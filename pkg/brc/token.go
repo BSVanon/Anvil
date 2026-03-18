@@ -1,145 +1,74 @@
 package brc
 
 import (
-	"bytes"
-	"errors"
-	"fmt"
-
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/pushdrop"
 )
-
-// BRC-48 opcodes used in token scripts.
-const (
-	opDROP     = 0x75
-	op2DROP    = 0x6d
-	opCHECKSIG = 0xac
-)
-
-// pushData returns the Bitcoin push-data encoding for b.
-func pushData(b []byte) []byte {
-	l := len(b)
-	switch {
-	case l <= 75:
-		return append([]byte{byte(l)}, b...)
-	case l <= 255:
-		return append([]byte{0x4c, byte(l)}, b...)
-	case l <= 65535:
-		return append([]byte{0x4d, byte(l), byte(l >> 8)}, b...)
-	default:
-		return append([]byte{0x4e, byte(l), byte(l >> 8), byte(l >> 16), byte(l >> 24)}, b...)
-	}
-}
-
-// BuildTokenScript builds a BRC-48 locking script:
-//
-//	pushData(fields[0]) pushData(fields[1]) ... pushData(fields[n])
-//	OP_DROP OP_2DROP OP_DROP
-//	pushData(lockingPub) OP_CHECKSIG
-func BuildTokenScript(fields []string, lockingPub *secp256k1.PublicKey) []byte {
-	var buf bytes.Buffer
-	for _, f := range fields {
-		buf.Write(pushData([]byte(f)))
-	}
-	buf.WriteByte(opDROP)
-	buf.WriteByte(op2DROP)
-	buf.WriteByte(opDROP)
-	buf.Write(pushData(lockingPub.SerializeCompressed()))
-	buf.WriteByte(opCHECKSIG)
-	return buf.Bytes()
-}
 
 // TokenFields holds the parsed fields from a BRC-48 token script.
 type TokenFields struct {
 	Protocol      string
 	IdentityPub   string
 	Domain        string
-	TopicProvider string // "topic" for SHIP, "provider" for SLAP
-	LockingPub    []byte // 33-byte compressed public key
+	TopicProvider string         // "topic" for SHIP, "provider" for SLAP
+	LockingPub    *ec.PublicKey  // locking public key from BRC-48 script
 }
 
-// ParseTokenScript extracts the data fields and locking pubkey from a BRC-48
-// script. Returns an error if the script doesn't match the expected format.
-func ParseTokenScript(script []byte) (*TokenFields, error) {
-	chunks, err := decodeScript(script)
-	if err != nil {
-		return nil, err
+// ParseTokenScript extracts the data fields from a BRC-48 push-drop script
+// using go-sdk's canonical pushdrop.Decode.
+func ParseTokenScript(s *script.Script) (*TokenFields, error) {
+	result := pushdrop.Decode(s)
+	if result == nil {
+		return nil, errInvalidScript
 	}
-
-	// Expect: 4 data pushes + OP_DROP + OP_2DROP + OP_DROP + pubkey push + OP_CHECKSIG
-	if len(chunks) < 9 {
-		return nil, fmt.Errorf("expected >= 9 script chunks, got %d", len(chunks))
+	if len(result.Fields) < 4 {
+		return nil, errTooFewFields
 	}
-
-	// Validate opcode sequence
-	opcodeIdx := 4
-	if !chunks[opcodeIdx].isOp(opDROP) || !chunks[opcodeIdx+1].isOp(op2DROP) ||
-		!chunks[opcodeIdx+2].isOp(opDROP) || !chunks[opcodeIdx+4].isOp(opCHECKSIG) {
-		return nil, errors.New("invalid opcode sequence")
-	}
-
-	pubBytes := chunks[opcodeIdx+3].data
-	if len(pubBytes) != 33 {
-		return nil, fmt.Errorf("locking pubkey must be 33 bytes, got %d", len(pubBytes))
-	}
-
 	return &TokenFields{
-		Protocol:      string(chunks[0].data),
-		IdentityPub:   string(chunks[1].data),
-		Domain:        string(chunks[2].data),
-		TopicProvider: string(chunks[3].data),
-		LockingPub:    pubBytes,
+		Protocol:      string(result.Fields[0]),
+		IdentityPub:   string(result.Fields[1]),
+		Domain:        string(result.Fields[2]),
+		TopicProvider: string(result.Fields[3]),
+		LockingPub:    result.LockingPublicKey,
 	}, nil
 }
 
-type scriptChunk struct {
-	data   []byte
-	op     byte
-	opcode bool // true if this chunk is an opcode, not data
-}
+// buildPushDropScript builds a BRC-48 push-drop script in lock-before format:
+// [pubkey] [CHECKSIG] [field1] [field2] ... [2DROP...] [DROP]
+// This is the format expected by go-sdk's pushdrop.Decode.
+func buildPushDropScript(lockingPub *ec.PublicKey, fields [][]byte) (*script.Script, error) {
+	var chunks []*script.ScriptChunk
 
-func (c scriptChunk) isOp(op byte) bool { return c.opcode && c.op == op }
+	// Lock-before: pubkey + CHECKSIG first
+	pubBytes := lockingPub.Compressed()
+	chunks = append(chunks, &script.ScriptChunk{Op: byte(len(pubBytes)), Data: pubBytes})
+	chunks = append(chunks, &script.ScriptChunk{Op: script.OpCHECKSIG})
 
-func decodeScript(script []byte) ([]scriptChunk, error) {
-	var chunks []scriptChunk
-	i := 0
-	for i < len(script) {
-		op := script[i]
-		i++
-		switch {
-		case op >= 1 && op <= 75:
-			end := i + int(op)
-			if end > len(script) {
-				return nil, errors.New("pushdata overflows script")
-			}
-			chunks = append(chunks, scriptChunk{data: script[i:end]})
-			i = end
-		case op == 0x4c: // OP_PUSHDATA1
-			if i >= len(script) {
-				return nil, errors.New("missing pushdata1 length")
-			}
-			l := int(script[i])
-			i++
-			end := i + l
-			if end > len(script) {
-				return nil, errors.New("pushdata1 overflows script")
-			}
-			chunks = append(chunks, scriptChunk{data: script[i:end]})
-			i = end
-		case op == 0x4d: // OP_PUSHDATA2
-			if i+1 >= len(script) {
-				return nil, errors.New("missing pushdata2 length")
-			}
-			l := int(script[i]) | int(script[i+1])<<8
-			i += 2
-			end := i + l
-			if end > len(script) {
-				return nil, errors.New("pushdata2 overflows script")
-			}
-			chunks = append(chunks, scriptChunk{data: script[i:end]})
-			i = end
-		default:
-			chunks = append(chunks, scriptChunk{op: op, opcode: true})
-		}
+	// Data fields
+	for _, f := range fields {
+		chunks = append(chunks, pushdrop.CreateMinimallyEncodedScriptChunk(f))
 	}
-	return chunks, nil
+
+	// Drop operations
+	remaining := len(fields)
+	for remaining > 1 {
+		chunks = append(chunks, &script.ScriptChunk{Op: script.Op2DROP})
+		remaining -= 2
+	}
+	if remaining > 0 {
+		chunks = append(chunks, &script.ScriptChunk{Op: script.OpDROP})
+	}
+
+	return script.NewScriptFromScriptOps(chunks)
 }
+
+var (
+	errInvalidScript = errorf("invalid BRC-48 script")
+	errTooFewFields  = errorf("expected >= 4 fields in BRC-48 script")
+)
+
+type constantError string
+
+func errorf(s string) constantError { return constantError(s) }
+func (e constantError) Error() string { return string(e) }

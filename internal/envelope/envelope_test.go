@@ -1,17 +1,16 @@
 package envelope
 
 import (
-	"encoding/hex"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
-func testKey() *secp256k1.PrivateKey {
-	b, _ := hex.DecodeString("0000000000000000000000000000000000000000000000000000000000000003")
-	return secp256k1.PrivKeyFromBytes(b)
+func testKey() *ec.PrivateKey {
+	key, _ := ec.PrivateKeyFromWif("KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S")
+	return key
 }
 
 func validEnvelope(t *testing.T) *Envelope {

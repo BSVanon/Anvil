@@ -6,27 +6,24 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/pkg/brc"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
 // Bootstrap registers the node's own SHIP tokens in the local directory
-// for each configured topic. This makes the node discoverable to peers
-// who query the overlay.
-//
-// This is the startup population path — the node advertises itself.
-// On-chain publication of the SHIP token is a separate step (requires
-// a funded wallet transaction). This only populates the local directory.
+// for each configured topic. This is a local dev/operator convenience —
+// not canonical overlay discovery. Real discovery comes from JungleBus
+// or overlay lookup.
 func Bootstrap(
 	dir *Directory,
-	identityKey *secp256k1.PrivateKey,
+	identityKey *ec.PrivateKey,
 	domain string,
 	topics []string,
 	logger *slog.Logger,
 ) error {
-	identityPubHex := hex.EncodeToString(identityKey.PubKey().SerializeCompressed())
+	identityPubHex := hex.EncodeToString(identityKey.PubKey().Compressed())
 
 	for _, topic := range topics {
-		script, _, err := brc.BuildSHIPScript(identityKey, domain, topic)
+		scriptBytes, _, err := brc.BuildSHIPScript(identityKey, domain, topic)
 		if err != nil {
 			logger.Error("failed to build SHIP script", "topic", topic, "error", err)
 			continue
@@ -41,7 +38,7 @@ func Bootstrap(
 			DiscoveredAt: time.Now(),
 		}
 
-		if err := dir.AddSHIPPeer(entry, script); err != nil {
+		if err := dir.AddSHIPPeer(entry, scriptBytes); err != nil {
 			logger.Error("failed to register SHIP", "topic", topic, "error", err)
 			continue
 		}

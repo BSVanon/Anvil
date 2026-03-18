@@ -19,7 +19,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	"github.com/BSVanon/Anvil/pkg/brc"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -421,9 +421,9 @@ func testServerWithOverlay(t *testing.T) *Server {
 	return NewServer(hs, ps, es, od, validator, broadcaster, "test-token", logger)
 }
 
-func overlayTestKey() *secp256k1.PrivateKey {
-	b, _ := hex.DecodeString("0000000000000000000000000000000000000000000000000000000000000003")
-	return secp256k1.PrivKeyFromBytes(b)
+func overlayTestKey() *ec.PrivateKey {
+	key, _ := ec.PrivateKeyFromWif("KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S")
+	return key
 }
 
 func TestOverlayLookupEmpty(t *testing.T) {

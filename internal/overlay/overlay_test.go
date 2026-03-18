@@ -7,12 +7,12 @@ import (
 	"testing"
 
 	"github.com/BSVanon/Anvil/pkg/brc"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
-func testKey() *secp256k1.PrivateKey {
-	b, _ := hex.DecodeString("0000000000000000000000000000000000000000000000000000000000000003")
-	return secp256k1.PrivKeyFromBytes(b)
+func testKey() *ec.PrivateKey {
+	key, _ := ec.PrivateKeyFromWif("KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S")
+	return key
 }
 
 func tmpDirectory(t *testing.T) *Directory {
@@ -39,7 +39,7 @@ func TestAddAndLookupSHIPPeer(t *testing.T) {
 	}
 
 	entry := &PeerEntry{
-		IdentityPub: hex.EncodeToString(key.PubKey().SerializeCompressed()),
+		IdentityPub: hex.EncodeToString(key.PubKey().Compressed()),
 		Domain:      "relay.example.com:8333",
 		Topic:       "forge:mainnet",
 		TxID:        "abc123",
@@ -95,7 +95,7 @@ func TestCountSHIP(t *testing.T) {
 	key := testKey()
 	script, _, _ := brc.BuildSHIPScript(key, "a.com", "forge:mainnet")
 	d.AddSHIPPeer(&PeerEntry{
-		IdentityPub: hex.EncodeToString(key.PubKey().SerializeCompressed()),
+		IdentityPub: hex.EncodeToString(key.PubKey().Compressed()),
 		Domain:      "a.com",
 		Topic:       "forge:mainnet",
 	}, script)
@@ -117,7 +117,7 @@ func TestAddAndLookupSLAPProvider(t *testing.T) {
 	}
 
 	entry := &ProviderEntry{
-		IdentityPub: hex.EncodeToString(key.PubKey().SerializeCompressed()),
+		IdentityPub: hex.EncodeToString(key.PubKey().Compressed()),
 		Domain:      "overlay.example.com",
 		Provider:    "SHIP",
 		TxID:        "def456",
