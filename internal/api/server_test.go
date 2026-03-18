@@ -513,3 +513,55 @@ func TestOverlayRegisterRejectsInvalid(t *testing.T) {
 		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestEndToEndRegisterThenDeregister(t *testing.T) {
+	srv := testServerWithOverlay(t)
+	key := overlayTestKey()
+
+	scriptBytes, _, _ := brc.BuildSHIPScript(key, "temp.example.com", "forge:mainnet")
+
+	// Register
+	body := fmt.Sprintf(`{"script":"%s","txid":"tx999","output_index":0}`, hex.EncodeToString(scriptBytes))
+	req := httptest.NewRequest("POST", "/overlay/register", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("register: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify it's there
+	req2 := httptest.NewRequest("GET", "/overlay/lookup?topic=forge:mainnet", nil)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	var resp map[string]interface{}
+	json.NewDecoder(w2.Body).Decode(&resp)
+	if resp["count"].(float64) != 1 {
+		t.Fatalf("expected 1 peer, got %v", resp["count"])
+	}
+
+	// Deregister
+	identityPubHex := hex.EncodeToString(key.PubKey().Compressed())
+	deregBody := fmt.Sprintf(`{"topic":"forge:mainnet","identity_pub":"%s"}`, identityPubHex)
+	req3 := httptest.NewRequest("POST", "/overlay/deregister", strings.NewReader(deregBody))
+	req3.Header.Set("Authorization", "Bearer test-token")
+	req3.Header.Set("Content-Type", "application/json")
+	w3 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("deregister: expected 200, got %d: %s", w3.Code, w3.Body.String())
+	}
+
+	// Verify it's gone
+	req4 := httptest.NewRequest("GET", "/overlay/lookup?topic=forge:mainnet", nil)
+	w4 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w4, req4)
+	var resp2 map[string]interface{}
+	json.NewDecoder(w4.Body).Decode(&resp2)
+	if resp2["count"].(float64) != 0 {
+		t.Fatalf("expected 0 peers after deregister, got %v", resp2["count"])
+	}
+
+	t.Log("e2e deregister success")
+}

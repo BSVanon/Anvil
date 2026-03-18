@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -113,7 +114,7 @@ func main() {
 		defer overlayDir.Close()
 		log.Printf("overlay directory opened (topics=%v)", cfg.Overlay.Topics)
 
-		// Bootstrap: register our own SHIP tokens if identity is configured
+		// Local bootstrap: register our own SHIP tokens (dev/operator convenience)
 		if cfg.Identity.WIF != "" {
 			identityKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
 			if err != nil {
@@ -121,6 +122,30 @@ func main() {
 			} else {
 				domain := cfg.Node.Listen
 				anviloverlay.Bootstrap(overlayDir, identityKey, domain, cfg.Overlay.Topics, logger)
+			}
+		}
+
+		// Live discovery: JungleBus subscription for real-time SHIP/SLAP detection
+		if cfg.JungleBus.Enabled {
+			discoverer := anviloverlay.NewDiscoverer(overlayDir, logger)
+			for _, sub := range cfg.JungleBus.Subscriptions {
+				jbSub, err := anviloverlay.NewJungleBusSubscriber(
+					cfg.JungleBus.URL,
+					sub.ID,
+					uint64(sub.FromBlock),
+					discoverer,
+					logger,
+				)
+				if err != nil {
+					log.Printf("junglebus subscription %q failed: %v", sub.Name, err)
+					continue
+				}
+				go func(name string) {
+					if err := jbSub.Start(context.Background()); err != nil {
+						logger.Error("junglebus subscription stopped", "name", name, "error", err)
+					}
+				}(sub.Name)
+				log.Printf("junglebus: subscribed %q from block %d", sub.Name, sub.FromBlock)
 			}
 		}
 	}

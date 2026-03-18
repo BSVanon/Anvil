@@ -68,6 +68,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /broadcast", s.requireAuth(s.handleBroadcast))
 	s.mux.HandleFunc("POST /data", s.requireAuth(s.handlePostData))
 	s.mux.HandleFunc("POST /overlay/register", s.requireAuth(s.handleOverlayRegister))
+	s.mux.HandleFunc("POST /overlay/deregister", s.requireAuth(s.handleOverlayDeregister))
 }
 
 // Handler returns the HTTP handler for the server.
@@ -384,6 +385,45 @@ func (s *Server) handleOverlayRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"registered": true,
 		"txid":       req.TxID,
+	})
+}
+
+// handleOverlayDeregister removes a SHIP peer from the directory.
+// POST /overlay/deregister
+// Body: {"topic": "<topic>", "identity_pub": "<hex>"}
+func (s *Server) handleOverlayDeregister(w http.ResponseWriter, r *http.Request) {
+	if s.overlayDir == nil {
+		writeError(w, http.StatusServiceUnavailable, "overlay not configured")
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+
+	var req struct {
+		Topic       string `json:"topic"`
+		IdentityPub string `json:"identity_pub"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+	if req.Topic == "" || req.IdentityPub == "" {
+		writeError(w, http.StatusBadRequest, "topic and identity_pub required")
+		return
+	}
+
+	if err := s.overlayDir.RemoveSHIPPeer(req.Topic, req.IdentityPub); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("deregister error: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"deregistered": true,
+		"topic":        req.Topic,
 	})
 }
 

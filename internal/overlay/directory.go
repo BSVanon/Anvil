@@ -134,6 +134,14 @@ func (d *Directory) LookupSLAPByDomain(domain string) ([]*ProviderEntry, error) 
 	return results, iter.Error()
 }
 
+// RemoveSHIPPeer removes a SHIP peer entry from the directory.
+func (d *Directory) RemoveSHIPPeer(topic, identityPub string) error {
+	key := shipKey(topic, identityPub)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.db.Delete(key, nil)
+}
+
 // CountSHIP returns the total number of SHIP entries.
 func (d *Directory) CountSHIP() int {
 	d.mu.RLock()
