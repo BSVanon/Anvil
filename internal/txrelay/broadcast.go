@@ -13,6 +13,7 @@ type BroadcastResult struct {
 	Accepted  bool   `json:"accepted"`
 	PeerCount int    `json:"peer_count,omitempty"` // peers that accepted the tx
 	ARC       bool   `json:"arc,omitempty"`        // submitted to ARC
+	Status    string `json:"status,omitempty"`     // ARC txStatus if applicable
 	Message   string `json:"message,omitempty"`
 }
 
@@ -112,14 +113,21 @@ func (b *Broadcaster) BroadcastToARC(raw []byte) (*BroadcastResult, error) {
 		return &BroadcastResult{
 			TxID:    txid,
 			ARC:     true,
+			Status:  "error",
 			Message: fmt.Sprintf("ARC submit failed: %v", err),
 		}, nil
 	}
 
+	// ARC returns a txStatus — only certain statuses mean acceptance.
+	// SEEN_ON_NETWORK and MINED indicate the tx was accepted.
+	// Other statuses (REJECTED, DOUBLE_SPEND_ATTEMPTED, etc.) are failures.
+	accepted := resp.Status == "SEEN_ON_NETWORK" || resp.Status == "MINED"
+
 	return &BroadcastResult{
 		TxID:     txid,
-		Accepted: true,
+		Accepted: accepted,
 		ARC:      true,
+		Status:   resp.Status,
 		Message:  fmt.Sprintf("ARC status: %s", resp.Status),
 	}, nil
 }
