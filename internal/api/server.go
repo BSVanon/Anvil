@@ -69,6 +69,16 @@ func (s *Server) Handler() http.Handler {
 	return s.mux
 }
 
+// Mux returns the underlying ServeMux for external route registration.
+func (s *Server) Mux() *http.ServeMux {
+	return s.mux
+}
+
+// RequireAuth is the exported auth middleware for external route registration.
+func (s *Server) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireAuth(next)
+}
+
 // --- Handlers ---
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

@@ -18,6 +18,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
+	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
 	"github.com/libsv/go-p2p/wire"
 )
 
@@ -102,6 +103,19 @@ func main() {
 	validator := spv.NewValidator(headerStore)
 	srv := api.NewServer(headerStore, proofStore, envStore, validator, broadcaster, cfg.API.AuthToken, logger)
 
+	// Phase 5.5: Node wallet (optional — requires identity WIF)
+	if cfg.Identity.WIF != "" {
+		walletDir := filepath.Join(cfg.Node.DataDir, "wallet")
+		nw, err := anvilwallet.New(cfg.Identity.WIF, walletDir, headerStore, proofStore, broadcaster, logger)
+		if err != nil {
+			log.Printf("wallet init failed (non-fatal): %v", err)
+		} else {
+			defer nw.Close()
+			nw.RegisterRoutes(srv.Mux(), srv.RequireAuth)
+			log.Printf("wallet initialized")
+		}
+	}
+
 	go func() {
 		log.Printf("REST API listening on %s", cfg.Node.APIListen)
 		if err := http.ListenAndServe(cfg.Node.APIListen, srv.Handler()); err != nil {
@@ -111,7 +125,6 @@ func main() {
 
 	// TODO: Phase 1 — init BRC identity from cfg.Identity.WIF
 	// TODO: Phase 4 — start gossip mesh
-	// TODO: Phase 5.5 — init wallet
 	// TODO: Phase 6 — start overlay discovery
 
 	// Block until signal
