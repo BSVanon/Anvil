@@ -137,3 +137,9 @@ func UnmarshalEnvelope(data []byte) (*Envelope, error) {
 	}
 	return &env, nil
 }
+
+// HashEnvelope returns a dedup key for an envelope based on its identifying fields.
+func HashEnvelope(topic, pubkey string, timestamp int64) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%d", topic, pubkey, timestamp)))
+	return hex.EncodeToString(h[:16])
+}

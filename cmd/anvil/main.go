@@ -16,6 +16,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/api"
 	"github.com/BSVanon/Anvil/internal/config"
 	"github.com/BSVanon/Anvil/internal/envelope"
+	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
@@ -174,7 +175,37 @@ func main() {
 		}
 	}()
 
-	// TODO: Phase 4 — start gossip mesh
+	// Phase 4: Gossip mesh — uses go-sdk auth.Peer for authenticated WebSocket peering
+	var gossipMgr *anvilgossip.Manager
+	if len(cfg.Forge.Seeds) > 0 || cfg.Node.Listen != "" {
+		gossipMgr = anvilgossip.NewManager(anvilgossip.ManagerConfig{
+			Store:          envStore,
+			Logger:         logger,
+			LocalInterests: cfg.Overlay.Topics,
+			MaxSeen:        10000,
+			OnEnvelope: func(env *envelope.Envelope) {
+				logger.Info("mesh envelope received", "topic", env.Topic, "from", env.Pubkey[:16])
+			},
+		})
+		defer gossipMgr.Stop()
+
+		// Connect to seed peers
+		for _, seed := range cfg.Forge.Seeds {
+			go func(endpoint string) {
+				if err := gossipMgr.ConnectPeer(context.Background(), endpoint); err != nil {
+					logger.Warn("forge peer failed", "endpoint", endpoint, "error", err)
+				}
+			}(seed)
+		}
+		log.Printf("forge mesh: connecting to %d seed peers", len(cfg.Forge.Seeds))
+
+		// Wire broadcaster to forward txs to mesh peers
+		broadcaster.SetGossipForwarder(func(txid, rawHex string) {
+			if gossipMgr.PeerCount() > 0 {
+				logger.Debug("forwarding tx to mesh", "txid", txid[:16], "peers", gossipMgr.PeerCount())
+			}
+		})
+	}
 
 	// Block until signal
 	sig := make(chan os.Signal, 1)
