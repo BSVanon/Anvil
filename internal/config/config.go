@@ -114,5 +114,30 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	// Environment variable overrides for secrets (never store secrets in TOML)
+	if v := os.Getenv("ANVIL_IDENTITY_WIF"); v != "" {
+		cfg.Identity.WIF = v
+	}
+	if v := os.Getenv("ANVIL_API_AUTH_TOKEN"); v != "" {
+		cfg.API.AuthToken = v
+	}
+	if v := os.Getenv("ANVIL_ARC_URL"); v != "" {
+		cfg.ARC.URL = v
+		cfg.ARC.Enabled = true
+	}
+	if v := os.Getenv("ANVIL_ARC_API_KEY"); v != "" {
+		cfg.ARC.APIKey = v
+	}
+	if v := os.Getenv("ANVIL_JUNGLEBUS_URL"); v != "" {
+		cfg.JungleBus.URL = v
+		cfg.JungleBus.Enabled = true
+	}
+	if v := os.Getenv("ANVIL_TLS_CERT"); v != "" {
+		cfg.API.TLSCert = v
+	}
+	if v := os.Getenv("ANVIL_TLS_KEY"); v != "" {
+		cfg.API.TLSKey = v
+	}
+
 	return cfg, nil
 }

@@ -184,3 +184,73 @@ func TestLoadOverridesDefaultsSelectively(t *testing.T) {
 		t.Fatalf("rate_limit should be default, got %d", cfg.API.RateLimit)
 	}
 }
+
+func TestEnvVarOverrides(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-env-*.toml")
+	f.WriteString("[node]\nname = \"env-test\"\n")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	// Set env vars
+	t.Setenv("ANVIL_IDENTITY_WIF", "KwEnvTestWIF")
+	t.Setenv("ANVIL_API_AUTH_TOKEN", "secret-from-env")
+	t.Setenv("ANVIL_ARC_URL", "https://arc.gorillapool.io")
+	t.Setenv("ANVIL_ARC_API_KEY", "gp-key-123")
+	t.Setenv("ANVIL_JUNGLEBUS_URL", "junglebus.gorillapool.io")
+	t.Setenv("ANVIL_TLS_CERT", "/etc/ssl/anvil.crt")
+	t.Setenv("ANVIL_TLS_KEY", "/etc/ssl/anvil.key")
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Identity.WIF != "KwEnvTestWIF" {
+		t.Fatalf("expected WIF from env, got %s", cfg.Identity.WIF)
+	}
+	if cfg.API.AuthToken != "secret-from-env" {
+		t.Fatalf("expected auth token from env, got %s", cfg.API.AuthToken)
+	}
+	if cfg.ARC.URL != "https://arc.gorillapool.io" {
+		t.Fatalf("expected ARC URL from env, got %s", cfg.ARC.URL)
+	}
+	if !cfg.ARC.Enabled {
+		t.Fatal("ARC should be auto-enabled when URL set via env")
+	}
+	if cfg.ARC.APIKey != "gp-key-123" {
+		t.Fatalf("expected ARC API key from env, got %s", cfg.ARC.APIKey)
+	}
+	if cfg.JungleBus.URL != "junglebus.gorillapool.io" {
+		t.Fatalf("expected JungleBus URL from env, got %s", cfg.JungleBus.URL)
+	}
+	if !cfg.JungleBus.Enabled {
+		t.Fatal("JungleBus should be auto-enabled when URL set via env")
+	}
+	if cfg.API.TLSCert != "/etc/ssl/anvil.crt" {
+		t.Fatalf("expected TLS cert from env, got %s", cfg.API.TLSCert)
+	}
+	if cfg.API.TLSKey != "/etc/ssl/anvil.key" {
+		t.Fatalf("expected TLS key from env, got %s", cfg.API.TLSKey)
+	}
+}
+
+func TestEnvVarDoesNotOverrideWhenEmpty(t *testing.T) {
+	toml := "[identity]\nwif = \"KwFromToml\"\n[arc]\nurl = \"https://arc.taal.com\"\n"
+	f, _ := os.CreateTemp("", "anvil-cfg-noenv-*.toml")
+	f.WriteString(toml)
+	f.Close()
+	defer os.Remove(f.Name())
+
+	// Do NOT set any env vars — TOML values should survive
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Identity.WIF != "KwFromToml" {
+		t.Fatalf("TOML WIF should survive when no env var set, got %s", cfg.Identity.WIF)
+	}
+	if cfg.ARC.URL != "https://arc.taal.com" {
+		t.Fatalf("TOML ARC URL should survive when no env var set, got %s", cfg.ARC.URL)
+	}
+}
