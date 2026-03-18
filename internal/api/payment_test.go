@@ -35,6 +35,7 @@ func testGate(t *testing.T, priceSats int) *PaymentGate {
 	return NewPaymentGate(PaymentGateConfig{
 		PriceSats:      priceSats,
 		PayeeScriptHex: testPayeeScript(t),
+		NonceProvider:  &DevNonceProvider{}, // explicit — gate won't create without it
 	})
 }
 
@@ -460,6 +461,101 @@ func TestX402ConcurrentChallengesNoRace(t *testing.T) {
 		t.Fatalf("expected %d successful payments, got %d", n, got)
 	}
 	t.Logf("concurrent 402: %d/%d proofs redeemed concurrently without race", got, n)
+}
+
+func TestX402RejectsMutatedHeaderHash(t *testing.T) {
+	srv := testServerWithPaymentGate(t, 100)
+	payeeScript := testPayeeScript(t)
+
+	ch := getChallenge(t, srv, "GET", "/status")
+
+	// Build proof but tamper with the header hash
+	ch.ReqHeadersSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	proofB64 := buildProof(t, ch, 200, payeeScript)
+
+	req := httptest.NewRequest("GET", "/status", nil)
+	req.Host = "localhost"
+	req.Header.Set(HeaderX402Proof, proofB64)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	// The proof's challenge_sha256 won't match any pending challenge (we tampered with it)
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402 for mutated header hash, got %d: %s", w.Code, w.Body.String())
+	}
+	t.Log("correctly rejected proof with mutated req_headers_sha256")
+}
+
+func TestX402RejectsMutatedBodyHash(t *testing.T) {
+	srv := testServerWithPaymentGate(t, 100)
+	payeeScript := testPayeeScript(t)
+
+	ch := getChallenge(t, srv, "GET", "/status")
+
+	// Build proof but tamper with the body hash
+	ch.ReqBodySHA256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	proofB64 := buildProof(t, ch, 200, payeeScript)
+
+	req := httptest.NewRequest("GET", "/status", nil)
+	req.Host = "localhost"
+	req.Header.Set(HeaderX402Proof, proofB64)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402 for mutated body hash, got %d: %s", w.Code, w.Body.String())
+	}
+	t.Log("correctly rejected proof with mutated req_body_sha256")
+}
+
+func TestNewPaymentGateRefusesWithoutPayee(t *testing.T) {
+	pg := NewPaymentGate(PaymentGateConfig{
+		PriceSats:     100,
+		NonceProvider: &DevNonceProvider{},
+		// PayeeScriptHex intentionally empty
+	})
+	if pg != nil {
+		t.Fatal("expected nil gate when no payee script configured")
+	}
+}
+
+func TestNewPaymentGateRefusesWithoutNonceProvider(t *testing.T) {
+	pg := NewPaymentGate(PaymentGateConfig{
+		PriceSats:      100,
+		PayeeScriptHex: "76a91462e907b15cbf27d5425399ebf6f0fb50ebb88f1888ac",
+		// NonceProvider intentionally nil
+	})
+	if pg != nil {
+		t.Fatal("expected nil gate when no nonce provider configured")
+	}
+}
+
+func TestPaymentGateDisabledWithoutWalletInConfig(t *testing.T) {
+	// Simulate: payment_satoshis > 0 but no payee/nonce (what main.go does without wallet)
+	pg := NewPaymentGate(PaymentGateConfig{
+		PriceSats: 100,
+		// No PayeeScriptHex, no NonceProvider
+	})
+	if pg != nil {
+		t.Fatal("gate should be nil when neither payee nor nonce provider are set")
+	}
+
+	// Nil gate should pass through as no-op
+	called := false
+	handler := pg.Middleware(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if !called {
+		t.Fatal("disabled gate should pass through")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	t.Log("payment gate correctly disabled without wallet — free access")
 }
 
 // helper to suppress unused import

@@ -139,9 +139,21 @@ type PaymentGateConfig struct {
 }
 
 // NewPaymentGate creates a spec-compliant x402 payment gate.
-// Returns nil if priceSats <= 0 (free access).
+// Returns nil if priceSats <= 0 (free access) OR if payee script is empty
+// (no recipient configured — cannot enforce real payment).
+// DevNonceProvider is only used when NonceProvider is nil AND PayeeScriptHex
+// is empty (both must be absent for dev mode). If payee is set but nonce
+// provider is nil, that's a config error and returns nil.
 func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 	if cfg.PriceSats <= 0 {
+		return nil
+	}
+	if cfg.PayeeScriptHex == "" {
+		// No payee = no real payment enforcement possible. Refuse to create.
+		return nil
+	}
+	if cfg.NonceProvider == nil {
+		// Payee configured but no nonce provider = broken config. Refuse.
 		return nil
 	}
 	ttl := cfg.ChallengeTTL
@@ -149,9 +161,6 @@ func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 		ttl = 60 * time.Second
 	}
 	np := cfg.NonceProvider
-	if np == nil {
-		np = &DevNonceProvider{}
-	}
 	return &PaymentGate{
 		priceSats:         cfg.PriceSats,
 		payeeScriptHex:    cfg.PayeeScriptHex,
@@ -267,6 +276,13 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 	if proof.Request.Query != challenge.Query || proof.Request.Query != r.URL.RawQuery {
 		return nil, fmt.Errorf("query mismatch")
 	}
+	// Verify header and body hashes match the challenge (request binding)
+	if proof.Request.ReqHeadersSHA256 != challenge.ReqHeadersSHA256 {
+		return nil, fmt.Errorf("req_headers_sha256 mismatch")
+	}
+	if proof.Request.ReqBodySHA256 != challenge.ReqBodySHA256 {
+		return nil, fmt.Errorf("req_body_sha256 mismatch")
+	}
 
 	// Step 4: Check expiry
 	if time.Now().Unix() > challenge.ExpiresAt {
@@ -307,32 +323,21 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 		}
 	}
 
-	// Step 7: Verify payment output to payee
-	if pg.payeeScriptHex != "" {
-		payeeBytes, err := hex.DecodeString(pg.payeeScriptHex)
-		if err != nil {
-			return nil, fmt.Errorf("invalid payee script config: %w", err)
+	// Step 7: Verify payment output to payee (always enforced — gate
+	// cannot be created without a payee script)
+	payeeBytes, err := hex.DecodeString(pg.payeeScriptHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid payee script config: %w", err)
+	}
+	paid := false
+	for _, out := range tx.Outputs {
+		if out.Satoshis >= uint64(pg.priceSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
+			paid = true
+			break
 		}
-		paid := false
-		for _, out := range tx.Outputs {
-			if out.Satoshis >= uint64(pg.priceSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
-				paid = true
-				break
-			}
-		}
-		if !paid {
-			return nil, fmt.Errorf("no output pays %d sats to payee %s",
-				pg.priceSats, pg.payeeScriptHex[:16]+"...")
-		}
-	} else {
-		// No payee configured — just check total output value (dev mode)
-		var total uint64
-		for _, out := range tx.Outputs {
-			total += out.Satoshis
-		}
-		if total < uint64(pg.priceSats) {
-			return nil, fmt.Errorf("insufficient payment: %d < %d sats", total, pg.priceSats)
-		}
+	}
+	if !paid {
+		return nil, fmt.Errorf("no output pays %d sats to payee", pg.priceSats)
 	}
 
 	// Step 8: Verify txid

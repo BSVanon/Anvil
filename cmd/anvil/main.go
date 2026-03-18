@@ -226,32 +226,34 @@ func main() {
 		}
 	}
 
-	// Derive payee script for x402 payment gating (from identity key if available)
+	// x402 payment gating requires both identity.wif (for payee script) and
+	// a wallet (for nonce UTXO minting). If either is missing, payment gating
+	// is forced off — payment_satoshis is zeroed so no dev-mode gate can leak through.
+	paymentSatoshis := cfg.API.PaymentSatoshis
 	var payeeScriptHex string
-	if cfg.Identity.WIF != "" && cfg.API.PaymentSatoshis > 0 {
-		payeeKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
-		if err != nil {
-			log.Fatalf("x402: invalid identity WIF: %v", err)
-		}
-		addr, err := bsvscript.NewAddressFromPublicKey(payeeKey.PubKey(), true)
-		if err != nil {
-			log.Fatalf("x402: derive address: %v", err)
-		}
-		lockScript, err := p2pkh.Lock(addr)
-		if err != nil {
-			log.Fatalf("x402: build locking script: %v", err)
-		}
-		payeeScriptHex = fmt.Sprintf("%x", []byte(*lockScript))
-		log.Printf("x402: payment gating enabled (%d sats/request, payee=%s)",
-			cfg.API.PaymentSatoshis, addr.AddressString)
-	} else if cfg.API.PaymentSatoshis > 0 {
-		log.Printf("x402: payment_satoshis=%d but no identity.wif — payment gating disabled", cfg.API.PaymentSatoshis)
-	}
-
-	// Wire wallet-backed nonce provider for x402 payment gating
 	var nonceProvider api.NonceProvider
-	if nodeWallet != nil && cfg.API.PaymentSatoshis > 0 {
-		nonceProvider = api.NewWalletNonceProvider(nodeWallet.Wallet())
+	if paymentSatoshis > 0 {
+		if cfg.Identity.WIF == "" || nodeWallet == nil {
+			log.Printf("x402: payment_satoshis=%d but identity.wif or wallet missing — payment gating DISABLED", paymentSatoshis)
+			paymentSatoshis = 0 // force off — no dev-mode fallback
+		} else {
+			payeeKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
+			if err != nil {
+				log.Fatalf("x402: invalid identity WIF: %v", err)
+			}
+			addr, err := bsvscript.NewAddressFromPublicKey(payeeKey.PubKey(), true)
+			if err != nil {
+				log.Fatalf("x402: derive address: %v", err)
+			}
+			lockScript, err := p2pkh.Lock(addr)
+			if err != nil {
+				log.Fatalf("x402: build locking script: %v", err)
+			}
+			payeeScriptHex = fmt.Sprintf("%x", []byte(*lockScript))
+			nonceProvider = api.NewWalletNonceProvider(nodeWallet.Wallet())
+			log.Printf("x402: payment gating enabled (%d sats/request, payee=%s)",
+				paymentSatoshis, addr.AddressString)
+		}
 	}
 
 	// REST API — gossip manager wired in so POST /data can broadcast to mesh
@@ -267,7 +269,7 @@ func main() {
 		AuthToken:       cfg.API.AuthToken,
 		RateLimit:       cfg.API.RateLimit,
 		TrustProxy:      cfg.API.TrustProxy,
-		PaymentSatoshis: cfg.API.PaymentSatoshis,
+		PaymentSatoshis: paymentSatoshis,
 		PayeeScriptHex:  payeeScriptHex,
 		NonceProvider:   nonceProvider,
 		Logger:          logger,
