@@ -26,32 +26,35 @@ type Server struct {
 	overlayDir    *overlay.Directory
 	validator     *spv.Validator
 	broadcaster   *txrelay.Broadcaster
-	gossipMgr     *gossip.Manager // nil if mesh not configured
-	rateLimiter   *RateLimiter    // nil if rate limiting disabled
-	logger        *slog.Logger
-	mux           *http.ServeMux
-	authToken     string
+	gossipMgr       *gossip.Manager // nil if mesh not configured
+	rateLimiter     *RateLimiter    // nil if rate limiting disabled
+	paymentSatoshis int             // per-request 402 price; 0 = free
+	logger          *slog.Logger
+	mux             *http.ServeMux
+	authToken       string
 }
 
 // ServerConfig holds all parameters for NewServer.
 type ServerConfig struct {
-	HeaderStore   *headers.Store
-	ProofStore    *spv.ProofStore
-	EnvelopeStore *envelope.Store
-	OverlayDir    *overlay.Directory
-	Validator     *spv.Validator
-	Broadcaster   *txrelay.Broadcaster
-	GossipMgr    *gossip.Manager
-	AuthToken     string
-	RateLimit     int // requests/second for open reads; 0 = disabled
-	Logger        *slog.Logger
+	HeaderStore     *headers.Store
+	ProofStore      *spv.ProofStore
+	EnvelopeStore   *envelope.Store
+	OverlayDir      *overlay.Directory
+	Validator       *spv.Validator
+	Broadcaster     *txrelay.Broadcaster
+	GossipMgr       *gossip.Manager
+	AuthToken       string
+	RateLimit       int  // requests/second for open reads; 0 = disabled
+	TrustProxy      bool // if true, use X-Forwarded-For for rate limiting
+	PaymentSatoshis int  // per-request price for 402-gated endpoints; 0 = free
+	Logger          *slog.Logger
 }
 
 // NewServer creates a new REST API server.
 func NewServer(cfg ServerConfig) *Server {
 	var rl *RateLimiter
 	if cfg.RateLimit > 0 {
-		rl = NewRateLimiter(cfg.RateLimit)
+		rl = NewRateLimiter(cfg.RateLimit, cfg.TrustProxy)
 	}
 	logger := cfg.Logger
 	if logger == nil {
@@ -64,9 +67,10 @@ func NewServer(cfg ServerConfig) *Server {
 		overlayDir:    cfg.OverlayDir,
 		validator:     cfg.Validator,
 		broadcaster:   cfg.Broadcaster,
-		gossipMgr:     cfg.GossipMgr,
-		rateLimiter:   rl,
-		logger:        logger,
+		gossipMgr:       cfg.GossipMgr,
+		rateLimiter:     rl,
+		paymentSatoshis: cfg.PaymentSatoshis,
+		logger:          logger,
 		mux:           http.NewServeMux(),
 		authToken:     cfg.AuthToken,
 	}
@@ -82,6 +86,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /data", s.openRead(s.handleQueryData))
 	s.mux.HandleFunc("GET /overlay/lookup", s.openRead(s.handleOverlayLookup))
 
+	// x402 discovery endpoint
+	if s.paymentSatoshis > 0 {
+		s.mux.HandleFunc("GET /.well-known/x402", s.handleX402Discovery)
+	}
+
 	// Authenticated write endpoints
 	s.mux.HandleFunc("POST /broadcast", s.requireAuth(s.handleBroadcast))
 	s.mux.HandleFunc("POST /data", s.requireAuth(s.handlePostData))
@@ -89,12 +98,39 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /overlay/deregister", s.requireAuth(s.handleOverlayDeregister))
 }
 
-// openRead wraps an open read handler with rate limiting if configured.
+// openRead wraps an open read handler with rate limiting and optional 402 payment gating.
+// Order: rate limit first (cheap check), then payment gate (expensive check).
 func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
-	if s.rateLimiter == nil {
-		return next
+	h := next
+
+	// Apply 402 payment gate if price > 0
+	gate := paymentGate(s.paymentSatoshis)
+	h = gate(h)
+
+	// Apply rate limiting if configured
+	if s.rateLimiter != nil {
+		h = s.rateLimiter.Middleware(h)
 	}
-	return s.rateLimiter.Middleware(next)
+
+	return h
+}
+
+// handleX402Discovery serves the /.well-known/x402 endpoint per x402 spec.
+// Returns a manifest of payment-gated endpoints and their prices.
+func (s *Server) handleX402Discovery(w http.ResponseWriter, r *http.Request) {
+	gatedEndpoints := []map[string]interface{}{
+		{"method": "GET", "path": "/status", "price": s.paymentSatoshis},
+		{"method": "GET", "path": "/headers/tip", "price": s.paymentSatoshis},
+		{"method": "GET", "path": "/tx/{txid}/beef", "price": s.paymentSatoshis},
+		{"method": "GET", "path": "/data", "price": s.paymentSatoshis},
+		{"method": "GET", "path": "/overlay/lookup", "price": s.paymentSatoshis},
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"version":   "0.1",
+		"network":   "mainnet",
+		"scheme":    "bsv-tx-v1",
+		"endpoints": gatedEndpoints,
+	})
 }
 
 // Handler returns the HTTP handler for the server.

@@ -7,7 +7,7 @@ import (
 )
 
 func TestRateLimiterAllowsBurst(t *testing.T) {
-	rl := NewRateLimiter(10) // 10 req/s
+	rl := NewRateLimiter(10, false) // 10 req/s
 
 	// Should allow up to burst (10) requests immediately
 	for i := 0; i < 10; i++ {
@@ -23,7 +23,7 @@ func TestRateLimiterAllowsBurst(t *testing.T) {
 }
 
 func TestRateLimiterDifferentKeys(t *testing.T) {
-	rl := NewRateLimiter(5)
+	rl := NewRateLimiter(5, false)
 
 	// Exhaust key A
 	for i := 0; i < 10; i++ {
@@ -37,7 +37,7 @@ func TestRateLimiterDifferentKeys(t *testing.T) {
 }
 
 func TestRateLimiterMiddleware429(t *testing.T) {
-	rl := NewRateLimiter(2) // very low for testing
+	rl := NewRateLimiter(2, false) // very low for testing
 
 	handler := rl.Middleware(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -66,7 +66,7 @@ func TestRateLimiterMiddleware429(t *testing.T) {
 }
 
 func TestRateLimiterMiddlewareXForwardedFor(t *testing.T) {
-	rl := NewRateLimiter(2)
+	rl := NewRateLimiter(2, true) // trust_proxy = true for XFF test
 
 	handler := rl.Middleware(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -107,7 +107,7 @@ func TestClientIPParsing(t *testing.T) {
 		if tt.xff != "" {
 			r.Header.Set("X-Forwarded-For", tt.xff)
 		}
-		got := clientIP(r)
+		got := clientIP(r, true) // trustProxy=true for these tests
 		if got != tt.expected {
 			t.Errorf("clientIP(%q, xff=%q) = %q, want %q", tt.remoteAddr, tt.xff, got, tt.expected)
 		}
@@ -129,7 +129,7 @@ func TestServerWithRateLimit(t *testing.T) {
 	// Create a server with a very low rate limit
 	srv := testServer(t)
 	// Manually set a rate limiter on the server (test-only, after construction)
-	srv.rateLimiter = NewRateLimiter(1)
+	srv.rateLimiter = NewRateLimiter(1, false)
 	// Re-initialize routes with the rate limiter
 	srv.mux = http.NewServeMux()
 	srv.routes()

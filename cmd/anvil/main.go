@@ -199,12 +199,10 @@ func main() {
 			log.Printf("foundry mesh: connecting to %d seed peers", len(cfg.Foundry.Seeds))
 		}
 
-		// Wire broadcaster to forward txs to mesh peers
-		broadcaster.SetGossipForwarder(func(txid, rawHex string) {
-			if gossipMgr.PeerCount() > 0 {
-				logger.Debug("forwarding tx to mesh", "txid", txid[:16], "peers", gossipMgr.PeerCount())
-			}
-		})
+		// NOTE: TX mesh forwarding is NOT implemented. Envelope gossip works
+		// (proven by mesh_e2e_test.go), but raw transaction forwarding across
+		// the foundry mesh requires a dedicated wire message type and is deferred.
+		// Transactions are local mempool + optional ARC submission only.
 
 		// Inbound mesh listener: accept authenticated WebSocket peers.
 		// Uses TLS (wss://) when cert/key are configured — required for production.
@@ -236,8 +234,10 @@ func main() {
 		Validator:     validator,
 		Broadcaster:   broadcaster,
 		GossipMgr:     gossipMgr,
-		AuthToken:     cfg.API.AuthToken,
-		RateLimit:     cfg.API.RateLimit,
+		AuthToken:       cfg.API.AuthToken,
+		RateLimit:       cfg.API.RateLimit,
+		TrustProxy:      cfg.API.TrustProxy,
+		PaymentSatoshis: cfg.API.PaymentSatoshis,
 		Logger:        logger,
 	})
 

@@ -75,10 +75,12 @@ type EnvelopeConfig struct {
 }
 
 type APIConfig struct {
-	AuthToken string `toml:"auth_token"`
-	TLSCert   string `toml:"tls_cert"`
-	TLSKey    string `toml:"tls_key"`
-	RateLimit int    `toml:"rate_limit"`
+	AuthToken  string `toml:"auth_token"`
+	TLSCert    string `toml:"tls_cert"`
+	TLSKey     string `toml:"tls_key"`
+	RateLimit  int    `toml:"rate_limit"`
+	TrustProxy bool   `toml:"trust_proxy"` // if true, use X-Forwarded-For for client IP; if false, use RemoteAddr only
+	PaymentSatoshis int `toml:"payment_satoshis"` // per-request price for 402-gated endpoints; 0 = free
 }
 
 func Load(path string) (*Config, error) {

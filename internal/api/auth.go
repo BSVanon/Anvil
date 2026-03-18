@@ -27,11 +27,12 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 // RateLimiter implements a token-bucket rate limiter keyed by client IP.
 // Zero-value is not usable — use NewRateLimiter.
 type RateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*bucket
-	rate     int           // tokens per second
-	burst    int           // max tokens (burst capacity)
-	cleanup  time.Duration // how often to evict stale entries
+	mu         sync.Mutex
+	buckets    map[string]*bucket
+	rate       int           // tokens per second
+	burst      int           // max tokens (burst capacity)
+	cleanup    time.Duration // how often to evict stale entries
+	trustProxy bool          // if true, use X-Forwarded-For; if false, use RemoteAddr only
 }
 
 type bucket struct {
@@ -40,8 +41,9 @@ type bucket struct {
 }
 
 // NewRateLimiter creates a rate limiter. rate is requests/second, burst
-// is the maximum burst size (defaults to rate if zero).
-func NewRateLimiter(rate int) *RateLimiter {
+// is the maximum burst size (defaults to rate if zero). If trustProxy
+// is true, X-Forwarded-For is used for client IP; otherwise RemoteAddr only.
+func NewRateLimiter(rate int, trustProxy bool) *RateLimiter {
 	if rate <= 0 {
 		rate = 100
 	}
@@ -50,10 +52,11 @@ func NewRateLimiter(rate int) *RateLimiter {
 		burst = 10
 	}
 	rl := &RateLimiter{
-		buckets: make(map[string]*bucket),
-		rate:    rate,
-		burst:   burst,
-		cleanup: 5 * time.Minute,
+		buckets:    make(map[string]*bucket),
+		rate:       rate,
+		burst:      burst,
+		cleanup:    5 * time.Minute,
+		trustProxy: trustProxy,
 	}
 	go rl.evictLoop()
 	return rl
@@ -89,7 +92,7 @@ func (rl *RateLimiter) Allow(key string) bool {
 // Middleware returns an http.HandlerFunc wrapper that rate-limits by client IP.
 func (rl *RateLimiter) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := clientIP(r)
+		key := clientIP(r, rl.trustProxy)
 		if !rl.Allow(key) {
 			w.Header().Set("Retry-After", "1")
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
@@ -115,19 +118,21 @@ func (rl *RateLimiter) evictLoop() {
 	}
 }
 
-// clientIP extracts the client IP from X-Forwarded-For (reverse proxy) or
-// falls back to RemoteAddr. Only the first IP in X-Forwarded-For is used.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP (leftmost = original client)
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
+// clientIP extracts the client IP. When trustProxy is true, X-Forwarded-For
+// is used (first IP only). When false, X-Forwarded-For is ignored entirely
+// to prevent spoofing on directly-exposed nodes.
+func clientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			for i := 0; i < len(xff); i++ {
+				if xff[i] == ',' {
+					return xff[:i]
+				}
 			}
+			return xff
 		}
-		return xff
 	}
-	// Strip port from RemoteAddr
+	// Fall back to RemoteAddr (strip port)
 	addr := r.RemoteAddr
 	for i := len(addr) - 1; i >= 0; i-- {
 		if addr[i] == ':' {
