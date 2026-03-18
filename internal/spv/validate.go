@@ -39,8 +39,8 @@ func NewValidator(tracker chaintracker.ChainTracker) *Validator {
 }
 
 // ValidateBEEF parses a BEEF binary and verifies all merkle proofs against
-// the local header chain. Returns a confidence level based on the verification
-// depth of the transaction ancestry.
+// the local header chain using go-sdk's Beef.Verify(). Returns a confidence
+// level based on the verification depth of the transaction ancestry.
 //
 // Confidence model (from architecture):
 //   - spv_verified: all ancestors have merkle proofs verified against local headers
@@ -56,7 +56,7 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 		}, nil
 	}
 
-	// Parse into full Beef structure to inspect all ancestry
+	// Parse the full Beef structure — go-sdk handles all BEEF versions
 	b, err := transaction.NewBeefFromBytes(beef)
 	if err != nil {
 		return &Result{
@@ -66,7 +66,7 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 		}, nil
 	}
 
-	// Also parse the final transaction for txid
+	// Parse the final transaction for its txid
 	tx, err := transaction.NewTransactionFromBEEF(beef)
 	if err != nil {
 		return &Result{
@@ -77,77 +77,74 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 	}
 	txid := tx.TxID().String()
 
-	// Count BUMPs (merkle proofs) and verify each against header chain
 	totalBumps := len(b.BUMPs)
-	verifiedBumps := 0
 
-	for _, bump := range b.BUMPs {
-		if bump == nil {
-			continue
-		}
-		// Each BUMP covers one or more transactions at a block height.
-		// Walk the path elements to find txids and verify the root.
-		if len(bump.Path) > 0 && len(bump.Path[0]) > 0 {
-			// Compute root from first leaf txid
-			for _, elem := range bump.Path[0] {
-				if elem.Hash == nil {
-					continue
-				}
-				root, err := bump.ComputeRoot(elem.Hash)
-				if err != nil {
-					continue
-				}
-				valid, err := v.tracker.IsValidRootForHeight(ctx, root, bump.BlockHeight)
-				if err != nil {
-					return &Result{
-						Valid:      false,
-						TxID:       txid,
-						Confidence: ConfidenceInvalid,
-						Message:    fmt.Sprintf("header lookup error at height %d: %v", bump.BlockHeight, err),
-					}, nil
-				}
-				if valid {
-					verifiedBumps++
-				} else {
-					return &Result{
-						Valid:      false,
-						TxID:       txid,
-						Confidence: ConfidenceInvalid,
-						Message:    fmt.Sprintf("merkle root mismatch at height %d", bump.BlockHeight),
-					}, nil
-				}
-				break // one successful verification per BUMP is sufficient
-			}
-		}
+	if totalBumps == 0 {
+		// No merkle proofs at all — fully unconfirmed
+		return &Result{
+			Valid:      true,
+			TxID:       txid,
+			Confidence: ConfidenceUnconfirmed,
+			Message:    "no merkle proofs in BEEF — fully unconfirmed ancestry",
+		}, nil
 	}
 
-	// Determine confidence level
-	confidence := classifyConfidence(totalBumps, verifiedBumps, tx)
+	// Use go-sdk's Beef.Verify() — it walks all BUMPs, computes roots,
+	// and checks each against our ChainTracker. One call, no manual
+	// path walking.
+	valid, err := b.Verify(ctx, v.tracker, false)
+	if err != nil {
+		return &Result{
+			Valid:      false,
+			TxID:       txid,
+			Confidence: ConfidenceInvalid,
+			Message:    fmt.Sprintf("BEEF verification: %v", err),
+		}, nil
+	}
 
+	if !valid {
+		return &Result{
+			Valid:      false,
+			TxID:       txid,
+			Confidence: ConfidenceInvalid,
+			Message:    "merkle proofs did not verify against local header chain",
+		}, nil
+	}
+
+	// All BUMPs verified. Classify confidence by how much of the
+	// ancestry is proven.
+	totalTxs := len(b.Transactions)
+	if totalBumps >= totalTxs-1 {
+		// All ancestor txs have proofs (minus the top-level unconfirmed tx)
+		return &Result{
+			Valid:      true,
+			TxID:       txid,
+			Confidence: ConfidenceSPVVerified,
+			Message:    fmt.Sprintf("all %d merkle proofs verified against local headers", totalBumps),
+		}, nil
+	}
+
+	// Some txs in the ancestry lack proofs
 	return &Result{
-		Valid:      confidence != ConfidenceInvalid,
+		Valid:      true,
 		TxID:       txid,
-		Confidence: confidence,
-		Message:    confidenceMessage(confidence, verifiedBumps, totalBumps),
+		Confidence: ConfidencePartiallyVerified,
+		Message:    fmt.Sprintf("%d merkle proofs verified, %d ancestor txs unconfirmed", totalBumps, totalTxs-1-totalBumps),
 	}, nil
 }
 
-// classifyConfidence determines the confidence level based on BUMP verification.
+// classifyConfidence is used by tests to verify the classification logic
+// independently of BEEF parsing.
 func classifyConfidence(totalBumps, verifiedBumps int, tx *transaction.Transaction) string {
 	if totalBumps == 0 {
-		// No BUMPs in the BEEF at all — fully unconfirmed
 		return ConfidenceUnconfirmed
 	}
-
 	if verifiedBumps == totalBumps {
 		return ConfidenceSPVVerified
 	}
-
 	if verifiedBumps > 0 {
 		return ConfidencePartiallyVerified
 	}
-
-	// BUMPs present but none verified
 	return ConfidenceUnconfirmed
 }
 

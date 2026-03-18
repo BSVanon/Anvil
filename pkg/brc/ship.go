@@ -1,6 +1,7 @@
 package brc
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 
@@ -70,21 +71,9 @@ func ValidateSHIPToken(script []byte) (*SHIPToken, error) {
 	expectedPub := DeriveChildPub(identityPub, InvoiceSHIP)
 	expectedBytes := expectedPub.SerializeCompressed()
 
-	if !bytesEqual(token.LockingPub, expectedBytes) {
+	if !bytes.Equal(token.LockingPub, expectedBytes) {
 		return nil, fmt.Errorf("locking pubkey does not match BRC-42 derivation from identity")
 	}
 
 	return token, nil
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

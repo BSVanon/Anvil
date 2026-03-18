@@ -1,6 +1,7 @@
 package brc
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 
@@ -64,7 +65,7 @@ func ValidateSLAPToken(script []byte) (*SLAPToken, error) {
 	expectedPub := DeriveChildPub(identityPub, InvoiceSLAP)
 	expectedBytes := expectedPub.SerializeCompressed()
 
-	if !bytesEqual(token.LockingPub, expectedBytes) {
+	if !bytes.Equal(token.LockingPub, expectedBytes) {
 		return nil, fmt.Errorf("locking pubkey does not match BRC-42 derivation from identity")
 	}
 
