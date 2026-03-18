@@ -126,18 +126,36 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// BroadcastResponse is the structured response from POST /broadcast.
+// All fields are machine-readable — clients should not parse Message strings.
+type BroadcastResponse struct {
+	TxID       string             `json:"txid"`
+	Confidence string             `json:"confidence"`
+	Stored     bool               `json:"stored"`
+	Mempool    bool               `json:"mempool"`
+	ARC        *ARCStatus         `json:"arc,omitempty"`
+	Message    string             `json:"message,omitempty"`
+}
+
+// ARCStatus is the structured ARC submission result.
+type ARCStatus struct {
+	Submitted bool   `json:"submitted"`
+	TxStatus  string `json:"tx_status,omitempty"` // SEEN_ON_NETWORK, MINED, etc.
+	Error     string `json:"error,omitempty"`
+}
+
 // handleBroadcast is the core BEEF acceptance endpoint.
 // POST /broadcast
+// POST /broadcast?arc=true
 //
 // Per the architecture contract:
-// 1. Parse BEEF
-// 2. Validate merkle proofs against local header chain
-// 3. Return a confidence level (spv_verified / partially_verified / unconfirmed)
-// 4. Store the proven envelope for future serving
-// 5. (Future: broadcast to peers, return broadcast-accepted)
+// 1. Parse and validate BEEF against local header chain
+// 2. Return a structured confidence level
+// 3. Store the proven envelope for future serving via GET /tx/:txid/beef
+// 4. Add raw tx to local mempool
+// 5. Optionally submit to ARC via ?arc=true
 //
-// The confidence level tells the app how much trust to place in the transaction.
-// The app decides what to do with it.
+// P2P peer relay is not yet implemented — mempool is local only.
 func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	beefBytes, err := readBEEF(r)
 	if err != nil {
@@ -145,7 +163,7 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate BEEF against local headers — returns confidence level
+	// Validate BEEF against local headers
 	result, err := s.validator.ValidateBEEF(context.Background(), beefBytes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("validation error: %v", err))
@@ -153,48 +171,56 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.Confidence == spv.ConfidenceInvalid {
-		writeJSON(w, http.StatusUnprocessableEntity, result)
+		writeJSON(w, http.StatusUnprocessableEntity, BroadcastResponse{
+			TxID:       result.TxID,
+			Confidence: result.Confidence,
+			Message:    result.Message,
+		})
 		return
 	}
 
-	// Store the full BEEF envelope if at least partially verified
+	resp := BroadcastResponse{
+		TxID:       result.TxID,
+		Confidence: result.Confidence,
+		Message:    result.Message,
+	}
+
+	// Store full BEEF if at least partially verified
 	if result.Confidence == spv.ConfidenceSPVVerified || result.Confidence == spv.ConfidencePartiallyVerified {
-		txid, err := s.proofStore.StoreBEEF(beefBytes)
-		if err != nil {
+		if _, err := s.proofStore.StoreBEEF(beefBytes); err != nil {
 			s.logger.Error("failed to store BEEF", "txid", result.TxID, "error", err)
 		} else {
-			s.logger.Info("stored BEEF",
-				"txid", txid,
-				"confidence", result.Confidence,
-			)
+			resp.Stored = true
 		}
 	}
 
-	// Broadcast the raw transaction — adds to mempool immediately.
-	// When P2P peer broadcasting is wired up, this will also relay to
-	// peers and report peer_count. ARC submission via ?arc=true query param.
+	// Add to local mempool
 	if s.broadcaster != nil {
-		br, err := s.broadcaster.BroadcastBEEF(beefBytes)
-		if err != nil {
-			s.logger.Error("broadcast failed", "txid", result.TxID, "error", err)
+		if _, err := s.broadcaster.BroadcastBEEF(beefBytes); err != nil {
+			s.logger.Error("mempool add failed", "txid", result.TxID, "error", err)
 		} else {
-			result.Message += fmt.Sprintf("; broadcast: %s", br.Message)
+			resp.Mempool = true
 		}
 
-		// If ?arc=true and ARC is configured, submit to ARC
-		if r.URL.Query().Get("arc") == "true" && br != nil {
+		// Optional ARC submission
+		if r.URL.Query().Get("arc") == "true" {
+			arcStatus := &ARCStatus{}
 			if raw, ok := s.broadcaster.Mempool().Get(result.TxID); ok {
 				arcResult, err := s.broadcaster.BroadcastToARC(raw)
 				if err != nil {
-					s.logger.Error("ARC submit failed", "txid", result.TxID, "error", err)
+					arcStatus.Error = err.Error()
 				} else {
-					result.Message += fmt.Sprintf("; arc: %s", arcResult.Message)
+					arcStatus.Submitted = true
+					arcStatus.TxStatus = arcResult.Status
 				}
+			} else {
+				arcStatus.Error = "tx not in mempool"
 			}
+			resp.ARC = arcStatus
 		}
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // --- Middleware ---
