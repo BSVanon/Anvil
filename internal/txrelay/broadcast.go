@@ -1,0 +1,125 @@
+package txrelay
+
+import (
+	"fmt"
+	"log/slog"
+
+	"github.com/bsv-blockchain/go-sdk/transaction"
+)
+
+// BroadcastResult holds the outcome of a transaction broadcast.
+type BroadcastResult struct {
+	TxID      string `json:"txid"`
+	Accepted  bool   `json:"accepted"`
+	PeerCount int    `json:"peer_count,omitempty"` // peers that accepted the tx
+	ARC       bool   `json:"arc,omitempty"`        // submitted to ARC
+	Message   string `json:"message,omitempty"`
+}
+
+// Broadcaster handles transaction broadcasting to P2P peers and optionally ARC.
+type Broadcaster struct {
+	mempool *Mempool
+	arc     *ARCClient // nil if ARC is disabled
+	logger  *slog.Logger
+}
+
+// NewBroadcaster creates a new broadcaster.
+func NewBroadcaster(mempool *Mempool, arc *ARCClient, logger *slog.Logger) *Broadcaster {
+	return &Broadcaster{
+		mempool: mempool,
+		arc:     arc,
+		logger:  logger,
+	}
+}
+
+// Mempool returns the underlying mempool for direct access.
+func (b *Broadcaster) Mempool() *Mempool {
+	return b.mempool
+}
+
+// BroadcastBEEF extracts the raw transaction from BEEF, adds it to the
+// mempool, and broadcasts it. Returns the broadcast result including
+// the txid and how many peers accepted it.
+func (b *Broadcaster) BroadcastBEEF(beef []byte) (*BroadcastResult, error) {
+	tx, err := transaction.NewTransactionFromBEEF(beef)
+	if err != nil {
+		return nil, fmt.Errorf("parse BEEF for broadcast: %w", err)
+	}
+
+	txid := tx.TxID().String()
+	rawBytes := tx.Bytes()
+
+	// Add to mempool (idempotent — ignore if already present)
+	b.mempool.Add(txid, rawBytes)
+
+	result := &BroadcastResult{
+		TxID:     txid,
+		Accepted: true,
+		Message:  "added to mempool",
+	}
+
+	// TODO: Phase 2 already has P2P peers. When the peer pool is available,
+	// broadcast the raw tx via inv/tx messages to connected peers and count
+	// how many accepted it. That upgrades confidence to broadcast-accepted.
+
+	b.logger.Info("broadcast",
+		"txid", txid,
+		"size", len(rawBytes),
+	)
+
+	return result, nil
+}
+
+// BroadcastRaw broadcasts a raw transaction (not BEEF).
+func (b *Broadcaster) BroadcastRaw(raw []byte) (*BroadcastResult, error) {
+	tx, err := transaction.NewTransactionFromBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse raw tx: %w", err)
+	}
+
+	txid := tx.TxID().String()
+	b.mempool.Add(txid, raw)
+
+	result := &BroadcastResult{
+		TxID:     txid,
+		Accepted: true,
+		Message:  "added to mempool",
+	}
+
+	b.logger.Info("broadcast raw",
+		"txid", txid,
+		"size", len(raw),
+	)
+
+	return result, nil
+}
+
+// BroadcastToARC submits a transaction to ARC for miner acceptance.
+// Returns the ARC response including any merkle proof.
+func (b *Broadcaster) BroadcastToARC(raw []byte) (*BroadcastResult, error) {
+	if b.arc == nil {
+		return nil, fmt.Errorf("ARC is not configured")
+	}
+
+	tx, err := transaction.NewTransactionFromBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse raw tx: %w", err)
+	}
+	txid := tx.TxID().String()
+
+	resp, err := b.arc.Submit(raw)
+	if err != nil {
+		return &BroadcastResult{
+			TxID:    txid,
+			ARC:     true,
+			Message: fmt.Sprintf("ARC submit failed: %v", err),
+		}, nil
+	}
+
+	return &BroadcastResult{
+		TxID:     txid,
+		Accepted: true,
+		ARC:      true,
+		Message:  fmt.Sprintf("ARC status: %s", resp.Status),
+	}, nil
+}

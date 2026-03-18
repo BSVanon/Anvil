@@ -12,6 +12,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
+	"github.com/BSVanon/Anvil/internal/txrelay"
 )
 
 // Server is the Anvil REST API server.
@@ -19,6 +20,7 @@ type Server struct {
 	headerStore *headers.Store
 	proofStore  *spv.ProofStore
 	validator   *spv.Validator
+	broadcaster *txrelay.Broadcaster
 	logger      *slog.Logger
 	mux         *http.ServeMux
 	authToken   string
@@ -29,6 +31,7 @@ func NewServer(
 	headerStore *headers.Store,
 	proofStore *spv.ProofStore,
 	validator *spv.Validator,
+	broadcaster *txrelay.Broadcaster,
 	authToken string,
 	logger *slog.Logger,
 ) *Server {
@@ -36,6 +39,7 @@ func NewServer(
 		headerStore: headerStore,
 		proofStore:  proofStore,
 		validator:   validator,
+		broadcaster: broadcaster,
 		logger:      logger,
 		mux:         http.NewServeMux(),
 		authToken:   authToken,
@@ -153,9 +157,7 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only store the full BEEF envelope if we have at least some verification.
-	// The complete BEEF binary is stored as-is so /tx/:txid/beef can serve it
-	// back with full ancestry and proofs intact.
+	// Store the full BEEF envelope if at least partially verified
 	if result.Confidence == spv.ConfidenceSPVVerified || result.Confidence == spv.ConfidencePartiallyVerified {
 		txid, err := s.proofStore.StoreBEEF(beefBytes)
 		if err != nil {
@@ -168,9 +170,29 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// TODO: Phase 3 — broadcast raw tx to connected peers
-	// When broadcast is implemented, upgrade confidence to broadcast-accepted
-	// if peers accept the transaction into mempool.
+	// Broadcast the raw transaction — adds to mempool immediately.
+	// When P2P peer broadcasting is wired up, this will also relay to
+	// peers and report peer_count. ARC submission via ?arc=true query param.
+	if s.broadcaster != nil {
+		br, err := s.broadcaster.BroadcastBEEF(beefBytes)
+		if err != nil {
+			s.logger.Error("broadcast failed", "txid", result.TxID, "error", err)
+		} else {
+			result.Message += fmt.Sprintf("; broadcast: %s", br.Message)
+		}
+
+		// If ?arc=true and ARC is configured, submit to ARC
+		if r.URL.Query().Get("arc") == "true" && br != nil {
+			if raw, ok := s.broadcaster.Mempool().Get(result.TxID); ok {
+				arcResult, err := s.broadcaster.BroadcastToARC(raw)
+				if err != nil {
+					s.logger.Error("ARC submit failed", "txid", result.TxID, "error", err)
+				} else {
+					result.Message += fmt.Sprintf("; arc: %s", arcResult.Message)
+				}
+			}
+		}
+	}
 
 	writeJSON(w, http.StatusOK, result)
 }

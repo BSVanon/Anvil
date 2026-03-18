@@ -15,6 +15,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/config"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
+	"github.com/BSVanon/Anvil/internal/txrelay"
 	"github.com/libsv/go-p2p/wire"
 )
 
@@ -58,7 +59,7 @@ func main() {
 		break
 	}
 
-	// Phase 7: SPV proof store + REST API
+	// Phase 7: SPV proof store
 	proofDir := filepath.Join(cfg.Node.DataDir, "proofs")
 	proofStore, err := spv.NewProofStore(proofDir)
 	if err != nil {
@@ -66,8 +67,18 @@ func main() {
 	}
 	defer proofStore.Close()
 
+	// Phase 3: TX relay + broadcast
+	mempool := txrelay.NewMempool()
+	var arcClient *txrelay.ARCClient
+	if cfg.ARC.Enabled {
+		arcClient = txrelay.NewARCClient(cfg.ARC.URL, cfg.ARC.APIKey)
+		log.Printf("ARC enabled: %s", cfg.ARC.URL)
+	}
+	broadcaster := txrelay.NewBroadcaster(mempool, arcClient, logger)
+
+	// REST API
 	validator := spv.NewValidator(headerStore)
-	srv := api.NewServer(headerStore, proofStore, validator, cfg.API.AuthToken, logger)
+	srv := api.NewServer(headerStore, proofStore, validator, broadcaster, cfg.API.AuthToken, logger)
 
 	go func() {
 		log.Printf("REST API listening on %s", cfg.Node.APIListen)
@@ -77,7 +88,6 @@ func main() {
 	}()
 
 	// TODO: Phase 1 — init BRC identity from cfg.Identity.WIF
-	// TODO: Phase 3 — start TX relay
 	// TODO: Phase 4 — start gossip mesh
 	// TODO: Phase 5 — init envelope store
 	// TODO: Phase 5.5 — init wallet

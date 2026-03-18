@@ -11,6 +11,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
+	"github.com/BSVanon/Anvil/internal/txrelay"
 )
 
 func testServer(t *testing.T) *Server {
@@ -34,7 +35,9 @@ func testServer(t *testing.T) *Server {
 
 	validator := spv.NewValidator(hs)
 	logger := slog.Default()
-	return NewServer(hs, ps, validator, "test-token", logger)
+	mempool := txrelay.NewMempool()
+	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
+	return NewServer(hs, ps, validator, broadcaster, "test-token", logger)
 }
 
 // testServerNoAuth creates a server with no auth token configured.
@@ -59,7 +62,9 @@ func testServerNoAuth(t *testing.T) *Server {
 
 	validator := spv.NewValidator(hs)
 	logger := slog.Default()
-	return NewServer(hs, ps, validator, "", logger) // empty token
+	mempool := txrelay.NewMempool()
+	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
+	return NewServer(hs, ps, validator, broadcaster, "", logger) // empty token
 }
 
 // --- Open read endpoints ---
