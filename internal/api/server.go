@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
@@ -17,45 +18,50 @@ import (
 
 // Server is the Anvil REST API server.
 type Server struct {
-	headerStore *headers.Store
-	proofStore  *spv.ProofStore
-	validator   *spv.Validator
-	broadcaster *txrelay.Broadcaster
-	logger      *slog.Logger
-	mux         *http.ServeMux
-	authToken   string
+	headerStore   *headers.Store
+	proofStore    *spv.ProofStore
+	envelopeStore *envelope.Store
+	validator     *spv.Validator
+	broadcaster   *txrelay.Broadcaster
+	logger        *slog.Logger
+	mux           *http.ServeMux
+	authToken     string
 }
 
 // NewServer creates a new REST API server.
 func NewServer(
 	headerStore *headers.Store,
 	proofStore *spv.ProofStore,
+	envelopeStore *envelope.Store,
 	validator *spv.Validator,
 	broadcaster *txrelay.Broadcaster,
 	authToken string,
 	logger *slog.Logger,
 ) *Server {
 	s := &Server{
-		headerStore: headerStore,
-		proofStore:  proofStore,
-		validator:   validator,
-		broadcaster: broadcaster,
-		logger:      logger,
-		mux:         http.NewServeMux(),
-		authToken:   authToken,
+		headerStore:   headerStore,
+		proofStore:    proofStore,
+		envelopeStore: envelopeStore,
+		validator:     validator,
+		broadcaster:   broadcaster,
+		logger:        logger,
+		mux:           http.NewServeMux(),
+		authToken:     authToken,
 	}
 	s.routes()
 	return s
 }
 
 func (s *Server) routes() {
-	// Open read endpoints (per ARCHITECTURE.md Phase 8)
+	// Open read endpoints
 	s.mux.HandleFunc("GET /status", s.handleStatus)
 	s.mux.HandleFunc("GET /headers/tip", s.handleHeadersTip)
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.handleGetBEEF)
+	s.mux.HandleFunc("GET /data", s.handleQueryData)
 
 	// Authenticated write endpoints
 	s.mux.HandleFunc("POST /broadcast", s.requireAuth(s.handleBroadcast))
+	s.mux.HandleFunc("POST /data", s.requireAuth(s.handlePostData))
 }
 
 // Handler returns the HTTP handler for the server.
@@ -221,6 +227,76 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// --- Data Envelope Endpoints ---
+
+// handlePostData ingests a signed data envelope.
+// POST /data
+func (s *Server) handlePostData(w http.ResponseWriter, r *http.Request) {
+	if s.envelopeStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "envelope store not configured")
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+
+	env, err := envelope.UnmarshalEnvelope(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid envelope JSON: %v", err))
+		return
+	}
+
+	if err := s.envelopeStore.Ingest(env); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("rejected: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"accepted": true,
+		"topic":    env.Topic,
+		"durable":  env.Durable,
+		"key":      env.Key(),
+	})
+}
+
+// handleQueryData queries envelopes by topic.
+// GET /data?topic=...&limit=...
+func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
+	if s.envelopeStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "envelope store not configured")
+		return
+	}
+
+	topic := r.URL.Query().Get("topic")
+	if topic == "" {
+		writeError(w, http.StatusBadRequest, "topic query parameter required")
+		return
+	}
+
+	limit := 100 // default
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+		if limit <= 0 || limit > 1000 {
+			limit = 100
+		}
+	}
+
+	envs, err := s.envelopeStore.QueryByTopic(topic, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query error: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"topic":     topic,
+		"count":     len(envs),
+		"envelopes": envs,
+	})
 }
 
 // --- Middleware ---

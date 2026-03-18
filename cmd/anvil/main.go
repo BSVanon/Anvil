@@ -13,6 +13,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/api"
 	"github.com/BSVanon/Anvil/internal/config"
+	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
@@ -76,9 +77,18 @@ func main() {
 	}
 	broadcaster := txrelay.NewBroadcaster(mempool, arcClient, logger)
 
+	// Phase 5: Data envelope store
+	envDir := filepath.Join(cfg.Node.DataDir, "envelopes")
+	envStore, err := envelope.NewStore(envDir, cfg.Envelopes.MaxEphemeralTTL, cfg.Envelopes.MaxDurableSize)
+	if err != nil {
+		log.Fatalf("envelope store: %v", err)
+	}
+	defer envStore.Close()
+	log.Printf("envelope store opened (max TTL=%ds, max durable=%d bytes)", cfg.Envelopes.MaxEphemeralTTL, cfg.Envelopes.MaxDurableSize)
+
 	// REST API
 	validator := spv.NewValidator(headerStore)
-	srv := api.NewServer(headerStore, proofStore, validator, broadcaster, cfg.API.AuthToken, logger)
+	srv := api.NewServer(headerStore, proofStore, envStore, validator, broadcaster, cfg.API.AuthToken, logger)
 
 	go func() {
 		log.Printf("REST API listening on %s", cfg.Node.APIListen)
@@ -89,7 +99,6 @@ func main() {
 
 	// TODO: Phase 1 — init BRC identity from cfg.Identity.WIF
 	// TODO: Phase 4 — start gossip mesh
-	// TODO: Phase 5 — init envelope store
 	// TODO: Phase 5.5 — init wallet
 	// TODO: Phase 6 — start overlay discovery
 

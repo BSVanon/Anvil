@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
@@ -42,7 +43,12 @@ func testServer(t *testing.T) *Server {
 	logger := slog.Default()
 	mempool := txrelay.NewMempool()
 	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
-	return NewServer(hs, ps, validator, broadcaster, "test-token", logger)
+	edir, _ := os.MkdirTemp("", "anvil-api-envs-*")
+	t.Cleanup(func() { os.RemoveAll(edir) })
+	es, _ := envelope.NewStore(edir, 3600, 65536)
+	t.Cleanup(func() { es.Close() })
+
+	return NewServer(hs, ps, es, validator, broadcaster, "test-token", logger)
 }
 
 // testServerNoAuth creates a server with no auth token configured.
@@ -65,11 +71,16 @@ func testServerNoAuth(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { ps.Close() })
 
+	edir, _ := os.MkdirTemp("", "anvil-api-envs-*")
+	t.Cleanup(func() { os.RemoveAll(edir) })
+	es, _ := envelope.NewStore(edir, 3600, 65536)
+	t.Cleanup(func() { es.Close() })
+
 	validator := spv.NewValidator(hs)
 	logger := slog.Default()
 	mempool := txrelay.NewMempool()
 	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
-	return NewServer(hs, ps, validator, broadcaster, "", logger) // empty token
+	return NewServer(hs, ps, es, validator, broadcaster, "", logger) // empty token
 }
 
 // --- Open read endpoints ---
@@ -273,12 +284,17 @@ func testServerGullible(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { ps.Close() })
 
+	edir, _ := os.MkdirTemp("", "anvil-api-envs-*")
+	t.Cleanup(func() { os.RemoveAll(edir) })
+	es, _ := envelope.NewStore(edir, 3600, 65536)
+	t.Cleanup(func() { es.Close() })
+
 	// Use gullible tracker so BUMP verification always succeeds
 	validator := spv.NewValidator(&gullibleTracker{})
 	logger := slog.Default()
 	mempool := txrelay.NewMempool()
 	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
-	return NewServer(hs, ps, validator, broadcaster, "test-token", logger)
+	return NewServer(hs, ps, es, validator, broadcaster, "test-token", logger)
 }
 
 func buildTestBEEF(t *testing.T) []byte {
