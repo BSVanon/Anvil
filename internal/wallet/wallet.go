@@ -19,8 +19,9 @@ import (
 
 // NodeWallet wraps go-wallet-toolbox's Wallet with Anvil's infrastructure.
 type NodeWallet struct {
-	inner   *wallet.Wallet
-	logger  *slog.Logger
+	inner     *wallet.Wallet
+	validator *spv.Validator
+	logger    *slog.Logger
 }
 
 // New creates a new NodeWallet from a WIF key, backed by SQLite storage
@@ -64,7 +65,8 @@ func New(
 		return nil, fmt.Errorf("create wallet: %w", err)
 	}
 
-	return &NodeWallet{inner: w, logger: logger}, nil
+	validator := spv.NewValidator(headerStore)
+	return &NodeWallet{inner: w, validator: validator, logger: logger}, nil
 }
 
 // Close shuts down the wallet.
@@ -150,6 +152,28 @@ func (nw *NodeWallet) handleInternalize(w http.ResponseWriter, r *http.Request) 
 	if err := json.Unmarshal(body, &args); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid JSON: %v", err)})
 		return
+	}
+
+	// SPV gate: validate BEEF before internalization.
+	// Per architecture: "BEEF validated by our SPV layer first"
+	if len(args.Tx) > 0 {
+		result, err := nw.validator.ValidateBEEF(context.Background(), args.Tx)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("SPV validation error: %v", err)})
+			return
+		}
+		if result.Confidence == spv.ConfidenceInvalid {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
+				"error":      "BEEF failed SPV validation",
+				"confidence": result.Confidence,
+				"message":    result.Message,
+			})
+			return
+		}
+		nw.logger.Info("internalize: BEEF validated",
+			"txid", result.TxID,
+			"confidence", result.Confidence,
+		)
 	}
 
 	result, err := nw.inner.InternalizeAction(context.Background(), args, "anvil")

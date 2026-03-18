@@ -78,16 +78,38 @@ func (s *AnvilServices) ChainHeaderByHeight(ctx context.Context, height uint32) 
 // --- Services methods ---
 
 func (s *AnvilServices) PostFromBEEF(ctx context.Context, beef *transaction.Beef, txids []string) (wdk.PostFromBeefResult, error) {
-	// Broadcast via our broadcaster (mempool + optionally ARC)
 	if s.broadcaster == nil {
 		return nil, fmt.Errorf("broadcaster not configured")
 	}
 
+	// Broadcast each tx in the BEEF through Anvil's broadcaster.
+	// The broadcaster adds to mempool (and eventually relays to P2P peers).
 	var txResults []wdk.PostedTxID
 	for _, txid := range txids {
+		tx := beef.FindTransaction(txid)
+		if tx == nil {
+			txResults = append(txResults, wdk.PostedTxID{
+				Result: wdk.PostedTxIDResultError,
+				TxID:   txid,
+				Error:  fmt.Errorf("tx %s not found in BEEF", txid),
+			})
+			continue
+		}
+
+		raw := tx.Bytes()
+		br, err := s.broadcaster.BroadcastRaw(raw)
+		if err != nil {
+			txResults = append(txResults, wdk.PostedTxID{
+				Result: wdk.PostedTxIDResultError,
+				TxID:   txid,
+				Error:  err,
+			})
+			continue
+		}
+
 		txResults = append(txResults, wdk.PostedTxID{
 			Result: wdk.PostedTxIDResultSuccess,
-			TxID:   txid,
+			TxID:   br.TxID,
 		})
 	}
 

@@ -2,12 +2,17 @@ package wallet
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"testing"
 
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
+	"github.com/BSVanon/Anvil/internal/txrelay"
 	sdkchainhash "github.com/bsv-blockchain/go-sdk/chainhash"
+	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv-blockchain/go-wallet-toolbox/pkg/wdk"
 )
 
 func tmpServices(t *testing.T) *AnvilServices {
@@ -113,5 +118,84 @@ func TestServicesRawTxNotFound(t *testing.T) {
 	}
 	if result.RawTx != nil {
 		t.Fatal("expected nil raw tx for missing txid")
+	}
+}
+
+func tmpServicesWithBroadcaster(t *testing.T) (*AnvilServices, *txrelay.Mempool) {
+	t.Helper()
+	hdir, _ := os.MkdirTemp("", "anvil-wallet-headers-*")
+	t.Cleanup(func() { os.RemoveAll(hdir) })
+	hs, _ := headers.NewTestStore(hdir)
+	t.Cleanup(func() { hs.Close() })
+
+	pdir, _ := os.MkdirTemp("", "anvil-wallet-proofs-*")
+	t.Cleanup(func() { os.RemoveAll(pdir) })
+	ps, _ := spv.NewProofStore(pdir)
+	t.Cleanup(func() { ps.Close() })
+
+	mempool := txrelay.NewMempool()
+	broadcaster := txrelay.NewBroadcaster(mempool, nil, slog.Default())
+	return NewAnvilServices(hs, ps, broadcaster), mempool
+}
+
+func TestPostFromBEEFActuallyBroadcasts(t *testing.T) {
+	svc, mempool := tmpServicesWithBroadcaster(t)
+
+	// Build a minimal transaction and wrap it in a Beef
+	tx := transaction.NewTransaction()
+	tx.Version = 1
+	s, _ := script.NewFromHex("76a9140000000000000000000000000000000000000000ac")
+	tx.AddOutput(&transaction.TransactionOutput{
+		Satoshis:      1000,
+		LockingScript: s,
+	})
+	txid := tx.TxID().String()
+
+	beef, err := transaction.NewBeefFromTransaction(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.PostFromBEEF(context.Background(), beef, []string{txid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success() {
+		t.Fatal("expected success")
+	}
+
+	// The tx should now be in the mempool — proving broadcast actually happened
+	if !mempool.Has(txid) {
+		t.Fatal("tx should be in mempool after PostFromBEEF — broadcast did not happen")
+	}
+}
+
+func TestPostFromBEEFMissingTx(t *testing.T) {
+	svc, _ := tmpServicesWithBroadcaster(t)
+
+	beef := transaction.NewBeef()
+	result, err := svc.PostFromBEEF(context.Background(), beef, []string{"nonexistent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Check that the individual tx result is an error
+	if len(result) != 1 {
+		t.Fatalf("expected 1 service result, got %d", len(result))
+	}
+	txResults := result[0].PostedBEEFResult.TxIDResults
+	if len(txResults) != 1 {
+		t.Fatalf("expected 1 tx result, got %d", len(txResults))
+	}
+	if txResults[0].Result != wdk.PostedTxIDResultError {
+		t.Fatalf("expected error result for missing tx, got %s", txResults[0].Result)
+	}
+}
+
+func TestPostFromBEEFNoBroadcaster(t *testing.T) {
+	svc := tmpServices(t) // no broadcaster
+	beef := transaction.NewBeef()
+	_, err := svc.PostFromBEEF(context.Background(), beef, []string{"abc"})
+	if err == nil {
+		t.Fatal("expected error when broadcaster is nil")
 	}
 }
