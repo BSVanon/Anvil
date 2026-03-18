@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 
+	"github.com/BSVanon/Anvil/internal/api"
 	"github.com/BSVanon/Anvil/internal/config"
 	"github.com/BSVanon/Anvil/internal/headers"
+	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/libsv/go-p2p/wire"
 )
 
@@ -44,7 +47,6 @@ func main() {
 	defer headerStore.Close()
 	log.Printf("header store opened at height %d", headerStore.Tip())
 
-	// Sync headers from configured BSV nodes
 	syncer := headers.NewSyncer(headerStore, wire.MainNet, logger)
 	for _, node := range cfg.BSV.Nodes {
 		tip, err := syncer.SyncFrom(node)
@@ -53,8 +55,26 @@ func main() {
 			continue
 		}
 		log.Printf("header sync from %s complete, tip=%d", node, tip)
-		break // synced from first successful peer
+		break
 	}
+
+	// Phase 7: SPV proof store + REST API
+	proofDir := filepath.Join(cfg.Node.DataDir, "proofs")
+	proofStore, err := spv.NewProofStore(proofDir)
+	if err != nil {
+		log.Fatalf("proof store: %v", err)
+	}
+	defer proofStore.Close()
+
+	validator := spv.NewValidator(headerStore)
+	srv := api.NewServer(headerStore, proofStore, validator, cfg.API.AuthToken, logger)
+
+	go func() {
+		log.Printf("REST API listening on %s", cfg.Node.APIListen)
+		if err := http.ListenAndServe(cfg.Node.APIListen, srv.Handler()); err != nil {
+			log.Fatalf("api server: %v", err)
+		}
+	}()
 
 	// TODO: Phase 1 — init BRC identity from cfg.Identity.WIF
 	// TODO: Phase 3 — start TX relay
@@ -62,7 +82,6 @@ func main() {
 	// TODO: Phase 5 — init envelope store
 	// TODO: Phase 5.5 — init wallet
 	// TODO: Phase 6 — start overlay discovery
-	// TODO: Phase 7 — start REST API
 
 	// Block until signal
 	sig := make(chan os.Signal, 1)
