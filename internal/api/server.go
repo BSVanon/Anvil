@@ -67,6 +67,7 @@ func (s *Server) routes() {
 	// Authenticated write endpoints
 	s.mux.HandleFunc("POST /broadcast", s.requireAuth(s.handleBroadcast))
 	s.mux.HandleFunc("POST /data", s.requireAuth(s.handlePostData))
+	s.mux.HandleFunc("POST /overlay/register", s.requireAuth(s.handleOverlayRegister))
 }
 
 // Handler returns the HTTP handler for the server.
@@ -340,6 +341,49 @@ func (s *Server) handleOverlayLookup(w http.ResponseWriter, r *http.Request) {
 		"topic": topic,
 		"count": len(peers),
 		"peers": peers,
+	})
+}
+
+// handleOverlayRegister ingests a SHIP script from an external source.
+// POST /overlay/register
+// Body: {"script": "<hex>", "txid": "<txid>", "output_index": <int>}
+func (s *Server) handleOverlayRegister(w http.ResponseWriter, r *http.Request) {
+	if s.overlayDir == nil {
+		writeError(w, http.StatusServiceUnavailable, "overlay not configured")
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+
+	var req struct {
+		Script      string `json:"script"`
+		TxID        string `json:"txid"`
+		OutputIndex int    `json:"output_index"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
+
+	scriptBytes, err := hex.DecodeString(req.Script)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid script hex")
+		return
+	}
+
+	disc := overlay.NewDiscoverer(s.overlayDir, s.logger)
+	if err := disc.ProcessSHIPScript(scriptBytes, req.TxID, req.OutputIndex); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("rejected: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"registered": true,
+		"txid":       req.TxID,
 	})
 }
 

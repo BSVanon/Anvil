@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,8 +15,11 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/headers"
+	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
+	"github.com/BSVanon/Anvil/pkg/brc"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -382,4 +387,129 @@ func TestEndToEndBroadcastThenRetrieve(t *testing.T) {
 	}
 
 	t.Logf("e2e success: txid=%s confidence=%s stored=%v", resp.TxID, resp.Confidence, resp.Stored)
+}
+
+// --- Overlay tests ---
+
+func testServerWithOverlay(t *testing.T) *Server {
+	t.Helper()
+
+	hdir, _ := os.MkdirTemp("", "anvil-api-headers-*")
+	t.Cleanup(func() { os.RemoveAll(hdir) })
+	hs, _ := headers.NewTestStore(hdir)
+	t.Cleanup(func() { hs.Close() })
+
+	pdir, _ := os.MkdirTemp("", "anvil-api-proofs-*")
+	t.Cleanup(func() { os.RemoveAll(pdir) })
+	ps, _ := spv.NewProofStore(pdir)
+	t.Cleanup(func() { ps.Close() })
+
+	edir, _ := os.MkdirTemp("", "anvil-api-envs-*")
+	t.Cleanup(func() { os.RemoveAll(edir) })
+	es, _ := envelope.NewStore(edir, 3600, 65536)
+	t.Cleanup(func() { es.Close() })
+
+	odir, _ := os.MkdirTemp("", "anvil-api-overlay-*")
+	t.Cleanup(func() { os.RemoveAll(odir) })
+	od, _ := overlay.NewDirectory(odir)
+	t.Cleanup(func() { od.Close() })
+
+	validator := spv.NewValidator(hs)
+	logger := slog.Default()
+	mempool := txrelay.NewMempool()
+	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
+	return NewServer(hs, ps, es, od, validator, broadcaster, "test-token", logger)
+}
+
+func overlayTestKey() *secp256k1.PrivateKey {
+	b, _ := hex.DecodeString("0000000000000000000000000000000000000000000000000000000000000003")
+	return secp256k1.PrivKeyFromBytes(b)
+}
+
+func TestOverlayLookupEmpty(t *testing.T) {
+	srv := testServerWithOverlay(t)
+	req := httptest.NewRequest("GET", "/overlay/lookup?topic=forge:mainnet", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["count"].(float64) != 0 {
+		t.Fatalf("expected 0 peers, got %v", resp["count"])
+	}
+}
+
+func TestOverlayLookupRequiresTopic(t *testing.T) {
+	srv := testServerWithOverlay(t)
+	req := httptest.NewRequest("GET", "/overlay/lookup", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestEndToEndRegisterThenLookup(t *testing.T) {
+	srv := testServerWithOverlay(t)
+	key := overlayTestKey()
+
+	// Build a real SHIP script
+	scriptBytes, _, err := brc.BuildSHIPScript(key, "peer.example.com:8333", "forge:mainnet")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// POST /overlay/register
+	body := fmt.Sprintf(`{"script":"%s","txid":"tx123","output_index":0}`, hex.EncodeToString(scriptBytes))
+	req := httptest.NewRequest("POST", "/overlay/register", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("register: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// GET /overlay/lookup?topic=forge:mainnet should now return the peer
+	req2 := httptest.NewRequest("GET", "/overlay/lookup?topic=forge:mainnet", nil)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("lookup: expected 200, got %d", w2.Code)
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w2.Body).Decode(&resp)
+	if resp["count"].(float64) != 1 {
+		t.Fatalf("expected 1 peer after registration, got %v", resp["count"])
+	}
+
+	peers := resp["peers"].([]interface{})
+	peer := peers[0].(map[string]interface{})
+	if peer["domain"] != "peer.example.com:8333" {
+		t.Fatalf("expected domain peer.example.com:8333, got %v", peer["domain"])
+	}
+
+	t.Logf("e2e overlay success: registered SHIP -> lookup found peer at %s", peer["domain"])
+}
+
+func TestOverlayRegisterRejectsInvalid(t *testing.T) {
+	srv := testServerWithOverlay(t)
+	body := `{"script":"deadbeef","txid":"tx","output_index":0}`
+	req := httptest.NewRequest("POST", "/overlay/register", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+	}
 }

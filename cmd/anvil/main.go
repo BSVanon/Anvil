@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/libsv/go-p2p/wire"
 )
 
@@ -111,6 +113,19 @@ func main() {
 		}
 		defer overlayDir.Close()
 		log.Printf("overlay directory opened (topics=%v)", cfg.Overlay.Topics)
+
+		// Bootstrap: register our own SHIP tokens if identity is configured
+		if cfg.Identity.WIF != "" {
+			// Parse WIF to get identity key for SHIP registration
+			wifBytes, err := wifToPrivKey(cfg.Identity.WIF)
+			if err != nil {
+				log.Printf("overlay bootstrap: invalid WIF: %v", err)
+			} else {
+				// Use the node's listen address as the domain
+				domain := cfg.Node.Listen
+				anviloverlay.Bootstrap(overlayDir, wifBytes, domain, cfg.Overlay.Topics, logger)
+			}
+		}
 	}
 
 	// REST API
@@ -137,9 +152,7 @@ func main() {
 		}
 	}()
 
-	// TODO: Phase 1 — init BRC identity from cfg.Identity.WIF
 	// TODO: Phase 4 — start gossip mesh
-	// TODO: Phase 6 — start overlay discovery
 
 	// Block until signal
 	sig := make(chan os.Signal, 1)
@@ -147,4 +160,42 @@ func main() {
 	s := <-sig
 	fmt.Println()
 	log.Printf("received %v, shutting down", s)
+}
+
+// wifToPrivKey decodes a WIF string to a secp256k1 private key.
+// WIF format: base58check(version + privkey + [compressed_flag] + checksum)
+func wifToPrivKey(wif string) (*secp256k1.PrivateKey, error) {
+	raw := base58Decode(wif)
+	if len(raw) < 33 {
+		return nil, fmt.Errorf("invalid WIF: too short")
+	}
+	// Skip version byte (1), take 32 bytes of private key
+	privBytes := raw[1:33]
+	return secp256k1.PrivKeyFromBytes(privBytes), nil
+}
+
+// base58Decode decodes a base58 string to bytes.
+func base58Decode(s string) []byte {
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	result := big.NewInt(0)
+	for _, c := range s {
+		idx := int64(0)
+		for i, a := range alphabet {
+			if c == a {
+				idx = int64(i)
+				break
+			}
+		}
+		result.Mul(result, big.NewInt(58))
+		result.Add(result, big.NewInt(idx))
+	}
+	b := result.Bytes()
+	// Preserve leading zeros
+	for _, c := range s {
+		if c != '1' {
+			break
+		}
+		b = append([]byte{0x00}, b...)
+	}
+	return b
 }
