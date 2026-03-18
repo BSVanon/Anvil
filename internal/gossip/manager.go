@@ -18,7 +18,7 @@ import (
 )
 
 // Manager wraps go-sdk auth.Peer instances for mesh communication.
-// Each connected forge peer is an authenticated session via auth.Peer.
+// Each connected foundry peer is an authenticated session via auth.Peer.
 // The auth layer handles identity verification and transport;
 // this manager handles message routing and topic-scoped forwarding.
 //

@@ -20,7 +20,7 @@ var (
 type PeerEntry struct {
 	IdentityPub string    `json:"identity_pub"` // compressed pubkey hex
 	Domain      string    `json:"domain"`       // e.g. "relay.example.com:8333"
-	Topic       string    `json:"topic"`        // e.g. "forge:mainnet"
+	Topic       string    `json:"topic"`        // e.g. "foundry:mainnet"
 	TxID        string    `json:"txid"`         // on-chain tx containing the SHIP token
 	OutputIndex int       `json:"output_index"`
 	DiscoveredAt time.Time `json:"discovered_at"`

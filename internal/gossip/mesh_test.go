@@ -212,7 +212,7 @@ func TestTopicInterestForwarding(t *testing.T) {
 	// Register two peers with different interests
 	m.mu.Lock()
 	m.interests["peerA"] = []string{"oracle:rates:"}
-	m.interests["peerB"] = []string{"forge:"}
+	m.interests["peerB"] = []string{"foundry:"}
 	m.mu.Unlock()
 
 	// forwardToInterested should match peerA for oracle:rates:bsv

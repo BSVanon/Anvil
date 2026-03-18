@@ -7,7 +7,7 @@ api_listen = "0.0.0.0:9333"      # REST API — HTTPS when TLS configured
 [identity]
 wif = "Kx..."                     # BRC-42 identity root — required for mesh peering and wallet
 
-[forge]
+[foundry]
 seeds = [
   # "wss://peer1.example.com:8333",   # production: always use wss://
   # "ws://localhost:8333",             # dev only: plain ws
@@ -30,7 +30,7 @@ url = "junglebus.gorillapool.io"
 
 [overlay]
 enabled = true
-topics = ["forge:mainnet"]
+topics = ["foundry:mainnet"]
 
 [envelopes]
 max_ephemeral_ttl = 3600

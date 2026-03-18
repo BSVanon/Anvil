@@ -11,7 +11,7 @@ import (
 
 func TestProtocolEncodeDecode(t *testing.T) {
 	// Encode a topics message
-	encoded, err := Encode(MsgTopics, TopicsPayload{Prefixes: []string{"oracle:", "forge:"}})
+	encoded, err := Encode(MsgTopics, TopicsPayload{Prefixes: []string{"oracle:", "foundry:"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestHashEnvelopeDedup(t *testing.T) {
 
 func TestManagerNewAndPeerCount(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		LocalInterests: []string{"oracle:", "forge:"},
+		LocalInterests: []string{"oracle:", "foundry:"},
 		MaxSeen:        100,
 	})
 
@@ -117,7 +117,7 @@ func TestManagerTopicInterestRouting(t *testing.T) {
 	// Simulate a peer declaring interest
 	m.mu.Lock()
 	m.interests["peer1"] = []string{"oracle:rates:"}
-	m.interests["peer2"] = []string{"forge:"}
+	m.interests["peer2"] = []string{"foundry:"}
 	m.mu.Unlock()
 
 	// Check that topic matching works

@@ -19,7 +19,7 @@ type BroadcastResult struct {
 
 // Broadcaster handles transaction admission to the local mempool and optionally
 // ARC submission. When a gossip forwarder is set, transactions are also forwarded
-// to connected forge mesh peers.
+// to connected foundry mesh peers.
 type Broadcaster struct {
 	mempool         *Mempool
 	arc             *ARCClient // nil if ARC is disabled

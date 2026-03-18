@@ -441,7 +441,7 @@ func overlayTestKey() *ec.PrivateKey {
 
 func TestOverlayLookupEmpty(t *testing.T) {
 	srv := testServerWithOverlay(t)
-	req := httptest.NewRequest("GET", "/overlay/lookup?topic=forge:mainnet", nil)
+	req := httptest.NewRequest("GET", "/overlay/lookup?topic=foundry:mainnet", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
@@ -472,7 +472,7 @@ func TestEndToEndRegisterThenLookup(t *testing.T) {
 	key := overlayTestKey()
 
 	// Build a real SHIP script
-	scriptBytes, _, err := brc.BuildSHIPScript(key, "peer.example.com:8333", "forge:mainnet")
+	scriptBytes, _, err := brc.BuildSHIPScript(key, "peer.example.com:8333", "foundry:mainnet")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,8 +489,8 @@ func TestEndToEndRegisterThenLookup(t *testing.T) {
 		t.Fatalf("register: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// GET /overlay/lookup?topic=forge:mainnet should now return the peer
-	req2 := httptest.NewRequest("GET", "/overlay/lookup?topic=forge:mainnet", nil)
+	// GET /overlay/lookup?topic=foundry:mainnet should now return the peer
+	req2 := httptest.NewRequest("GET", "/overlay/lookup?topic=foundry:mainnet", nil)
 	w2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w2, req2)
 
@@ -531,7 +531,7 @@ func TestEndToEndRegisterThenDeregister(t *testing.T) {
 	srv := testServerWithOverlay(t)
 	key := overlayTestKey()
 
-	scriptBytes, _, _ := brc.BuildSHIPScript(key, "temp.example.com", "forge:mainnet")
+	scriptBytes, _, _ := brc.BuildSHIPScript(key, "temp.example.com", "foundry:mainnet")
 
 	// Register
 	body := fmt.Sprintf(`{"script":"%s","txid":"tx999","output_index":0}`, hex.EncodeToString(scriptBytes))
@@ -545,7 +545,7 @@ func TestEndToEndRegisterThenDeregister(t *testing.T) {
 	}
 
 	// Verify it's there
-	req2 := httptest.NewRequest("GET", "/overlay/lookup?topic=forge:mainnet", nil)
+	req2 := httptest.NewRequest("GET", "/overlay/lookup?topic=foundry:mainnet", nil)
 	w2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w2, req2)
 	var resp map[string]interface{}
@@ -556,7 +556,7 @@ func TestEndToEndRegisterThenDeregister(t *testing.T) {
 
 	// Deregister
 	identityPubHex := hex.EncodeToString(key.PubKey().Compressed())
-	deregBody := fmt.Sprintf(`{"topic":"forge:mainnet","identity_pub":"%s"}`, identityPubHex)
+	deregBody := fmt.Sprintf(`{"topic":"foundry:mainnet","identity_pub":"%s"}`, identityPubHex)
 	req3 := httptest.NewRequest("POST", "/overlay/deregister", strings.NewReader(deregBody))
 	req3.Header.Set("Authorization", "Bearer test-token")
 	req3.Header.Set("Content-Type", "application/json")
@@ -567,7 +567,7 @@ func TestEndToEndRegisterThenDeregister(t *testing.T) {
 	}
 
 	// Verify it's gone
-	req4 := httptest.NewRequest("GET", "/overlay/lookup?topic=forge:mainnet", nil)
+	req4 := httptest.NewRequest("GET", "/overlay/lookup?topic=foundry:mainnet", nil)
 	w4 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w4, req4)
 	var resp2 map[string]interface{}

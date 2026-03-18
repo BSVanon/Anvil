@@ -55,7 +55,7 @@ api_listen = "127.0.0.1:9334"
 [identity]
 wif = "Kx123"
 
-[forge]
+[foundry]
 seeds = ["wss://peer1.example.com:8333"]
 
 [bsv]
@@ -77,7 +77,7 @@ from_block = 800000
 
 [overlay]
 enabled = true
-topics = ["forge:mainnet", "oracle:rates"]
+topics = ["foundry:mainnet", "oracle:rates"]
 
 [envelopes]
 max_ephemeral_ttl = 1800
@@ -110,8 +110,8 @@ rate_limit = 50
 	if cfg.Identity.WIF != "Kx123" {
 		t.Fatalf("got wif=%s", cfg.Identity.WIF)
 	}
-	if len(cfg.Forge.Seeds) != 1 || cfg.Forge.Seeds[0] != "wss://peer1.example.com:8333" {
-		t.Fatalf("got forge seeds=%v", cfg.Forge.Seeds)
+	if len(cfg.Foundry.Seeds) != 1 || cfg.Foundry.Seeds[0] != "wss://peer1.example.com:8333" {
+		t.Fatalf("got forge seeds=%v", cfg.Foundry.Seeds)
 	}
 	if !cfg.ARC.Enabled || cfg.ARC.URL != "https://arc.example.com" {
 		t.Fatalf("got arc=%+v", cfg.ARC)

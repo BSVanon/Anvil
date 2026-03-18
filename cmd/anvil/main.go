@@ -169,10 +169,10 @@ func main() {
 	// Phase 4: Gossip mesh — uses go-sdk auth.Peer for authenticated WebSocket peering.
 	// Requires a wallet for authenticated identity: mesh is disabled without identity.wif.
 	var gossipMgr *anvilgossip.Manager
-	meshWanted := len(cfg.Forge.Seeds) > 0 || cfg.Node.Listen != ""
+	meshWanted := len(cfg.Foundry.Seeds) > 0 || cfg.Node.Listen != ""
 	if meshWanted && nodeWallet == nil {
 		log.Printf("mesh disabled: identity.wif required for authenticated peering (seeds=%d listen=%q)",
-			len(cfg.Forge.Seeds), cfg.Node.Listen)
+			len(cfg.Foundry.Seeds), cfg.Node.Listen)
 	}
 	if meshWanted && nodeWallet != nil {
 		gossipMgr = anvilgossip.NewManager(anvilgossip.ManagerConfig{
@@ -188,15 +188,15 @@ func main() {
 		defer gossipMgr.Stop()
 
 		// Connect to seed peers
-		for _, seed := range cfg.Forge.Seeds {
+		for _, seed := range cfg.Foundry.Seeds {
 			go func(endpoint string) {
 				if err := gossipMgr.ConnectPeer(context.Background(), endpoint); err != nil {
-					logger.Warn("forge peer failed", "endpoint", endpoint, "error", err)
+					logger.Warn("foundry peer failed", "endpoint", endpoint, "error", err)
 				}
 			}(seed)
 		}
-		if len(cfg.Forge.Seeds) > 0 {
-			log.Printf("forge mesh: connecting to %d seed peers", len(cfg.Forge.Seeds))
+		if len(cfg.Foundry.Seeds) > 0 {
+			log.Printf("foundry mesh: connecting to %d seed peers", len(cfg.Foundry.Seeds))
 		}
 
 		// Wire broadcaster to forward txs to mesh peers

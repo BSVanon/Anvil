@@ -1,4 +1,4 @@
-// Package gossip implements the Forge mesh protocol using the canonical
+// Package gossip implements the Foundry mesh protocol using the canonical
 // go-sdk auth.Peer for authenticated peer communication.
 //
 // The four message types (data, topics, data_request, data_response) are
