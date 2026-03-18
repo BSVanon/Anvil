@@ -17,7 +17,9 @@ type BroadcastResult struct {
 	Message   string `json:"message,omitempty"`
 }
 
-// Broadcaster handles transaction broadcasting to P2P peers and optionally ARC.
+// Broadcaster handles transaction admission to the local mempool and optionally
+// ARC submission. P2P peer relay is not yet implemented — transactions are only
+// in the local mempool until peer relay is wired.
 type Broadcaster struct {
 	mempool *Mempool
 	arc     *ARCClient // nil if ARC is disabled
@@ -38,9 +40,9 @@ func (b *Broadcaster) Mempool() *Mempool {
 	return b.mempool
 }
 
-// BroadcastBEEF extracts the raw transaction from BEEF, adds it to the
-// mempool, and broadcasts it. Returns the broadcast result including
-// the txid and how many peers accepted it.
+// BroadcastBEEF extracts the raw transaction from BEEF and adds it to the
+// local mempool. P2P peer relay is NOT yet implemented — the tx stays local.
+// Returns the result including txid.
 func (b *Broadcaster) BroadcastBEEF(beef []byte) (*BroadcastResult, error) {
 	tx, err := transaction.NewTransactionFromBEEF(beef)
 	if err != nil {
@@ -56,14 +58,10 @@ func (b *Broadcaster) BroadcastBEEF(beef []byte) (*BroadcastResult, error) {
 	result := &BroadcastResult{
 		TxID:     txid,
 		Accepted: true,
-		Message:  "added to mempool",
+		Message:  "added to local mempool (P2P peer relay not yet implemented)",
 	}
 
-	// TODO: Phase 2 already has P2P peers. When the peer pool is available,
-	// broadcast the raw tx via inv/tx messages to connected peers and count
-	// how many accepted it. That upgrades confidence to broadcast-accepted.
-
-	b.logger.Info("broadcast",
+	b.logger.Info("mempool admit",
 		"txid", txid,
 		"size", len(rawBytes),
 	)
@@ -71,7 +69,8 @@ func (b *Broadcaster) BroadcastBEEF(beef []byte) (*BroadcastResult, error) {
 	return result, nil
 }
 
-// BroadcastRaw broadcasts a raw transaction (not BEEF).
+// BroadcastRaw adds a raw transaction to the local mempool. P2P peer relay
+// is NOT yet implemented.
 func (b *Broadcaster) BroadcastRaw(raw []byte) (*BroadcastResult, error) {
 	tx, err := transaction.NewTransactionFromBytes(raw)
 	if err != nil {
@@ -87,7 +86,7 @@ func (b *Broadcaster) BroadcastRaw(raw []byte) (*BroadcastResult, error) {
 		Message:  "added to mempool",
 	}
 
-	b.logger.Info("broadcast raw",
+	b.logger.Info("mempool admit raw",
 		"txid", txid,
 		"size", len(raw),
 	)
