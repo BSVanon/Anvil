@@ -48,7 +48,7 @@ func testServer(t *testing.T) *Server {
 	es, _ := envelope.NewStore(edir, 3600, 65536)
 	t.Cleanup(func() { es.Close() })
 
-	return NewServer(hs, ps, es, validator, broadcaster, "test-token", logger)
+	return NewServer(hs, ps, es, nil, validator, broadcaster, "test-token", logger)
 }
 
 // testServerNoAuth creates a server with no auth token configured.
@@ -80,7 +80,7 @@ func testServerNoAuth(t *testing.T) *Server {
 	logger := slog.Default()
 	mempool := txrelay.NewMempool()
 	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
-	return NewServer(hs, ps, es, validator, broadcaster, "", logger) // empty token
+	return NewServer(hs, ps, es, nil, validator, broadcaster, "", logger) // empty token
 }
 
 // --- Open read endpoints ---
@@ -294,7 +294,7 @@ func testServerGullible(t *testing.T) *Server {
 	logger := slog.Default()
 	mempool := txrelay.NewMempool()
 	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
-	return NewServer(hs, ps, es, validator, broadcaster, "test-token", logger)
+	return NewServer(hs, ps, es, nil, validator, broadcaster, "test-token", logger)
 }
 
 func buildTestBEEF(t *testing.T) []byte {

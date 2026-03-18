@@ -12,6 +12,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/headers"
+	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 )
@@ -21,6 +22,7 @@ type Server struct {
 	headerStore   *headers.Store
 	proofStore    *spv.ProofStore
 	envelopeStore *envelope.Store
+	overlayDir    *overlay.Directory
 	validator     *spv.Validator
 	broadcaster   *txrelay.Broadcaster
 	logger        *slog.Logger
@@ -33,6 +35,7 @@ func NewServer(
 	headerStore *headers.Store,
 	proofStore *spv.ProofStore,
 	envelopeStore *envelope.Store,
+	overlayDir *overlay.Directory,
 	validator *spv.Validator,
 	broadcaster *txrelay.Broadcaster,
 	authToken string,
@@ -42,6 +45,7 @@ func NewServer(
 		headerStore:   headerStore,
 		proofStore:    proofStore,
 		envelopeStore: envelopeStore,
+		overlayDir:    overlayDir,
 		validator:     validator,
 		broadcaster:   broadcaster,
 		logger:        logger,
@@ -58,6 +62,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /headers/tip", s.handleHeadersTip)
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.handleGetBEEF)
 	s.mux.HandleFunc("GET /data", s.handleQueryData)
+	s.mux.HandleFunc("GET /overlay/lookup", s.handleOverlayLookup)
 
 	// Authenticated write endpoints
 	s.mux.HandleFunc("POST /broadcast", s.requireAuth(s.handleBroadcast))
@@ -306,6 +311,35 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		"topic":     topic,
 		"count":     len(envs),
 		"envelopes": envs,
+	})
+}
+
+// --- Overlay Endpoints ---
+
+// handleOverlayLookup queries the overlay directory for SHIP peers by topic.
+// GET /overlay/lookup?topic=...
+func (s *Server) handleOverlayLookup(w http.ResponseWriter, r *http.Request) {
+	if s.overlayDir == nil {
+		writeError(w, http.StatusServiceUnavailable, "overlay not configured")
+		return
+	}
+
+	topic := r.URL.Query().Get("topic")
+	if topic == "" {
+		writeError(w, http.StatusBadRequest, "topic query parameter required")
+		return
+	}
+
+	peers, err := s.overlayDir.LookupSHIPByTopic(topic)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("lookup error: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"topic": topic,
+		"count": len(peers),
+		"peers": peers,
 	})
 }
 

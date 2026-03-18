@@ -17,6 +17,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
+	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
 	"github.com/libsv/go-p2p/wire"
@@ -99,9 +100,22 @@ func main() {
 		}
 	}()
 
+	// Phase 6: Overlay directory
+	var overlayDir *anviloverlay.Directory
+	if cfg.Overlay.Enabled {
+		ovDir := filepath.Join(cfg.Node.DataDir, "overlay")
+		var err error
+		overlayDir, err = anviloverlay.NewDirectory(ovDir)
+		if err != nil {
+			log.Fatalf("overlay directory: %v", err)
+		}
+		defer overlayDir.Close()
+		log.Printf("overlay directory opened (topics=%v)", cfg.Overlay.Topics)
+	}
+
 	// REST API
 	validator := spv.NewValidator(headerStore)
-	srv := api.NewServer(headerStore, proofStore, envStore, validator, broadcaster, cfg.API.AuthToken, logger)
+	srv := api.NewServer(headerStore, proofStore, envStore, overlayDir, validator, broadcaster, cfg.API.AuthToken, logger)
 
 	// Phase 5.5: Node wallet (optional — requires identity WIF)
 	if cfg.Identity.WIF != "" {
