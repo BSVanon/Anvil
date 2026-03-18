@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
@@ -14,11 +15,15 @@ import (
 // Envelope is a signed data envelope that can be ephemeral (TTL-bounded)
 // or durable (persisted, never expired). This is the core data primitive
 // for the relay mesh — the fix for SessionRelay's problem.
+//
+// The signature covers the canonical digest of all semantic fields:
+// sha256(type + "\n" + topic + "\n" + payload + "\n" + ttl + "\n" + durable + "\n" + timestamp)
+// This prevents any field from being changed without breaking the signature.
 type Envelope struct {
 	Type      string `json:"type"`                // always "data"
 	Topic     string `json:"topic"`               // topic string e.g. "oracle:rates:bsv"
 	Payload   string `json:"payload"`             // application data (opaque to the node)
-	Signature string `json:"signature"`           // DER hex signature over sha256(payload)
+	Signature string `json:"signature"`           // DER hex signature over canonical digest
 	Pubkey    string `json:"pubkey"`              // compressed pubkey hex of the signer
 	TTL       int    `json:"ttl"`                 // seconds until expiry (0 = check Durable)
 	Durable   bool   `json:"durable,omitempty"`   // if true + TTL==0: persist forever
@@ -26,6 +31,31 @@ type Envelope struct {
 
 	// Set by the node on ingest, not by the sender
 	ReceivedAt time.Time `json:"-"`
+}
+
+// SigningDigest computes the canonical digest that the signature must cover.
+// All semantic fields are included so that changing any field invalidates
+// the signature. Fields are joined with newlines in a fixed order.
+func (e *Envelope) SigningDigest() [32]byte {
+	durableStr := "false"
+	if e.Durable {
+		durableStr = "true"
+	}
+	canonical := e.Type + "\n" +
+		e.Topic + "\n" +
+		e.Payload + "\n" +
+		strconv.Itoa(e.TTL) + "\n" +
+		durableStr + "\n" +
+		strconv.FormatInt(e.Timestamp, 10)
+	return sha256.Sum256([]byte(canonical))
+}
+
+// Sign signs the envelope with the given private key, setting Signature and Pubkey.
+func (e *Envelope) Sign(key *secp256k1.PrivateKey) {
+	digest := e.SigningDigest()
+	sig := ecdsa.Sign(key, digest[:])
+	e.Signature = hex.EncodeToString(sig.Serialize())
+	e.Pubkey = hex.EncodeToString(key.PubKey().SerializeCompressed())
 }
 
 // Validate checks structural validity and signature.
@@ -50,7 +80,7 @@ func (e *Envelope) Validate() error {
 		return fmt.Errorf("TTL=0 requires durable=true")
 	}
 
-	// Verify signature
+	// Verify signature over canonical digest (all semantic fields)
 	pubBytes, err := hex.DecodeString(e.Pubkey)
 	if err != nil {
 		return fmt.Errorf("invalid pubkey hex: %w", err)
@@ -69,9 +99,9 @@ func (e *Envelope) Validate() error {
 		return fmt.Errorf("invalid DER signature: %w", err)
 	}
 
-	hash := sha256.Sum256([]byte(e.Payload))
-	if !sig.Verify(hash[:], pub) {
-		return fmt.Errorf("signature does not match pubkey")
+	digest := e.SigningDigest()
+	if !sig.Verify(digest[:], pub) {
+		return fmt.Errorf("signature does not match envelope contents")
 	}
 
 	return nil
@@ -88,14 +118,13 @@ func (e *Envelope) IsExpired() bool {
 	return time.Since(e.ReceivedAt) > time.Duration(e.TTL)*time.Second
 }
 
-// Key returns the storage key for this envelope: topic + pubkey + hash(payload).
-// This allows multiple envelopes per topic from different signers.
+// Key returns the storage key for this envelope: topic + pubkey prefix + payload hash.
 func (e *Envelope) Key() string {
 	h := sha256.Sum256([]byte(e.Payload))
 	return e.Topic + ":" + e.Pubkey[:16] + ":" + hex.EncodeToString(h[:8])
 }
 
-// MarshalJSON encodes the envelope for storage/transmission.
+// Marshal encodes the envelope as JSON for storage/transmission.
 func (e *Envelope) Marshal() ([]byte, error) {
 	return json.Marshal(e)
 }

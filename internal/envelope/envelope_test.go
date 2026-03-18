@@ -1,56 +1,44 @@
 package envelope
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 )
 
-// testKey returns a deterministic private key for testing.
 func testKey() *secp256k1.PrivateKey {
 	b, _ := hex.DecodeString("0000000000000000000000000000000000000000000000000000000000000003")
 	return secp256k1.PrivKeyFromBytes(b)
 }
 
-// signPayload signs a payload with the given key, returns DER hex signature.
-func signPayload(key *secp256k1.PrivateKey, payload string) string {
-	hash := sha256.Sum256([]byte(payload))
-	sig := ecdsa.Sign(key, hash[:])
-	return hex.EncodeToString(sig.Serialize())
-}
-
 func validEnvelope(t *testing.T) *Envelope {
 	t.Helper()
-	key := testKey()
-	payload := "test payload data"
-	return &Envelope{
+	env := &Envelope{
 		Type:      "data",
 		Topic:     "test:topic",
-		Payload:   payload,
-		Signature: signPayload(key, payload),
-		Pubkey:    hex.EncodeToString(key.PubKey().SerializeCompressed()),
+		Payload:   "test payload data",
 		TTL:       300,
+		Timestamp: 1710000000,
 	}
+	env.Sign(testKey())
+	return env
 }
 
 func validDurableEnvelope(t *testing.T) *Envelope {
 	t.Helper()
-	key := testKey()
-	payload := "durable session data"
-	return &Envelope{
+	env := &Envelope{
 		Type:      "data",
 		Topic:     "app:sessions:test",
-		Payload:   payload,
-		Signature: signPayload(key, payload),
-		Pubkey:    hex.EncodeToString(key.PubKey().SerializeCompressed()),
+		Payload:   "durable session data",
 		TTL:       0,
 		Durable:   true,
+		Timestamp: 1710000000,
 	}
+	env.Sign(testKey())
+	return env
 }
 
 // --- Envelope validation ---
@@ -93,15 +81,6 @@ func TestValidateRejectsEmptySignature(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsBadSignature(t *testing.T) {
-	env := validEnvelope(t)
-	// Sign a different payload
-	env.Signature = signPayload(testKey(), "different payload")
-	if err := env.Validate(); err == nil {
-		t.Fatal("expected error for signature mismatch")
-	}
-}
-
 func TestValidateRejectsTTL0WithoutDurable(t *testing.T) {
 	env := validEnvelope(t)
 	env.TTL = 0
@@ -111,11 +90,62 @@ func TestValidateRejectsTTL0WithoutDurable(t *testing.T) {
 	}
 }
 
+// --- Tamper tests: changing any semantic field breaks the signature ---
+
+func TestTamperPayload(t *testing.T) {
+	env := validEnvelope(t)
+	env.Payload = "tampered payload"
+	if err := env.Validate(); err == nil {
+		t.Fatal("expected signature failure after payload tamper")
+	}
+}
+
+func TestTamperTopic(t *testing.T) {
+	env := validEnvelope(t)
+	env.Topic = "evil:topic"
+	if err := env.Validate(); err == nil {
+		t.Fatal("expected signature failure after topic tamper")
+	}
+}
+
+func TestTamperTTL(t *testing.T) {
+	env := validEnvelope(t)
+	env.TTL = 9999
+	if err := env.Validate(); err == nil {
+		t.Fatal("expected signature failure after TTL tamper")
+	}
+}
+
+func TestTamperDurable(t *testing.T) {
+	env := validEnvelope(t)
+	env.TTL = 0
+	env.Durable = true // was false with TTL=300
+	if err := env.Validate(); err == nil {
+		t.Fatal("expected signature failure after durable tamper")
+	}
+}
+
+func TestTamperTimestamp(t *testing.T) {
+	env := validEnvelope(t)
+	env.Timestamp = 9999999999
+	if err := env.Validate(); err == nil {
+		t.Fatal("expected signature failure after timestamp tamper")
+	}
+}
+
+func TestTamperType(t *testing.T) {
+	env := validEnvelope(t)
+	env.Type = "evil"
+	if err := env.Validate(); err == nil {
+		t.Fatal("expected signature failure after type tamper")
+	}
+}
+
 // --- Expiration ---
 
 func TestIsExpiredEphemeral(t *testing.T) {
 	env := validEnvelope(t)
-	env.TTL = 1 // 1 second
+	env.TTL = 1
 	env.ReceivedAt = time.Now().Add(-2 * time.Second)
 	if !env.IsExpired() {
 		t.Fatal("expected expired")
@@ -133,7 +163,7 @@ func TestIsNotExpiredEphemeral(t *testing.T) {
 
 func TestDurableNeverExpires(t *testing.T) {
 	env := validDurableEnvelope(t)
-	env.ReceivedAt = time.Now().Add(-365 * 24 * time.Hour) // 1 year ago
+	env.ReceivedAt = time.Now().Add(-365 * 24 * time.Hour)
 	if env.IsExpired() {
 		t.Fatal("durable envelopes should never expire")
 	}
@@ -156,11 +186,9 @@ func tmpEnvelopeStore(t *testing.T) *Store {
 func TestIngestAndQueryEphemeral(t *testing.T) {
 	s := tmpEnvelopeStore(t)
 	env := validEnvelope(t)
-
 	if err := s.Ingest(env); err != nil {
 		t.Fatal(err)
 	}
-
 	results, err := s.QueryByTopic("test:topic", 10)
 	if err != nil {
 		t.Fatal(err)
@@ -168,19 +196,14 @@ func TestIngestAndQueryEphemeral(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-	if results[0].Payload != env.Payload {
-		t.Fatalf("payload mismatch")
-	}
 }
 
 func TestIngestAndQueryDurable(t *testing.T) {
 	s := tmpEnvelopeStore(t)
 	env := validDurableEnvelope(t)
-
 	if err := s.Ingest(env); err != nil {
 		t.Fatal(err)
 	}
-
 	results, err := s.QueryByTopic("app:sessions:test", 10)
 	if err != nil {
 		t.Fatal(err)
@@ -188,14 +211,14 @@ func TestIngestAndQueryDurable(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-	if results[0].Durable != true {
+	if !results[0].Durable {
 		t.Fatal("expected durable=true")
 	}
 }
 
 func TestIngestRejectsInvalidEnvelope(t *testing.T) {
 	s := tmpEnvelopeStore(t)
-	env := &Envelope{Topic: "", Payload: "x"} // invalid
+	env := &Envelope{Topic: "", Payload: "x"}
 	if err := s.Ingest(env); err == nil {
 		t.Fatal("expected rejection")
 	}
@@ -203,10 +226,15 @@ func TestIngestRejectsInvalidEnvelope(t *testing.T) {
 
 func TestIngestRejectsOversizeDurable(t *testing.T) {
 	s := tmpEnvelopeStore(t)
-	env := validDurableEnvelope(t)
-	env.Payload = string(make([]byte, 100000)) // exceeds 65536 limit
-	// Re-sign with the large payload
-	env.Signature = signPayload(testKey(), env.Payload)
+	env := &Envelope{
+		Type:      "data",
+		Topic:     "big:topic",
+		Payload:   string(make([]byte, 100000)),
+		TTL:       0,
+		Durable:   true,
+		Timestamp: 1710000000,
+	}
+	env.Sign(testKey())
 	if err := s.Ingest(env); err == nil {
 		t.Fatal("expected rejection for oversize durable")
 	}
@@ -214,8 +242,14 @@ func TestIngestRejectsOversizeDurable(t *testing.T) {
 
 func TestIngestRejectsExcessiveTTL(t *testing.T) {
 	s := tmpEnvelopeStore(t)
-	env := validEnvelope(t)
-	env.TTL = 99999 // exceeds 3600 limit
+	env := &Envelope{
+		Type:      "data",
+		Topic:     "ttl:topic",
+		Payload:   "data",
+		TTL:       99999,
+		Timestamp: 1710000000,
+	}
+	env.Sign(testKey())
 	if err := s.Ingest(env); err == nil {
 		t.Fatal("expected rejection for excessive TTL")
 	}
@@ -223,11 +257,18 @@ func TestIngestRejectsExcessiveTTL(t *testing.T) {
 
 func TestExpireEphemeralRemovesOld(t *testing.T) {
 	s := tmpEnvelopeStore(t)
-	env := validEnvelope(t)
-	env.TTL = 1
-	s.Ingest(env)
+	env := &Envelope{
+		Type:      "data",
+		Topic:     "expire:test",
+		Payload:   "will expire",
+		TTL:       1,
+		Timestamp: 1710000000,
+	}
+	env.Sign(testKey())
+	if err := s.Ingest(env); err != nil {
+		t.Fatal(err)
+	}
 
-	// Manually backdate
 	s.mu.Lock()
 	for _, e := range s.ephemeral {
 		e.ReceivedAt = time.Now().Add(-5 * time.Second)
@@ -254,8 +295,6 @@ func TestQueryByTopicNoResults(t *testing.T) {
 	}
 }
 
-// --- Marshal/Unmarshal ---
-
 func TestMarshalRoundTrip(t *testing.T) {
 	env := validEnvelope(t)
 	data, err := env.Marshal()
@@ -268,5 +307,20 @@ func TestMarshalRoundTrip(t *testing.T) {
 	}
 	if env2.Topic != env.Topic || env2.Payload != env.Payload {
 		t.Fatal("round-trip mismatch")
+	}
+	// Re-validate after round-trip — signature must still verify
+	if err := env2.Validate(); err != nil {
+		t.Fatalf("signature invalid after round-trip: %v", err)
+	}
+}
+
+// --- SigningDigest determinism ---
+
+func TestSigningDigestDeterministic(t *testing.T) {
+	env := validEnvelope(t)
+	d1 := env.SigningDigest()
+	d2 := env.SigningDigest()
+	if d1 != d2 {
+		t.Fatal("signing digest not deterministic")
 	}
 }

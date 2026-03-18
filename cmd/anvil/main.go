@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/api"
 	"github.com/BSVanon/Anvil/internal/config"
@@ -85,6 +86,17 @@ func main() {
 	}
 	defer envStore.Close()
 	log.Printf("envelope store opened (max TTL=%ds, max durable=%d bytes)", cfg.Envelopes.MaxEphemeralTTL, cfg.Envelopes.MaxDurableSize)
+
+	// Periodic ephemeral envelope sweeper
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if n := envStore.ExpireEphemeral(); n > 0 {
+				logger.Info("expired ephemeral envelopes", "count", n)
+			}
+		}
+	}()
 
 	// REST API
 	validator := spv.NewValidator(headerStore)
