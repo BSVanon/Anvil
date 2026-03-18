@@ -26,10 +26,10 @@ type Server struct {
 	overlayDir    *overlay.Directory
 	validator     *spv.Validator
 	broadcaster   *txrelay.Broadcaster
-	gossipMgr       *gossip.Manager // nil if mesh not configured
-	rateLimiter     *RateLimiter    // nil if rate limiting disabled
-	paymentSatoshis int             // per-request 402 price; 0 = free
-	logger          *slog.Logger
+	gossipMgr   *gossip.Manager // nil if mesh not configured
+	rateLimiter *RateLimiter    // nil if rate limiting disabled
+	paymentGate *PaymentGate    // nil if 402 gating disabled
+	logger      *slog.Logger
 	mux             *http.ServeMux
 	authToken       string
 }
@@ -44,9 +44,10 @@ type ServerConfig struct {
 	Broadcaster     *txrelay.Broadcaster
 	GossipMgr       *gossip.Manager
 	AuthToken       string
-	RateLimit       int  // requests/second for open reads; 0 = disabled
-	TrustProxy      bool // if true, use X-Forwarded-For for rate limiting
-	PaymentSatoshis int  // per-request price for 402-gated endpoints; 0 = free
+	RateLimit       int    // requests/second for open reads; 0 = disabled
+	TrustProxy      bool   // if true, use X-Forwarded-For for rate limiting
+	PaymentSatoshis int    // per-request price for 402-gated endpoints; 0 = free
+	PayeeScriptHex  string // hex locking script for payment output (derived from wallet)
 	Logger          *slog.Logger
 }
 
@@ -56,21 +57,26 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.RateLimit > 0 {
 		rl = NewRateLimiter(cfg.RateLimit, cfg.TrustProxy)
 	}
+	pg := NewPaymentGate(PaymentGateConfig{
+		PriceSats:      cfg.PaymentSatoshis,
+		PayeeScriptHex: cfg.PayeeScriptHex,
+		RequireMempool: false, // ARC integration deferred
+	})
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 	s := &Server{
-		headerStore:   cfg.HeaderStore,
-		proofStore:    cfg.ProofStore,
+		headerStore: cfg.HeaderStore,
+		proofStore:  cfg.ProofStore,
 		envelopeStore: cfg.EnvelopeStore,
-		overlayDir:    cfg.OverlayDir,
-		validator:     cfg.Validator,
-		broadcaster:   cfg.Broadcaster,
-		gossipMgr:       cfg.GossipMgr,
-		rateLimiter:     rl,
-		paymentSatoshis: cfg.PaymentSatoshis,
-		logger:          logger,
+		overlayDir:  cfg.OverlayDir,
+		validator:   cfg.Validator,
+		broadcaster: cfg.Broadcaster,
+		gossipMgr:   cfg.GossipMgr,
+		rateLimiter: rl,
+		paymentGate: pg,
+		logger:      logger,
 		mux:           http.NewServeMux(),
 		authToken:     cfg.AuthToken,
 	}
@@ -87,7 +93,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /overlay/lookup", s.openRead(s.handleOverlayLookup))
 
 	// x402 discovery endpoint
-	if s.paymentSatoshis > 0 {
+	if s.paymentGate != nil {
 		s.mux.HandleFunc("GET /.well-known/x402", s.handleX402Discovery)
 	}
 
@@ -103,9 +109,10 @@ func (s *Server) routes() {
 func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
 	h := next
 
-	// Apply 402 payment gate if price > 0
-	gate := paymentGate(s.paymentSatoshis)
-	h = gate(h)
+	// Apply 402 payment gate
+	if s.paymentGate != nil {
+		h = s.paymentGate.Middleware(h)
+	}
 
 	// Apply rate limiting if configured
 	if s.rateLimiter != nil {
@@ -118,12 +125,16 @@ func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
 // handleX402Discovery serves the /.well-known/x402 endpoint per x402 spec.
 // Returns a manifest of payment-gated endpoints and their prices.
 func (s *Server) handleX402Discovery(w http.ResponseWriter, r *http.Request) {
+	price := 0
+	if s.paymentGate != nil {
+		price = s.paymentGate.priceSats
+	}
 	gatedEndpoints := []map[string]interface{}{
-		{"method": "GET", "path": "/status", "price": s.paymentSatoshis},
-		{"method": "GET", "path": "/headers/tip", "price": s.paymentSatoshis},
-		{"method": "GET", "path": "/tx/{txid}/beef", "price": s.paymentSatoshis},
-		{"method": "GET", "path": "/data", "price": s.paymentSatoshis},
-		{"method": "GET", "path": "/overlay/lookup", "price": s.paymentSatoshis},
+		{"method": "GET", "path": "/status", "price": price},
+		{"method": "GET", "path": "/headers/tip", "price": price},
+		{"method": "GET", "path": "/tx/{txid}/beef", "price": price},
+		{"method": "GET", "path": "/data", "price": price},
+		{"method": "GET", "path": "/overlay/lookup", "price": price},
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"version":   "0.1",
