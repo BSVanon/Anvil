@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/wallet"
+	"golang.org/x/net/websocket"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
@@ -51,6 +53,8 @@ type MeshPeer struct {
 	Peer       *auth.Peer
 	IdentityPK *ec.PublicKey
 	Endpoint   string
+	origKey    string          // the original map key at insertion time (for cleanup after re-key)
+	closeFunc  func() error   // closes the underlying transport connection
 }
 
 // ManagerConfig holds configuration for the gossip manager.
@@ -88,7 +92,11 @@ func NewManager(cfg ManagerConfig) *Manager {
 
 // ConnectPeer establishes an authenticated mesh connection to a remote peer.
 // Uses go-sdk auth.Peer + WebSocketTransport for BRC-31 identity verification.
+// Requires a wallet — returns an error if none was configured.
 func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
+	if m.wallet == nil {
+		return fmt.Errorf("cannot connect to peer: no wallet configured (identity.wif required)")
+	}
 	transport, err := NewWSTransportAdapter(endpoint)
 	if err != nil {
 		return fmt.Errorf("websocket transport: %w", err)
@@ -122,12 +130,17 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 
 	m.mu.Lock()
 	m.peers[endpoint] = &MeshPeer{
-		Peer:     peer,
-		Endpoint: endpoint,
+		Peer:      peer,
+		Endpoint:  endpoint,
+		origKey:   endpoint,
+		closeFunc: transport.Close,
 	}
 	m.mu.Unlock()
 
 	m.logger.Info("mesh peer connecting", "endpoint", endpoint)
+
+	// Start the read loop for incoming messages
+	go transport.StartReceive()
 
 	// Announce our topic interests
 	return m.announceInterests(peer)
@@ -327,6 +340,108 @@ func (m *Manager) BroadcastEnvelope(env *envelope.Envelope) {
 	m.forwardToInterested("", env.Topic, raw)
 }
 
+// AcceptPeer registers an inbound peer using a server-side transport.
+// Called by the mesh listener for each accepted WebSocket connection.
+// Returns the peer key used in the peers map and the transport's done channel.
+func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err error) {
+	peer := auth.NewPeer(&auth.PeerOptions{
+		Wallet:    m.wallet,
+		Transport: transport,
+	})
+
+	// Use a temporary key until the auth handshake reveals the real identity
+	tempKey := fmt.Sprintf("inbound-%p", transport)
+
+	peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
+		pkHex := fmt.Sprintf("%x", senderPK.Compressed())
+
+		m.mu.Lock()
+		if mp, ok := m.peers[tempKey]; ok && mp.IdentityPK == nil {
+			mp.IdentityPK = senderPK
+			m.peers[pkHex] = mp
+			delete(m.peers, tempKey)
+		}
+		m.mu.Unlock()
+
+		return m.handleMessage(pkHex, senderPK, payload)
+	})
+
+	if err := peer.Start(); err != nil {
+		return "", fmt.Errorf("peer start: %w", err)
+	}
+
+	m.mu.Lock()
+	m.peers[tempKey] = &MeshPeer{
+		Peer:      peer,
+		Endpoint:  "inbound",
+		origKey:   tempKey,
+		closeFunc: transport.Close,
+	}
+	m.mu.Unlock()
+
+	m.logger.Info("mesh peer accepted (inbound)")
+
+	// Start the read loop in a goroutine; when it exits the done channel closes
+	go transport.StartReceive()
+
+	if err := m.announceInterests(peer); err != nil {
+		return tempKey, err
+	}
+	return tempKey, nil
+}
+
+// removePeer removes a peer from the peers and interests maps.
+// Pass the original key that was returned by AcceptPeer or used in ConnectPeer.
+// After re-keying (temp key → identity pubkey), the peer's origKey field
+// identifies it unambiguously even with multiple inbound peers.
+func (m *Manager) removePeer(origKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Fast path: key hasn't been re-keyed yet
+	if p, ok := m.peers[origKey]; ok {
+		p.Peer.Stop()
+		if p.closeFunc != nil {
+			p.closeFunc()
+		}
+		delete(m.peers, origKey)
+		delete(m.interests, origKey)
+		return
+	}
+
+	// Slow path: peer was re-keyed to its identity pubkey.
+	// Find it by matching origKey on the MeshPeer struct.
+	for k, p := range m.peers {
+		if p.origKey == origKey {
+			p.Peer.Stop()
+			if p.closeFunc != nil {
+				p.closeFunc()
+			}
+			delete(m.peers, k)
+			delete(m.interests, k)
+			return
+		}
+	}
+}
+
+// MeshHandler returns an http.Handler that accepts inbound WebSocket
+// connections for mesh peering. Mount this on the mesh listen address.
+func (m *Manager) MeshHandler() http.Handler {
+	return websocket.Handler(func(conn *websocket.Conn) {
+		transport := NewServerWSTransport(conn)
+		peerKey, err := m.AcceptPeer(transport)
+		if err != nil {
+			m.logger.Warn("inbound peer accept failed", "error", err)
+			return
+		}
+
+		// Block until the connection closes, then clean up the peer.
+		<-transport.Done()
+		m.removePeer(peerKey)
+		m.logger.Info("inbound peer disconnected, cleaned up", "key", truncate(peerKey))
+	})
+}
+
 // PeerCount returns the number of connected mesh peers.
 func (m *Manager) PeerCount() int {
 	m.mu.RLock()
@@ -334,13 +449,16 @@ func (m *Manager) PeerCount() int {
 	return len(m.peers)
 }
 
-// Stop gracefully disconnects all peers.
+// Stop gracefully disconnects all peers, closing their transport connections.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, peer := range m.peers {
 		if peer.Peer != nil {
 			peer.Peer.Stop()
+		}
+		if peer.closeFunc != nil {
+			peer.closeFunc()
 		}
 	}
 	m.peers = make(map[string]*MeshPeer)

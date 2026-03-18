@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
+	"github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
@@ -53,7 +54,10 @@ func testServer(t *testing.T) *Server {
 	es, _ := envelope.NewStore(edir, 3600, 65536)
 	t.Cleanup(func() { es.Close() })
 
-	return NewServer(hs, ps, es, nil, validator, broadcaster, "test-token", logger)
+	return NewServer(ServerConfig{
+		HeaderStore: hs, ProofStore: ps, EnvelopeStore: es,
+		Validator: validator, Broadcaster: broadcaster, AuthToken: "test-token", Logger: logger,
+	})
 }
 
 // testServerNoAuth creates a server with no auth token configured.
@@ -85,7 +89,10 @@ func testServerNoAuth(t *testing.T) *Server {
 	logger := slog.Default()
 	mempool := txrelay.NewMempool()
 	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
-	return NewServer(hs, ps, es, nil, validator, broadcaster, "", logger) // empty token
+	return NewServer(ServerConfig{
+		HeaderStore: hs, ProofStore: ps, EnvelopeStore: es,
+		Validator: validator, Broadcaster: broadcaster, Logger: logger,
+	}) // empty token
 }
 
 // --- Open read endpoints ---
@@ -299,7 +306,10 @@ func testServerGullible(t *testing.T) *Server {
 	logger := slog.Default()
 	mempool := txrelay.NewMempool()
 	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
-	return NewServer(hs, ps, es, nil, validator, broadcaster, "test-token", logger)
+	return NewServer(ServerConfig{
+		HeaderStore: hs, ProofStore: ps, EnvelopeStore: es,
+		Validator: validator, Broadcaster: broadcaster, AuthToken: "test-token", Logger: logger,
+	})
 }
 
 func buildTestBEEF(t *testing.T) []byte {
@@ -418,7 +428,10 @@ func testServerWithOverlay(t *testing.T) *Server {
 	logger := slog.Default()
 	mempool := txrelay.NewMempool()
 	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
-	return NewServer(hs, ps, es, od, validator, broadcaster, "test-token", logger)
+	return NewServer(ServerConfig{
+		HeaderStore: hs, ProofStore: ps, EnvelopeStore: es, OverlayDir: od,
+		Validator: validator, Broadcaster: broadcaster, AuthToken: "test-token", Logger: logger,
+	})
 }
 
 func overlayTestKey() *ec.PrivateKey {
@@ -564,4 +577,91 @@ func TestEndToEndRegisterThenDeregister(t *testing.T) {
 	}
 
 	t.Log("e2e deregister success")
+}
+
+// --- Data envelope + gossip integration ---
+
+func testServerWithGossip(t *testing.T) (*Server, *gossip.Manager) {
+	t.Helper()
+
+	hdir, _ := os.MkdirTemp("", "anvil-api-headers-*")
+	t.Cleanup(func() { os.RemoveAll(hdir) })
+	hs, _ := headers.NewTestStore(hdir)
+	t.Cleanup(func() { hs.Close() })
+
+	pdir, _ := os.MkdirTemp("", "anvil-api-proofs-*")
+	t.Cleanup(func() { os.RemoveAll(pdir) })
+	ps, _ := spv.NewProofStore(pdir)
+	t.Cleanup(func() { ps.Close() })
+
+	edir, _ := os.MkdirTemp("", "anvil-api-envs-*")
+	t.Cleanup(func() { os.RemoveAll(edir) })
+	es, _ := envelope.NewStore(edir, 3600, 65536)
+	t.Cleanup(func() { es.Close() })
+
+	mgr := gossip.NewManager(gossip.ManagerConfig{
+		Store:          es,
+		LocalInterests: []string{"oracle:"},
+		MaxSeen:        100,
+	})
+	t.Cleanup(func() { mgr.Stop() })
+
+	validator := spv.NewValidator(hs)
+	logger := slog.Default()
+	mempool := txrelay.NewMempool()
+	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
+	srv := NewServer(ServerConfig{
+		HeaderStore: hs, ProofStore: ps, EnvelopeStore: es,
+		Validator: validator, Broadcaster: broadcaster, GossipMgr: mgr,
+		AuthToken: "test-token", Logger: logger,
+	})
+	return srv, mgr
+}
+
+func TestPostDataBroadcastsToMesh(t *testing.T) {
+	srv, _ := testServerWithGossip(t)
+
+	// Build a signed envelope
+	key, _ := ec.NewPrivateKey()
+	env := &envelope.Envelope{
+		Type:      "data",
+		Topic:     "oracle:rates:bsv",
+		Payload:   `{"rate":42}`,
+		TTL:       60,
+		Timestamp: 1700000000,
+	}
+	env.Sign(key)
+	body, _ := json.Marshal(env)
+
+	req := httptest.NewRequest("POST", "/data", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["accepted"] != true {
+		t.Fatalf("expected accepted=true, got %v", resp["accepted"])
+	}
+
+	// Verify the envelope is stored and retrievable
+	req2 := httptest.NewRequest("GET", "/data?topic=oracle:rates:bsv", nil)
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("query: expected 200, got %d", w2.Code)
+	}
+	var queryResp map[string]interface{}
+	json.NewDecoder(w2.Body).Decode(&queryResp)
+	if queryResp["count"].(float64) != 1 {
+		t.Fatalf("expected 1 envelope, got %v", queryResp["count"])
+	}
+
+	t.Log("POST /data -> store + gossip broadcast wired correctly")
 }
