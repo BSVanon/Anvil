@@ -88,8 +88,13 @@ func (s *Server) handleHeadersTip(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGetBEEF serves a stored transaction as BEEF (raw tx + BUMP proof).
+// handleGetBEEF serves a stored transaction as a complete BEEF envelope.
 // GET /tx/:txid/beef
+//
+// Returns the full BEEF binary (hex-encoded in JSON, or raw binary if
+// Accept: application/octet-stream). This includes the transaction, its
+// full input ancestry, and all BRC-74 merkle proofs — everything needed
+// for the consumer to independently verify the transaction.
 func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 	txid := r.PathValue("txid")
 	if len(txid) != 64 {
@@ -97,29 +102,23 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawTx, err := s.proofStore.GetRawTx(txid)
+	beefBytes, err := s.proofStore.GetBEEF(txid)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "transaction not found")
+		writeError(w, http.StatusNotFound, "no BEEF envelope found for this txid")
 		return
 	}
 
-	bump, err := s.proofStore.GetBUMP(txid)
-	if err != nil {
-		// Have the raw tx but no proof — return what we have
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"txid":   txid,
-			"raw_tx": hex.EncodeToString(rawTx),
-			"bump":   nil,
-			"proven": false,
-		})
+	// If client wants raw binary, serve it directly
+	if strings.Contains(r.Header.Get("Accept"), "application/octet-stream") {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write(beefBytes)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"txid":   txid,
-		"raw_tx": hex.EncodeToString(rawTx),
-		"bump":   hex.EncodeToString(bump),
-		"proven": true,
+		"txid": txid,
+		"beef": hex.EncodeToString(beefBytes),
 	})
 }
 
@@ -154,12 +153,13 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only store if we have at least some verification
+	// Only store the full BEEF envelope if we have at least some verification.
+	// The complete BEEF binary is stored as-is so /tx/:txid/beef can serve it
+	// back with full ancestry and proofs intact.
 	if result.Confidence == spv.ConfidenceSPVVerified || result.Confidence == spv.ConfidencePartiallyVerified {
-		txid, err := s.proofStore.StoreFromBEEF(beefBytes)
+		txid, err := s.proofStore.StoreBEEF(beefBytes)
 		if err != nil {
 			s.logger.Error("failed to store BEEF", "txid", result.TxID, "error", err)
-			// Don't fail the request — validation succeeded, storage is secondary
 		} else {
 			s.logger.Info("stored BEEF",
 				"txid", txid,

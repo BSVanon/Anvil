@@ -2,15 +2,14 @@ package spv
 
 import (
 	"context"
-	"encoding/hex"
 	"testing"
 
 	"github.com/bsv-blockchain/go-sdk/chainhash"
+	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
-// gullibleTracker always says yes — for testing BEEF parsing and confidence
-// classification without needing real headers.
+// gullibleTracker always says the merkle root is valid.
 type gullibleTracker struct{}
 
 func (g *gullibleTracker) IsValidRootForHeight(_ context.Context, _ *chainhash.Hash, _ uint32) (bool, error) {
@@ -20,7 +19,7 @@ func (g *gullibleTracker) CurrentHeight(_ context.Context) (uint32, error) {
 	return 999999, nil
 }
 
-// rejectTracker always says no — for testing proof rejection.
+// rejectTracker always says the merkle root is invalid.
 type rejectTracker struct{}
 
 func (r *rejectTracker) IsValidRootForHeight(_ context.Context, _ *chainhash.Hash, _ uint32) (bool, error) {
@@ -28,6 +27,63 @@ func (r *rejectTracker) IsValidRootForHeight(_ context.Context, _ *chainhash.Has
 }
 func (r *rejectTracker) CurrentHeight(_ context.Context) (uint32, error) {
 	return 999999, nil
+}
+
+// buildTestBEEFWithBUMP creates a BEEF binary containing a transaction with
+// a merkle proof (BUMP). Uses the go-sdk to construct a structurally valid
+// BEEF with a single-leaf merkle path.
+func buildTestBEEFWithBUMP(t *testing.T) []byte {
+	t.Helper()
+
+	// Create a parent transaction (the "input source")
+	parent := transaction.NewTransaction()
+	parent.Version = 1
+	parent.AddOutput(&transaction.TransactionOutput{
+		Satoshis:      1000,
+		LockingScript: mustScript(t, "76a9140000000000000000000000000000000000000000ac"),
+	})
+
+	// Give the parent a merkle path (confirmed at block height 100)
+	txidHash := parent.TxID()
+	boolTrue := true
+	parent.MerklePath = transaction.NewMerklePath(100, [][]*transaction.PathElement{
+		{
+			{Offset: 0, Hash: txidHash, Txid: &boolTrue},
+			{Offset: 1, Duplicate: &boolTrue},
+		},
+	})
+
+	// Create the child transaction that spends the parent
+	child := transaction.NewTransaction()
+	child.Version = 1
+	child.AddInput(&transaction.TransactionInput{
+		SourceTXID:        txidHash,
+		SourceTxOutIndex:  0,
+		SequenceNumber:    0xffffffff,
+		SourceTransaction: parent,
+	})
+	child.AddOutput(&transaction.TransactionOutput{
+		Satoshis:      900,
+		LockingScript: mustScript(t, "76a9140000000000000000000000000000000000000000ac"),
+	})
+
+	beefBytes, err := child.BEEF()
+	if err != nil {
+		t.Fatalf("failed to encode BEEF: %v", err)
+	}
+	if len(beefBytes) == 0 {
+		t.Fatal("BEEF encoding returned empty bytes")
+	}
+	return beefBytes
+}
+
+func mustScript(t *testing.T, hexStr string) *script.Script {
+	t.Helper()
+	s, err := script.NewFromHex(hexStr)
+	if err != nil {
+		t.Fatalf("invalid script hex: %v", err)
+	}
+	return s
 }
 
 // --- Invalid input ---
@@ -90,83 +146,71 @@ func TestClassifyConfidenceBumpsButNoneVerified(t *testing.T) {
 	}
 }
 
-// --- Positive BEEF test with synthetic but structurally valid BEEF ---
-
-func TestValidateBEEFWithGullibleTracker(t *testing.T) {
-	// Build a minimal valid BEEF using go-sdk.
-	tx := transaction.NewTransaction()
-	tx.Version = 1
-	tx.LockTime = 0
-
-	beefBytes, err := tx.BEEF()
-	if err != nil || len(beefBytes) == 0 {
-		t.Skip("go-sdk BEEF() returned empty or error — may need inputs for valid BEEF")
+func TestConfidenceMessages(t *testing.T) {
+	cases := []struct {
+		confidence string
+		verified   int
+		total      int
+	}{
+		{ConfidenceSPVVerified, 3, 3},
+		{ConfidencePartiallyVerified, 1, 3},
+		{ConfidenceUnconfirmed, 0, 0},
+		{ConfidenceUnconfirmed, 0, 2},
+		{ConfidenceInvalid, 0, 0},
 	}
+	for _, tc := range cases {
+		msg := confidenceMessage(tc.confidence, tc.verified, tc.total)
+		if msg == "" {
+			t.Fatalf("expected non-empty message for %s", tc.confidence)
+		}
+	}
+}
+
+// --- Genuine BUMP-verified positive test ---
+// Constructs a real BEEF with a merkle proof and validates it against
+// a gullible tracker that accepts any root. This proves the full path:
+// parse BEEF → find BUMPs → compute root → check against tracker → spv_verified.
+
+func TestValidateBEEFWithBUMP_Positive(t *testing.T) {
+	beefBytes := buildTestBEEFWithBUMP(t)
 
 	v := NewValidator(&gullibleTracker{})
 	result, err := v.ValidateBEEF(context.Background(), beefBytes)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	// With no BUMPs, confidence should be unconfirmed (not invalid)
-	if result.Confidence == ConfidenceInvalid {
-		t.Fatalf("structurally valid BEEF should not be invalid: %s", result.Message)
+	if !result.Valid {
+		t.Fatalf("expected valid, got invalid: %s", result.Message)
 	}
-	t.Logf("confidence=%s message=%s", result.Confidence, result.Message)
+	if result.TxID == "" {
+		t.Fatal("expected non-empty txid")
+	}
+	if result.Confidence != ConfidenceSPVVerified {
+		t.Fatalf("expected spv_verified, got %s: %s", result.Confidence, result.Message)
+	}
+	t.Logf("txid=%s confidence=%s message=%s", result.TxID, result.Confidence, result.Message)
 }
 
-// Test with a BEEF hex that has been validated in the real world.
-// This is a known BEEF V1 hex from the BSV SDK test vectors.
-func TestValidateRealBEEFHex(t *testing.T) {
-	// Minimal BEEF V1: version(4) + nBUMPs(1:0) + nTxs(1:1) + tx_data
-	// We construct a minimal valid BEEF V1 binary:
-	//   0100beef (version BEEF_V1 = 4022206465 = 0x0100BEEF little-endian)
-	//   00 (0 BUMPs)
-	//   01 (1 transaction)
-	//   00 (hasBump = false)
-	//   <raw tx bytes>
+// --- Genuine bad-proof rejection test ---
+// Same BEEF, but the tracker rejects the merkle root. This proves that
+// a structurally valid BEEF with proofs that don't match the header chain
+// is correctly rejected.
 
-	// Create a minimal raw transaction
-	tx := transaction.NewTransaction()
-	tx.Version = 1
-	tx.LockTime = 0
-	rawTx := tx.Bytes()
+func TestValidateBEEFWithBUMP_Rejected(t *testing.T) {
+	beefBytes := buildTestBEEFWithBUMP(t)
 
-	// Build BEEF V1 binary
-	var beef []byte
-	// BEEF_V1 magic in little-endian: 0x0100BEEF
-	beef = append(beef, 0x01, 0xBE, 0xEF, 0x00) // not right, let me check the actual format
-	// Actually BEEF_V1 = 4022206465 which is 0xEFBE0001 in hex
-	// Little-endian: 01 00 BE EF
-
-	// Let's just try to use the SDK's own encoding
-	_ = rawTx
-	_ = beef
-
-	// Instead, use NewBeefFromBytes to verify our validator handles edge cases
-	t.Log("BEEF format construction requires go-sdk Beef builder — testing classification only")
-
-	// Verify confidence messages are well-formed
-	msg := confidenceMessage(ConfidenceSPVVerified, 3, 3)
-	if msg == "" {
-		t.Fatal("expected non-empty message for spv_verified")
+	v := NewValidator(&rejectTracker{})
+	result, err := v.ValidateBEEF(context.Background(), beefBytes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	msg = confidenceMessage(ConfidencePartiallyVerified, 1, 3)
-	if msg == "" {
-		t.Fatal("expected non-empty message for partially_verified")
+	if result.Valid {
+		t.Fatal("expected invalid when tracker rejects root")
 	}
-
-	msg = confidenceMessage(ConfidenceUnconfirmed, 0, 0)
-	if msg == "" {
-		t.Fatal("expected non-empty message for unconfirmed with no bumps")
+	if result.Confidence != ConfidenceInvalid {
+		t.Fatalf("expected confidence=invalid, got %s: %s", result.Confidence, result.Message)
 	}
-
-	msg = confidenceMessage(ConfidenceUnconfirmed, 0, 2)
-	if msg == "" {
-		t.Fatal("expected non-empty message for unconfirmed with bumps")
-	}
+	t.Logf("correctly rejected: confidence=%s message=%s", result.Confidence, result.Message)
 }
 
 func TestValidatorCreation(t *testing.T) {
@@ -175,27 +219,3 @@ func TestValidatorCreation(t *testing.T) {
 		t.Fatal("expected non-nil validator")
 	}
 }
-
-// --- Reject tracker: proofs fail ---
-
-func TestValidateBEEFWithRejectTracker(t *testing.T) {
-	// Build a BEEF with a BUMP that will fail verification.
-	// We need a BEEF binary with at least one BUMP to trigger the reject path.
-	// Construct minimal BEEF V2 with a fake BUMP.
-
-	// BEEF_V2 = 4022206466 = 0x0100BEF2 — no, let me check
-	// BEEF_V2 = uint32(4022206466) = 0xEFBE0002
-	// Little-endian bytes: 02 00 BE EF
-
-	// This is hard to construct manually without the SDK's builder.
-	// Let's test the reject path via confidence classification instead.
-	v := NewValidator(&rejectTracker{})
-	if v == nil {
-		t.Fatal("expected non-nil validator")
-	}
-	// If we had a BEEF with BUMPs, the reject tracker would return false
-	// and we'd get ConfidenceInvalid. Tested via classification logic.
-}
-
-// Suppress unused import warning
-var _ = hex.EncodeToString

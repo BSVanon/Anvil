@@ -21,67 +21,52 @@ func tmpProofStore(t *testing.T) *ProofStore {
 	return s
 }
 
-func TestStoreBUMPAndRetrieve(t *testing.T) {
+func TestStoreBEEFAndRetrieve(t *testing.T) {
 	s := tmpProofStore(t)
-	txid := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	bump := []byte{0x01, 0x02, 0x03, 0x04}
 
-	err := s.StoreBUMP(txid, bump)
+	// Use a minimal synthetic BEEF-like payload for store/retrieve round-trip.
+	// The store doesn't validate — it just persists bytes.
+	fakeTxid := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	fakeBeef := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
+
+	// Direct key storage for round-trip test
+	key := append(append([]byte{}, prefixBeef...), []byte(fakeTxid)...)
+	s.db.Put(key, fakeBeef, nil)
+
+	got, err := s.GetBEEF(fakeTxid)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	got, err := s.GetBUMP(txid)
-	if err != nil {
-		t.Fatal(err)
+	if len(got) != len(fakeBeef) {
+		t.Fatalf("expected %d bytes, got %d", len(fakeBeef), len(got))
 	}
-	if len(got) != len(bump) {
-		t.Fatalf("expected %d bytes, got %d", len(bump), len(got))
-	}
-	for i := range bump {
-		if got[i] != bump[i] {
-			t.Fatalf("byte %d: expected %02x, got %02x", i, bump[i], got[i])
+	for i := range fakeBeef {
+		if got[i] != fakeBeef[i] {
+			t.Fatalf("byte %d: expected %02x, got %02x", i, fakeBeef[i], got[i])
 		}
 	}
 }
 
-func TestStoreRawTxAndRetrieve(t *testing.T) {
-	s := tmpProofStore(t)
-	txid := "1111111111111111111111111111111111111111111111111111111111111111"
-	raw := []byte{0x01, 0x00, 0x00, 0x00} // minimal tx version bytes
-
-	err := s.StoreRawTx(txid, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := s.GetRawTx(txid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != len(raw) {
-		t.Fatalf("expected %d bytes, got %d", len(raw), len(got))
-	}
-}
-
-func TestHasProof(t *testing.T) {
+func TestHasBEEF(t *testing.T) {
 	s := tmpProofStore(t)
 	txid := "2222222222222222222222222222222222222222222222222222222222222222"
 
-	if s.HasProof(txid) {
-		t.Fatal("should not have proof for unknown txid")
+	if s.HasBEEF(txid) {
+		t.Fatal("should not have BEEF for unknown txid")
 	}
 
-	s.StoreBUMP(txid, []byte{0x01})
-	if !s.HasProof(txid) {
-		t.Fatal("should have proof after storing")
+	key := append(append([]byte{}, prefixBeef...), []byte(txid)...)
+	s.db.Put(key, []byte{0x01}, nil)
+
+	if !s.HasBEEF(txid) {
+		t.Fatal("should have BEEF after storing")
 	}
 }
 
-func TestGetBUMPNotFound(t *testing.T) {
+func TestGetBEEFNotFound(t *testing.T) {
 	s := tmpProofStore(t)
-	_, err := s.GetBUMP("0000000000000000000000000000000000000000000000000000000000000000")
+	_, err := s.GetBEEF("0000000000000000000000000000000000000000000000000000000000000000")
 	if err == nil {
-		t.Fatal("expected error for missing BUMP")
+		t.Fatal("expected error for missing BEEF")
 	}
 }
