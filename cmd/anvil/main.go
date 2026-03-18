@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -151,34 +152,31 @@ func main() {
 		}
 	}
 
-	// REST API
-	validator := spv.NewValidator(headerStore)
-	srv := api.NewServer(headerStore, proofStore, envStore, overlayDir, validator, broadcaster, cfg.API.AuthToken, logger)
-
 	// Phase 5.5: Node wallet (optional — requires identity WIF)
+	var nodeWallet *anvilwallet.NodeWallet
 	if cfg.Identity.WIF != "" {
 		walletDir := filepath.Join(cfg.Node.DataDir, "wallet")
 		nw, err := anvilwallet.New(cfg.Identity.WIF, walletDir, headerStore, proofStore, broadcaster, logger)
 		if err != nil {
 			log.Printf("wallet init failed (non-fatal): %v", err)
 		} else {
-			defer nw.Close()
-			nw.RegisterRoutes(srv.Mux(), srv.RequireAuth)
+			nodeWallet = nw
+			defer nodeWallet.Close()
 			log.Printf("wallet initialized")
 		}
 	}
 
-	go func() {
-		log.Printf("REST API listening on %s", cfg.Node.APIListen)
-		if err := http.ListenAndServe(cfg.Node.APIListen, srv.Handler()); err != nil {
-			log.Fatalf("api server: %v", err)
-		}
-	}()
-
-	// Phase 4: Gossip mesh — uses go-sdk auth.Peer for authenticated WebSocket peering
+	// Phase 4: Gossip mesh — uses go-sdk auth.Peer for authenticated WebSocket peering.
+	// Requires a wallet for authenticated identity: mesh is disabled without identity.wif.
 	var gossipMgr *anvilgossip.Manager
-	if len(cfg.Forge.Seeds) > 0 || cfg.Node.Listen != "" {
+	meshWanted := len(cfg.Forge.Seeds) > 0 || cfg.Node.Listen != ""
+	if meshWanted && nodeWallet == nil {
+		log.Printf("mesh disabled: identity.wif required for authenticated peering (seeds=%d listen=%q)",
+			len(cfg.Forge.Seeds), cfg.Node.Listen)
+	}
+	if meshWanted && nodeWallet != nil {
 		gossipMgr = anvilgossip.NewManager(anvilgossip.ManagerConfig{
+			Wallet:         nodeWallet.Wallet(),
 			Store:          envStore,
 			Logger:         logger,
 			LocalInterests: cfg.Overlay.Topics,
@@ -197,7 +195,9 @@ func main() {
 				}
 			}(seed)
 		}
-		log.Printf("forge mesh: connecting to %d seed peers", len(cfg.Forge.Seeds))
+		if len(cfg.Forge.Seeds) > 0 {
+			log.Printf("forge mesh: connecting to %d seed peers", len(cfg.Forge.Seeds))
+		}
 
 		// Wire broadcaster to forward txs to mesh peers
 		broadcaster.SetGossipForwarder(func(txid, rawHex string) {
@@ -205,7 +205,67 @@ func main() {
 				logger.Debug("forwarding tx to mesh", "txid", txid[:16], "peers", gossipMgr.PeerCount())
 			}
 		})
+
+		// Inbound mesh listener: accept authenticated WebSocket peers.
+		// Uses TLS (wss://) when cert/key are configured — required for production.
+		if cfg.Node.Listen != "" {
+			go func() {
+				handler := gossipMgr.MeshHandler()
+				if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
+					log.Printf("mesh listener on %s (wss, TLS)", cfg.Node.Listen)
+					if err := http.ListenAndServeTLS(cfg.Node.Listen, cfg.API.TLSCert, cfg.API.TLSKey, handler); err != nil {
+						log.Fatalf("mesh listener: %v", err)
+					}
+				} else {
+					log.Printf("mesh listener on %s (ws, no TLS — dev only)", cfg.Node.Listen)
+					if err := http.ListenAndServe(cfg.Node.Listen, handler); err != nil {
+						log.Fatalf("mesh listener: %v", err)
+					}
+				}
+			}()
+		}
 	}
+
+	// REST API — gossip manager wired in so POST /data can broadcast to mesh
+	validator := spv.NewValidator(headerStore)
+	srv := api.NewServer(api.ServerConfig{
+		HeaderStore:   headerStore,
+		ProofStore:    proofStore,
+		EnvelopeStore: envStore,
+		OverlayDir:    overlayDir,
+		Validator:     validator,
+		Broadcaster:   broadcaster,
+		GossipMgr:     gossipMgr,
+		AuthToken:     cfg.API.AuthToken,
+		RateLimit:     cfg.API.RateLimit,
+		Logger:        logger,
+	})
+
+	if nodeWallet != nil {
+		nodeWallet.RegisterRoutes(srv.Mux(), srv.RequireAuth)
+	}
+
+	go func() {
+		handler := srv.Handler()
+		if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
+			log.Printf("REST API listening on %s (TLS)", cfg.Node.APIListen)
+			tlsSrv := &http.Server{
+				Addr:    cfg.Node.APIListen,
+				Handler: handler,
+				TLSConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+				},
+			}
+			if err := tlsSrv.ListenAndServeTLS(cfg.API.TLSCert, cfg.API.TLSKey); err != nil {
+				log.Fatalf("api server: %v", err)
+			}
+		} else {
+			log.Printf("REST API listening on %s (no TLS — use reverse proxy for production)", cfg.Node.APIListen)
+			if err := http.ListenAndServe(cfg.Node.APIListen, handler); err != nil {
+				log.Fatalf("api server: %v", err)
+			}
+		}
+	}()
 
 	// Block until signal
 	sig := make(chan os.Signal, 1)

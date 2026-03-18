@@ -1,15 +1,16 @@
 [node]
 name = "my-anvil"
 data_dir = "/var/lib/anvil"
-listen = "0.0.0.0:8333"          # mesh peers (WebSocket)
-api_listen = "0.0.0.0:9333"      # REST API
+listen = "0.0.0.0:8333"          # mesh peers — wss:// when TLS configured, ws:// otherwise
+api_listen = "0.0.0.0:9333"      # REST API — HTTPS when TLS configured
 
 [identity]
-wif = "Kx..."                     # BRC-42 identity root
+wif = "Kx..."                     # BRC-42 identity root — required for mesh peering and wallet
 
-[peers]
+[forge]
 seeds = [
-  # "ws://peer1.example.com:8333",
+  # "wss://peer1.example.com:8333",   # production: always use wss://
+  # "ws://localhost:8333",             # dev only: plain ws
 ]
 
 [bsv]
@@ -37,8 +38,9 @@ max_durable_size = 65536
 max_durable_store_mb = 10240
 warn_at_percent = 80
 
+# Phase 8: Security + API auth
 [api]
-auth_token = ""
-tls_cert = ""
-tls_key = ""
-rate_limit = 100
+auth_token = ""                   # bearer token for write endpoints — set to enable writes
+tls_cert = ""                     # path to TLS cert — enables HTTPS for API + wss:// for mesh
+tls_key = ""                      # path to TLS key — required with tls_cert
+rate_limit = 100                  # requests/second per IP for open read endpoints (0 = disabled)

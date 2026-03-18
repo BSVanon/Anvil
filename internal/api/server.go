@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
+	"github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
@@ -25,50 +26,75 @@ type Server struct {
 	overlayDir    *overlay.Directory
 	validator     *spv.Validator
 	broadcaster   *txrelay.Broadcaster
+	gossipMgr     *gossip.Manager // nil if mesh not configured
+	rateLimiter   *RateLimiter    // nil if rate limiting disabled
 	logger        *slog.Logger
 	mux           *http.ServeMux
 	authToken     string
 }
 
+// ServerConfig holds all parameters for NewServer.
+type ServerConfig struct {
+	HeaderStore   *headers.Store
+	ProofStore    *spv.ProofStore
+	EnvelopeStore *envelope.Store
+	OverlayDir    *overlay.Directory
+	Validator     *spv.Validator
+	Broadcaster   *txrelay.Broadcaster
+	GossipMgr    *gossip.Manager
+	AuthToken     string
+	RateLimit     int // requests/second for open reads; 0 = disabled
+	Logger        *slog.Logger
+}
+
 // NewServer creates a new REST API server.
-func NewServer(
-	headerStore *headers.Store,
-	proofStore *spv.ProofStore,
-	envelopeStore *envelope.Store,
-	overlayDir *overlay.Directory,
-	validator *spv.Validator,
-	broadcaster *txrelay.Broadcaster,
-	authToken string,
-	logger *slog.Logger,
-) *Server {
+func NewServer(cfg ServerConfig) *Server {
+	var rl *RateLimiter
+	if cfg.RateLimit > 0 {
+		rl = NewRateLimiter(cfg.RateLimit)
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	s := &Server{
-		headerStore:   headerStore,
-		proofStore:    proofStore,
-		envelopeStore: envelopeStore,
-		overlayDir:    overlayDir,
-		validator:     validator,
-		broadcaster:   broadcaster,
+		headerStore:   cfg.HeaderStore,
+		proofStore:    cfg.ProofStore,
+		envelopeStore: cfg.EnvelopeStore,
+		overlayDir:    cfg.OverlayDir,
+		validator:     cfg.Validator,
+		broadcaster:   cfg.Broadcaster,
+		gossipMgr:     cfg.GossipMgr,
+		rateLimiter:   rl,
 		logger:        logger,
 		mux:           http.NewServeMux(),
-		authToken:     authToken,
+		authToken:     cfg.AuthToken,
 	}
 	s.routes()
 	return s
 }
 
 func (s *Server) routes() {
-	// Open read endpoints
-	s.mux.HandleFunc("GET /status", s.handleStatus)
-	s.mux.HandleFunc("GET /headers/tip", s.handleHeadersTip)
-	s.mux.HandleFunc("GET /tx/{txid}/beef", s.handleGetBEEF)
-	s.mux.HandleFunc("GET /data", s.handleQueryData)
-	s.mux.HandleFunc("GET /overlay/lookup", s.handleOverlayLookup)
+	// Open read endpoints — rate-limited when configured
+	s.mux.HandleFunc("GET /status", s.openRead(s.handleStatus))
+	s.mux.HandleFunc("GET /headers/tip", s.openRead(s.handleHeadersTip))
+	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
+	s.mux.HandleFunc("GET /data", s.openRead(s.handleQueryData))
+	s.mux.HandleFunc("GET /overlay/lookup", s.openRead(s.handleOverlayLookup))
 
 	// Authenticated write endpoints
 	s.mux.HandleFunc("POST /broadcast", s.requireAuth(s.handleBroadcast))
 	s.mux.HandleFunc("POST /data", s.requireAuth(s.handlePostData))
 	s.mux.HandleFunc("POST /overlay/register", s.requireAuth(s.handleOverlayRegister))
 	s.mux.HandleFunc("POST /overlay/deregister", s.requireAuth(s.handleOverlayDeregister))
+}
+
+// openRead wraps an open read handler with rate limiting if configured.
+func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
+	if s.rateLimiter == nil {
+		return next
+	}
+	return s.rateLimiter.Middleware(next)
 }
 
 // Handler returns the HTTP handler for the server.
@@ -273,6 +299,11 @@ func (s *Server) handlePostData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Broadcast to mesh peers if gossip is active
+	if s.gossipMgr != nil {
+		s.gossipMgr.BroadcastEnvelope(env)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"accepted": true,
 		"topic":    env.Topic,
@@ -425,26 +456,6 @@ func (s *Server) handleOverlayDeregister(w http.ResponseWriter, r *http.Request)
 		"deregistered": true,
 		"topic":        req.Topic,
 	})
-}
-
-// --- Middleware ---
-
-// requireAuth rejects requests without a valid bearer token.
-// If no auth token is configured, ALL writes are rejected — secure by default.
-func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.authToken == "" {
-			writeError(w, http.StatusForbidden, "no auth token configured — write endpoints disabled")
-			return
-		}
-		auth := r.Header.Get("Authorization")
-		expected := "Bearer " + s.authToken
-		if auth != expected {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-		next(w, r)
-	}
 }
 
 // --- Helpers ---
