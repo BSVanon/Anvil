@@ -191,14 +191,9 @@ func TestEnvVarOverrides(t *testing.T) {
 	f.Close()
 	defer os.Remove(f.Name())
 
-	// Set env vars
+	// Set env vars — only the two that matter
 	t.Setenv("ANVIL_IDENTITY_WIF", "KwEnvTestWIF")
-	t.Setenv("ANVIL_API_AUTH_TOKEN", "secret-from-env")
-	t.Setenv("ANVIL_ARC_URL", "https://arc.gorillapool.io")
-	t.Setenv("ANVIL_ARC_API_KEY", "gp-key-123")
-	t.Setenv("ANVIL_JUNGLEBUS_URL", "junglebus.gorillapool.io")
-	t.Setenv("ANVIL_TLS_CERT", "/etc/ssl/anvil.crt")
-	t.Setenv("ANVIL_TLS_KEY", "/etc/ssl/anvil.key")
+	t.Setenv("ANVIL_TAAL_API_KEY", "taal-key-123")
 
 	cfg, err := Load(f.Name())
 	if err != nil {
@@ -208,29 +203,85 @@ func TestEnvVarOverrides(t *testing.T) {
 	if cfg.Identity.WIF != "KwEnvTestWIF" {
 		t.Fatalf("expected WIF from env, got %s", cfg.Identity.WIF)
 	}
-	if cfg.API.AuthToken != "secret-from-env" {
-		t.Fatalf("expected auth token from env, got %s", cfg.API.AuthToken)
+	// Auth token should be auto-derived from WIF, not empty
+	if cfg.API.AuthToken == "" {
+		t.Fatal("expected auth token derived from WIF")
+	}
+	// Verify it's deterministic
+	expected := deriveAuthToken("KwEnvTestWIF")
+	if cfg.API.AuthToken != expected {
+		t.Fatalf("expected derived token %s, got %s", expected, cfg.API.AuthToken)
+	}
+	// ARC should be enabled by default (GorillaPool)
+	if !cfg.ARC.Enabled {
+		t.Fatal("ARC should be enabled by default")
 	}
 	if cfg.ARC.URL != "https://arc.gorillapool.io" {
-		t.Fatalf("expected ARC URL from env, got %s", cfg.ARC.URL)
+		t.Fatalf("expected default GorillaPool ARC, got %s", cfg.ARC.URL)
 	}
-	if !cfg.ARC.Enabled {
-		t.Fatal("ARC should be auto-enabled when URL set via env")
+	// TAAL failover from env
+	if !cfg.ARC.TAALEnabled {
+		t.Fatal("TAAL should be enabled when API key set via env")
 	}
-	if cfg.ARC.APIKey != "gp-key-123" {
-		t.Fatalf("expected ARC API key from env, got %s", cfg.ARC.APIKey)
+	if cfg.ARC.TAALAPIKey != "taal-key-123" {
+		t.Fatalf("expected TAAL key from env, got %s", cfg.ARC.TAALAPIKey)
+	}
+	// JungleBus should be enabled by default
+	if !cfg.JungleBus.Enabled {
+		t.Fatal("JungleBus should be enabled by default")
 	}
 	if cfg.JungleBus.URL != "junglebus.gorillapool.io" {
-		t.Fatalf("expected JungleBus URL from env, got %s", cfg.JungleBus.URL)
+		t.Fatalf("expected default JungleBus URL, got %s", cfg.JungleBus.URL)
 	}
-	if !cfg.JungleBus.Enabled {
-		t.Fatal("JungleBus should be auto-enabled when URL set via env")
+}
+
+func TestAuthTokenDerivedFromWIF(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-auth-*.toml")
+	f.WriteString("[identity]\nwif = \"***REMOVED-KEY***\"\n")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.API.TLSCert != "/etc/ssl/anvil.crt" {
-		t.Fatalf("expected TLS cert from env, got %s", cfg.API.TLSCert)
+
+	if cfg.API.AuthToken == "" {
+		t.Fatal("auth token should be derived from WIF")
 	}
-	if cfg.API.TLSKey != "/etc/ssl/anvil.key" {
-		t.Fatalf("expected TLS key from env, got %s", cfg.API.TLSKey)
+
+	// Load again — should produce the same token (deterministic)
+	cfg2, _ := Load(f.Name())
+	if cfg.API.AuthToken != cfg2.API.AuthToken {
+		t.Fatal("derived auth token should be deterministic")
+	}
+
+	// Different WIF → different token
+	f2, _ := os.CreateTemp("", "anvil-cfg-auth2-*.toml")
+	f2.WriteString("[identity]\nwif = \"KwDifferentWIF\"\n")
+	f2.Close()
+	defer os.Remove(f2.Name())
+	cfg3, _ := Load(f2.Name())
+	if cfg.API.AuthToken == cfg3.API.AuthToken {
+		t.Fatal("different WIF should produce different auth token")
+	}
+
+	t.Logf("derived token: %s (first 16 chars)", cfg.API.AuthToken[:16])
+}
+
+func TestExplicitAuthTokenOverridesDerived(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-explicit-auth-*.toml")
+	f.WriteString("[identity]\nwif = \"KwSomeWIF\"\n[api]\nauth_token = \"my-custom-token\"\n")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.API.AuthToken != "my-custom-token" {
+		t.Fatalf("explicit auth_token should override derived, got %s", cfg.API.AuthToken)
 	}
 }
 

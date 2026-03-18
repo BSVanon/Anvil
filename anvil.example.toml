@@ -1,28 +1,35 @@
+# Anvil configuration
+# Most settings have sensible defaults. The only required setting is identity.wif,
+# which should be set via ANVIL_IDENTITY_WIF env var (not in this file).
+
 [node]
 name = "my-anvil"
 data_dir = "/var/lib/anvil"
-listen = "0.0.0.0:8333"          # mesh peers — wss:// when TLS configured, ws:// otherwise
+listen = "0.0.0.0:8333"          # mesh peers — wss:// when TLS configured
 api_listen = "0.0.0.0:9333"      # REST API — HTTPS when TLS configured
 
 [identity]
-wif = "Kx..."                     # BRC-42 identity root — required for mesh peering and wallet
+# wif = ""                       # Set via ANVIL_IDENTITY_WIF env var, not here
 
 [foundry]
 seeds = [
-  # "wss://peer1.example.com:8333",   # production: always use wss://
-  # "ws://localhost:8333",             # dev only: plain ws
+  # "wss://peer1.example.com:8333",
 ]
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333"]
 
+# ARC — GorillaPool is the default (free, no API key required)
 [arc]
-enabled = false
-url = "https://arc.taal.com"
-# api_key = ""
+enabled = true
+url = "https://arc.gorillapool.io"
+# TAAL failover (recommended but not required — set ANVIL_TAAL_API_KEY env var)
+# taal_enabled = false
+# taal_url = "https://arc.taal.com"
 
+# JungleBus — GorillaPool (free, enabled by default for SHIP/SLAP discovery)
 [junglebus]
-enabled = false
+enabled = true
 url = "junglebus.gorillapool.io"
 # subscriptions = [
 #   { id = "sub_abc123", name = "ship-tokens", from_block = 800000 },
@@ -38,11 +45,12 @@ max_durable_size = 65536
 max_durable_store_mb = 10240
 warn_at_percent = 80
 
-# Security + API auth + x402 payment gating
 [api]
-auth_token = ""                   # bearer token for write endpoints — set to enable writes
-tls_cert = ""                     # path to TLS cert — enables HTTPS for API + wss:// for mesh
-tls_key = ""                      # path to TLS key — required with tls_cert
-rate_limit = 100                  # requests/second per IP for open read endpoints (0 = disabled)
-trust_proxy = false               # if true, trust X-Forwarded-For for client IP (set true behind nginx/caddy)
-payment_satoshis = 0              # per-request price for open read endpoints via x402 HTTP 402 (0 = free)
+# auth_token is auto-derived from identity.wif — you don't need to set it.
+# If you want a custom token, set it here (overrides the derived one).
+# auth_token = ""
+tls_cert = ""                     # path to TLS cert (or use reverse proxy)
+tls_key = ""                      # path to TLS key
+rate_limit = 100                  # requests/second per IP for open reads
+trust_proxy = false               # set true behind nginx/caddy
+payment_satoshis = 0              # x402 price per request (0 = free, experimental)

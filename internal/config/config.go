@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 
@@ -45,9 +48,12 @@ type BSVConfig struct {
 }
 
 type ARCConfig struct {
-	Enabled bool   `toml:"enabled"`
-	URL     string `toml:"url"`
-	APIKey  string `toml:"api_key"`
+	Enabled      bool   `toml:"enabled"`
+	URL          string `toml:"url"`           // primary ARC (default: GorillaPool, free)
+	APIKey       string `toml:"api_key"`       // for primary ARC if it requires auth
+	TAALEnabled  bool   `toml:"taal_enabled"`  // optional TAAL failover
+	TAALURL      string `toml:"taal_url"`      // default: https://arc.taal.com
+	TAALAPIKey   string `toml:"taal_api_key"`  // TAAL API key (recommended but not required)
 }
 
 type JungleBusSubscription struct {
@@ -99,6 +105,19 @@ func Load(path string) (*Config, error) {
 		BSV: BSVConfig{
 			Nodes: []string{"seed.bitcoinsv.io:8333"},
 		},
+		ARC: ARCConfig{
+			Enabled: true,
+			URL:     "https://arc.gorillapool.io",
+			TAALURL: "https://arc.taal.com",
+		},
+		JungleBus: JungleBusConfig{
+			Enabled: true,
+			URL:     "junglebus.gorillapool.io",
+		},
+		Overlay: OverlayConfig{
+			Enabled: true,
+			Topics:  []string{"foundry:mainnet"},
+		},
 		Envelopes: EnvelopeConfig{
 			MaxEphemeralTTL:   3600,
 			MaxDurableSize:    65536,
@@ -114,30 +133,30 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	// Environment variable overrides for secrets (never store secrets in TOML)
+	// Environment variable overrides
 	if v := os.Getenv("ANVIL_IDENTITY_WIF"); v != "" {
 		cfg.Identity.WIF = v
 	}
-	if v := os.Getenv("ANVIL_API_AUTH_TOKEN"); v != "" {
-		cfg.API.AuthToken = v
+	if v := os.Getenv("ANVIL_TAAL_API_KEY"); v != "" {
+		cfg.ARC.TAALAPIKey = v
+		cfg.ARC.TAALEnabled = true
 	}
-	if v := os.Getenv("ANVIL_ARC_URL"); v != "" {
-		cfg.ARC.URL = v
-		cfg.ARC.Enabled = true
-	}
-	if v := os.Getenv("ANVIL_ARC_API_KEY"); v != "" {
-		cfg.ARC.APIKey = v
-	}
-	if v := os.Getenv("ANVIL_JUNGLEBUS_URL"); v != "" {
-		cfg.JungleBus.URL = v
-		cfg.JungleBus.Enabled = true
-	}
-	if v := os.Getenv("ANVIL_TLS_CERT"); v != "" {
-		cfg.API.TLSCert = v
-	}
-	if v := os.Getenv("ANVIL_TLS_KEY"); v != "" {
-		cfg.API.TLSKey = v
+
+	// Derive API auth token from WIF if not explicitly set.
+	// HMAC(key=WIF, msg="anvil-api-auth") → deterministic 32-byte hex token.
+	// Anyone who knows the WIF can compute this — which is the right trust model
+	// because the WIF IS the root of trust for the node.
+	if cfg.API.AuthToken == "" && cfg.Identity.WIF != "" {
+		cfg.API.AuthToken = deriveAuthToken(cfg.Identity.WIF)
 	}
 
 	return cfg, nil
+}
+
+// deriveAuthToken deterministically derives an API bearer token from a WIF.
+// Uses HMAC-SHA256 so the token is stable across restarts.
+func deriveAuthToken(wif string) string {
+	mac := hmac.New(sha256.New, []byte(wif))
+	mac.Write([]byte("anvil-api-auth"))
+	return hex.EncodeToString(mac.Sum(nil))
 }
