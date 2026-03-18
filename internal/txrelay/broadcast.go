@@ -18,12 +18,13 @@ type BroadcastResult struct {
 }
 
 // Broadcaster handles transaction admission to the local mempool and optionally
-// ARC submission. P2P peer relay is not yet implemented — transactions are only
-// in the local mempool until peer relay is wired.
+// ARC submission. When a gossip forwarder is set, transactions are also forwarded
+// to connected forge mesh peers.
 type Broadcaster struct {
-	mempool *Mempool
-	arc     *ARCClient // nil if ARC is disabled
-	logger  *slog.Logger
+	mempool         *Mempool
+	arc             *ARCClient // nil if ARC is disabled
+	logger          *slog.Logger
+	gossipForwarder func(txid, rawHex string) // set by gossip manager
 }
 
 // NewBroadcaster creates a new broadcaster.
@@ -66,11 +67,20 @@ func (b *Broadcaster) BroadcastBEEF(beef []byte) (*BroadcastResult, error) {
 		"size", len(rawBytes),
 	)
 
+	// Forward to mesh peers if gossip is wired
+	if b.gossipForwarder != nil {
+		b.gossipForwarder(txid, fmt.Sprintf("%x", rawBytes))
+	}
+
 	return result, nil
 }
 
-// BroadcastRaw adds a raw transaction to the local mempool. P2P peer relay
-// is NOT yet implemented.
+// SetGossipForwarder sets a callback to forward transactions to mesh peers.
+func (b *Broadcaster) SetGossipForwarder(fn func(txid, rawHex string)) {
+	b.gossipForwarder = fn
+}
+
+// BroadcastRaw adds a raw transaction to the local mempool and forwards to mesh peers.
 func (b *Broadcaster) BroadcastRaw(raw []byte) (*BroadcastResult, error) {
 	tx, err := transaction.NewTransactionFromBytes(raw)
 	if err != nil {

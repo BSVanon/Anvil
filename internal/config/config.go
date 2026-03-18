@@ -11,12 +11,18 @@ type Config struct {
 	Node      NodeConfig      `toml:"node"`
 	Identity  IdentityConfig  `toml:"identity"`
 	Peers     PeersConfig     `toml:"peers"`
+	Forge     ForgeConfig     `toml:"forge"`
 	BSV       BSVConfig       `toml:"bsv"`
 	ARC       ARCConfig       `toml:"arc"`
 	JungleBus JungleBusConfig `toml:"junglebus"`
 	Overlay   OverlayConfig   `toml:"overlay"`
 	Envelopes EnvelopeConfig  `toml:"envelopes"`
 	API       APIConfig       `toml:"api"`
+}
+
+// ForgeConfig defines mesh peering via go-sdk auth.Peer + WebSocket.
+type ForgeConfig struct {
+	Seeds []string `toml:"seeds"` // WebSocket endpoints of seed peers
 }
 
 type NodeConfig struct {
