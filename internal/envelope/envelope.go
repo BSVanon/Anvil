@@ -8,8 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
 // Envelope is a signed data envelope that can be ephemeral (TTL-bounded)
@@ -51,11 +50,12 @@ func (e *Envelope) SigningDigest() [32]byte {
 }
 
 // Sign signs the envelope with the given private key, setting Signature and Pubkey.
-func (e *Envelope) Sign(key *secp256k1.PrivateKey) {
+// Sign signs the envelope with the given private key using go-sdk's ec.Sign.
+func (e *Envelope) Sign(key *ec.PrivateKey) {
 	digest := e.SigningDigest()
-	sig := ecdsa.Sign(key, digest[:])
+	sig, _ := key.Sign(digest[:])
 	e.Signature = hex.EncodeToString(sig.Serialize())
-	e.Pubkey = hex.EncodeToString(key.PubKey().SerializeCompressed())
+	e.Pubkey = hex.EncodeToString(key.PubKey().Compressed())
 }
 
 // Validate checks structural validity and signature.
@@ -85,7 +85,7 @@ func (e *Envelope) Validate() error {
 	if err != nil {
 		return fmt.Errorf("invalid pubkey hex: %w", err)
 	}
-	pub, err := secp256k1.ParsePubKey(pubBytes)
+	pub, err := ec.PublicKeyFromBytes(pubBytes)
 	if err != nil {
 		return fmt.Errorf("invalid pubkey: %w", err)
 	}
@@ -94,7 +94,7 @@ func (e *Envelope) Validate() error {
 	if err != nil {
 		return fmt.Errorf("invalid signature hex: %w", err)
 	}
-	sig, err := ecdsa.ParseDERSignature(sigBytes)
+	sig, err := ec.FromDER(sigBytes)
 	if err != nil {
 		return fmt.Errorf("invalid DER signature: %w", err)
 	}

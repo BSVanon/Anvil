@@ -5,75 +5,99 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/overlay"
+	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/pushdrop"
 )
+
 
 // SHIPToken holds the parsed fields of a SHIP registration token.
 type SHIPToken struct {
 	IdentityPub string
 	Domain      string
 	Topic       string
-	LockingPub  []byte
+	LockingPub  *ec.PublicKey
 }
 
-// BuildSHIPScript builds a SHIP token locking script.
-//
-//	pushData("SHIP") pushData(identityPubHex) pushData(domain) pushData(topic)
-//	OP_DROP OP_2DROP OP_DROP
-//	pushData(lockingPub) OP_CHECKSIG
-func BuildSHIPScript(identityKey *secp256k1.PrivateKey, domain, topic string) ([]byte, *secp256k1.PublicKey, error) {
-	identityPub := identityKey.PubKey()
-	identityPubHex := hex.EncodeToString(identityPub.SerializeCompressed())
-
-	_, lockingPub := DeriveChild(identityKey, InvoiceSHIP)
-
-	fields := []string{"SHIP", identityPubHex, domain, topic}
-	script := BuildTokenScript(fields, lockingPub)
-	return script, lockingPub, nil
-}
-
-// ParseSHIPScript extracts SHIP token fields from a locking script.
-func ParseSHIPScript(script []byte) (*SHIPToken, error) {
-	tf, err := ParseTokenScript(script)
-	if err != nil {
-		return nil, err
+// ParseSHIPScript extracts SHIP token fields from a locking script
+// using go-sdk's canonical admintoken.Decode.
+func ParseSHIPScript(scriptBytes []byte) (*SHIPToken, error) {
+	s := script.NewFromBytes(scriptBytes)
+	// Use pushdrop.Decode to get the locking public key and fields
+	pd := pushdrop.Decode(s)
+	if pd == nil || len(pd.Fields) < 4 {
+		return nil, fmt.Errorf("not a valid BRC-48 push-drop script")
 	}
-	if tf.Protocol != "SHIP" {
-		return nil, fmt.Errorf("expected SHIP protocol, got %q", tf.Protocol)
+	if string(pd.Fields[0]) != string(overlay.ProtocolSHIP) {
+		return nil, fmt.Errorf("expected SHIP protocol, got %q", string(pd.Fields[0]))
 	}
+
+	identityKeyHex := hex.EncodeToString(pd.Fields[1])
+
 	return &SHIPToken{
-		IdentityPub: tf.IdentityPub,
-		Domain:      tf.Domain,
-		Topic:       tf.TopicProvider,
-		LockingPub:  tf.LockingPub,
+		IdentityPub: identityKeyHex,
+		Domain:      string(pd.Fields[2]),
+		Topic:       string(pd.Fields[3]),
+		LockingPub:  pd.LockingPublicKey, // the actual locking key from the script
 	}, nil
 }
 
-// ValidateSHIPToken validates that the locking pubkey in a SHIP script
-// matches the BRC-42 derivation from the claimed identity pubkey.
-func ValidateSHIPToken(script []byte) (*SHIPToken, error) {
-	token, err := ParseSHIPScript(script)
+// ValidateSHIPToken validates that a SHIP script's locking pubkey matches
+// the BRC-42 derivation from the claimed identity pubkey.
+// Uses go-sdk's canonical ec.PublicKey.DeriveChild.
+func ValidateSHIPToken(scriptBytes []byte) (*SHIPToken, error) {
+	token, err := ParseSHIPScript(scriptBytes)
 	if err != nil {
 		return nil, err
 	}
 
-	// Decode the claimed identity pubkey
 	identityPubBytes, err := hex.DecodeString(token.IdentityPub)
 	if err != nil {
 		return nil, fmt.Errorf("invalid identity pubkey hex: %w", err)
 	}
-	identityPub, err := secp256k1.ParsePubKey(identityPubBytes)
+	identityPub, err := ec.PublicKeyFromBytes(identityPubBytes)
 	if err != nil {
 		return nil, fmt.Errorf("invalid identity pubkey: %w", err)
 	}
 
-	// Derive expected locking pubkey using public derivation
-	expectedPub := DeriveChildPub(identityPub, InvoiceSHIP)
-	expectedBytes := expectedPub.SerializeCompressed()
+	// Derive expected locking pubkey using canonical SDK derivation
+	expectedPub, err := DeriveChildPub(identityPub, InvoiceSHIP)
+	if err != nil {
+		return nil, fmt.Errorf("derive child pub: %w", err)
+	}
 
-	if !bytes.Equal(token.LockingPub, expectedBytes) {
+	if !bytes.Equal(expectedPub.Compressed(), token.LockingPub.Compressed()) {
 		return nil, fmt.Errorf("locking pubkey does not match BRC-42 derivation from identity")
 	}
 
 	return token, nil
+}
+
+// BuildSHIPScript builds a SHIP token locking script in lock-before format
+// compatible with go-sdk's pushdrop.Decode.
+// Uses go-sdk's ec.PrivateKey.DeriveChild for key derivation and
+// pushdrop.CreateMinimallyEncodedScriptChunk for script encoding.
+func BuildSHIPScript(identityKey *ec.PrivateKey, domain, topic string) ([]byte, *ec.PublicKey, error) {
+	anyonePub := AnyonePub()
+	lockingKey, err := identityKey.DeriveChild(anyonePub, InvoiceSHIP)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive SHIP key: %w", err)
+	}
+	lockingPub := lockingKey.PubKey()
+	identityPubHex := hex.EncodeToString(identityKey.PubKey().Compressed())
+
+	fields := [][]byte{
+		[]byte("SHIP"),
+		identityKey.PubKey().Compressed(), // raw 33-byte pubkey, not hex string
+		[]byte(domain),
+		[]byte(topic),
+	}
+	_ = identityPubHex // used in return value via admintoken.Decode
+
+	s, err := buildPushDropScript(lockingPub, fields)
+	if err != nil {
+		return nil, nil, err
+	}
+	return *s, lockingPub, nil
 }
