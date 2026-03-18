@@ -558,5 +558,30 @@ func TestPaymentGateDisabledWithoutWalletInConfig(t *testing.T) {
 	t.Log("payment gate correctly disabled without wallet — free access")
 }
 
+func TestX402RejectsLiveHeaderMismatch(t *testing.T) {
+	srv := testServerWithPaymentGate(t, 100)
+	payeeScript := testPayeeScript(t)
+
+	// Get challenge with specific headers (default Accept, Content-Type, Host)
+	ch := getChallenge(t, srv, "GET", "/status")
+
+	// Build proof from the real challenge (correct challenge hash)
+	proofB64 := buildProof(t, ch, 200, payeeScript)
+
+	// Retry with DIFFERENT headers than the original challenge request.
+	// The live header hash will differ from the stored challenge's hash.
+	req := httptest.NewRequest("GET", "/status", nil)
+	req.Host = "localhost"
+	req.Header.Set("Accept", "text/xml") // different from challenge request
+	req.Header.Set(HeaderX402Proof, proofB64)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402 for live header mismatch, got %d: %s", w.Code, w.Body.String())
+	}
+	t.Log("correctly rejected proof where live request headers differ from challenged request")
+}
+
 // helper to suppress unused import
 var _ = fmt.Sprintf

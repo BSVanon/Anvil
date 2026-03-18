@@ -266,7 +266,8 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 		return nil, fmt.Errorf("unknown or expired challenge")
 	}
 
-	// Step 3: Verify proof.request matches challenge AND actual HTTP request
+	// Step 3: Verify proof.request matches challenge AND actual HTTP request.
+	// Three-way check: proof fields must match stored challenge AND live request.
 	if proof.Request.Method != challenge.Method || proof.Request.Method != r.Method {
 		return nil, fmt.Errorf("method mismatch")
 	}
@@ -276,12 +277,23 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 	if proof.Request.Query != challenge.Query || proof.Request.Query != r.URL.RawQuery {
 		return nil, fmt.Errorf("query mismatch")
 	}
-	// Verify header and body hashes match the challenge (request binding)
+	// Verify header and body hashes: proof must match challenge AND live request.
+	// Recompute from the actual incoming request to prevent cross-request replay.
+	liveHeaderHash := canonicalHeaderHash(r)
+	liveBodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	liveBodyHash := sha256Hex(liveBodyBytes)
+
 	if proof.Request.ReqHeadersSHA256 != challenge.ReqHeadersSHA256 {
-		return nil, fmt.Errorf("req_headers_sha256 mismatch")
+		return nil, fmt.Errorf("req_headers_sha256: proof does not match challenge")
+	}
+	if challenge.ReqHeadersSHA256 != liveHeaderHash {
+		return nil, fmt.Errorf("req_headers_sha256: challenge does not match live request")
 	}
 	if proof.Request.ReqBodySHA256 != challenge.ReqBodySHA256 {
-		return nil, fmt.Errorf("req_body_sha256 mismatch")
+		return nil, fmt.Errorf("req_body_sha256: proof does not match challenge")
+	}
+	if challenge.ReqBodySHA256 != liveBodyHash {
+		return nil, fmt.Errorf("req_body_sha256: challenge does not match live request")
 	}
 
 	// Step 4: Check expiry
@@ -307,7 +319,12 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 		return nil, fmt.Errorf("invalid transaction: %w", err)
 	}
 
-	// Step 6: Verify nonce UTXO spend
+	// Step 6: Verify nonce UTXO spend (outpoint reference check).
+	// EXPERIMENTAL: This verifies the tx claims to spend the nonce UTXO
+	// (correct outpoint in an input), but does NOT verify the spending
+	// script is valid or that the nonce tx was accepted on-chain.
+	// Full consensus-layer replay protection requires ARC broadcast +
+	// mempool acceptance verification, which is deferred.
 	if challenge.NonceUTXO != nil && challenge.NonceUTXO.LockingScriptHex != "dev-mode-no-real-utxo" {
 		nonceSpent := false
 		for _, input := range tx.Inputs {
