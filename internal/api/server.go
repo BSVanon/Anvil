@@ -46,8 +46,9 @@ type ServerConfig struct {
 	AuthToken       string
 	RateLimit       int    // requests/second for open reads; 0 = disabled
 	TrustProxy      bool   // if true, use X-Forwarded-For for rate limiting
-	PaymentSatoshis int    // per-request price for 402-gated endpoints; 0 = free
-	PayeeScriptHex  string // hex locking script for payment output (derived from wallet)
+	PaymentSatoshis int           // per-request price for 402-gated endpoints; 0 = free
+	PayeeScriptHex  string        // hex locking script for payment output (derived from wallet)
+	NonceProvider   NonceProvider // real wallet nonces for production; nil = dev mode
 	Logger          *slog.Logger
 }
 
@@ -60,6 +61,7 @@ func NewServer(cfg ServerConfig) *Server {
 	pg := NewPaymentGate(PaymentGateConfig{
 		PriceSats:      cfg.PaymentSatoshis,
 		PayeeScriptHex: cfg.PayeeScriptHex,
+		NonceProvider:  cfg.NonceProvider,
 		RequireMempool: false, // ARC integration deferred
 	})
 	logger := cfg.Logger

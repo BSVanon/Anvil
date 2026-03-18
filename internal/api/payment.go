@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -98,13 +100,13 @@ type NonceProvider interface {
 // DevNonceProvider generates deterministic nonces without real UTXOs.
 // NOT replay-safe — for development/testing only.
 type DevNonceProvider struct {
-	counter int
+	counter atomic.Int64
 }
 
 func (d *DevNonceProvider) MintNonce() (*NonceUTXO, error) {
-	d.counter++
+	n := d.counter.Add(1)
 	// Generate a deterministic fake txid from the counter
-	h := sha256.Sum256([]byte(fmt.Sprintf("dev-nonce-%d-%d", d.counter, time.Now().UnixNano())))
+	h := sha256.Sum256([]byte(fmt.Sprintf("dev-nonce-%d-%d", n, time.Now().UnixNano())))
 	return &NonceUTXO{
 		TxID:             hex.EncodeToString(h[:]),
 		Vout:             0,
@@ -117,11 +119,13 @@ func (d *DevNonceProvider) MintNonce() (*NonceUTXO, error) {
 
 // PaymentGate holds the state for 402 payment gating.
 type PaymentGate struct {
-	priceSats         int
-	payeeScriptHex    string // hex-encoded locking script for the node's payment address
-	nonceProvider     NonceProvider
-	challengeTTL      time.Duration
-	requireMempool    bool
+	priceSats      int
+	payeeScriptHex string // hex-encoded locking script for the node's payment address
+	nonceProvider  NonceProvider
+	challengeTTL   time.Duration
+	requireMempool bool
+
+	mu                sync.Mutex
 	pendingChallenges map[string]*X402Challenge // challenge_sha256 → challenge (short-lived)
 }
 
@@ -214,7 +218,9 @@ func (pg *PaymentGate) issueChallenge(w http.ResponseWriter, r *http.Request) {
 	challengeHash := sha256Hex(challengeJSON)
 
 	// Store for later verification
+	pg.mu.Lock()
 	pg.pendingChallenges[challengeHash] = challenge
+	pg.mu.Unlock()
 
 	// Clean expired challenges
 	go pg.cleanExpired()
@@ -244,7 +250,9 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 	}
 
 	// Step 2: Look up the challenge by its hash
+	pg.mu.Lock()
 	challenge, ok := pg.pendingChallenges[proof.ChallengeSHA256]
+	pg.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown or expired challenge")
 	}
@@ -262,7 +270,9 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 
 	// Step 4: Check expiry
 	if time.Now().Unix() > challenge.ExpiresAt {
+		pg.mu.Lock()
 		delete(pg.pendingChallenges, proof.ChallengeSHA256)
+		pg.mu.Unlock()
 		return nil, fmt.Errorf("challenge expired")
 	}
 
@@ -336,7 +346,9 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 	// broadcast the tx and verify acceptance. Not implemented yet.
 
 	// Clean up the used challenge (one-time use even in dev mode)
+	pg.mu.Lock()
 	delete(pg.pendingChallenges, proof.ChallengeSHA256)
+	pg.mu.Unlock()
 
 	return &X402Receipt{
 		TxID:      txid,
@@ -348,6 +360,8 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 // cleanExpired removes challenges older than their expiry.
 func (pg *PaymentGate) cleanExpired() {
 	now := time.Now().Unix()
+	pg.mu.Lock()
+	defer pg.mu.Unlock()
 	for hash, ch := range pg.pendingChallenges {
 		if now > ch.ExpiresAt {
 			delete(pg.pendingChallenges, hash)

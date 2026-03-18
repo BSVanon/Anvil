@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -417,6 +419,47 @@ func TestPaymentGateNilIsNoOp(t *testing.T) {
 	if !called {
 		t.Fatal("nil gate should pass through")
 	}
+}
+
+func TestX402ConcurrentChallengesNoRace(t *testing.T) {
+	srv := testServerWithPaymentGate(t, 100)
+	payeeScript := testPayeeScript(t)
+
+	// Issue challenges sequentially (each modifies server state)
+	const n = 20
+	type challengeProof struct {
+		proofB64 string
+	}
+	proofs := make([]challengeProof, n)
+	for i := 0; i < n; i++ {
+		ch := getChallenge(t, srv, "GET", "/status")
+		proofs[i].proofB64 = buildProof(t, ch, 200, payeeScript)
+	}
+
+	// Redeem all proofs concurrently — this exercises the mutex
+	var wg sync.WaitGroup
+	successCount := atomic.Int32{}
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", "/status", nil)
+			req.Host = "localhost"
+			req.Header.Set(HeaderX402Proof, proofs[idx].proofB64)
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+			if w.Code == http.StatusOK {
+				successCount.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	got := int(successCount.Load())
+	if got != n {
+		t.Fatalf("expected %d successful payments, got %d", n, got)
+	}
+	t.Logf("concurrent 402: %d/%d proofs redeemed concurrently without race", got, n)
 }
 
 // helper to suppress unused import

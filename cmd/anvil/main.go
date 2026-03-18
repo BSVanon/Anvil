@@ -24,6 +24,8 @@ import (
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	bsvscript "github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/libsv/go-p2p/wire"
 )
 
@@ -224,21 +226,51 @@ func main() {
 		}
 	}
 
+	// Derive payee script for x402 payment gating (from identity key if available)
+	var payeeScriptHex string
+	if cfg.Identity.WIF != "" && cfg.API.PaymentSatoshis > 0 {
+		payeeKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
+		if err != nil {
+			log.Fatalf("x402: invalid identity WIF: %v", err)
+		}
+		addr, err := bsvscript.NewAddressFromPublicKey(payeeKey.PubKey(), true)
+		if err != nil {
+			log.Fatalf("x402: derive address: %v", err)
+		}
+		lockScript, err := p2pkh.Lock(addr)
+		if err != nil {
+			log.Fatalf("x402: build locking script: %v", err)
+		}
+		payeeScriptHex = fmt.Sprintf("%x", []byte(*lockScript))
+		log.Printf("x402: payment gating enabled (%d sats/request, payee=%s)",
+			cfg.API.PaymentSatoshis, addr.AddressString)
+	} else if cfg.API.PaymentSatoshis > 0 {
+		log.Printf("x402: payment_satoshis=%d but no identity.wif — payment gating disabled", cfg.API.PaymentSatoshis)
+	}
+
+	// Wire wallet-backed nonce provider for x402 payment gating
+	var nonceProvider api.NonceProvider
+	if nodeWallet != nil && cfg.API.PaymentSatoshis > 0 {
+		nonceProvider = api.NewWalletNonceProvider(nodeWallet.Wallet())
+	}
+
 	// REST API — gossip manager wired in so POST /data can broadcast to mesh
 	validator := spv.NewValidator(headerStore)
 	srv := api.NewServer(api.ServerConfig{
-		HeaderStore:   headerStore,
-		ProofStore:    proofStore,
-		EnvelopeStore: envStore,
-		OverlayDir:    overlayDir,
-		Validator:     validator,
-		Broadcaster:   broadcaster,
-		GossipMgr:     gossipMgr,
+		HeaderStore:     headerStore,
+		ProofStore:      proofStore,
+		EnvelopeStore:   envStore,
+		OverlayDir:      overlayDir,
+		Validator:       validator,
+		Broadcaster:     broadcaster,
+		GossipMgr:       gossipMgr,
 		AuthToken:       cfg.API.AuthToken,
 		RateLimit:       cfg.API.RateLimit,
 		TrustProxy:      cfg.API.TrustProxy,
 		PaymentSatoshis: cfg.API.PaymentSatoshis,
-		Logger:        logger,
+		PayeeScriptHex:  payeeScriptHex,
+		NonceProvider:   nonceProvider,
+		Logger:          logger,
 	})
 
 	if nodeWallet != nil {
