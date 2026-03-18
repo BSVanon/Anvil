@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
@@ -20,14 +21,17 @@ var (
 	prefixHash      = []byte("hi:") // hi:<hash> → height (4 bytes big-endian)
 	prefixMerkle    = []byte("m:")  // m:<height_be> → merkle root (32 bytes)
 	keyTip          = []byte("tip") // tip → height (4 bytes big-endian)
+	keyWork         = []byte("work") // work → cumulative chain work (big.Int bytes)
 )
 
 // Store is a LevelDB-backed block header store that implements the go-sdk
 // ChainTracker interface for sovereign SPV verification.
 type Store struct {
-	db  *leveldb.DB
-	mu  sync.RWMutex
-	tip uint32
+	db       *leveldb.DB
+	mu       sync.RWMutex
+	tip      uint32
+	work     *big.Int // cumulative work of the active chain
+	skipPoW  bool     // for testing only
 }
 
 // NewStore opens or creates a header store at the given path.
@@ -38,7 +42,7 @@ func NewStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("open header store: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, work: big.NewInt(0)}
 
 	// Load current tip
 	tipBytes, err := db.Get(keyTip, nil)
@@ -55,6 +59,26 @@ func NewStore(path string) (*Store, error) {
 		s.tip = binary.BigEndian.Uint32(tipBytes)
 	}
 
+	// Load cumulative work
+	workBytes, err := db.Get(keyWork, nil)
+	if err == nil {
+		s.work.SetBytes(workBytes)
+	} else if err != leveldb.ErrNotFound {
+		db.Close()
+		return nil, fmt.Errorf("read work: %w", err)
+	}
+
+	return s, nil
+}
+
+// NewTestStore creates a store with PoW validation disabled, for unit tests
+// that use synthetic headers which don't have valid proof of work.
+func NewTestStore(path string) (*Store, error) {
+	s, err := NewStore(path)
+	if err != nil {
+		return nil, err
+	}
+	s.skipPoW = true
 	return s, nil
 }
 
@@ -71,7 +95,10 @@ func (s *Store) Tip() uint32 {
 }
 
 // AddHeaders stores a batch of sequential headers starting at the given height.
-// It validates prev-hash linkage against the existing chain tip.
+// Validates:
+//   - Prev-hash linkage against the existing chain tip
+//   - Proof of work (block hash meets difficulty target)
+//   - Tracks cumulative chain work
 func (s *Store) AddHeaders(startHeight uint32, headers []*wire.BlockHeader) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -80,7 +107,6 @@ func (s *Store) AddHeaders(startHeight uint32, headers []*wire.BlockHeader) erro
 		return fmt.Errorf("expected start height %d, got %d", s.tip+1, startHeight)
 	}
 
-	// Validate prev-hash linkage: first header must link to current tip
 	if len(headers) == 0 {
 		return nil
 	}
@@ -92,11 +118,19 @@ func (s *Store) AddHeaders(startHeight uint32, headers []*wire.BlockHeader) erro
 
 	batch := new(leveldb.Batch)
 	height := startHeight
+	batchWork := new(big.Int)
 
 	for i, hdr := range headers {
 		// Check prev-hash linkage
 		if hdr.PrevBlock != *tipHash {
 			return fmt.Errorf("header %d: prev hash mismatch at height %d", i, height)
+		}
+
+		// Validate proof of work
+		if !s.skipPoW {
+			if err := ValidatePoW(hdr); err != nil {
+				return fmt.Errorf("header %d at height %d: %w", i, height, err)
+			}
 		}
 
 		// Serialize header
@@ -116,20 +150,81 @@ func (s *Store) AddHeaders(startHeight uint32, headers []*wire.BlockHeader) erro
 		batch.Put(hashKey, heightBytes)
 		batch.Put(merkleKey, hdr.MerkleRoot[:])
 
+		batchWork.Add(batchWork, WorkForHeader(hdr))
+
 		tipHash = &blockHash
 		height++
 	}
 
-	// Update tip
+	// Update tip and cumulative work
+	newTip := height - 1
 	tipBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(tipBytes, height-1)
+	binary.BigEndian.PutUint32(tipBytes, newTip)
 	batch.Put(keyTip, tipBytes)
+
+	newWork := new(big.Int).Add(s.work, batchWork)
+	batch.Put(keyWork, newWork.Bytes())
 
 	if err := s.db.Write(batch, nil); err != nil {
 		return fmt.Errorf("write batch: %w", err)
 	}
 
-	s.tip = height - 1
+	s.tip = newTip
+	s.work = newWork
+	return nil
+}
+
+// Work returns the cumulative chain work.
+func (s *Store) Work() *big.Int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return new(big.Int).Set(s.work)
+}
+
+// Rollback removes headers from the tip back to the given height (inclusive).
+// Used during reorg when a competing chain has more cumulative work.
+func (s *Store) Rollback(toHeight uint32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if toHeight >= s.tip {
+		return fmt.Errorf("rollback target %d >= current tip %d", toHeight, s.tip)
+	}
+
+	batch := new(leveldb.Batch)
+	rollbackWork := new(big.Int)
+
+	for h := s.tip; h > toHeight; h-- {
+		raw, err := s.db.Get(heightToKey(prefixHeader, h), nil)
+		if err != nil {
+			return fmt.Errorf("read header at %d for rollback: %w", h, err)
+		}
+		var hdr wire.BlockHeader
+		if err := hdr.Deserialize(bytes.NewReader(raw)); err != nil {
+			return fmt.Errorf("deserialize header at %d: %w", h, err)
+		}
+
+		blockHash := hdr.BlockHash()
+		rollbackWork.Add(rollbackWork, WorkForHeader(&hdr))
+
+		batch.Delete(heightToKey(prefixHeader, h))
+		batch.Delete(append(append([]byte{}, prefixHash...), blockHash[:]...))
+		batch.Delete(heightToKey(prefixMerkle, h))
+	}
+
+	tipBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(tipBytes, toHeight)
+	batch.Put(keyTip, tipBytes)
+
+	newWork := new(big.Int).Sub(s.work, rollbackWork)
+	batch.Put(keyWork, newWork.Bytes())
+
+	if err := s.db.Write(batch, nil); err != nil {
+		return fmt.Errorf("rollback write: %w", err)
+	}
+
+	s.tip = toHeight
+	s.work = newWork
 	return nil
 }
 

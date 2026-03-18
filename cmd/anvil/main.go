@@ -4,11 +4,15 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/BSVanon/Anvil/internal/config"
+	"github.com/BSVanon/Anvil/internal/headers"
+	"github.com/libsv/go-p2p/wire"
 )
 
 func main() {
@@ -20,6 +24,8 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	logger := slog.Default()
+
 	log.Printf("anvil node %q starting", cfg.Node.Name)
 	log.Printf("  data_dir:   %s", cfg.Node.DataDir)
 	log.Printf("  mesh:       %s", cfg.Node.Listen)
@@ -29,8 +35,28 @@ func main() {
 	log.Printf("  junglebus:  enabled=%v", cfg.JungleBus.Enabled)
 	log.Printf("  overlay:    enabled=%v topics=%v", cfg.Overlay.Enabled, cfg.Overlay.Topics)
 
+	// Phase 2: Header store + sync
+	headerDir := filepath.Join(cfg.Node.DataDir, "headers")
+	headerStore, err := headers.NewStore(headerDir)
+	if err != nil {
+		log.Fatalf("header store: %v", err)
+	}
+	defer headerStore.Close()
+	log.Printf("header store opened at height %d", headerStore.Tip())
+
+	// Sync headers from configured BSV nodes
+	syncer := headers.NewSyncer(headerStore, wire.MainNet, logger)
+	for _, node := range cfg.BSV.Nodes {
+		tip, err := syncer.SyncFrom(node)
+		if err != nil {
+			log.Printf("header sync from %s failed: %v", node, err)
+			continue
+		}
+		log.Printf("header sync from %s complete, tip=%d", node, tip)
+		break // synced from first successful peer
+	}
+
 	// TODO: Phase 1 — init BRC identity from cfg.Identity.WIF
-	// TODO: Phase 2 — start P2P transport, header sync
 	// TODO: Phase 3 — start TX relay
 	// TODO: Phase 4 — start gossip mesh
 	// TODO: Phase 5 — init envelope store
