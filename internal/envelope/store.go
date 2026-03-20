@@ -84,6 +84,13 @@ func (s *Store) storeEphemeral(env *Envelope) error {
 	return nil
 }
 
+// StoreEphemeralDirect stores an envelope without validation. For testing only.
+func (s *Store) StoreEphemeralDirect(env *Envelope) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ephemeral[env.Key()] = env
+}
+
 // QueryByTopic returns envelopes matching the given topic.
 // Searches both durable (LevelDB) and ephemeral (memory) stores.
 // Results are limited by the limit parameter (0 = no limit).
