@@ -14,7 +14,8 @@ type Config struct {
 	Node      NodeConfig      `toml:"node"`
 	Identity  IdentityConfig  `toml:"identity"`
 	Peers     PeersConfig     `toml:"peers"`
-	Foundry   FoundryConfig   `toml:"foundry"`
+	Mesh      MeshConfig      `toml:"mesh"`
+	Foundry   MeshConfig      `toml:"foundry"` // deprecated alias — use [mesh]
 	BSV       BSVConfig       `toml:"bsv"`
 	ARC       ARCConfig       `toml:"arc"`
 	JungleBus JungleBusConfig `toml:"junglebus"`
@@ -23,9 +24,11 @@ type Config struct {
 	API       APIConfig       `toml:"api"`
 }
 
-// FoundryConfig defines mesh peering via go-sdk auth.Peer + WebSocket.
-type FoundryConfig struct {
-	Seeds []string `toml:"seeds"` // WebSocket endpoints of seed peers
+// MeshConfig defines Anvil mesh peering via go-sdk auth.Peer + WebSocket.
+type MeshConfig struct {
+	Seeds          []string `toml:"seeds"`            // WebSocket endpoints of seed peers
+	MinBondSats    int      `toml:"min_bond_sats"`    // minimum bond UTXO required to peer (0 = no bond required)
+	BondCheckURL   string   `toml:"bond_check_url"`   // UTXO lookup API (default: WoC)
 }
 
 type NodeConfig struct {
@@ -81,12 +84,28 @@ type EnvelopeConfig struct {
 }
 
 type APIConfig struct {
-	AuthToken  string `toml:"auth_token"`
-	TLSCert    string `toml:"tls_cert"`
-	TLSKey     string `toml:"tls_key"`
-	RateLimit  int    `toml:"rate_limit"`
-	TrustProxy bool   `toml:"trust_proxy"` // if true, use X-Forwarded-For for client IP; if false, use RemoteAddr only
-	PaymentSatoshis int `toml:"payment_satoshis"` // per-request price for 402-gated endpoints; 0 = free
+	AuthToken        string            `toml:"auth_token"`
+	TLSCert          string            `toml:"tls_cert"`
+	TLSKey           string            `toml:"tls_key"`
+	RateLimit        int               `toml:"rate_limit"`
+	TrustProxy       bool              `toml:"trust_proxy"`
+	PaymentSatoshis  int               `toml:"payment_satoshis"`    // default per-request price; 0 = free
+	RequireMempool   bool              `toml:"require_mempool"`     // require ARC SEEN_ON_NETWORK before accepting x402 payment
+	EndpointPrices   map[string]int    `toml:"endpoint_prices"`     // per-endpoint price overrides (path → sats)
+	AppPayments      AppPaymentConfig  `toml:"app_payments"`
+}
+
+// AppPaymentConfig controls which non-custodial payment models apps can use.
+// Per NON_CUSTODIAL_PAYMENT_POLICY.md, the defaults are safe: all models
+// enabled with a reasonable price cap. Custodial patterns (receive-and-forward,
+// hold-on-behalf, revenue-share-via-wallet) are NOT configurable — they are
+// hardcoded prohibitions enforced by the absence of any code path that could
+// perform them.
+type AppPaymentConfig struct {
+	AllowPassthrough bool `toml:"allow_passthrough"` // allow apps to set their own payee scripts (Model 2)
+	AllowSplit       bool `toml:"allow_split"`       // allow dual-output node+app payments (Model 3)
+	AllowTokenGating bool `toml:"allow_token_gating"` // allow apps to gate via signed credentials (Model 4)
+	MaxAppPriceSats  int  `toml:"max_app_price_sats"` // cap on app-declared prices; 0 = no cap
 }
 
 func Load(path string) (*Config, error) {
@@ -103,7 +122,11 @@ func Load(path string) (*Config, error) {
 			APIListen: "0.0.0.0:9333",
 		},
 		BSV: BSVConfig{
-			Nodes: []string{"seed.bitcoinsv.io:8333"},
+			Nodes: []string{
+				"seed.bitcoinsv.io:8333",
+				"seed.cascharia.com:8333",
+				"seed.satoshisvision.network:8333",
+			},
 		},
 		ARC: ARCConfig{
 			Enabled: true,
@@ -116,7 +139,7 @@ func Load(path string) (*Config, error) {
 		},
 		Overlay: OverlayConfig{
 			Enabled: true,
-			Topics:  []string{"foundry:mainnet"},
+			Topics:  []string{"anvil:mainnet"},
 		},
 		Envelopes: EnvelopeConfig{
 			MaxEphemeralTTL:   3600,
@@ -126,11 +149,22 @@ func Load(path string) (*Config, error) {
 		},
 		API: APIConfig{
 			RateLimit: 100,
+			AppPayments: AppPaymentConfig{
+				AllowPassthrough: true,
+				AllowSplit:       true,
+				AllowTokenGating: true,
+				MaxAppPriceSats:  10000, // reasonable default cap
+			},
 		},
 	}
 
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	// Merge deprecated [foundry] into [mesh] for backward compatibility
+	if len(cfg.Foundry.Seeds) > 0 && len(cfg.Mesh.Seeds) == 0 {
+		cfg.Mesh.Seeds = cfg.Foundry.Seeds
 	}
 
 	// Environment variable overrides

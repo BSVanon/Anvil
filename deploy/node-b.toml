@@ -1,0 +1,49 @@
+# Anvil One — peers with Prime
+# Identity: set ANVIL_IDENTITY_WIF env var (MUST be different from Prime)
+
+[node]
+name = "anvil-one"
+data_dir = "/var/lib/<node-b>"
+listen = "0.0.0.0:8334"          # different port from Node A
+api_listen = "0.0.0.0:9334"      # different port from Node A
+
+[identity]
+# wif = ""  # ANVIL_IDENTITY_WIF env var
+
+[mesh]
+# Node B connects to Node A on startup
+seeds = [
+  "ws://127.0.0.1:8333",         # Node A's mesh listener (use wss:// with TLS)
+]
+
+[bsv]
+nodes = ["seed.bitcoinsv.io:8333"]
+
+[arc]
+enabled = true
+url = "https://arc.gorillapool.io"
+
+[junglebus]
+enabled = true
+url = "junglebus.gorillapool.io"
+
+[overlay]
+enabled = true
+topics = ["anvil:mainnet"]
+
+[envelopes]
+max_ephemeral_ttl = 3600
+max_durable_size = 65536
+max_durable_store_mb = 10240
+warn_at_percent = 80
+
+[api]
+rate_limit = 100
+trust_proxy = false
+payment_satoshis = 0              # Node B provides free infrastructure
+
+[api.app_payments]
+allow_passthrough = true          # still enforces app-declared payments
+allow_split = true                # even though node is free, split degrades to app-only
+allow_token_gating = true
+max_app_price_sats = 10000

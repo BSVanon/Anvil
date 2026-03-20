@@ -1,4 +1,4 @@
-// Package gossip implements the Foundry mesh protocol using the canonical
+// Package gossip implements the Anvil mesh protocol using the canonical
 // go-sdk auth.Peer for authenticated peer communication.
 //
 // The four message types (data, topics, data_request, data_response) are
@@ -28,6 +28,10 @@ const (
 
 	// MsgDataResponse replies with cached envelopes.
 	MsgDataResponse MessageType = "data_response"
+
+	// MsgSHIPSync shares SHIP overlay registrations between peers.
+	// Sent on connect (full sync) and when a new registration is added.
+	MsgSHIPSync MessageType = "ship_sync"
 )
 
 // Message is the wire format for all mesh messages, serialized as
@@ -54,6 +58,18 @@ type DataResponsePayload struct {
 	Topic     string               `json:"topic"`
 	Envelopes []*envelope.Envelope `json:"envelopes"`
 	HasMore   bool                 `json:"hasMore"`
+}
+
+// SHIPSyncPayload carries SHIP peer registrations between mesh peers.
+type SHIPSyncPayload struct {
+	Peers []SHIPPeerInfo `json:"peers"`
+}
+
+// SHIPPeerInfo is the wire format for a SHIP registration.
+type SHIPPeerInfo struct {
+	IdentityPub string `json:"identity_pub"`
+	Domain      string `json:"domain"`
+	Topic       string `json:"topic"`
 }
 
 // Encode serializes a message for transport via auth.GeneralMessage.

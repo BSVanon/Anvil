@@ -39,6 +39,7 @@ type Invoice struct {
 type NodeWallet struct {
 	inner     *wallet.Wallet
 	validator *spv.Validator
+	scanner   *Scanner // UTXO scanner for external payment discovery
 	logger    *slog.Logger
 
 	invoiceDB *leveldb.DB // persistent invoice storage
@@ -48,12 +49,14 @@ type NodeWallet struct {
 
 // New creates a new NodeWallet from a WIF key, backed by SQLite storage
 // and connected to Anvil's header store for SPV verification.
+// arcClient may be nil if ARC is not configured (scanner will be disabled).
 func New(
 	wif string,
 	dataDir string,
 	headerStore *headers.Store,
 	proofStore *spv.ProofStore,
 	broadcaster *txrelay.Broadcaster,
+	arcClient *txrelay.ARCClient,
 	logger *slog.Logger,
 ) (*NodeWallet, error) {
 	services := NewAnvilServices(headerStore, proofStore, broadcaster)
@@ -116,9 +119,17 @@ func New(
 	iter.Release()
 
 	validator := spv.NewValidator(headerStore)
+
+	// Create UTXO scanner if ARC is available (needed for merkle proofs)
+	var scanner *Scanner
+	if arcClient != nil {
+		scanner = NewScanner(w, identityKey, arcClient, logger)
+	}
+
 	return &NodeWallet{
 		inner:     w,
 		validator: validator,
+		scanner:   scanner,
 		logger:    logger,
 		invoiceDB: invoiceDB,
 		nextID:    maxID,
@@ -170,6 +181,7 @@ func (nw *NodeWallet) RegisterRoutes(mux *http.ServeMux, requireAuth func(http.H
 	mux.HandleFunc("POST /wallet/send", requireAuth(nw.handleSend))
 	mux.HandleFunc("POST /wallet/internalize", requireAuth(nw.handleInternalize))
 	mux.HandleFunc("GET /wallet/outputs", requireAuth(nw.handleListOutputs))
+	mux.HandleFunc("POST /wallet/scan", requireAuth(nw.handleScan))
 
 	// Low-level toolbox endpoints (for advanced use)
 	mux.HandleFunc("POST /wallet/create-action", requireAuth(nw.handleCreateAction))
@@ -486,6 +498,48 @@ func (nw *NodeWallet) handleSignAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleScan triggers a UTXO scan: queries WhatsOnChain for UTXOs,
+// fetches merkle proofs from ARC, builds BEEF, and internalizes each.
+// POST /wallet/scan
+// Optional body: {"address": "1..."} to scan a specific address
+// (e.g. an invoice-derived address). If omitted, scans the identity address.
+func (nw *NodeWallet) handleScan(w http.ResponseWriter, r *http.Request) {
+	if nw.scanner == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "scanner not available — ARC client required for merkle proofs",
+		})
+		return
+	}
+
+	// Check for optional address override
+	var scanAddr string
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if len(body) > 0 {
+		var req struct {
+			Address string `json:"address"`
+		}
+		if err := json.Unmarshal(body, &req); err == nil && req.Address != "" {
+			scanAddr = req.Address
+		}
+	}
+
+	var result *ScanResult
+	var err error
+	if scanAddr != "" {
+		result, err = nw.scanner.ScanAddress(r.Context(), scanAddr)
+	} else {
+		result, err = nw.scanner.Scan(r.Context())
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("scan failed: %v", err),
+		})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, result)
 }
 

@@ -1,0 +1,59 @@
+{
+  "_comment": "Cross-language test vectors for Anvil envelope signing. Both Go and JS tests must produce identical digests and verify each other's signatures.",
+  "vectors": [
+    {
+      "name": "basic_rate_envelope",
+      "wif": "***REMOVED-KEY***",
+      "expected_pubkey": "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+      "envelope": {
+        "type": "data",
+        "topic": "oracle:rates:bsv",
+        "payload": "{\"USD\":14.35,\"source\":\"sendbsv\"}",
+        "ttl": 120,
+        "durable": false,
+        "timestamp": 1742403600
+      },
+      "expected_preimage": "data\noracle:rates:bsv\n{\"USD\":14.35,\"source\":\"sendbsv\"}\n120\nfalse\n1742403600",
+      "expected_digest_hex": "a707be0dec932e79aa7ac8ad0381b22e643f2d609af3f46176dc85b77f3c5da3"
+    },
+    {
+      "name": "durable_envelope",
+      "wif": "***REMOVED-KEY***",
+      "expected_pubkey": "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+      "envelope": {
+        "type": "data",
+        "topic": "app:sessions:test",
+        "payload": "{\"session\":\"abc123\"}",
+        "ttl": 0,
+        "durable": true,
+        "timestamp": 1742403700
+      },
+      "expected_preimage": "data\napp:sessions:test\n{\"session\":\"abc123\"}\n0\ntrue\n1742403700",
+      "expected_digest_hex": "02b66fb59728655bfc24a9ee5b7c4137e55c0a2d57c848eb02cd7393f64ae465"
+    },
+    {
+      "name": "monetized_envelope",
+      "wif": "***REMOVED-KEY***",
+      "expected_pubkey": "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+      "envelope": {
+        "type": "data",
+        "topic": "premium:analytics",
+        "payload": "{\"metric\":\"pageviews\",\"value\":42}",
+        "ttl": 60,
+        "durable": false,
+        "timestamp": 1742403800,
+        "monetization": {
+          "model": "passthrough",
+          "payee_locking_script_hex": "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac",
+          "price_sats": 100
+        }
+      },
+      "expected_preimage": "data\npremium:analytics\n{\"metric\":\"pageviews\",\"value\":42}\n60\nfalse\n1742403800\npassthrough\n76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac\n100",
+      "expected_digest_hex": "b9ee841660f64d7cf8fc8f8bdf868111f428cc8a8cfe517ffdee6d5f5c854f15"
+    }
+  ],
+  "signing_rules": {
+    "go": "sha256.Sum256(preimage) → ec.PrivateKey.Sign(digest) — NO double hash",
+    "js": "PrivateKey.sign(Array.from(Buffer.from(preimage))) — sign() does SHA-256 internally, do NOT pre-hash"
+  }
+}

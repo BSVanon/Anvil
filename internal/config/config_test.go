@@ -77,7 +77,7 @@ from_block = 800000
 
 [overlay]
 enabled = true
-topics = ["foundry:mainnet", "oracle:rates"]
+topics = ["anvil:mainnet", "oracle:rates"]
 
 [envelopes]
 max_ephemeral_ttl = 1800

@@ -1,0 +1,314 @@
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/BSVanon/Anvil/internal/config"
+)
+
+// cmdDoctor handles `anvil doctor` — validates config, dirs, connectivity, and mesh health.
+// Exits 0 if healthy, 1 if any check fails.
+func cmdDoctor(args []string) {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	configPath := fs.String("config", "anvil.toml", "path to config file")
+	fs.Parse(args)
+
+	fmt.Println("=== Anvil Doctor ===")
+	issues := 0
+
+	// ── 1. Config ──
+	section("Config")
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fail("config load: %v", err)
+		issues++
+		fmt.Println("\nCannot proceed without valid config.")
+		os.Exit(1)
+	}
+	pass("config loaded from %s", *configPath)
+
+	if cfg.Identity.WIF == "" {
+		fail("no identity WIF configured (set ANVIL_IDENTITY_WIF)")
+		issues++
+	} else {
+		pass("identity WIF present (%s...)", cfg.Identity.WIF[:8])
+	}
+
+	if cfg.API.AuthToken == "" {
+		fail("auth token not derived (WIF missing or invalid)")
+		issues++
+	} else {
+		pass("auth token derived (%s...)", cfg.API.AuthToken[:12])
+	}
+
+	// ── 2. Data directories ──
+	section("Data Directories")
+	requiredDirs := []string{"headers", "envelopes", "overlay", "wallet", "invoices", "proofs"}
+	for _, sub := range requiredDirs {
+		dir := filepath.Join(cfg.Node.DataDir, sub)
+		if info, err := os.Stat(dir); err != nil {
+			fail("%s: does not exist", dir)
+			issues++
+		} else if !info.IsDir() {
+			fail("%s: not a directory", dir)
+			issues++
+		} else {
+			pass("%s", dir)
+		}
+	}
+
+	// Check ownership
+	dataOwner := fileOwner(cfg.Node.DataDir)
+	if dataOwner != "anvil" && dataOwner != "" {
+		warn("%s owned by %q, expected \"anvil\"", cfg.Node.DataDir, dataOwner)
+	}
+
+	// ── 3. Systemd service ──
+	section("Systemd Service")
+	svcName := guessServiceName(cfg)
+	if svcName != "" {
+		status := serviceStatus(svcName)
+		if strings.Contains(status, "active (running)") {
+			pass("%s is running", svcName)
+		} else {
+			fail("%s status: %s", svcName, strings.TrimSpace(status))
+			issues++
+		}
+	} else {
+		warn("could not determine systemd service name")
+	}
+
+	// ── 4. Local API ──
+	section("Local API")
+	apiURL := fmt.Sprintf("http://127.0.0.1%s", normalizePort(cfg.Node.APIListen))
+	statusResp := httpGet(apiURL + "/status")
+	if statusResp != nil {
+		pass("API responding at %s", apiURL)
+		if h, ok := statusResp["headers"].(map[string]interface{}); ok {
+			if height, ok := h["height"].(float64); ok {
+				pass("header height: %d", int(height))
+			}
+		}
+	} else {
+		fail("API not responding at %s", apiURL)
+		issues++
+	}
+
+	// CORS check
+	if corsOK(apiURL + "/status") {
+		pass("CORS headers present")
+	} else {
+		warn("no CORS headers on /status — Explorer won't work")
+	}
+
+	// x402 discovery
+	x402Resp := httpGet(apiURL + "/.well-known/x402")
+	if cfg.API.PaymentSatoshis > 0 {
+		if x402Resp != nil {
+			pass("x402 discovery responding")
+		} else {
+			fail("x402 discovery not responding (payment_satoshis=%d but /.well-known/x402 returns 404)", cfg.API.PaymentSatoshis)
+			issues++
+		}
+	} else {
+		if x402Resp == nil {
+			pass("x402 disabled (payment_satoshis=0)")
+		}
+	}
+
+	// ── 5. External connectivity ──
+	section("External Connectivity")
+
+	// BSV seed node
+	for _, node := range cfg.BSV.Nodes {
+		host := strings.Split(node, ":")[0]
+		if canResolve(host) {
+			pass("BSV node reachable: %s", node)
+		} else {
+			fail("BSV node unreachable: %s", node)
+			issues++
+		}
+	}
+
+	// ARC
+	if cfg.ARC.Enabled {
+		arcResp := httpGet(cfg.ARC.URL + "/v1/policy")
+		if arcResp != nil {
+			pass("ARC responding: %s", cfg.ARC.URL)
+		} else {
+			warn("ARC not responding: %s (tx broadcast may fail)", cfg.ARC.URL)
+		}
+	}
+
+	// WoC (used by UTXO scanner)
+	wocResp := httpGet("https://api.whatsonchain.com/v1/bsv/main/chain/info")
+	if wocResp != nil {
+		pass("WhatsOnChain API reachable")
+	} else {
+		warn("WhatsOnChain unreachable (UTXO scanner will fail)")
+	}
+
+	// ── 6. Mesh peers ──
+	section("Mesh Peers")
+	if statusResp != nil {
+		// Try to get envelope count to verify store is working
+		envResp := httpGet(apiURL + "/data?topic=*&limit=0")
+		if envResp != nil {
+			pass("envelope store responding")
+		}
+	}
+
+	// Check if any mesh seeds are configured and try their API
+	for _, seed := range cfg.Mesh.Seeds {
+		seedAPI := meshSeedToAPI(seed)
+		if seedAPI != "" {
+			peerStatus := httpGet(seedAPI + "/status")
+			if peerStatus != nil {
+				pass("mesh peer responding: %s", seedAPI)
+			} else {
+				warn("mesh peer not responding: %s", seedAPI)
+			}
+		}
+	}
+
+	// ── 7. Wallet ──
+	section("Wallet")
+	if cfg.API.AuthToken != "" {
+		walletResp := httpGetAuth(apiURL+"/wallet/outputs", cfg.API.AuthToken)
+		if walletResp != nil {
+			if outputs, ok := walletResp["totalOutputs"].(float64); ok {
+				pass("wallet responding: %d outputs", int(outputs))
+				if total, ok := walletResp["outputs"].([]interface{}); ok {
+					sats := 0
+					for _, o := range total {
+						if om, ok := o.(map[string]interface{}); ok {
+							if s, ok := om["satoshis"].(float64); ok {
+								sats += int(s)
+							}
+						}
+					}
+					if sats > 0 {
+						pass("wallet balance: %d sats", sats)
+					} else {
+						warn("wallet has 0 sats — fund it for tx broadcast")
+					}
+				}
+			}
+		} else {
+			warn("wallet not responding (may need funding)")
+		}
+	}
+
+	// ── Summary ──
+	fmt.Println()
+	if issues == 0 {
+		fmt.Println("=== All checks passed ===")
+		os.Exit(0)
+	} else {
+		fmt.Printf("=== %d issue(s) found ===\n", issues)
+		os.Exit(1)
+	}
+}
+
+// ── Output helpers ──
+
+func section(name string) { fmt.Printf("\n── %s ──\n", name) }
+func pass(f string, a ...interface{}) {
+	fmt.Printf("  ✓ %s\n", fmt.Sprintf(f, a...))
+}
+func fail(f string, a ...interface{}) {
+	fmt.Printf("  ✗ %s\n", fmt.Sprintf(f, a...))
+}
+func warn(f string, a ...interface{}) {
+	fmt.Printf("  ⚠ %s\n", fmt.Sprintf(f, a...))
+}
+
+// ── Check helpers ──
+
+func httpGet(url string) map[string]interface{} {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil || resp.StatusCode != 200 {
+		return nil
+	}
+	defer resp.Body.Close()
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result
+}
+
+func httpGetAuth(url, token string) map[string]interface{} {
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return nil
+	}
+	defer resp.Body.Close()
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result
+}
+
+func corsOK(url string) bool {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Head(url)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.Header.Get("Access-Control-Allow-Origin") != ""
+}
+
+func canResolve(host string) bool {
+	cmd := exec.Command("getent", "hosts", host)
+	return cmd.Run() == nil
+}
+
+func fileOwner(path string) string {
+	out, err := exec.Command("stat", "-c", "%U", path).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func serviceStatus(name string) string {
+	out, _ := exec.Command("systemctl", "is-active", name).Output()
+	return strings.TrimSpace(string(out))
+}
+
+func guessServiceName(cfg *config.Config) string {
+	port := normalizePort(cfg.Node.APIListen)
+	if strings.HasSuffix(port, ":9334") {
+		return "<node-b>"
+	}
+	return "<node-a>"
+}
+
+func normalizePort(listen string) string {
+	if !strings.Contains(listen, ":") {
+		return ":" + listen
+	}
+	// Extract :port from 0.0.0.0:9333
+	parts := strings.Split(listen, ":")
+	return ":" + parts[len(parts)-1]
+}
+
+func meshSeedToAPI(seed string) string {
+	// ws://127.0.0.1:8333 → http://127.0.0.1:9333
+	s := strings.Replace(seed, "ws://", "http://", 1)
+	s = strings.Replace(s, "wss://", "https://", 1)
+	s = strings.Replace(s, ":8333", ":9333", 1)
+	s = strings.Replace(s, ":8334", ":9334", 1)
+	return s
+}

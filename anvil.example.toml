@@ -11,7 +11,7 @@ api_listen = "0.0.0.0:9333"      # REST API — HTTPS when TLS configured
 [identity]
 # wif = ""                       # Set via ANVIL_IDENTITY_WIF env var, not here
 
-[foundry]
+[mesh]
 seeds = [
   # "wss://peer1.example.com:8333",
 ]
@@ -37,7 +37,7 @@ url = "junglebus.gorillapool.io"
 
 [overlay]
 enabled = true
-topics = ["foundry:mainnet"]
+topics = ["anvil:mainnet"]
 
 [envelopes]
 max_ephemeral_ttl = 3600
@@ -54,3 +54,18 @@ tls_key = ""                      # path to TLS key
 rate_limit = 100                  # requests/second per IP for open reads
 trust_proxy = false               # set true behind nginx/caddy
 payment_satoshis = 0              # x402 price per request (0 = free, experimental)
+
+# Non-custodial app payment models.
+# These control which payment flows third-party apps can use.
+# All are safe by default — the node never holds or forwards funds.
+# See docs/NON_CUSTODIAL_PAYMENT_POLICY.md for the full policy.
+[api.app_payments]
+allow_passthrough = true          # Model 2: app sets its own payee script
+allow_split = true                # Model 3: atomic dual-pay (node + app)
+allow_token_gating = true         # Model 4: credential-based access (no payment)
+max_app_price_sats = 10000        # cap on app-declared prices (0 = no cap)
+
+# HARDCODED PROHIBITIONS (not configurable — no code path exists):
+# - receive_and_forward = PROHIBITED (money transmission)
+# - hold_on_behalf = PROHIBITED (custodial)
+# - revenue_share_via_wallet = PROHIBITED (money transmission)

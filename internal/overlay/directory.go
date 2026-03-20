@@ -20,7 +20,7 @@ var (
 type PeerEntry struct {
 	IdentityPub string    `json:"identity_pub"` // compressed pubkey hex
 	Domain      string    `json:"domain"`       // e.g. "relay.example.com:8333"
-	Topic       string    `json:"topic"`        // e.g. "foundry:mainnet"
+	Topic       string    `json:"topic"`        // e.g. "anvil:mainnet"
 	TxID        string    `json:"txid"`         // on-chain tx containing the SHIP token
 	OutputIndex int       `json:"output_index"`
 	DiscoveredAt time.Time `json:"discovered_at"`
@@ -154,6 +154,46 @@ func (d *Directory) CountSHIP() int {
 		count++
 	}
 	return count
+}
+
+// ForEachSHIP iterates all SHIP registrations, calling fn for each.
+// Satisfies gossip.OverlayDirectory interface.
+func (d *Directory) ForEachSHIP(fn func(identity, domain, topic string) bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	iter := d.db.NewIterator(util.BytesPrefix(prefixSHIP), nil)
+	defer iter.Release()
+	for iter.Next() {
+		var entry PeerEntry
+		if err := json.Unmarshal(iter.Value(), &entry); err != nil {
+			continue
+		}
+		if !fn(entry.IdentityPub, entry.Domain, entry.Topic) {
+			break
+		}
+	}
+}
+
+// AddSHIPPeerFromGossip stores a SHIP peer received from a trusted mesh peer.
+// Skips SHIP script validation since the peer has already been authenticated.
+// Satisfies gossip.OverlayDirectory interface.
+func (d *Directory) AddSHIPPeerFromGossip(identity, domain, topic string) error {
+	entry := &PeerEntry{
+		IdentityPub:  identity,
+		Domain:       domain,
+		Topic:        topic,
+		TxID:         "gossip",
+		DiscoveredAt: time.Now(),
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	key := shipKey(topic, identity)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.db.Put(key, data, nil)
 }
 
 func shipKey(topic, identityPub string) []byte {

@@ -1,0 +1,166 @@
+package api
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/bsv-blockchain/go-sdk/transaction"
+)
+
+// verifyProof validates a payment proof against the x402 spec.
+func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Receipt, error) {
+	// Step 1: Decode proof from base64url
+	proofJSON, err := base64.RawURLEncoding.DecodeString(proofHeader)
+	if err != nil {
+		proofJSON = []byte(proofHeader)
+	}
+
+	var proof X402Proof
+	if err := json.Unmarshal(proofJSON, &proof); err != nil {
+		return nil, fmt.Errorf("invalid proof JSON: %w", err)
+	}
+
+	if proof.V != 1 {
+		return nil, fmt.Errorf("unsupported proof version: %d", proof.V)
+	}
+
+	// Step 2: Look up the challenge by its hash
+	pg.mu.Lock()
+	pending, ok := pg.pendingChallenges[proof.ChallengeSHA256]
+	pg.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown or expired challenge")
+	}
+	challenge := pending.challenge
+	payees := pending.payees
+
+	// Step 3: Three-way request binding verification
+	if proof.Request.Method != challenge.Method || proof.Request.Method != r.Method {
+		return nil, fmt.Errorf("method mismatch")
+	}
+	if proof.Request.Path != challenge.Path || proof.Request.Path != r.URL.Path {
+		return nil, fmt.Errorf("path mismatch")
+	}
+	if proof.Request.Query != challenge.Query || proof.Request.Query != r.URL.RawQuery {
+		return nil, fmt.Errorf("query mismatch")
+	}
+
+	liveHeaderHash := canonicalHeaderHash(r)
+	liveBodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	liveBodyHash := sha256Hex(liveBodyBytes)
+	// Restore the body so downstream handlers (e.g. POST /data) can read it.
+	r.Body = io.NopCloser(bytes.NewReader(liveBodyBytes))
+
+	if proof.Request.ReqHeadersSHA256 != challenge.ReqHeadersSHA256 {
+		return nil, fmt.Errorf("req_headers_sha256: proof does not match challenge")
+	}
+	if challenge.ReqHeadersSHA256 != liveHeaderHash {
+		return nil, fmt.Errorf("req_headers_sha256: challenge does not match live request")
+	}
+	if proof.Request.ReqBodySHA256 != challenge.ReqBodySHA256 {
+		return nil, fmt.Errorf("req_body_sha256: proof does not match challenge")
+	}
+	if challenge.ReqBodySHA256 != liveBodyHash {
+		return nil, fmt.Errorf("req_body_sha256: challenge does not match live request")
+	}
+
+	// Step 4: Check expiry
+	if time.Now().Unix() > challenge.ExpiresAt {
+		pg.mu.Lock()
+		delete(pg.pendingChallenges, proof.ChallengeSHA256)
+		pg.mu.Unlock()
+		return nil, fmt.Errorf("challenge expired")
+	}
+
+	// Step 5: Decode transaction
+	txBytes, err := base64.StdEncoding.DecodeString(proof.Payment.RawTxB64)
+	if err != nil {
+		txBytes, err = hex.DecodeString(proof.Payment.RawTxB64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid rawtx: %w", err)
+		}
+	}
+
+	tx, err := transaction.NewTransactionFromBytes(txBytes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid transaction: %w", err)
+	}
+
+	// Step 6: Verify nonce UTXO spend
+	if challenge.NonceUTXO != nil && challenge.NonceUTXO.LockingScriptHex != "dev-mode-no-real-utxo" {
+		nonceSpent := false
+		for _, input := range tx.Inputs {
+			inputTxID := input.SourceTXID.String()
+			if inputTxID == challenge.NonceUTXO.TxID && input.SourceTxOutIndex == uint32(challenge.NonceUTXO.Vout) {
+				nonceSpent = true
+				break
+			}
+		}
+		if !nonceSpent {
+			return nil, fmt.Errorf("nonce UTXO not spent: expected %s:%d",
+				challenge.NonceUTXO.TxID, challenge.NonceUTXO.Vout)
+		}
+	}
+
+	// Step 7: Verify ALL payees are paid.
+	totalPaid := 0
+	for _, payee := range payees {
+		payeeBytes, err := hex.DecodeString(payee.LockingScriptHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid payee script (%s): %w", payee.Role, err)
+		}
+		found := false
+		for _, out := range tx.Outputs {
+			if out.Satoshis >= uint64(payee.AmountSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
+				found = true
+				totalPaid += payee.AmountSats
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("no output pays %d sats to %s payee", payee.AmountSats, payee.Role)
+		}
+	}
+
+	// Step 8: Verify txid
+	txid := tx.TxID().String()
+	if proof.Payment.TxID != "" && proof.Payment.TxID != txid {
+		return nil, fmt.Errorf("txid mismatch: claimed %s, computed %s", proof.Payment.TxID, txid)
+	}
+
+	// Step 9: Mempool acceptance via ARC.
+	// When requireMempool is true AND an ARC client is available,
+	// broadcast the proof tx and require SEEN_ON_NETWORK before accepting.
+	// This prevents attackers from submitting structurally valid but
+	// never-broadcast transactions.
+	if challenge.RequireMempoolAccept && pg.arcClient != nil {
+		arcResp, err := pg.arcClient.Submit(txBytes)
+		if err != nil {
+			return nil, fmt.Errorf("ARC broadcast failed: %w", err)
+		}
+		// Accept SEEN_ON_NETWORK, MINED, or any success status
+		switch arcResp.Status {
+		case "SEEN_ON_NETWORK", "MINED", "SEEN_IN_ORPHAN_MEMPOOL":
+			// OK — miner has it
+		default:
+			return nil, fmt.Errorf("ARC rejected payment tx: status=%s", arcResp.Status)
+		}
+	}
+
+	// Clean up the used challenge (one-time use)
+	pg.mu.Lock()
+	delete(pg.pendingChallenges, proof.ChallengeSHA256)
+	pg.mu.Unlock()
+
+	return &X402Receipt{
+		TxID:      txid,
+		Satoshis:  totalPaid,
+		Timestamp: time.Now().Unix(),
+	}, nil
+}

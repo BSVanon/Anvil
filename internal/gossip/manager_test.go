@@ -11,7 +11,7 @@ import (
 
 func TestProtocolEncodeDecode(t *testing.T) {
 	// Encode a topics message
-	encoded, err := Encode(MsgTopics, TopicsPayload{Prefixes: []string{"oracle:", "foundry:"}})
+	encoded, err := Encode(MsgTopics, TopicsPayload{Prefixes: []string{"oracle:", "anvil:"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,9 +81,10 @@ func TestProtocolEncodeDecodeEnvelope(t *testing.T) {
 }
 
 func TestHashEnvelopeDedup(t *testing.T) {
-	h1 := envelope.HashEnvelope("oracle:rates", "02abc", 1700000000)
-	h2 := envelope.HashEnvelope("oracle:rates", "02abc", 1700000000)
-	h3 := envelope.HashEnvelope("oracle:rates", "02abc", 1700000001)
+	h1 := envelope.HashEnvelope("oracle:rates", "02abc", "payload1", 1700000000)
+	h2 := envelope.HashEnvelope("oracle:rates", "02abc", "payload1", 1700000000)
+	h3 := envelope.HashEnvelope("oracle:rates", "02abc", "payload1", 1700000001)
+	h4 := envelope.HashEnvelope("oracle:rates", "02abc", "payload2", 1700000000)
 
 	if h1 != h2 {
 		t.Fatal("same inputs should produce same hash")
@@ -91,11 +92,14 @@ func TestHashEnvelopeDedup(t *testing.T) {
 	if h1 == h3 {
 		t.Fatal("different timestamp should produce different hash")
 	}
+	if h1 == h4 {
+		t.Fatal("different payload should produce different hash — this was the dedup collision bug")
+	}
 }
 
 func TestManagerNewAndPeerCount(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		LocalInterests: []string{"oracle:", "foundry:"},
+		LocalInterests: []string{"oracle:", "anvil:"},
 		MaxSeen:        100,
 	})
 
@@ -117,7 +121,7 @@ func TestManagerTopicInterestRouting(t *testing.T) {
 	// Simulate a peer declaring interest
 	m.mu.Lock()
 	m.interests["peer1"] = []string{"oracle:rates:"}
-	m.interests["peer2"] = []string{"foundry:"}
+	m.interests["peer2"] = []string{"anvil:"}
 	m.mu.Unlock()
 
 	// Check that topic matching works
@@ -141,5 +145,61 @@ func TestManagerTopicInterestRouting(t *testing.T) {
 	}
 	if peer2Match {
 		t.Fatal("peer2 should NOT match oracle:rates:bsv")
+	}
+}
+
+func TestNoGossipEnvelopeNotBroadcast(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		LocalInterests: []string{""},
+		MaxSeen:        100,
+	})
+
+	// Create a no_gossip envelope
+	env := &envelope.Envelope{
+		Type:     "data",
+		Topic:    "test:secret",
+		Payload:  "hidden",
+		Pubkey:   "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+		TTL:      60,
+		NoGossip: true,
+	}
+
+	// BroadcastEnvelope should be a no-op for no_gossip envelopes
+	m.BroadcastEnvelope(env)
+
+	// If it was broadcast, it would appear in the seen map.
+	// With NoGossip=true, BroadcastEnvelope returns before marking as seen.
+	m.seenMu.Lock()
+	_, wasSeen := m.seen[envelope.HashEnvelope(env.Topic, env.Pubkey, env.Payload, env.Timestamp)]
+	m.seenMu.Unlock()
+
+	if wasSeen {
+		t.Fatal("no_gossip envelope should NOT be broadcast or marked as seen")
+	}
+}
+
+func TestGossipEnvelopeIsBroadcast(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		LocalInterests: []string{""},
+		MaxSeen:        100,
+	})
+
+	env := &envelope.Envelope{
+		Type:     "data",
+		Topic:    "test:public",
+		Payload:  "visible",
+		Pubkey:   "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+		TTL:      60,
+		NoGossip: false,
+	}
+
+	m.BroadcastEnvelope(env)
+
+	m.seenMu.Lock()
+	_, wasSeen := m.seen[envelope.HashEnvelope(env.Topic, env.Pubkey, env.Payload, env.Timestamp)]
+	m.seenMu.Unlock()
+
+	if !wasSeen {
+		t.Fatal("normal envelope SHOULD be broadcast and marked as seen")
 	}
 }

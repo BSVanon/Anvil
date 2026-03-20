@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -14,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/BSVanon/Anvil/internal/txrelay"
 )
 
 // x402 HTTP headers per merkleworks-x402-spec v1.0.
@@ -26,22 +27,32 @@ const (
 
 // --- Challenge (server → client) ---
 
-// X402Challenge is the 402 challenge per merkleworks-x402-spec v1.0.
-// Serialized as canonical JSON (sorted keys), then base64url-encoded in the header.
+// Payee identifies a payment recipient in a multi-payee challenge.
+// Per NON_CUSTODIAL_PAYMENT_POLICY.md, each party receives directly
+// from the consumer — the node never intermediates.
+type Payee struct {
+	Role             string `json:"role"`               // "infrastructure" (node) or "content" (app)
+	LockingScriptHex string `json:"locking_script_hex"` // P2PKH (or other) locking script
+	AmountSats       int    `json:"amount_sats"`        // minimum satoshis for this payee
+}
+
+// X402Challenge is the 402 challenge per merkleworks-x402-spec v1.0,
+// extended for multi-payee support (Models 2 & 3 from the non-custodial policy).
 type X402Challenge struct {
-	V                    int         `json:"v"`                        // must be 1
-	Scheme               string      `json:"scheme"`                   // "bsv-tx-v1"
-	Domain               string      `json:"domain"`                   // HTTP Host
-	Method               string      `json:"method"`                   // HTTP method
-	Path                 string      `json:"path"`                     // absolute path
-	Query                string      `json:"query"`                    // raw query string
-	ReqHeadersSHA256     string      `json:"req_headers_sha256"`       // SHA-256 of canonical header binding
-	ReqBodySHA256        string      `json:"req_body_sha256"`          // SHA-256 of request body
-	AmountSats           int         `json:"amount_sats"`              // minimum satoshis
-	PayeeLockingScriptHex string    `json:"payee_locking_script_hex"` // node's receiving script
-	NonceUTXO            *NonceUTXO  `json:"nonce_utxo"`               // nonce UTXO to spend
-	ExpiresAt            int64       `json:"expires_at"`               // UNIX timestamp
-	RequireMempoolAccept bool        `json:"require_mempool_accept"`   // require ARC confirmation
+	V                     int        `json:"v"`
+	Scheme                string     `json:"scheme"`
+	Domain                string     `json:"domain"`
+	Method                string     `json:"method"`
+	Path                  string     `json:"path"`
+	Query                 string     `json:"query"`
+	ReqHeadersSHA256      string     `json:"req_headers_sha256"`
+	ReqBodySHA256         string     `json:"req_body_sha256"`
+	AmountSats            int        `json:"amount_sats"`
+	PayeeLockingScriptHex string     `json:"payee_locking_script_hex"`
+	Payees                []Payee    `json:"payees,omitempty"`
+	NonceUTXO             *NonceUTXO `json:"nonce_utxo"`
+	ExpiresAt             int64      `json:"expires_at"`
+	RequireMempoolAccept  bool       `json:"require_mempool_accept"`
 }
 
 // NonceUTXO identifies the UTXO the client must spend for replay protection.
@@ -54,16 +65,14 @@ type NonceUTXO struct {
 
 // --- Proof (client → server) ---
 
-// X402Proof is the payment proof per merkleworks-x402-spec v1.0.
 type X402Proof struct {
-	V              int          `json:"v"`                // must be 1
-	Scheme         string       `json:"scheme"`           // "bsv-tx-v1"
-	ChallengeSHA256 string     `json:"challenge_sha256"` // SHA-256 of canonical challenge JSON
-	Request        ProofRequest `json:"request"`          // echoed request binding
-	Payment        ProofPayment `json:"payment"`          // the settlement tx
+	V               int          `json:"v"`
+	Scheme          string       `json:"scheme"`
+	ChallengeSHA256 string       `json:"challenge_sha256"`
+	Request         ProofRequest `json:"request"`
+	Payment         ProofPayment `json:"payment"`
 }
 
-// ProofRequest echoes the request fields from the challenge for binding verification.
 type ProofRequest struct {
 	Method           string `json:"method"`
 	Path             string `json:"path"`
@@ -72,15 +81,13 @@ type ProofRequest struct {
 	ReqBodySHA256    string `json:"req_body_sha256"`
 }
 
-// ProofPayment carries the settlement transaction.
 type ProofPayment struct {
-	TxID    string `json:"txid"`
-	RawTxB64 string `json:"rawtx_b64"` // standard base64
+	TxID     string `json:"txid"`
+	RawTxB64 string `json:"rawtx_b64"`
 }
 
 // --- Receipt (server → client) ---
 
-// X402Receipt confirms accepted payment.
 type X402Receipt struct {
 	TxID      string `json:"txid"`
 	Satoshis  int    `json:"satoshis"`
@@ -90,10 +97,7 @@ type X402Receipt struct {
 // --- NonceProvider interface ---
 
 // NonceProvider mints nonce UTXOs for 402 challenges.
-// The WalletNonceProvider uses the node wallet; the DevNonceProvider
-// generates deterministic test nonces without real UTXOs.
 type NonceProvider interface {
-	// MintNonce creates a nonce UTXO and returns its details.
 	MintNonce() (*NonceUTXO, error)
 }
 
@@ -105,7 +109,6 @@ type DevNonceProvider struct {
 
 func (d *DevNonceProvider) MintNonce() (*NonceUTXO, error) {
 	n := d.counter.Add(1)
-	// Generate a deterministic fake txid from the counter
 	h := sha256.Sum256([]byte(fmt.Sprintf("dev-nonce-%d-%d", n, time.Now().UnixNano())))
 	return &NonceUTXO{
 		TxID:             hex.EncodeToString(h[:]),
@@ -115,60 +118,100 @@ func (d *DevNonceProvider) MintNonce() (*NonceUTXO, error) {
 	}, nil
 }
 
-// --- Middleware ---
+// --- PaymentGate ---
 
 // PaymentGate holds the state for 402 payment gating.
+// It is topic-aware: when a request targets a topic with monetization
+// metadata, the challenge and verification adapt to the declared model.
 type PaymentGate struct {
 	priceSats      int
-	payeeScriptHex string // hex-encoded locking script for the node's payment address
+	payeeScriptHex string
 	nonceProvider  NonceProvider
 	challengeTTL   time.Duration
 	requireMempool bool
+	arcClient      *txrelay.ARCClient // for mempool acceptance verification
+	resolver       *TopicMonetizationResolver
+
+	allowPassthrough bool
+	allowSplit       bool
+	maxAppPriceSats  int
+
+	// Per-endpoint pricing overrides (path → satoshis). If a path is in
+	// this map, its price overrides priceSats for that endpoint.
+	endpointPrices map[string]int
 
 	mu                sync.Mutex
-	pendingChallenges map[string]*X402Challenge // challenge_sha256 → challenge (short-lived)
+	pendingChallenges map[string]*pendingChallenge
+}
+
+type pendingChallenge struct {
+	challenge *X402Challenge
+	payees    []Payee
 }
 
 // PaymentGateConfig configures the 402 payment gate.
 type PaymentGateConfig struct {
-	PriceSats      int
-	PayeeScriptHex string        // the node's P2PKH locking script (hex)
-	NonceProvider  NonceProvider
-	ChallengeTTL   time.Duration // how long a challenge is valid (default 60s)
-	RequireMempool bool          // require ARC mempool acceptance
+	PriceSats        int
+	PayeeScriptHex   string
+	NonceProvider    NonceProvider
+	ChallengeTTL     time.Duration
+	RequireMempool   bool
+	ARCClient        *txrelay.ARCClient
+	Resolver         *TopicMonetizationResolver
+	AllowPassthrough bool
+	AllowSplit       bool
+	MaxAppPriceSats  int
+	EndpointPrices   map[string]int // path → satoshis override
 }
 
 // NewPaymentGate creates a spec-compliant x402 payment gate.
-// Returns nil if priceSats <= 0 (free access) OR if payee script is empty
-// (no recipient configured — cannot enforce real payment).
-// DevNonceProvider is only used when NonceProvider is nil AND PayeeScriptHex
-// is empty (both must be absent for dev mode). If payee is set but nonce
-// provider is nil, that's a config error and returns nil.
+// Returns nil only when no payment enforcement is possible.
 func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
-	if cfg.PriceSats <= 0 {
-		return nil
-	}
-	if cfg.PayeeScriptHex == "" {
-		// No payee = no real payment enforcement possible. Refuse to create.
+	appMonetizationEnabled := cfg.AllowPassthrough || cfg.AllowSplit
+	nodeCharges := cfg.PriceSats > 0
+
+	if !nodeCharges && !appMonetizationEnabled {
 		return nil
 	}
 	if cfg.NonceProvider == nil {
-		// Payee configured but no nonce provider = broken config. Refuse.
+		return nil
+	}
+	if nodeCharges && cfg.PayeeScriptHex == "" {
 		return nil
 	}
 	ttl := cfg.ChallengeTTL
 	if ttl == 0 {
 		ttl = 60 * time.Second
 	}
-	np := cfg.NonceProvider
 	return &PaymentGate{
 		priceSats:         cfg.PriceSats,
 		payeeScriptHex:    cfg.PayeeScriptHex,
-		nonceProvider:     np,
+		nonceProvider:     cfg.NonceProvider,
 		challengeTTL:      ttl,
 		requireMempool:    cfg.RequireMempool,
-		pendingChallenges: make(map[string]*X402Challenge),
+		arcClient:         cfg.ARCClient,
+		resolver:          cfg.Resolver,
+		allowPassthrough:  cfg.AllowPassthrough,
+		allowSplit:        cfg.AllowSplit,
+		maxAppPriceSats:   cfg.MaxAppPriceSats,
+		endpointPrices:    cfg.EndpointPrices,
+		pendingChallenges: make(map[string]*pendingChallenge),
 	}
+}
+
+// priceForPath returns the per-endpoint price if configured, else the default.
+// Infrastructure paths (/content/, /.well-known/) are always free.
+func (pg *PaymentGate) priceForPath(path string) int {
+	// Infrastructure paths are always free — CDN content and discovery endpoints
+	if strings.HasPrefix(path, "/content/") || strings.HasPrefix(path, "/.well-known/") {
+		return 0
+	}
+	if pg.endpointPrices != nil {
+		if price, ok := pg.endpointPrices[path]; ok {
+			return price
+		}
+	}
+	return pg.priceSats
 }
 
 // Middleware returns the HTTP middleware that enforces 402 payment.
@@ -177,9 +220,20 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		payees, tokenGated := pg.resolvePayees(r)
+		if tokenGated {
+			r.Header.Set("X-Anvil-Authed", "true")
+			next(w, r)
+			return
+		}
+		if len(payees) == 0 {
+			next(w, r)
+			return
+		}
+
 		proofHeader := r.Header.Get(HeaderX402Proof)
 		if proofHeader == "" {
-			pg.issueChallenge(w, r)
+			pg.issueChallengeForPayees(w, r, payees)
 			return
 		}
 
@@ -191,12 +245,13 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 
 		receiptJSON, _ := json.Marshal(receipt)
 		w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
+		r.Header.Set("X-Anvil-Authed", "true")
 		next(w, r)
 	}
 }
 
-// issueChallenge builds and returns a 402 challenge.
-func (pg *PaymentGate) issueChallenge(w http.ResponseWriter, r *http.Request) {
+// issueChallengeForPayees builds and returns a 402 challenge.
+func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Request, payees []Payee) {
 	nonce, err := pg.nonceProvider.MintNonce()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to mint nonce: "+err.Error())
@@ -205,7 +260,18 @@ func (pg *PaymentGate) issueChallenge(w http.ResponseWriter, r *http.Request) {
 
 	bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	bodyHash := sha256Hex(bodyBytes)
+	// Restore body for downstream handlers
+	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	headerHash := canonicalHeaderHash(r)
+
+	totalSats := 0
+	primaryScript := pg.payeeScriptHex
+	for _, p := range payees {
+		totalSats += p.AmountSats
+	}
+	if len(payees) == 1 {
+		primaryScript = payees[0].LockingScriptHex
+	}
 
 	challenge := &X402Challenge{
 		V:                     1,
@@ -216,22 +282,27 @@ func (pg *PaymentGate) issueChallenge(w http.ResponseWriter, r *http.Request) {
 		Query:                 r.URL.RawQuery,
 		ReqHeadersSHA256:      headerHash,
 		ReqBodySHA256:         bodyHash,
-		AmountSats:            pg.priceSats,
-		PayeeLockingScriptHex: pg.payeeScriptHex,
+		AmountSats:            totalSats,
+		PayeeLockingScriptHex: primaryScript,
 		NonceUTXO:             nonce,
 		ExpiresAt:             time.Now().Add(pg.challengeTTL).Unix(),
 		RequireMempoolAccept:  pg.requireMempool,
 	}
 
+	if len(payees) > 1 {
+		challenge.Payees = payees
+	}
+
 	challengeJSON, _ := json.Marshal(challenge)
 	challengeHash := sha256Hex(challengeJSON)
 
-	// Store for later verification
 	pg.mu.Lock()
-	pg.pendingChallenges[challengeHash] = challenge
+	pg.pendingChallenges[challengeHash] = &pendingChallenge{
+		challenge: challenge,
+		payees:    payees,
+	}
 	pg.mu.Unlock()
 
-	// Clean expired challenges
 	go pg.cleanExpired()
 
 	w.Header().Set(HeaderX402Challenge, base64Url(challengeJSON))
@@ -240,152 +311,13 @@ func (pg *PaymentGate) issueChallenge(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(challenge)
 }
 
-// verifyProof validates a payment proof against the x402 spec.
-func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Receipt, error) {
-	// Step 1: Decode proof from base64url
-	proofJSON, err := base64.RawURLEncoding.DecodeString(proofHeader)
-	if err != nil {
-		// Fall back to raw JSON for compatibility
-		proofJSON = []byte(proofHeader)
-	}
-
-	var proof X402Proof
-	if err := json.Unmarshal(proofJSON, &proof); err != nil {
-		return nil, fmt.Errorf("invalid proof JSON: %w", err)
-	}
-
-	if proof.V != 1 {
-		return nil, fmt.Errorf("unsupported proof version: %d", proof.V)
-	}
-
-	// Step 2: Look up the challenge by its hash
-	pg.mu.Lock()
-	challenge, ok := pg.pendingChallenges[proof.ChallengeSHA256]
-	pg.mu.Unlock()
-	if !ok {
-		return nil, fmt.Errorf("unknown or expired challenge")
-	}
-
-	// Step 3: Verify proof.request matches challenge AND actual HTTP request.
-	// Three-way check: proof fields must match stored challenge AND live request.
-	if proof.Request.Method != challenge.Method || proof.Request.Method != r.Method {
-		return nil, fmt.Errorf("method mismatch")
-	}
-	if proof.Request.Path != challenge.Path || proof.Request.Path != r.URL.Path {
-		return nil, fmt.Errorf("path mismatch")
-	}
-	if proof.Request.Query != challenge.Query || proof.Request.Query != r.URL.RawQuery {
-		return nil, fmt.Errorf("query mismatch")
-	}
-	// Verify header and body hashes: proof must match challenge AND live request.
-	// Recompute from the actual incoming request to prevent cross-request replay.
-	liveHeaderHash := canonicalHeaderHash(r)
-	liveBodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	liveBodyHash := sha256Hex(liveBodyBytes)
-
-	if proof.Request.ReqHeadersSHA256 != challenge.ReqHeadersSHA256 {
-		return nil, fmt.Errorf("req_headers_sha256: proof does not match challenge")
-	}
-	if challenge.ReqHeadersSHA256 != liveHeaderHash {
-		return nil, fmt.Errorf("req_headers_sha256: challenge does not match live request")
-	}
-	if proof.Request.ReqBodySHA256 != challenge.ReqBodySHA256 {
-		return nil, fmt.Errorf("req_body_sha256: proof does not match challenge")
-	}
-	if challenge.ReqBodySHA256 != liveBodyHash {
-		return nil, fmt.Errorf("req_body_sha256: challenge does not match live request")
-	}
-
-	// Step 4: Check expiry
-	if time.Now().Unix() > challenge.ExpiresAt {
-		pg.mu.Lock()
-		delete(pg.pendingChallenges, proof.ChallengeSHA256)
-		pg.mu.Unlock()
-		return nil, fmt.Errorf("challenge expired")
-	}
-
-	// Step 5: Decode transaction
-	txBytes, err := base64.StdEncoding.DecodeString(proof.Payment.RawTxB64)
-	if err != nil {
-		// Fall back to hex for compatibility
-		txBytes, err = hex.DecodeString(proof.Payment.RawTxB64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid rawtx: %w", err)
-		}
-	}
-
-	tx, err := transaction.NewTransactionFromBytes(txBytes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid transaction: %w", err)
-	}
-
-	// Step 6: Verify nonce UTXO spend (outpoint reference check).
-	// EXPERIMENTAL: This verifies the tx claims to spend the nonce UTXO
-	// (correct outpoint in an input), but does NOT verify the spending
-	// script is valid or that the nonce tx was accepted on-chain.
-	// Full consensus-layer replay protection requires ARC broadcast +
-	// mempool acceptance verification, which is deferred.
-	if challenge.NonceUTXO != nil && challenge.NonceUTXO.LockingScriptHex != "dev-mode-no-real-utxo" {
-		nonceSpent := false
-		for _, input := range tx.Inputs {
-			inputTxID := input.SourceTXID.String()
-			if inputTxID == challenge.NonceUTXO.TxID && input.SourceTxOutIndex == uint32(challenge.NonceUTXO.Vout) {
-				nonceSpent = true
-				break
-			}
-		}
-		if !nonceSpent {
-			return nil, fmt.Errorf("nonce UTXO not spent: expected %s:%d",
-				challenge.NonceUTXO.TxID, challenge.NonceUTXO.Vout)
-		}
-	}
-
-	// Step 7: Verify payment output to payee (always enforced — gate
-	// cannot be created without a payee script)
-	payeeBytes, err := hex.DecodeString(pg.payeeScriptHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid payee script config: %w", err)
-	}
-	paid := false
-	for _, out := range tx.Outputs {
-		if out.Satoshis >= uint64(pg.priceSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
-			paid = true
-			break
-		}
-	}
-	if !paid {
-		return nil, fmt.Errorf("no output pays %d sats to payee", pg.priceSats)
-	}
-
-	// Step 8: Verify txid
-	txid := tx.TxID().String()
-	if proof.Payment.TxID != "" && proof.Payment.TxID != txid {
-		return nil, fmt.Errorf("txid mismatch: claimed %s, computed %s", proof.Payment.TxID, txid)
-	}
-
-	// Step 9: Mempool acceptance (deferred — requires ARC integration)
-	// When require_mempool_accept is true and ARC is available,
-	// broadcast the tx and verify acceptance. Not implemented yet.
-
-	// Clean up the used challenge (one-time use even in dev mode)
-	pg.mu.Lock()
-	delete(pg.pendingChallenges, proof.ChallengeSHA256)
-	pg.mu.Unlock()
-
-	return &X402Receipt{
-		TxID:      txid,
-		Satoshis:  pg.priceSats,
-		Timestamp: time.Now().Unix(),
-	}, nil
-}
-
 // cleanExpired removes challenges older than their expiry.
 func (pg *PaymentGate) cleanExpired() {
 	now := time.Now().Unix()
 	pg.mu.Lock()
 	defer pg.mu.Unlock()
-	for hash, ch := range pg.pendingChallenges {
-		if now > ch.ExpiresAt {
+	for hash, pending := range pg.pendingChallenges {
+		if now > pending.challenge.ExpiresAt {
 			delete(pg.pendingChallenges, hash)
 		}
 	}
@@ -402,10 +334,7 @@ func base64Url(data []byte) string {
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 
-// canonicalHeaderHash builds the canonical header binding string per x402 spec:
-// lowercase names, trimmed values, sorted by name, concatenated as "name:value\n".
 func canonicalHeaderHash(r *http.Request) string {
-	// Bind a minimal set of headers: Host, Content-Type, Accept
 	bindHeaders := []string{"host", "content-type", "accept"}
 	var pairs []string
 	for _, name := range bindHeaders {

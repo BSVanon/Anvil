@@ -51,7 +51,7 @@ func (ti *testInfra) openWallet(t *testing.T, dataDir string) *NodeWallet {
 	t.Helper()
 	mempool := txrelay.NewMempool()
 	broadcaster := txrelay.NewBroadcaster(mempool, nil, slog.Default())
-	nw, err := New(testWIF, dataDir, ti.hs, ti.ps, broadcaster, slog.Default())
+	nw, err := New(testWIF, dataDir, ti.hs, ti.ps, broadcaster, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

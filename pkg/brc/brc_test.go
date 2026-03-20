@@ -116,7 +116,7 @@ func TestInvoiceConstants(t *testing.T) {
 
 func TestBuildAndValidateSHIP(t *testing.T) {
 	key := loadFixtureKey(t)
-	scriptBytes, _, err := BuildSHIPScript(key, "example.com", "foundry:mainnet")
+	scriptBytes, _, err := BuildSHIPScript(key, "example.com", "anvil:mainnet")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestBuildAndValidateSHIP(t *testing.T) {
 	if token.Domain != "example.com" {
 		t.Fatalf("domain: got %q", token.Domain)
 	}
-	if token.Topic != "foundry:mainnet" {
+	if token.Topic != "anvil:mainnet" {
 		t.Fatalf("topic: got %q", token.Topic)
 	}
 }
@@ -144,7 +144,7 @@ func TestSHIPRejectsWrongDerivation(t *testing.T) {
 		[]byte("SHIP"),
 		[]byte(identityPubHex),
 		[]byte("example.com"),
-		[]byte("foundry:mainnet"),
+		[]byte("anvil:mainnet"),
 	}
 	s, _ := script.EncodePushDatas(fields)
 	pubBytes := slapKey.PubKey().Compressed()

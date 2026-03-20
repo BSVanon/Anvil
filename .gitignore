@@ -24,3 +24,5 @@ anvil.toml
 
 # Test
 coverage.out
+sdk/ts/node_modules/
+sdk/ts/dist/

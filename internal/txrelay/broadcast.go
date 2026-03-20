@@ -18,7 +18,7 @@ type BroadcastResult struct {
 }
 
 // Broadcaster handles transaction admission to the local mempool and optionally
-// ARC submission. Transactions stay local to this node — foundry mesh forwarding
+// ARC submission. Transactions stay local to this node — mesh forwarding
 // of raw transactions is not yet implemented (envelope gossip is separate).
 type Broadcaster struct {
 	mempool *Mempool

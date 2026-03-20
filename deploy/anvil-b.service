@@ -1,0 +1,24 @@
+[Unit]
+Description=Anvil One (peer node)
+After=network-online.target <node-a>.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anvil
+Group=anvil
+WorkingDirectory=/opt/anvil
+ExecStart=/opt/anvil/anvil -config /etc/anvil/node-b.toml
+EnvironmentFile=/etc/anvil/node-b.env
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/<node-b>
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

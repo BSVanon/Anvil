@@ -1,0 +1,24 @@
+[Unit]
+Description=Anvil Prime (seed node)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anvil
+Group=anvil
+WorkingDirectory=/opt/anvil
+ExecStart=/opt/anvil/anvil -config /etc/anvil/node-a.toml
+EnvironmentFile=/etc/anvil/node-a.env
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/<node-a>
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

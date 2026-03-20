@@ -33,7 +33,7 @@ func TestAddAndLookupSHIPPeer(t *testing.T) {
 	d := tmpDirectory(t)
 	key := testKey()
 
-	script, _, err := brc.BuildSHIPScript(key, "relay.example.com:8333", "foundry:mainnet")
+	script, _, err := brc.BuildSHIPScript(key, "relay.example.com:8333", "anvil:mainnet")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestAddAndLookupSHIPPeer(t *testing.T) {
 	entry := &PeerEntry{
 		IdentityPub: hex.EncodeToString(key.PubKey().Compressed()),
 		Domain:      "relay.example.com:8333",
-		Topic:       "foundry:mainnet",
+		Topic:       "anvil:mainnet",
 		TxID:        "abc123",
 		OutputIndex: 0,
 	}
@@ -50,7 +50,7 @@ func TestAddAndLookupSHIPPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	peers, err := d.LookupSHIPByTopic("foundry:mainnet")
+	peers, err := d.LookupSHIPByTopic("anvil:mainnet")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestSHIPRejectsInvalidScript(t *testing.T) {
 	entry := &PeerEntry{
 		IdentityPub: "deadbeef",
 		Domain:      "bad.com",
-		Topic:       "foundry:mainnet",
+		Topic:       "anvil:mainnet",
 	}
 	err := d.AddSHIPPeer(entry, []byte("not a valid script"))
 	if err == nil {
@@ -93,11 +93,11 @@ func TestCountSHIP(t *testing.T) {
 	}
 
 	key := testKey()
-	script, _, _ := brc.BuildSHIPScript(key, "a.com", "foundry:mainnet")
+	script, _, _ := brc.BuildSHIPScript(key, "a.com", "anvil:mainnet")
 	d.AddSHIPPeer(&PeerEntry{
 		IdentityPub: hex.EncodeToString(key.PubKey().Compressed()),
 		Domain:      "a.com",
-		Topic:       "foundry:mainnet",
+		Topic:       "anvil:mainnet",
 	}, script)
 
 	if d.CountSHIP() != 1 {
@@ -147,13 +147,13 @@ func TestDiscovererProcessSHIPScript(t *testing.T) {
 	disc := NewDiscoverer(d, slog.Default())
 	key := testKey()
 
-	script, _, _ := brc.BuildSHIPScript(key, "peer.example.com:8333", "foundry:mainnet")
+	script, _, _ := brc.BuildSHIPScript(key, "peer.example.com:8333", "anvil:mainnet")
 
 	if err := disc.ProcessSHIPScript(script, "tx123", 0); err != nil {
 		t.Fatal(err)
 	}
 
-	peers, _ := disc.DiscoverPeersForTopic("foundry:mainnet")
+	peers, _ := disc.DiscoverPeersForTopic("anvil:mainnet")
 	if len(peers) != 1 {
 		t.Fatalf("expected 1 peer, got %d", len(peers))
 	}

@@ -1,0 +1,23 @@
+{
+  "name": "@anvil/client",
+  "version": "0.1.0",
+  "description": "Thin TypeScript client for the Anvil mesh network",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/test.js"
+  },
+  "dependencies": {
+    "@bsv/sdk": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.0.0"
+  },
+  "license": "Apache-2.0"
+}

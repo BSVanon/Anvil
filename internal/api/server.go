@@ -1,15 +1,12 @@
 package api
 
 import (
-	"context"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 
+	"github.com/BSVanon/Anvil/internal/bond"
+	"github.com/BSVanon/Anvil/internal/content"
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
@@ -26,30 +23,48 @@ type Server struct {
 	overlayDir    *overlay.Directory
 	validator     *spv.Validator
 	broadcaster   *txrelay.Broadcaster
-	gossipMgr   *gossip.Manager // nil if mesh not configured
-	rateLimiter *RateLimiter    // nil if rate limiting disabled
-	paymentGate *PaymentGate    // nil if 402 gating disabled
-	logger      *slog.Logger
-	mux             *http.ServeMux
-	authToken       string
+	gossipMgr     *gossip.Manager
+	rateLimiter   *RateLimiter
+	paymentGate   *PaymentGate
+	tokenGate     *TokenGate
+	logger        *slog.Logger
+	mux           *http.ServeMux
+	authToken     string
+	nodeName      string
+	identityPub    string
+	bondChecker    *bond.Checker
+	contentServer  *content.Server
 }
 
 // ServerConfig holds all parameters for NewServer.
 type ServerConfig struct {
-	HeaderStore     *headers.Store
-	ProofStore      *spv.ProofStore
-	EnvelopeStore   *envelope.Store
-	OverlayDir      *overlay.Directory
-	Validator       *spv.Validator
-	Broadcaster     *txrelay.Broadcaster
-	GossipMgr       *gossip.Manager
-	AuthToken       string
-	RateLimit       int    // requests/second for open reads; 0 = disabled
-	TrustProxy      bool   // if true, use X-Forwarded-For for rate limiting
-	PaymentSatoshis int           // per-request price for 402-gated endpoints; 0 = free
-	PayeeScriptHex  string        // hex locking script for payment output (derived from wallet)
-	NonceProvider   NonceProvider // real wallet nonces for production; nil = dev mode
-	Logger          *slog.Logger
+	HeaderStore      *headers.Store
+	ProofStore       *spv.ProofStore
+	EnvelopeStore    *envelope.Store
+	OverlayDir       *overlay.Directory
+	Validator        *spv.Validator
+	Broadcaster      *txrelay.Broadcaster
+	GossipMgr        *gossip.Manager
+	AuthToken        string
+	RateLimit        int
+	TrustProxy       bool
+	PaymentSatoshis  int
+	PayeeScriptHex   string
+	NonceProvider    NonceProvider
+	AllowPassthrough bool
+	AllowSplit       bool
+	AllowTokenGating bool
+	MaxAppPriceSats  int
+	EndpointPrices   map[string]int // per-endpoint price overrides
+	ARCClient        *txrelay.ARCClient
+	RequireMempool   bool
+	Logger           *slog.Logger
+	NodeName         string
+	IdentityPub      string
+	BondChecker      *bond.Checker
+	P2PTxSource      content.TxSource
+	P2PBlockSource   content.BlockTxSource
+	HeaderLookup     func(int) string
 }
 
 // NewServer creates a new REST API server.
@@ -58,484 +73,315 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.RateLimit > 0 {
 		rl = NewRateLimiter(cfg.RateLimit, cfg.TrustProxy)
 	}
+	resolver := NewTopicMonetizationResolver(cfg.EnvelopeStore)
 	pg := NewPaymentGate(PaymentGateConfig{
-		PriceSats:      cfg.PaymentSatoshis,
-		PayeeScriptHex: cfg.PayeeScriptHex,
-		NonceProvider:  cfg.NonceProvider,
-		RequireMempool: false, // ARC integration deferred
+		PriceSats:        cfg.PaymentSatoshis,
+		PayeeScriptHex:   cfg.PayeeScriptHex,
+		NonceProvider:    cfg.NonceProvider,
+		RequireMempool:   cfg.RequireMempool,
+		ARCClient:        cfg.ARCClient,
+		Resolver:         resolver,
+		AllowPassthrough: cfg.AllowPassthrough,
+		AllowSplit:       cfg.AllowSplit,
+		MaxAppPriceSats:  cfg.MaxAppPriceSats,
+		EndpointPrices:   cfg.EndpointPrices,
 	})
+	tg := NewTokenGate(resolver, cfg.AllowTokenGating)
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 	s := &Server{
-		headerStore: cfg.HeaderStore,
-		proofStore:  cfg.ProofStore,
+		headerStore:   cfg.HeaderStore,
+		proofStore:    cfg.ProofStore,
 		envelopeStore: cfg.EnvelopeStore,
-		overlayDir:  cfg.OverlayDir,
-		validator:   cfg.Validator,
-		broadcaster: cfg.Broadcaster,
-		gossipMgr:   cfg.GossipMgr,
-		rateLimiter: rl,
-		paymentGate: pg,
-		logger:      logger,
+		overlayDir:    cfg.OverlayDir,
+		validator:     cfg.Validator,
+		broadcaster:   cfg.Broadcaster,
+		gossipMgr:     cfg.GossipMgr,
+		rateLimiter:   rl,
+		paymentGate:   pg,
+		tokenGate:     tg,
+		logger:        logger,
 		mux:           http.NewServeMux(),
 		authToken:     cfg.AuthToken,
+		nodeName:      cfg.NodeName,
+		identityPub:    cfg.IdentityPub,
+		bondChecker:    cfg.BondChecker,
+		contentServer:  content.NewServer("", cfg.P2PTxSource, cfg.P2PBlockSource, cfg.HeaderLookup),
+	}
+	if s.nodeName == "" {
+		s.nodeName = "anvil"
 	}
 	s.routes()
 	return s
 }
 
 func (s *Server) routes() {
-	// Open read endpoints — rate-limited when configured
 	s.mux.HandleFunc("GET /status", s.openRead(s.handleStatus))
+	s.mux.HandleFunc("GET /stats", s.openRead(s.handleStats))
 	s.mux.HandleFunc("GET /headers/tip", s.openRead(s.handleHeadersTip))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
 	s.mux.HandleFunc("GET /data", s.openRead(s.handleQueryData))
 	s.mux.HandleFunc("GET /overlay/lookup", s.openRead(s.handleOverlayLookup))
 
-	// x402 discovery endpoint
-	if s.paymentGate != nil {
-		s.mux.HandleFunc("GET /.well-known/x402", s.handleX402Discovery)
-	}
+	// Always register x402 discovery — shows pricing even when free (price=0).
+	// Apps and Explorer use this to discover payment capabilities.
+	s.mux.HandleFunc("GET /.well-known/x402", cors(s.handleX402Discovery))
+	s.mux.HandleFunc("GET /.well-known/anvil", cors(s.handleAnvilManifest))
+	s.mux.HandleFunc("GET /.well-known/identity", cors(s.handleIdentity))
+	s.mux.HandleFunc("POST /bootstrap/block/{blockHash}", s.requireAuth(s.contentServer.BootstrapBlock))
+	s.mux.HandleFunc("GET /content/{origin}", s.openRead(s.contentServer.ServeContent))
 
-	// Authenticated write endpoints
 	s.mux.HandleFunc("POST /broadcast", s.requireAuth(s.handleBroadcast))
-	s.mux.HandleFunc("POST /data", s.requireAuth(s.handlePostData))
+	// POST /data accepts bearer auth OR x402 payment (if payment gate exists).
+	// This lets third-party publishers submit envelopes by paying instead of
+	// needing the operator's auth token.
+	s.mux.HandleFunc("POST /data", s.authOrPay(s.handlePostData))
 	s.mux.HandleFunc("POST /overlay/register", s.requireAuth(s.handleOverlayRegister))
 	s.mux.HandleFunc("POST /overlay/deregister", s.requireAuth(s.handleOverlayDeregister))
 }
 
-// openRead wraps an open read handler with rate limiting and optional 402 payment gating.
-// Order: rate limit first (cheap check), then payment gate (expensive check).
+// openRead wraps a handler with CORS, rate limiting, token gating, and x402 payment gating.
 func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
 	h := next
-
-	// Apply 402 payment gate
 	if s.paymentGate != nil {
 		h = s.paymentGate.Middleware(h)
 	}
-
-	// Apply rate limiting if configured
+	if s.tokenGate != nil {
+		h = s.tokenGate.Middleware(h)
+	}
 	if s.rateLimiter != nil {
 		h = s.rateLimiter.Middleware(h)
 	}
-
-	return h
+	// CORS: open read endpoints are public and safe to call from any origin.
+	// Required for browser-based consumers like the Anvil Explorer.
+	return cors(h)
 }
 
-// handleX402Discovery serves the /.well-known/x402 endpoint per x402 spec.
-// Returns a manifest of payment-gated endpoints and their prices.
+// cors adds permissive CORS headers to open read endpoints.
+func cors(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-App-Token, X402-Proof")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// handleX402Discovery serves the /.well-known/x402 endpoint.
 func (s *Server) handleX402Discovery(w http.ResponseWriter, r *http.Request) {
-	price := 0
-	if s.paymentGate != nil {
-		price = s.paymentGate.priceSats
+	priceFor := func(path string) int {
+		if s.paymentGate != nil {
+			return s.paymentGate.priceForPath(path)
+		}
+		return 0
 	}
 	gatedEndpoints := []map[string]interface{}{
-		{"method": "GET", "path": "/status", "price": price},
-		{"method": "GET", "path": "/headers/tip", "price": price},
-		{"method": "GET", "path": "/tx/{txid}/beef", "price": price},
-		{"method": "GET", "path": "/data", "price": price},
-		{"method": "GET", "path": "/overlay/lookup", "price": price},
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"version":   "0.1",
-		"network":   "mainnet",
-		"scheme":    "bsv-tx-v1",
-		"endpoints": gatedEndpoints,
-	})
-}
-
-// Handler returns the HTTP handler for the server.
-func (s *Server) Handler() http.Handler {
-	return s.mux
-}
-
-// Mux returns the underlying ServeMux for external route registration.
-func (s *Server) Mux() *http.ServeMux {
-	return s.mux
-}
-
-// RequireAuth is the exported auth middleware for external route registration.
-func (s *Server) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return s.requireAuth(next)
-}
-
-// --- Handlers ---
-
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	tip := s.headerStore.Tip()
-	work := s.headerStore.Work()
-	resp := map[string]interface{}{
-		"node":    "anvil",
-		"version": "0.1.0",
-		"headers": map[string]interface{}{
-			"height": tip,
-			"work":   work.String(),
+		{
+			"method":      "GET",
+			"path":        "/status",
+			"price":       priceFor("/status"),
+			"description": "Node health, version, and current header height",
+		},
+		{
+			"method":      "GET",
+			"path":        "/stats",
+			"price":       priceFor("/status"),
+			"description": "Extended node stats: envelope counts, active topics, mesh peers, overlay registrations",
+		},
+		{
+			"method":      "GET",
+			"path":        "/headers/tip",
+			"price":       priceFor("/headers/tip"),
+			"description": "Current BSV header chain tip with block hash",
+		},
+		{
+			"method":      "GET",
+			"path":        "/tx/{txid}/beef",
+			"price":       priceFor("/tx/{txid}/beef"),
+			"description": "SPV verification — returns transaction in BEEF format with merkle proof",
+		},
+		{
+			"method":      "GET",
+			"path":        "/data",
+			"price":       priceFor("/data"),
+			"description": "Query signed data envelopes by topic. Use ?topic=<name>&limit=<n>",
+			"note":        "price may vary by topic monetization model",
+		},
+		{
+			"method":      "GET",
+			"path":        "/overlay/lookup",
+			"price":       priceFor("/overlay/lookup"),
+			"description": "Discover other nodes in the mesh via overlay registrations. Use ?topic=anvil:mainnet",
+		},
+		{
+			"method":      "GET",
+			"path":        "/.well-known/anvil",
+			"price":       0,
+			"description": "Machine-readable manifest of this node's capabilities, payment options, and mesh info",
+		},
+		{
+			"method":      "GET",
+			"path":        "/content/{txid}_{vout}",
+			"price":       0,
+			"description": "Serve on-chain inscription content directly. Decentralized CDN — no GorillaPool dependency.",
 		},
 	}
-	writeJSON(w, http.StatusOK, resp)
+
+	models := []string{"node_merchant"}
+	if s.paymentGate != nil {
+		if s.paymentGate.allowPassthrough {
+			models = append(models, "passthrough")
+		}
+		if s.paymentGate.allowSplit {
+			models = append(models, "split")
+		}
+	}
+	if s.tokenGate != nil {
+		models = append(models, "token")
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"version":        "0.1",
+		"network":        "bsv-mainnet",
+		"node":           s.nodeName,
+		"settlement":     "BSV",
+		"non_custodial":  true,
+		"endpoints":      gatedEndpoints,
+		"payment_models": models,
+		"contact":        "https://x.com/SendBSV",
+	})
 }
 
-func (s *Server) handleHeadersTip(w http.ResponseWriter, r *http.Request) {
+// handleIdentity serves /.well-known/identity — node's public identity + bond status.
+func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
+	result := map[string]interface{}{
+		"node":    s.nodeName,
+		"version": "0.1.0",
+	}
+
+	if s.identityPub != "" {
+		result["identity_key"] = s.identityPub
+	}
+
+	if s.bondChecker != nil && s.bondChecker.Required() {
+		result["bond"] = map[string]interface{}{
+			"required":  true,
+			"min_sats":  s.bondChecker.MinSats(),
+		}
+	} else {
+		result["bond"] = map[string]interface{}{
+			"required": false,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleAnvilManifest serves /.well-known/anvil — a machine-readable manifest
+// describing this node's identity, capabilities, and payment options.
+// Designed for AI agent crawlers and discovery networks (e.g. Hyperspace Matrix).
+func (s *Server) handleAnvilManifest(w http.ResponseWriter, r *http.Request) {
 	tip := s.headerStore.Tip()
-	hash, err := s.headerStore.HashAtHeight(tip)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get tip hash")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"height": tip,
-		"hash":   hash.String(),
-	})
-}
 
-// handleGetBEEF serves a stored transaction as a complete BEEF envelope.
-// GET /tx/:txid/beef
-//
-// Returns the full BEEF binary (hex-encoded in JSON, or raw binary if
-// Accept: application/octet-stream). This includes the transaction, its
-// full input ancestry, and all BRC-74 merkle proofs — everything needed
-// for the consumer to independently verify the transaction.
-func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
-	txid := r.PathValue("txid")
-	if len(txid) != 64 {
-		writeError(w, http.StatusBadRequest, "txid must be 64 hex characters")
-		return
-	}
-
-	beefBytes, err := s.proofStore.GetBEEF(txid)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "no BEEF envelope found for this txid")
-		return
-	}
-
-	// If client wants raw binary, serve it directly
-	if strings.Contains(r.Header.Get("Accept"), "application/octet-stream") {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.WriteHeader(http.StatusOK)
-		w.Write(beefBytes)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"txid": txid,
-		"beef": hex.EncodeToString(beefBytes),
-	})
-}
-
-// BroadcastResponse is the structured response from POST /broadcast.
-// All fields are machine-readable — clients should not parse Message strings.
-type BroadcastResponse struct {
-	TxID       string             `json:"txid"`
-	Confidence string             `json:"confidence"`
-	Stored     bool               `json:"stored"`
-	Mempool    bool               `json:"mempool"`
-	ARC        *ARCStatus         `json:"arc,omitempty"`
-	Message    string             `json:"message,omitempty"`
-}
-
-// ARCStatus is the structured ARC submission result.
-type ARCStatus struct {
-	Submitted bool   `json:"submitted"`
-	TxStatus  string `json:"tx_status,omitempty"` // SEEN_ON_NETWORK, MINED, etc.
-	Error     string `json:"error,omitempty"`
-}
-
-// handleBroadcast is the core BEEF acceptance endpoint.
-// POST /broadcast
-// POST /broadcast?arc=true
-//
-// Per the architecture contract:
-// 1. Parse and validate BEEF against local header chain
-// 2. Return a structured confidence level
-// 3. Store the proven envelope for future serving via GET /tx/:txid/beef
-// 4. Add raw tx to local mempool
-// 5. Optionally submit to ARC via ?arc=true
-//
-// P2P peer relay is not yet implemented — mempool is local only.
-func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
-	beefBytes, err := readBEEF(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	// Validate BEEF against local headers
-	result, err := s.validator.ValidateBEEF(context.Background(), beefBytes)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("validation error: %v", err))
-		return
-	}
-
-	if result.Confidence == spv.ConfidenceInvalid {
-		writeJSON(w, http.StatusUnprocessableEntity, BroadcastResponse{
-			TxID:       result.TxID,
-			Confidence: result.Confidence,
-			Message:    result.Message,
-		})
-		return
-	}
-
-	resp := BroadcastResponse{
-		TxID:       result.TxID,
-		Confidence: result.Confidence,
-		Message:    result.Message,
-	}
-
-	// Store full BEEF if at least partially verified
-	if result.Confidence == spv.ConfidenceSPVVerified || result.Confidence == spv.ConfidencePartiallyVerified {
-		if _, err := s.proofStore.StoreBEEF(beefBytes); err != nil {
-			s.logger.Error("failed to store BEEF", "txid", result.TxID, "error", err)
-		} else {
-			resp.Stored = true
-		}
-	}
-
-	// Add to local mempool
-	if s.broadcaster != nil {
-		if _, err := s.broadcaster.BroadcastBEEF(beefBytes); err != nil {
-			s.logger.Error("mempool add failed", "txid", result.TxID, "error", err)
-		} else {
-			resp.Mempool = true
-		}
-
-		// Optional ARC submission
-		if r.URL.Query().Get("arc") == "true" {
-			arcStatus := &ARCStatus{}
-			if raw, ok := s.broadcaster.Mempool().Get(result.TxID); ok {
-				arcResult, err := s.broadcaster.BroadcastToARC(raw)
-				if err != nil {
-					arcStatus.Error = err.Error()
-				} else {
-					arcStatus.Submitted = true
-					arcStatus.TxStatus = arcResult.Status
-				}
-			} else {
-				arcStatus.Error = "tx not in mempool"
+	// Build capabilities from live topics
+	capabilities := []map[string]interface{}{}
+	if s.envelopeStore != nil {
+		for topic, count := range s.envelopeStore.Topics() {
+			cap := map[string]interface{}{
+				"type":        "data-feed",
+				"topic":       topic,
+				"envelopes":   count,
+				"access":      "GET /data?topic=" + topic,
 			}
-			resp.ARC = arcStatus
+			if s.paymentGate != nil && s.paymentGate.priceForPath("/data") > 0 {
+				cap["payment"] = "HTTP-402"
+			} else {
+				cap["payment"] = "free"
+			}
+			capabilities = append(capabilities, cap)
 		}
 	}
 
-	writeJSON(w, http.StatusOK, resp)
-}
+	// Static capabilities always available
+	capabilities = append(capabilities, map[string]interface{}{
+		"type":        "spv-verification",
+		"description": "Verify any BSV transaction with merkle proof against synced headers",
+		"access":      "GET /tx/{txid}/beef",
+		"payment":     "free",
+	})
+	capabilities = append(capabilities, map[string]interface{}{
+		"type":        "header-chain",
+		"description": "Full BSV header chain synced to tip",
+		"height":      tip,
+		"access":      "GET /headers/tip",
+		"payment":     "free",
+	})
 
-// --- Data Envelope Endpoints ---
-
-// handlePostData ingests a signed data envelope.
-// POST /data
-func (s *Server) handlePostData(w http.ResponseWriter, r *http.Request) {
-	if s.envelopeStore == nil {
-		writeError(w, http.StatusServiceUnavailable, "envelope store not configured")
-		return
+	// Mesh info
+	meshInfo := map[string]interface{}{
+		"gossip":    "websocket",
+		"discovery": "overlay-ship",
 	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
-		return
-	}
-
-	env, err := envelope.UnmarshalEnvelope(body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid envelope JSON: %v", err))
-		return
-	}
-
-	if err := s.envelopeStore.Ingest(env); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("rejected: %v", err))
-		return
-	}
-
-	// Broadcast to mesh peers if gossip is active
 	if s.gossipMgr != nil {
-		s.gossipMgr.BroadcastEnvelope(env)
+		meshInfo["peers"] = s.gossipMgr.PeerCount()
+	}
+	if s.overlayDir != nil {
+		meshInfo["known_nodes"] = s.overlayDir.CountSHIP()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"accepted": true,
-		"topic":    env.Topic,
-		"durable":  env.Durable,
-		"key":      env.Key(),
+		"name":         s.nodeName,
+		"protocol":     "anvil-mesh",
+		"version":      "0.1.0",
+		"network":      "bsv-mainnet",
+		"capabilities": capabilities,
+		"payment": map[string]interface{}{
+			"standard":      "HTTP-402",
+			"settlement":    "BSV",
+			"non_custodial": true,
+			"discovery":     "/.well-known/x402",
+		},
+		"mesh":    meshInfo,
+		"contact": "https://x.com/SendBSV",
+		"source":  "https://github.com/BSVanon/Anvil",
 	})
 }
 
-// handleQueryData queries envelopes by topic.
-// GET /data?topic=...&limit=...
-func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
-	if s.envelopeStore == nil {
-		writeError(w, http.StatusServiceUnavailable, "envelope store not configured")
-		return
-	}
-
-	topic := r.URL.Query().Get("topic")
-	if topic == "" {
-		writeError(w, http.StatusBadRequest, "topic query parameter required")
-		return
-	}
-
-	limit := 100 // default
-	if l := r.URL.Query().Get("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &limit)
-		if limit <= 0 || limit > 1000 {
-			limit = 100
+// authOrPay allows either bearer auth OR x402 payment to access a write endpoint.
+// Bearer auth is checked first (free for the operator). If no bearer token is
+// provided and a payment gate exists, x402 payment is accepted instead.
+func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// If bearer token is present and valid, let through
+		if token := r.Header.Get("Authorization"); token != "" {
+			if s.authToken != "" && token == "Bearer "+s.authToken {
+				r.Header.Set("X-Anvil-Authed", "true")
+				next(w, r)
+				return
+			}
 		}
-	}
 
-	envs, err := s.envelopeStore.QueryByTopic(topic, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query error: %v", err))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"topic":     topic,
-		"count":     len(envs),
-		"envelopes": envs,
-	})
-}
-
-// --- Overlay Endpoints ---
-
-// handleOverlayLookup queries the overlay directory for SHIP peers by topic.
-// GET /overlay/lookup?topic=...
-func (s *Server) handleOverlayLookup(w http.ResponseWriter, r *http.Request) {
-	if s.overlayDir == nil {
-		writeError(w, http.StatusServiceUnavailable, "overlay not configured")
-		return
-	}
-
-	topic := r.URL.Query().Get("topic")
-	if topic == "" {
-		writeError(w, http.StatusBadRequest, "topic query parameter required")
-		return
-	}
-
-	peers, err := s.overlayDir.LookupSHIPByTopic(topic)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("lookup error: %v", err))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"topic": topic,
-		"count": len(peers),
-		"peers": peers,
-	})
-}
-
-// handleOverlayRegister ingests a SHIP script from an external source.
-// POST /overlay/register
-// Body: {"script": "<hex>", "txid": "<txid>", "output_index": <int>}
-func (s *Server) handleOverlayRegister(w http.ResponseWriter, r *http.Request) {
-	if s.overlayDir == nil {
-		writeError(w, http.StatusServiceUnavailable, "overlay not configured")
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
-		return
-	}
-
-	var req struct {
-		Script      string `json:"script"`
-		TxID        string `json:"txid"`
-		OutputIndex int    `json:"output_index"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
-		return
-	}
-
-	scriptBytes, err := hex.DecodeString(req.Script)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid script hex")
-		return
-	}
-
-	disc := overlay.NewDiscoverer(s.overlayDir, s.logger)
-	if err := disc.ProcessSHIPScript(scriptBytes, req.TxID, req.OutputIndex); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("rejected: %v", err))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"registered": true,
-		"txid":       req.TxID,
-	})
-}
-
-// handleOverlayDeregister removes a SHIP peer from the directory.
-// POST /overlay/deregister
-// Body: {"topic": "<topic>", "identity_pub": "<hex>"}
-func (s *Server) handleOverlayDeregister(w http.ResponseWriter, r *http.Request) {
-	if s.overlayDir == nil {
-		writeError(w, http.StatusServiceUnavailable, "overlay not configured")
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
-		return
-	}
-
-	var req struct {
-		Topic       string `json:"topic"`
-		IdentityPub string `json:"identity_pub"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
-		return
-	}
-	if req.Topic == "" || req.IdentityPub == "" {
-		writeError(w, http.StatusBadRequest, "topic and identity_pub required")
-		return
-	}
-
-	if err := s.overlayDir.RemoveSHIPPeer(req.Topic, req.IdentityPub); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("deregister error: %v", err))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"deregistered": true,
-		"topic":        req.Topic,
-	})
-}
-
-// --- Helpers ---
-
-// readBEEF reads BEEF bytes from a request body, supporting both JSON
-// ({"beef": "hex..."}) and raw binary Content-Type.
-func readBEEF(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20)) // 10MB limit
-	if err != nil {
-		return nil, fmt.Errorf("failed to read body")
-	}
-	if len(body) == 0 {
-		return nil, fmt.Errorf("empty request body")
-	}
-
-	contentType := r.Header.Get("Content-Type")
-	if strings.Contains(contentType, "application/json") {
-		var req struct {
-			Beef string `json:"beef"`
+		// If no valid bearer token, try x402 payment
+		if s.paymentGate != nil {
+			s.paymentGate.Middleware(next)(w, r)
+			return
 		}
-		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, fmt.Errorf("invalid JSON")
-		}
-		beefBytes, err := hex.DecodeString(req.Beef)
-		if err != nil {
-			return nil, fmt.Errorf("invalid hex in beef field")
-		}
-		return beefBytes, nil
-	}
 
-	return body, nil
+		// Neither auth nor payment available
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+	}
+}
+
+func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Mux() *http.ServeMux   { return s.mux }
+
+func (s *Server) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireAuth(next)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

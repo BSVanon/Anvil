@@ -43,7 +43,7 @@ func TestBroadcastEnvelopeMarksSeenAndForwards(t *testing.T) {
 	m.BroadcastEnvelope(env)
 
 	// Verify it's in the seen set
-	hash := envelope.HashEnvelope(env.Topic, env.Pubkey, env.Timestamp)
+	hash := envelope.HashEnvelope(env.Topic, env.Pubkey, env.Payload, env.Timestamp)
 	m.seenMu.Lock()
 	_, seen := m.seen[hash]
 	m.seenMu.Unlock()
@@ -212,7 +212,7 @@ func TestTopicInterestForwarding(t *testing.T) {
 	// Register two peers with different interests
 	m.mu.Lock()
 	m.interests["peerA"] = []string{"oracle:rates:"}
-	m.interests["peerB"] = []string{"foundry:"}
+	m.interests["peerB"] = []string{"anvil:"}
 	m.mu.Unlock()
 
 	// forwardToInterested should match peerA for oracle:rates:bsv

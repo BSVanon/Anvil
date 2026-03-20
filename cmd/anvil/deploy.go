@@ -1,0 +1,417 @@
+package main
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"strings"
+	"text/template"
+	"time"
+)
+
+// cmdDeploy handles `anvil deploy` — installs or updates the Anvil mesh on this host.
+//
+// Pre-flight: validates config, creates dirs, ensures anvil user exists.
+// Deploy: installs binary, systemd units, config files.
+// Post-flight: starts services, waits for health, verifies mesh peering.
+func cmdDeploy(args []string) {
+	fs := flag.NewFlagSet("deploy", flag.ExitOnError)
+	configDir := fs.String("config-dir", "/etc/anvil", "directory for node config files")
+	dataBase := fs.String("data-dir", "/var/lib", "base directory for node data (creates anvil/ and <node-b>/ under this)")
+	installDir := fs.String("install-dir", "/opt/anvil", "directory for the anvil binary")
+	nodes := fs.String("nodes", "a", "which nodes to deploy: a, b, or ab (both)")
+	dryRun := fs.Bool("dry-run", false, "validate and show what would happen without changing anything")
+	skipHealth := fs.Bool("skip-health", false, "skip post-deploy health check")
+	fs.Parse(args)
+
+	nodeList := parseNodeList(*nodes)
+	if len(nodeList) == 0 {
+		fatal("--nodes must be a, b, or ab")
+	}
+
+	if !*dryRun {
+		assertRoot()
+	}
+
+	fmt.Println("=== Anvil Deploy ===")
+	fmt.Printf("  nodes:       %v\n", nodeList)
+	fmt.Printf("  config-dir:  %s\n", *configDir)
+	fmt.Printf("  data-dir:    %s\n", *dataBase)
+	fmt.Printf("  install-dir: %s\n", *installDir)
+	fmt.Printf("  dry-run:     %v\n", *dryRun)
+	fmt.Println()
+
+	// ── Pre-flight ──
+	step("Pre-flight: checking environment")
+
+	ensureUser("anvil", *dryRun)
+
+	for _, n := range nodeList {
+		dataDir := nodeDataDir(*dataBase, n)
+		preflight(n, *configDir, dataDir, *dryRun)
+	}
+
+	ok("Pre-flight passed")
+
+	// ── Install binary ──
+	step("Installing binary")
+	selfBin, _ := os.Executable()
+	destBin := filepath.Join(*installDir, "anvil")
+
+	if *dryRun {
+		fmt.Printf("  [dry-run] would copy %s → %s\n", selfBin, destBin)
+	} else {
+		os.MkdirAll(*installDir, 0755)
+		stopServices(nodeList)
+		copyFile(selfBin, destBin, 0755)
+		ok("Binary installed: " + destBin)
+	}
+
+	// ── Deploy config + systemd units ──
+	for _, n := range nodeList {
+		dataDir := nodeDataDir(*dataBase, n)
+		step(fmt.Sprintf("Deploying Node %s", strings.ToUpper(n)))
+		deployNode(n, *configDir, dataDir, *installDir, *dryRun)
+	}
+
+	if *dryRun {
+		fmt.Println("\n=== Dry run complete — no changes made ===")
+		return
+	}
+
+	// ── Start services ──
+	step("Starting services")
+	for _, n := range nodeList {
+		svc := serviceName(n)
+		run("systemctl", "daemon-reload")
+		run("systemctl", "enable", svc)
+		run("systemctl", "start", svc)
+		fmt.Printf("  started %s\n", svc)
+		if n == "a" && contains(nodeList, "b") {
+			time.Sleep(3 * time.Second) // let A start before B connects
+		}
+	}
+
+	// ── Post-flight health check ──
+	if *skipHealth {
+		fmt.Println("\n=== Deploy complete (health check skipped) ===")
+		return
+	}
+
+	step("Post-flight health check")
+	time.Sleep(5 * time.Second) // allow header sync to start
+	allHealthy := true
+	for _, n := range nodeList {
+		port := apiPort(n)
+		if !healthCheck(port) {
+			allHealthy = false
+		}
+	}
+
+	if !allHealthy {
+		fmt.Println("\n⚠ Some nodes did not pass health check. Run: anvil doctor -config /etc/anvil/node-a.toml")
+	} else {
+		ok("All nodes healthy")
+	}
+
+	fmt.Println("\n=== Deploy complete ===")
+	fmt.Println("Monitor: journalctl -u <node-a> -f")
+	fmt.Println("Doctor:  anvil doctor -config /etc/anvil/node-a.toml")
+}
+
+// ── Pre-flight checks ──
+
+func preflight(node, configDir, dataDir string, dryRun bool) {
+	// Required subdirs for the data directory
+	subdirs := []string{"headers", "envelopes", "overlay", "wallet", "invoices", "proofs"}
+	for _, sub := range subdirs {
+		dir := filepath.Join(dataDir, sub)
+		if dryRun {
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				fmt.Printf("  [dry-run] would create %s\n", dir)
+			}
+			continue
+		}
+		os.MkdirAll(dir, 0755)
+		chownRecursive(dir, "anvil")
+	}
+
+	// Ensure env file exists (with WIF)
+	envFile := filepath.Join(configDir, fmt.Sprintf("node-%s.env", node))
+	if _, err := os.Stat(envFile); os.IsNotExist(err) {
+		if dryRun {
+			fmt.Printf("  [dry-run] would create %s with generated WIF\n", envFile)
+		} else {
+			os.MkdirAll(configDir, 0755)
+			wif := generatePlaceholderWIF()
+			content := fmt.Sprintf("# Anvil Node %s identity\n# Generate a real WIF or replace this placeholder\nANVIL_IDENTITY_WIF=%s\n", strings.ToUpper(node), wif)
+			os.WriteFile(envFile, []byte(content), 0600)
+			chown(envFile, "anvil")
+			fmt.Printf("  created %s (placeholder WIF — replace for production)\n", envFile)
+		}
+	}
+}
+
+func ensureUser(username string, dryRun bool) {
+	if _, err := user.Lookup(username); err == nil {
+		return
+	}
+	if dryRun {
+		fmt.Printf("  [dry-run] would create user %s\n", username)
+		return
+	}
+	run("useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", username)
+	fmt.Printf("  created system user: %s\n", username)
+}
+
+// ── Deploy a single node ──
+
+func deployNode(node, configDir, dataDir, installDir string, dryRun bool) {
+	// Systemd unit
+	unitContent := renderUnit(node, configDir, dataDir, installDir)
+	unitPath := fmt.Sprintf("/etc/systemd/system/%s.service", serviceName(node))
+	if dryRun {
+		fmt.Printf("  [dry-run] would write %s\n", unitPath)
+	} else {
+		os.WriteFile(unitPath, []byte(unitContent), 0644)
+		fmt.Printf("  wrote %s\n", unitPath)
+	}
+
+	// Config file (only if not already present — never overwrite existing config)
+	tomlPath := filepath.Join(configDir, fmt.Sprintf("node-%s.toml", node))
+	if _, err := os.Stat(tomlPath); os.IsNotExist(err) {
+		tomlContent := renderConfig(node, dataDir)
+		if dryRun {
+			fmt.Printf("  [dry-run] would write %s\n", tomlPath)
+		} else {
+			os.WriteFile(tomlPath, []byte(tomlContent), 0644)
+			fmt.Printf("  wrote %s\n", tomlPath)
+		}
+	} else {
+		fmt.Printf("  %s exists — not overwriting\n", tomlPath)
+	}
+
+	chownRecursive(dataDir, "anvil")
+}
+
+// ── Templates ──
+
+var unitTmpl = template.Must(template.New("unit").Parse(`[Unit]
+Description=Anvil {{.DisplayName}}
+After=network-online.target{{if eq .Node "b"}}
+After=<node-a>.service{{end}}
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anvil
+Group=anvil
+WorkingDirectory={{.InstallDir}}
+ExecStart={{.InstallDir}}/anvil -config {{.ConfigDir}}/node-{{.Node}}.toml
+EnvironmentFile={{.ConfigDir}}/node-{{.Node}}.env
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{.DataDir}}
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+`))
+
+func renderUnit(node, configDir, dataDir, installDir string) string {
+	var buf bytes.Buffer
+	displayName := "Prime (seed node)"
+	if node == "b" {
+		displayName = "One (peer node)"
+	}
+	unitTmpl.Execute(&buf, map[string]string{
+		"Node":        node,
+		"DisplayName": displayName,
+		"ConfigDir":   configDir,
+		"DataDir":     dataDir,
+		"InstallDir":  installDir,
+	})
+	return buf.String()
+}
+
+func renderConfig(node, dataDir string) string {
+	meshPort := "8333"
+	apiPort := "9333"
+	seeds := "seeds = []"
+	name := "anvil-prime"
+	paymentSats := "0" // default: free infrastructure
+
+	if node == "b" {
+		meshPort = "8334"
+		apiPort = "9334"
+		seeds = `seeds = ["ws://127.0.0.1:8333"]`
+		name = "anvil-one"
+	}
+
+	return fmt.Sprintf(`# Anvil Node %s
+[node]
+name = "%s"
+data_dir = "%s"
+listen = "0.0.0.0:%s"
+api_listen = "0.0.0.0:%s"
+
+[mesh]
+%s
+
+[bsv]
+nodes = ["seed.bitcoinsv.io:8333"]
+
+[arc]
+enabled = true
+url = "https://arc.gorillapool.io"
+
+[junglebus]
+enabled = true
+url = "junglebus.gorillapool.io"
+
+[overlay]
+enabled = true
+topics = ["anvil:mainnet"]
+
+[envelopes]
+max_ephemeral_ttl = 3600
+max_durable_size = 65536
+
+[api]
+rate_limit = 100
+payment_satoshis = %s
+
+[api.app_payments]
+allow_passthrough = true
+allow_split = true
+allow_token_gating = true
+max_app_price_sats = 10000
+`, strings.ToUpper(node), name, dataDir, meshPort, apiPort, seeds, paymentSats)
+}
+
+// ── Health check ──
+
+func healthCheck(port string) bool {
+	url := fmt.Sprintf("http://127.0.0.1:%s/status", port)
+	for attempt := 0; attempt < 6; attempt++ {
+		resp, err := http.Get(url)
+		if err == nil && resp.StatusCode == 200 {
+			resp.Body.Close()
+			fmt.Printf("  ✓ :%s responding\n", port)
+			return true
+		}
+		time.Sleep(2 * time.Second)
+	}
+	fmt.Printf("  ✗ :%s not responding after 12s\n", port)
+	return false
+}
+
+// ── Helpers ──
+
+func parseNodeList(s string) []string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "a":
+		return []string{"a"}
+	case "b":
+		return []string{"b"}
+	case "ab", "both":
+		return []string{"a", "b"}
+	}
+	return nil
+}
+
+func nodeDataDir(base, node string) string {
+	if node == "a" {
+		return filepath.Join(base, "anvil")
+	}
+	return filepath.Join(base, "<node-b>")
+}
+
+func serviceName(node string) string { return "anvil-" + node }
+
+func apiPort(node string) string {
+	if node == "b" {
+		return "9334"
+	}
+	return "9333"
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func assertRoot() {
+	if os.Geteuid() != 0 {
+		fatal("anvil deploy requires root (use sudo)")
+	}
+}
+
+func stopServices(nodes []string) {
+	for _, n := range nodes {
+		exec.Command("systemctl", "stop", serviceName(n)).Run() // ignore errors
+	}
+	time.Sleep(2 * time.Second) // wait for processes to exit
+}
+
+func run(name string, args ...string) {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("  warning: %s %v: %v\n", name, args, err)
+	}
+}
+
+func copyFile(src, dst string, perm os.FileMode) {
+	in, err := os.Open(src)
+	if err != nil {
+		fatal("open source binary: " + err.Error())
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		fatal("create dest binary: " + err.Error())
+	}
+	defer out.Close()
+	io.Copy(out, in)
+}
+
+func chownRecursive(path, username string) {
+	exec.Command("chown", "-R", username+":"+username, path).Run()
+}
+
+func chown(path, username string) {
+	exec.Command("chown", username+":"+username, path).Run()
+}
+
+func generatePlaceholderWIF() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return "PLACEHOLDER_" + hex.EncodeToString(b)[:16]
+}
+
+func step(msg string) { fmt.Printf("\n[→] %s\n", msg) }
+func ok(msg string)   { fmt.Printf("  ✓ %s\n", msg) }
+func fatal(msg string) {
+	fmt.Fprintf(os.Stderr, "FATAL: %s\n", msg)
+	os.Exit(1)
+}

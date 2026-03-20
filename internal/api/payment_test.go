@@ -317,8 +317,8 @@ func TestX402DiscoveryEndpoint(t *testing.T) {
 
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
-	if body["scheme"] != "bsv-tx-v1" {
-		t.Fatalf("expected scheme=bsv-tx-v1, got %v", body["scheme"])
+	if body["settlement"] != "BSV" {
+		t.Fatalf("expected settlement=BSV, got %v", body["settlement"])
 	}
 	endpoints := body["endpoints"].([]interface{})
 	if len(endpoints) == 0 {
@@ -330,15 +330,25 @@ func TestX402DiscoveryEndpoint(t *testing.T) {
 	}
 }
 
-func TestX402DiscoveryHiddenWhenFree(t *testing.T) {
+func TestX402DiscoveryShowsZeroWhenFree(t *testing.T) {
 	srv := testServer(t) // no payment gate
 
 	req := httptest.NewRequest("GET", "/.well-known/x402", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
-	if w.Code == http.StatusOK {
-		t.Fatal("expected no discovery endpoint when free")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for x402 discovery even when free, got %d", w.Code)
+	}
+	// All prices should be 0
+	var result map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&result)
+	endpoints := result["endpoints"].([]interface{})
+	for _, ep := range endpoints {
+		em := ep.(map[string]interface{})
+		if price, ok := em["price"].(float64); ok && price > 0 {
+			t.Fatalf("expected price=0 for free node, got %v on %s", price, em["path"])
+		}
 	}
 }
 

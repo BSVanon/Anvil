@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/api"
+	"github.com/BSVanon/Anvil/internal/bond"
+	"github.com/BSVanon/Anvil/internal/p2p"
 	"github.com/BSVanon/Anvil/internal/config"
 	"github.com/BSVanon/Anvil/internal/envelope"
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
@@ -30,6 +32,18 @@ import (
 )
 
 func main() {
+	// Subcommand routing — deploy, doctor, or run (default)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "deploy":
+			cmdDeploy(os.Args[2:])
+			return
+		case "doctor":
+			cmdDoctor(os.Args[2:])
+			return
+		}
+	}
+
 	configPath := flag.String("config", "anvil.toml", "path to config file")
 	flag.Parse()
 
@@ -155,10 +169,19 @@ func main() {
 	}
 
 	// Phase 5.5: Node wallet (optional — requires identity WIF)
+	var identityPubHex string
+	if cfg.Identity.WIF != "" {
+		if ik, err := ec.PrivateKeyFromWif(cfg.Identity.WIF); err == nil {
+			identityPubHex = fmt.Sprintf("%x", ik.PubKey().Compressed())
+		}
+	}
+
+	var bondCheck *bond.Checker // may be set in mesh block below
+
 	var nodeWallet *anvilwallet.NodeWallet
 	if cfg.Identity.WIF != "" {
 		walletDir := filepath.Join(cfg.Node.DataDir, "wallet")
-		nw, err := anvilwallet.New(cfg.Identity.WIF, walletDir, headerStore, proofStore, broadcaster, logger)
+		nw, err := anvilwallet.New(cfg.Identity.WIF, walletDir, headerStore, proofStore, broadcaster, arcClient, logger)
 		if err != nil {
 			log.Printf("wallet init failed (non-fatal): %v", err)
 		} else {
@@ -168,21 +191,29 @@ func main() {
 		}
 	}
 
-	// Phase 4: Gossip mesh — uses go-sdk auth.Peer for authenticated WebSocket peering.
+	// Anvil mesh — uses go-sdk auth.Peer for authenticated WebSocket peering.
 	// Requires a wallet for authenticated identity: mesh is disabled without identity.wif.
 	var gossipMgr *anvilgossip.Manager
-	meshWanted := len(cfg.Foundry.Seeds) > 0 || cfg.Node.Listen != ""
+	meshWanted := len(cfg.Mesh.Seeds) > 0 || cfg.Node.Listen != ""
 	if meshWanted && nodeWallet == nil {
 		log.Printf("mesh disabled: identity.wif required for authenticated peering (seeds=%d listen=%q)",
-			len(cfg.Foundry.Seeds), cfg.Node.Listen)
+			len(cfg.Mesh.Seeds), cfg.Node.Listen)
 	}
 	if meshWanted && nodeWallet != nil {
+		// Bond checker — if configured, peers must prove a bond UTXO to join the mesh
+		if cfg.Mesh.MinBondSats > 0 {
+			bondCheck = bond.NewChecker(cfg.Mesh.MinBondSats, cfg.Mesh.BondCheckURL)
+			log.Printf("bond required: %d sats minimum for mesh peering", cfg.Mesh.MinBondSats)
+		}
+
 		gossipMgr = anvilgossip.NewManager(anvilgossip.ManagerConfig{
 			Wallet:         nodeWallet.Wallet(),
 			Store:          envStore,
 			Logger:         logger,
-			LocalInterests: cfg.Overlay.Topics,
+			LocalInterests: []string{""}, // match all topics — relay everything we store
 			MaxSeen:        10000,
+			OverlayDir:     overlayDir,
+			BondChecker:    bondCheck,
 			OnEnvelope: func(env *envelope.Envelope) {
 				logger.Info("mesh envelope received", "topic", env.Topic, "from", env.Pubkey[:16])
 			},
@@ -190,20 +221,20 @@ func main() {
 		defer gossipMgr.Stop()
 
 		// Connect to seed peers
-		for _, seed := range cfg.Foundry.Seeds {
+		for _, seed := range cfg.Mesh.Seeds {
 			go func(endpoint string) {
 				if err := gossipMgr.ConnectPeer(context.Background(), endpoint); err != nil {
-					logger.Warn("foundry peer failed", "endpoint", endpoint, "error", err)
+					logger.Warn("mesh peer failed", "endpoint", endpoint, "error", err)
 				}
 			}(seed)
 		}
-		if len(cfg.Foundry.Seeds) > 0 {
-			log.Printf("foundry mesh: connecting to %d seed peers", len(cfg.Foundry.Seeds))
+		if len(cfg.Mesh.Seeds) > 0 {
+			log.Printf("anvil mesh: connecting to %d seed peers", len(cfg.Mesh.Seeds))
 		}
 
 		// NOTE: TX mesh forwarding is NOT implemented. Envelope gossip works
 		// (proven by mesh_e2e_test.go), but raw transaction forwarding across
-		// the foundry mesh requires a dedicated wire message type and is deferred.
+		// the mesh requires a dedicated wire message type and is deferred.
 		// Transactions are local mempool + optional ARC submission only.
 
 		// Inbound mesh listener: accept authenticated WebSocket peers.
@@ -256,23 +287,51 @@ func main() {
 		}
 	}
 
+	// P2P fetchers for content CDN — uses BSV nodes directly, WoC as fallback
+	var p2pTxFetcher *p2p.TxFetcher
+	var p2pBlockFetcher *p2p.BlockTxFetcher
+	if len(cfg.BSV.Nodes) > 0 {
+		p2pTxFetcher = p2p.NewTxFetcher(cfg.BSV.Nodes, logger)
+		p2pBlockFetcher = p2p.NewBlockTxFetcher(cfg.BSV.Nodes, logger)
+		defer p2pTxFetcher.Close()
+	}
+
 	// REST API — gossip manager wired in so POST /data can broadcast to mesh
 	validator := spv.NewValidator(headerStore)
 	srv := api.NewServer(api.ServerConfig{
-		HeaderStore:     headerStore,
-		ProofStore:      proofStore,
-		EnvelopeStore:   envStore,
-		OverlayDir:      overlayDir,
-		Validator:       validator,
-		Broadcaster:     broadcaster,
-		GossipMgr:       gossipMgr,
-		AuthToken:       cfg.API.AuthToken,
-		RateLimit:       cfg.API.RateLimit,
-		TrustProxy:      cfg.API.TrustProxy,
-		PaymentSatoshis: paymentSatoshis,
-		PayeeScriptHex:  payeeScriptHex,
-		NonceProvider:   nonceProvider,
-		Logger:          logger,
+		HeaderStore:      headerStore,
+		ProofStore:       proofStore,
+		EnvelopeStore:    envStore,
+		OverlayDir:       overlayDir,
+		Validator:        validator,
+		Broadcaster:      broadcaster,
+		GossipMgr:        gossipMgr,
+		AuthToken:        cfg.API.AuthToken,
+		RateLimit:        cfg.API.RateLimit,
+		TrustProxy:       cfg.API.TrustProxy,
+		PaymentSatoshis:  paymentSatoshis,
+		PayeeScriptHex:   payeeScriptHex,
+		NonceProvider:    nonceProvider,
+		AllowPassthrough: cfg.API.AppPayments.AllowPassthrough,
+		AllowSplit:       cfg.API.AppPayments.AllowSplit,
+		AllowTokenGating: cfg.API.AppPayments.AllowTokenGating,
+		MaxAppPriceSats:  cfg.API.AppPayments.MaxAppPriceSats,
+		EndpointPrices:   cfg.API.EndpointPrices,
+		ARCClient:        arcClient,
+		RequireMempool:   cfg.API.RequireMempool,
+		Logger:           logger,
+		NodeName:         cfg.Node.Name,
+		IdentityPub:      identityPubHex,
+		BondChecker:      bondCheck,
+		P2PTxSource:      p2pTxFetcher,
+		P2PBlockSource:   p2pBlockFetcher,
+		HeaderLookup: func(height int) string {
+			hash, err := headerStore.HashAtHeight(uint32(height))
+			if err != nil || hash == nil {
+				return ""
+			}
+			return hash.String()
+		},
 	})
 
 	if nodeWallet != nil {

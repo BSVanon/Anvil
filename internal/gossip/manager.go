@@ -2,11 +2,9 @@ package gossip
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/bsv-blockchain/go-sdk/auth"
@@ -14,11 +12,12 @@ import (
 	"github.com/bsv-blockchain/go-sdk/wallet"
 	"golang.org/x/net/websocket"
 
+	"github.com/BSVanon/Anvil/internal/bond"
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
 // Manager wraps go-sdk auth.Peer instances for mesh communication.
-// Each connected foundry peer is an authenticated session via auth.Peer.
+// Each connected mesh peer is an authenticated session via auth.Peer.
 // The auth layer handles identity verification and transport;
 // this manager handles message routing and topic-scoped forwarding.
 //
@@ -46,6 +45,22 @@ type Manager struct {
 
 	// callback for new envelopes from the mesh
 	onEnvelope func(*envelope.Envelope)
+
+	// overlay directory for SHIP gossip (nil = SHIP sync disabled)
+	overlayDir OverlayDirectory
+
+	// bond checker (nil = no bond required)
+	bondChecker *bond.Checker
+}
+
+// OverlayDirectory is the interface for SHIP registration storage.
+// Satisfied by overlay.Directory. Uses callback pattern to avoid
+// shared type definitions across packages.
+type OverlayDirectory interface {
+	// ForEachSHIP calls fn for every SHIP registration. Stop iteration by returning false.
+	ForEachSHIP(fn func(identity, domain, topic string) bool)
+	// AddSHIPPeerFromGossip stores a SHIP peer received from a trusted mesh peer.
+	AddSHIPPeerFromGossip(identity, domain, topic string) error
 }
 
 // MeshPeer represents a single authenticated mesh connection.
@@ -65,6 +80,8 @@ type ManagerConfig struct {
 	LocalInterests []string
 	MaxSeen        int
 	OnEnvelope     func(*envelope.Envelope)
+	OverlayDir     OverlayDirectory
+	BondChecker    *bond.Checker
 }
 
 // NewManager creates a gossip manager backed by go-sdk auth.Peer.
@@ -87,6 +104,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 		seen:           make(map[string]struct{}),
 		maxSeen:        maxSeen,
 		onEnvelope:     cfg.OnEnvelope,
+		overlayDir:     cfg.OverlayDir,
+		bondChecker:    cfg.BondChecker,
 	}
 }
 
@@ -113,13 +132,30 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 
 		// Update peer identity on first message (auth handshake completes)
 		m.mu.Lock()
+		needsBondCheck := false
 		if mp, ok := m.peers[endpoint]; ok && mp.IdentityPK == nil {
 			mp.IdentityPK = senderPK
-			// Re-key from endpoint to pubkey
 			m.peers[pkHex] = mp
 			delete(m.peers, endpoint)
+			needsBondCheck = true
 		}
 		m.mu.Unlock()
+
+		// Verify bond on first message (identity just revealed)
+		if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
+			balance, err := m.bondChecker.VerifyBond(senderPK)
+			if err != nil {
+				m.logger.Warn("outbound peer rejected: insufficient bond",
+					"peer", truncate(pkHex),
+					"endpoint", endpoint,
+					"error", err.Error())
+				m.removePeer(pkHex)
+				return fmt.Errorf("bond required: %w", err)
+			}
+			m.logger.Info("outbound peer bond verified",
+				"peer", truncate(pkHex),
+				"bond_sats", balance)
+		}
 
 		return m.handleMessage(pkHex, senderPK, payload)
 	})
@@ -143,192 +179,25 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 	go transport.StartReceive()
 
 	// Announce our topic interests
-	return m.announceInterests(peer)
-}
-
-// announceInterests sends our topic declarations to a peer.
-func (m *Manager) announceInterests(peer *auth.Peer) error {
-	payload, err := Encode(MsgTopics, TopicsPayload{Prefixes: m.localInterests})
-	if err != nil {
-		return err
-	}
-	ctx := context.Background()
-	return peer.ToPeer(ctx, payload, nil, 5000)
-}
-
-// handleMessage processes an incoming mesh message from an authenticated peer.
-func (m *Manager) handleMessage(senderPKHex string, senderPK *ec.PublicKey, payload []byte) error {
-	msg, err := Decode(payload)
-	if err != nil {
-		m.logger.Warn("invalid mesh message", "error", err)
-		return nil // don't break the connection for bad messages
-	}
-
-	switch msg.Type {
-	case MsgData:
-		return m.onData(senderPKHex, msg.Data)
-	case MsgTopics:
-		return m.onTopics(senderPKHex, msg.Data)
-	case MsgDataRequest:
-		return m.onDataRequest(senderPKHex, senderPK, msg.Data)
-	case MsgDataResponse:
-		return m.onDataResponse(msg.Data)
-	default:
-		m.logger.Debug("unknown mesh message type", "type", msg.Type)
-	}
-	return nil
-}
-
-// onData handles an incoming data envelope from a peer.
-func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
-	env, err := envelope.UnmarshalEnvelope(raw)
-	if err != nil {
-		return nil
-	}
-
-	// Dedup check
-	hash := envelope.HashEnvelope(env.Topic, env.Pubkey, env.Timestamp)
-	m.seenMu.Lock()
-	if _, seen := m.seen[hash]; seen {
-		m.seenMu.Unlock()
-		return nil
-	}
-	if len(m.seen) >= m.maxSeen {
-		// FIFO eviction: clear half
-		count := 0
-		for k := range m.seen {
-			delete(m.seen, k)
-			count++
-			if count >= m.maxSeen/2 {
-				break
-			}
-		}
-	}
-	m.seen[hash] = struct{}{}
-	m.seenMu.Unlock()
-
-	// Validate signature
-	if err := env.Validate(); err != nil {
-		m.logger.Debug("envelope signature invalid", "topic", env.Topic, "error", err)
-		return nil
-	}
-
-	// Store
-	if m.store != nil {
-		if err := m.store.Ingest(env); err != nil {
-			m.logger.Warn("envelope store error", "error", err)
-		}
-	}
-
-	// Notify callback
-	if m.onEnvelope != nil {
-		m.onEnvelope(env)
-	}
-
-	// Forward to interested peers (except sender)
-	m.forwardToInterested(senderPK, env.Topic, raw)
-
-	return nil
-}
-
-// onTopics handles a peer's interest declaration.
-func (m *Manager) onTopics(senderPK string, raw json.RawMessage) error {
-	var tp TopicsPayload
-	if err := json.Unmarshal(raw, &tp); err != nil {
-		return nil
-	}
-	m.mu.Lock()
-	m.interests[senderPK] = tp.Prefixes
-	m.mu.Unlock()
-	m.logger.Debug("peer interests updated", "peer", truncate(senderPK), "prefixes", tp.Prefixes)
-	return nil
-}
-
-// onDataRequest handles a pull-based catch-up query. Responds without re-gossiping.
-func (m *Manager) onDataRequest(senderPKHex string, senderPK *ec.PublicKey, raw json.RawMessage) error {
-	var req DataRequestPayload
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil
-	}
-
-	if m.store == nil {
-		return nil
-	}
-
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	results, _ := m.store.QueryByTopic(req.Topic, limit)
-
-	resp, err := Encode(MsgDataResponse, DataResponsePayload{
-		Topic:     req.Topic,
-		Envelopes: results,
-		HasMore:   false,
-	})
-	if err != nil {
+	if err := m.announceInterests(peer); err != nil {
 		return err
 	}
 
-	// Send directly to requester — no gossip
-	m.mu.RLock()
-	peer, ok := m.peers[senderPKHex]
-	m.mu.RUnlock()
-	if ok && peer.Peer != nil {
-		return peer.Peer.ToPeer(context.Background(), resp, senderPK, 5000)
-	}
+	// Share our SHIP registrations
+	m.announceSHIP(peer)
 	return nil
 }
 
-// onDataResponse handles catch-up response. Stores locally without re-gossiping.
-func (m *Manager) onDataResponse(raw json.RawMessage) error {
-	var resp DataResponsePayload
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil
-	}
-
-	for _, env := range resp.Envelopes {
-		if err := env.Validate(); err != nil {
-			continue
-		}
-		if m.store != nil {
-			m.store.Ingest(env)
-		}
-	}
-	return nil
-}
-
-// forwardToInterested sends an envelope to peers whose declared interests match the topic.
-func (m *Manager) forwardToInterested(senderPK string, topic string, rawEnvelope json.RawMessage) {
-	encoded, err := Encode(MsgData, rawEnvelope)
-	if err != nil {
-		return
-	}
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for pkHex, peer := range m.peers {
-		if pkHex == senderPK {
-			continue // don't echo back to sender
-		}
-
-		prefixes := m.interests[pkHex]
-		for _, prefix := range prefixes {
-			if strings.HasPrefix(topic, prefix) {
-				if peer.Peer != nil {
-					peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
-				}
-				break
-			}
-		}
-	}
-}
 
 // BroadcastEnvelope sends an envelope to all interested peers.
 // Called by the API layer when a new envelope is submitted via HTTP.
 func (m *Manager) BroadcastEnvelope(env *envelope.Envelope) {
-	hash := envelope.HashEnvelope(env.Topic, env.Pubkey, env.Timestamp)
+	// Respect no_gossip flag — local-only envelopes stay on this node
+	if env.NoGossip {
+		return
+	}
+
+	hash := envelope.HashEnvelope(env.Topic, env.Pubkey, env.Payload, env.Timestamp)
 	m.seenMu.Lock()
 	m.seen[hash] = struct{}{}
 	m.seenMu.Unlock()
@@ -356,12 +225,29 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 		pkHex := fmt.Sprintf("%x", senderPK.Compressed())
 
 		m.mu.Lock()
+		needsBondCheck := false
 		if mp, ok := m.peers[tempKey]; ok && mp.IdentityPK == nil {
 			mp.IdentityPK = senderPK
 			m.peers[pkHex] = mp
 			delete(m.peers, tempKey)
+			needsBondCheck = true
 		}
 		m.mu.Unlock()
+
+		// Verify bond on first message (identity just revealed)
+		if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
+			balance, err := m.bondChecker.VerifyBond(senderPK)
+			if err != nil {
+				m.logger.Warn("peer rejected: insufficient bond",
+					"peer", truncate(pkHex),
+					"error", err.Error())
+				m.removePeer(pkHex)
+				return fmt.Errorf("bond required: %w", err)
+			}
+			m.logger.Info("peer bond verified",
+				"peer", truncate(pkHex),
+				"bond_sats", balance)
+		}
 
 		return m.handleMessage(pkHex, senderPK, payload)
 	})
@@ -387,6 +273,7 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 	if err := m.announceInterests(peer); err != nil {
 		return tempKey, err
 	}
+	m.announceSHIP(peer)
 	return tempKey, nil
 }
 

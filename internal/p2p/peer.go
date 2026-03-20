@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	protocolVersion = 70016
-	userAgent       = "/Anvil:0.1.0/"
-	readTimeout     = 30 * time.Second
-	writeTimeout    = 10 * time.Second
+	protocolVersion    = 70016
+	userAgent          = "/Anvil:0.1.0/"
+	readTimeout        = 30 * time.Second
+	readTimeoutLargeTx = 120 * time.Second // large inscriptions need more time
+	writeTimeout       = 10 * time.Second
 )
 
 // Peer is a raw Bitcoin P2P connection that handles the wire protocol
@@ -136,6 +137,43 @@ func (p *Peer) ReadHeaders() ([]*wire.BlockHeader, error) {
 	}
 }
 
+// RequestTransaction sends a getdata message requesting a specific transaction by hash.
+func (p *Peer) RequestTransaction(txHash *chainhash.Hash) error {
+	msg := wire.NewMsgGetData()
+	inv := wire.NewInvVect(wire.InvTypeTx, txHash)
+	if err := msg.AddInvVect(inv); err != nil {
+		return err
+	}
+	return p.writeMsg(msg)
+}
+
+// ReadTransaction reads messages until it gets a tx response matching the requested hash.
+// Uses extended timeout for large inscription transactions.
+func (p *Peer) ReadTransaction(targetHash *chainhash.Hash) (*wire.MsgTx, error) {
+	for {
+		msg, err := p.readMsgLarge()
+		if err != nil {
+			return nil, err
+		}
+		switch m := msg.(type) {
+		case *wire.MsgTx:
+			// Verify this is the tx we requested
+			gotHash := m.TxHash()
+			if gotHash.IsEqual(targetHash) {
+				return m, nil
+			}
+			p.logger.Debug("tx: ignoring unexpected", "got", gotHash.String(), "want", targetHash.String())
+		case *wire.MsgPing:
+			pong := wire.NewMsgPong(m.Nonce)
+			p.writeMsg(pong)
+		case *wire.MsgNotFound:
+			return nil, fmt.Errorf("transaction not found by peer")
+		default:
+			p.logger.Debug("tx: ignoring", "cmd", msg.Command())
+		}
+	}
+}
+
 // Close closes the connection.
 func (p *Peer) Close() error {
 	return p.conn.Close()
@@ -149,7 +187,15 @@ func (p *Peer) writeMsg(msg wire.Message) error {
 }
 
 func (p *Peer) readMsg() (wire.Message, error) {
-	p.conn.SetReadDeadline(time.Now().Add(readTimeout))
+	return p.readMsgTimeout(readTimeout)
+}
+
+func (p *Peer) readMsgLarge() (wire.Message, error) {
+	return p.readMsgTimeout(readTimeoutLargeTx)
+}
+
+func (p *Peer) readMsgTimeout(timeout time.Duration) (wire.Message, error) {
+	p.conn.SetReadDeadline(time.Now().Add(timeout))
 	msg, _, err := wire.ReadMessage(p.conn, protocolVersion, p.network)
 	if err != nil {
 		if err == io.EOF {
