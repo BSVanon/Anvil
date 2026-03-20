@@ -281,8 +281,9 @@ func main() {
 				log.Fatalf("x402: build locking script: %v", err)
 			}
 			payeeScriptHex = fmt.Sprintf("%x", []byte(*lockScript))
-			nonceProvider = api.NewWalletNonceProvider(nodeWallet.Wallet())
-			log.Printf("x402: payment gating enabled (%d sats/request, payee=%s)",
+			walletNonce := api.NewWalletNonceProvider(nodeWallet.Wallet())
+			nonceProvider = api.NewUTXONoncePool(walletNonce, 100, logger)
+			log.Printf("x402: payment gating enabled (%d sats/request, payee=%s, nonce pool=100)",
 				paymentSatoshis, addr.AddressString)
 		}
 	}
