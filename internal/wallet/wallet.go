@@ -422,8 +422,9 @@ func (nw *NodeWallet) handleSend(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 		Outputs: []sdk.CreateActionOutput{
 			{
-				LockingScript: []byte(*lockingScript),
-				Satoshis:      req.Satoshis,
+				LockingScript:     []byte(*lockingScript),
+				Satoshis:          req.Satoshis,
+				OutputDescription: req.Description,
 			},
 		},
 	}, "anvil")

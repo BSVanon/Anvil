@@ -263,29 +263,33 @@ func main() {
 	paymentSatoshis := cfg.API.PaymentSatoshis
 	var payeeScriptHex string
 	var nonceProvider api.NonceProvider
-	if paymentSatoshis > 0 {
-		if cfg.Identity.WIF == "" || nodeWallet == nil {
-			log.Printf("x402: payment_satoshis=%d but identity.wif or wallet missing — payment gating DISABLED", paymentSatoshis)
-			paymentSatoshis = 0 // force off — no dev-mode fallback
-		} else {
-			payeeKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
-			if err != nil {
-				log.Fatalf("x402: invalid identity WIF: %v", err)
-			}
-			addr, err := bsvscript.NewAddressFromPublicKey(payeeKey.PubKey(), true)
-			if err != nil {
-				log.Fatalf("x402: derive address: %v", err)
-			}
-			lockScript, err := p2pkh.Lock(addr)
-			if err != nil {
-				log.Fatalf("x402: build locking script: %v", err)
-			}
-			payeeScriptHex = fmt.Sprintf("%x", []byte(*lockScript))
-			walletNonce := api.NewWalletNonceProvider(nodeWallet.Wallet())
-			nonceProvider = api.NewUTXONoncePool(walletNonce, 100, logger)
+	// Create nonce provider whenever wallet exists — needed for app passthrough/split
+	// payments even when the node itself charges 0 (payment_satoshis = 0).
+	if cfg.Identity.WIF != "" && nodeWallet != nil {
+		payeeKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
+		if err != nil {
+			log.Fatalf("x402: invalid identity WIF: %v", err)
+		}
+		addr, err := bsvscript.NewAddressFromPublicKey(payeeKey.PubKey(), true)
+		if err != nil {
+			log.Fatalf("x402: derive address: %v", err)
+		}
+		lockScript, err := p2pkh.Lock(addr)
+		if err != nil {
+			log.Fatalf("x402: build locking script: %v", err)
+		}
+		payeeScriptHex = fmt.Sprintf("%x", []byte(*lockScript))
+		walletNonce := api.NewWalletNonceProvider(nodeWallet.Wallet())
+		nonceProvider = api.NewUTXONoncePool(walletNonce, 100, logger)
+		if paymentSatoshis > 0 {
 			log.Printf("x402: payment gating enabled (%d sats/request, payee=%s, nonce pool=100)",
 				paymentSatoshis, addr.AddressString)
+		} else {
+			log.Printf("x402: node is free, nonce pool ready for app passthrough/split payments")
 		}
+	} else if paymentSatoshis > 0 {
+		log.Printf("x402: payment_satoshis=%d but identity.wif or wallet missing — payment gating DISABLED", paymentSatoshis)
+		paymentSatoshis = 0
 	}
 
 	// P2P fetchers for content CDN — uses BSV nodes directly, WoC as fallback
