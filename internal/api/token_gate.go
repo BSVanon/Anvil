@@ -77,6 +77,7 @@ func (tg *TokenGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		r.Header.Set("X-Anvil-Authed", "true")
 		next(w, r)
 	}
 }
