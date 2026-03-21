@@ -36,6 +36,7 @@ type NodeConfig struct {
 	DataDir   string `toml:"data_dir"`
 	Listen    string `toml:"listen"`
 	APIListen string `toml:"api_listen"`
+	PublicURL string `toml:"public_url"` // public-facing API URL for overlay registration (e.g. "https://anvil.sendbsv.com")
 }
 
 type IdentityConfig struct {

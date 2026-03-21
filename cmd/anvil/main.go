@@ -138,7 +138,10 @@ func main() {
 			if err != nil {
 				log.Printf("overlay bootstrap: invalid WIF: %v", err)
 			} else {
-				domain := cfg.Node.Listen
+				domain := cfg.Node.PublicURL
+				if domain == "" {
+					domain = cfg.Node.Listen
+				}
 				anviloverlay.Bootstrap(overlayDir, identityKey, domain, cfg.Overlay.Topics, logger)
 			}
 		}
