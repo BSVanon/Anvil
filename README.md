@@ -98,7 +98,7 @@ curl http://localhost:9333/.well-known/x402
 | | URL |
 |---|---|
 | Explorer | https://anvil.sendbsv.com |
-| Direct IP | http://212.56.43.191:9333 |
+| Direct IP | http://212.56.43.191:9333/explorer |
 | x402 discovery | https://anvil.sendbsv.com/.well-known/x402 |
 
 ## Operations

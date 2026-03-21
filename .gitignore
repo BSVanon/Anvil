@@ -7,8 +7,8 @@
 *.ldb
 data/
 
-# Docs (local only, never committed)
-docs/
+# Internal docs (local only, never committed)
+docs/internal/
 
 # IDE
 .vscode/
