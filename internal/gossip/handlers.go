@@ -30,10 +30,11 @@ func (m *Manager) announceSHIP(peer *auth.Peer) {
 		return
 	}
 	var peers []SHIPPeerInfo
-	m.overlayDir.ForEachSHIP(func(identity, domain, topic string) bool {
+	m.overlayDir.ForEachSHIP(func(identity, domain, nodeName, topic string) bool {
 		peers = append(peers, SHIPPeerInfo{
 			IdentityPub: identity,
 			Domain:      domain,
+			NodeName:    nodeName,
 			Topic:       topic,
 		})
 		return true
@@ -62,7 +63,7 @@ func (m *Manager) onSHIPSync(senderPK string, raw json.RawMessage) error {
 		if p.IdentityPub == "" || p.Domain == "" || p.Topic == "" {
 			continue
 		}
-		if err := m.overlayDir.AddSHIPPeerFromGossip(p.IdentityPub, p.Domain, p.Topic); err == nil {
+		if err := m.overlayDir.AddSHIPPeerFromGossip(p.IdentityPub, p.Domain, p.NodeName, p.Topic); err == nil {
 			added++
 		}
 	}
