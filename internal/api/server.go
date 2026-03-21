@@ -130,6 +130,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /.well-known/x402", cors(s.handleX402Discovery))
 	s.mux.HandleFunc("GET /.well-known/anvil", cors(s.handleAnvilManifest))
 	s.mux.HandleFunc("GET /.well-known/identity", cors(s.handleIdentity))
+	s.mux.HandleFunc("GET /app/{name}", cors(s.handleAppRedirect))
+	s.mux.HandleFunc("GET /explorer", cors(func(w http.ResponseWriter, r *http.Request) {
+		r.SetPathValue("name", "Anvil Explorer")
+		s.handleAppRedirect(w, r)
+	}))
 	s.mux.HandleFunc("POST /bootstrap/block/{blockHash}", s.requireAuth(s.contentServer.BootstrapBlock))
 	s.mux.HandleFunc("GET /content/{origin}", s.openRead(s.contentServer.ServeContent))
 

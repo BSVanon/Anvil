@@ -75,13 +75,19 @@ curl http://localhost:9333/.well-known/x402
 | Endpoint | Method | Auth | Layer |
 |----------|--------|------|-------|
 | `/status` | GET | No | 0 |
+| `/stats` | GET | No | 0 |
 | `/tx/{txid}/beef` | GET | No | 0 |
+| `/content/{txid}_{vout}` | GET | No | 0 |
 | `/data` | GET | No | 1 |
 | `/data` | POST | Bearer or x402 | 1 |
 | `/overlay/lookup` | GET | No | 1 |
 | `/broadcast` | POST | Bearer | 0 |
 | `/wallet/scan` | POST | Bearer | 0 |
 | `/.well-known/x402` | GET | No | 3 |
+| `/.well-known/anvil` | GET | No | 3 |
+| `/.well-known/identity` | GET | No | 3 |
+| `/app/{name}` | GET | No | 3 |
+| `/explorer` | GET | No | 3 |
 
 ## Operations
 
@@ -100,6 +106,7 @@ curl http://localhost:9333/.well-known/x402
 | [Capabilities Reference](docs/ANVIL_CAPABILITIES.md) | Full API reference |
 | [Architecture](docs/ARCHITECTURE.md) | Internal design |
 | [Anvil Explorer](https://github.com/BSVanon/Anvil-Explorer) | Browser dashboard |
+| [anvil-mesh SDK](https://www.npmjs.com/package/anvil-mesh) | TypeScript client — `npm install anvil-mesh` |
 
 ## Requirements
 

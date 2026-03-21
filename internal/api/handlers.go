@@ -421,3 +421,42 @@ func readBEEF(r *http.Request) ([]byte, error) {
 
 	return body, nil
 }
+
+// handleAppRedirect serves /app/{name} — redirects to the latest inscription
+// for a named app from the anvil:catalog topic. Every node in the mesh can
+// serve this because the catalog gossips across all peers.
+func (s *Server) handleAppRedirect(w http.ResponseWriter, r *http.Request) {
+	appName := r.PathValue("name")
+	if appName == "" {
+		writeError(w, http.StatusBadRequest, "app name required")
+		return
+	}
+
+	if s.envelopeStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "no envelope store")
+		return
+	}
+
+	envs, err := s.envelopeStore.QueryByTopic("anvil:catalog", 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "catalog query failed")
+		return
+	}
+
+	// Search for matching app
+	for _, env := range envs {
+		var listing struct {
+			Name          string `json:"name"`
+			ContentOrigin string `json:"content_origin"`
+		}
+		if err := json.Unmarshal([]byte(env.Payload), &listing); err != nil {
+			continue
+		}
+		if strings.EqualFold(listing.Name, appName) && listing.ContentOrigin != "" {
+			http.Redirect(w, r, "/content/"+listing.ContentOrigin, http.StatusFound)
+			return
+		}
+	}
+
+	writeError(w, http.StatusNotFound, fmt.Sprintf("app %q not found in catalog or has no content_origin", appName))
+}
