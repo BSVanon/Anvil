@@ -87,6 +87,8 @@ No accounts, no API keys, no signups. Sub-cent costs, instant settlement.
 curl -s "http://212.56.43.191:9333/data?topic=oracle:rates:bsv&limit=1" | jq '.envelopes[0].payload | fromjson | .USD'
 ```
 
-## Contact
+## Links
 
+- [GitHub](https://github.com/BSVanon/Anvil)
+- [SDK](https://www.npmjs.com/package/anvil-mesh) — `npm install anvil-mesh`
 - [@SendBSV](https://x.com/SendBSV)
