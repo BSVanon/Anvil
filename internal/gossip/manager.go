@@ -337,6 +337,27 @@ func (m *Manager) PeerCount() int {
 	return len(m.peers)
 }
 
+// PeerInfo holds public information about a connected mesh peer.
+type PeerInfo struct {
+	Identity string `json:"identity"`
+	Endpoint string `json:"endpoint"`
+}
+
+// PeerList returns information about all connected mesh peers.
+func (m *Manager) PeerList() []PeerInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	list := make([]PeerInfo, 0, len(m.peers))
+	for _, p := range m.peers {
+		info := PeerInfo{Endpoint: p.Endpoint}
+		if p.IdentityPK != nil {
+			info.Identity = fmt.Sprintf("%x", p.IdentityPK.Compressed())
+		}
+		list = append(list, info)
+	}
+	return list
+}
+
 // ConnectSeedWithReconnect connects to a seed peer and automatically
 // reconnects if the connection drops. Blocks until ctx is cancelled.
 // Designed to run in a goroutine per seed peer.

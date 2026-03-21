@@ -52,7 +52,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	if s.gossipMgr != nil {
 		stats["mesh"] = map[string]interface{}{
-			"peers": s.gossipMgr.PeerCount(),
+			"peers":     s.gossipMgr.PeerCount(),
+			"peer_list": s.gossipMgr.PeerList(),
 		}
 	}
 
