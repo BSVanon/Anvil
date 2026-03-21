@@ -95,19 +95,11 @@ curl http://localhost:9333/.well-known/x402
 
 ## Live network
 
-- **Explorer:** https://anvil.sendbsv.com
-- **Direct IP:** http://212.56.43.191:9333
-- **x402 discovery:** https://anvil.sendbsv.com/.well-known/x402
-
-## Mesh peering
-
-Anvil nodes discover each other via overlay (SHIP) registration and gossip.
-
-**Bonds:** Nodes can require a minimum bond (BSV locked at the node's identity address) before accepting mesh peers. This prevents spam peering and ensures operators have skin in the game. Configure with `min_bond_sats` in the `[mesh]` section of your TOML config.
-
-**Auto-reconnect:** Seed peers automatically reconnect on disconnect (30s retry).
-
-**Node names:** Each node advertises its name via overlay gossip. Set `name` in the `[node]` section of your TOML config.
+| | URL |
+|---|---|
+| Explorer | https://anvil.sendbsv.com |
+| Direct IP | http://212.56.43.191:9333 |
+| x402 discovery | https://anvil.sendbsv.com/.well-known/x402 |
 
 ## Operations
 
@@ -125,6 +117,7 @@ Anvil nodes discover each other via overlay (SHIP) registration and gossip.
 | [Non-Custodial Payment Policy](docs/NON_CUSTODIAL_PAYMENT_POLICY.md) | What's allowed, what's prohibited |
 | [Capabilities Reference](docs/ANVIL_CAPABILITIES.md) | Full API reference |
 | [Architecture](docs/ARCHITECTURE.md) | Internal design |
+| [Mesh Peering](docs/MESH_PEERING.md) | Bonds, auto-reconnect, node names, overlay discovery |
 | [Anvil Explorer](https://github.com/BSVanon/Anvil-Explorer) | Browser dashboard |
 | [anvil-mesh SDK](https://www.npmjs.com/package/anvil-mesh) | TypeScript client — `npm install anvil-mesh` |
 
