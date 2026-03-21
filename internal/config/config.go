@@ -93,6 +93,7 @@ type APIConfig struct {
 	RequireMempool   bool              `toml:"require_mempool"`     // require ARC SEEN_ON_NETWORK before accepting x402 payment
 	EndpointPrices   map[string]int    `toml:"endpoint_prices"`     // per-endpoint price overrides (path → sats)
 	AppPayments      AppPaymentConfig  `toml:"app_payments"`
+	ExplorerOrigin   string            `toml:"explorer_origin"`     // fallback content_origin for /explorer (survives catalog expiry)
 }
 
 // AppPaymentConfig controls which non-custodial payment models apps can use.

@@ -32,8 +32,9 @@ type Server struct {
 	authToken     string
 	nodeName      string
 	identityPub    string
-	bondChecker    *bond.Checker
-	contentServer  *content.Server
+	bondChecker     *bond.Checker
+	contentServer   *content.Server
+	explorerOrigin  string
 }
 
 // ServerConfig holds all parameters for NewServer.
@@ -65,6 +66,7 @@ type ServerConfig struct {
 	P2PTxSource      content.TxSource
 	P2PBlockSource   content.BlockTxSource
 	HeaderLookup     func(int) string
+	ExplorerOrigin   string // fallback content_origin for /explorer when catalog is empty
 }
 
 // NewServer creates a new REST API server.
@@ -108,7 +110,8 @@ func NewServer(cfg ServerConfig) *Server {
 		nodeName:      cfg.NodeName,
 		identityPub:    cfg.IdentityPub,
 		bondChecker:    cfg.BondChecker,
-		contentServer:  content.NewServer("", cfg.P2PTxSource, cfg.P2PBlockSource, cfg.HeaderLookup),
+		contentServer:   content.NewServer("", cfg.P2PTxSource, cfg.P2PBlockSource, cfg.HeaderLookup),
+		explorerOrigin:  cfg.ExplorerOrigin,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -118,6 +121,10 @@ func NewServer(cfg ServerConfig) *Server {
 }
 
 func (s *Server) routes() {
+	// Root redirects to Explorer when configured
+	s.mux.HandleFunc("GET /{$}", cors(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/explorer", http.StatusFound)
+	}))
 	s.mux.HandleFunc("GET /status", s.openRead(s.handleStatus))
 	s.mux.HandleFunc("GET /stats", s.openRead(s.handleStats))
 	s.mux.HandleFunc("GET /headers/tip", s.openRead(s.handleHeadersTip))
@@ -133,7 +140,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /app/{name}", cors(s.handleAppRedirect))
 	s.mux.HandleFunc("GET /explorer", cors(func(w http.ResponseWriter, r *http.Request) {
 		r.SetPathValue("name", "Anvil Explorer")
-		s.handleAppRedirect(w, r)
+		s.handleAppRedirectWithFallback(w, r, s.explorerOrigin)
 	}))
 	s.mux.HandleFunc("POST /bootstrap/block/{blockHash}", s.requireAuth(s.contentServer.BootstrapBlock))
 	s.mux.HandleFunc("GET /content/{origin}", s.openRead(s.contentServer.ServeContent))

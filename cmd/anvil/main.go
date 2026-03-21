@@ -325,6 +325,7 @@ func main() {
 		NodeName:         cfg.Node.Name,
 		IdentityPub:      identityPubHex,
 		BondChecker:      bondCheck,
+		ExplorerOrigin:   cfg.API.ExplorerOrigin,
 		P2PTxSource:      p2pTxFetcher,
 		P2PBlockSource:   p2pBlockFetcher,
 		HeaderLookup: func(height int) string {

@@ -2,6 +2,7 @@ package envelope
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -93,11 +94,13 @@ func (s *Store) StoreEphemeralDirect(env *Envelope) {
 
 // QueryByTopic returns envelopes matching the given topic.
 // Searches both durable (LevelDB) and ephemeral (memory) stores.
-// Results are limited by the limit parameter (0 = no limit).
+// Results are sorted newest-first (by timestamp descending) and
+// limited after merging both stores, so limit=1 always returns the
+// most recent envelope regardless of storage type.
 func (s *Store) QueryByTopic(topic string, limit int) ([]*Envelope, error) {
 	var results []*Envelope
 
-	// Query durable store
+	// Query durable store (collect all, sort later)
 	prefix := append(append([]byte{}, prefixDurable...), []byte(topic+":")...)
 	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
 	defer iter.Release()
@@ -108,9 +111,6 @@ func (s *Store) QueryByTopic(topic string, limit int) ([]*Envelope, error) {
 			continue
 		}
 		results = append(results, env)
-		if limit > 0 && len(results) >= limit {
-			break
-		}
 	}
 	if err := iter.Error(); err != nil {
 		return nil, fmt.Errorf("iterate durable: %w", err)
@@ -118,14 +118,21 @@ func (s *Store) QueryByTopic(topic string, limit int) ([]*Envelope, error) {
 
 	// Query ephemeral store
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	for _, env := range s.ephemeral {
 		if env.Topic == topic && !env.IsExpired() {
 			results = append(results, env)
-			if limit > 0 && len(results) >= limit {
-				break
-			}
 		}
+	}
+	s.mu.RUnlock()
+
+	// Sort newest-first by timestamp
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Timestamp > results[j].Timestamp
+	})
+
+	// Apply limit after merge + sort
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
 	}
 
 	return results, nil

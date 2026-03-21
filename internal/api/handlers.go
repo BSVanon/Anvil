@@ -460,3 +460,37 @@ func (s *Server) handleAppRedirect(w http.ResponseWriter, r *http.Request) {
 
 	writeError(w, http.StatusNotFound, fmt.Sprintf("app %q not found in catalog or has no content_origin", appName))
 }
+
+// handleAppRedirectWithFallback is like handleAppRedirect but falls back
+// to a configured content origin when the catalog has no matching entry.
+// Used by /explorer to survive catalog expiry.
+func (s *Server) handleAppRedirectWithFallback(w http.ResponseWriter, r *http.Request, fallbackOrigin string) {
+	appName := r.PathValue("name")
+
+	if s.envelopeStore != nil {
+		envs, err := s.envelopeStore.QueryByTopic("anvil:catalog", 100)
+		if err == nil {
+			for _, env := range envs {
+				var listing struct {
+					Name          string `json:"name"`
+					ContentOrigin string `json:"content_origin"`
+				}
+				if err := json.Unmarshal([]byte(env.Payload), &listing); err != nil {
+					continue
+				}
+				if strings.EqualFold(listing.Name, appName) && listing.ContentOrigin != "" {
+					http.Redirect(w, r, "/content/"+listing.ContentOrigin, http.StatusFound)
+					return
+				}
+			}
+		}
+	}
+
+	// Fall back to configured origin
+	if fallbackOrigin != "" {
+		http.Redirect(w, r, "/content/"+fallbackOrigin, http.StatusFound)
+		return
+	}
+
+	writeError(w, http.StatusNotFound, "explorer not configured")
+}
