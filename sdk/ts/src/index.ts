@@ -1,5 +1,5 @@
 /**
- * @anvil/client — Thin TypeScript client for the Anvil mesh network.
+ * anvil-mesh — Thin TypeScript client for the Anvil mesh network.
  *
  * Handles auth token derivation, envelope signing, publish, and query.
  * Eliminates the pain points that burned us with SendBSV-Rates:
@@ -57,6 +57,8 @@ export interface CatalogListing {
   description: string;
   /** Version string */
   version?: string;
+  /** On-chain content origin (txid_vout) — used by /app/{name} and /explorer redirect */
+  content_origin?: string;
   /** URL to access the app (if web-based) */
   url?: string;
   /** Data topics this app publishes to */
