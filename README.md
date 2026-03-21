@@ -1,6 +1,10 @@
-# Anvil
+<p align="center">
+  <img src="anvil-logo.svg" width="140" alt="Anvil" />
+</p>
 
-A single-binary BSV node. Verify transactions, publish data, get paid, let machines transact.
+<h1 align="center">Anvil</h1>
+
+<p align="center">A single-binary BSV node. Verify transactions, publish data, get paid, let machines transact.</p>
 
 ## Four layers
 
