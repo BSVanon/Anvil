@@ -58,8 +58,9 @@ func (w *WalletNonceProvider) MintNonce() (*NonceUTXO, error) {
 		Description: "x402 nonce UTXO",
 		Outputs: []sdk.CreateActionOutput{
 			{
-				LockingScript: lockScriptBytes,
-				Satoshis:      1,
+				LockingScript:     lockScriptBytes,
+				Satoshis:          1,
+				OutputDescription: "x402 nonce output",
 			},
 		},
 	}, "anvil-x402")

@@ -220,16 +220,13 @@ func main() {
 		})
 		defer gossipMgr.Stop()
 
-		// Connect to seed peers
+		// Connect to seed peers with automatic reconnection.
+		// Each seed gets a goroutine that reconnects on disconnect (30s retry).
 		for _, seed := range cfg.Mesh.Seeds {
-			go func(endpoint string) {
-				if err := gossipMgr.ConnectPeer(context.Background(), endpoint); err != nil {
-					logger.Warn("mesh peer failed", "endpoint", endpoint, "error", err)
-				}
-			}(seed)
+			go gossipMgr.ConnectSeedWithReconnect(context.Background(), seed, 30*time.Second)
 		}
 		if len(cfg.Mesh.Seeds) > 0 {
-			log.Printf("anvil mesh: connecting to %d seed peers", len(cfg.Mesh.Seeds))
+			log.Printf("anvil mesh: connecting to %d seed peers (auto-reconnect enabled)", len(cfg.Mesh.Seeds))
 		}
 
 		// NOTE: TX mesh forwarding is NOT implemented. Envelope gossip works

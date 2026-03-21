@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
@@ -334,6 +335,108 @@ func (m *Manager) PeerCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.peers)
+}
+
+// ConnectSeedWithReconnect connects to a seed peer and automatically
+// reconnects if the connection drops. Blocks until ctx is cancelled.
+// Designed to run in a goroutine per seed peer.
+func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string, interval time.Duration) {
+	for {
+		transport, err := NewWSTransportAdapter(endpoint)
+		if err != nil {
+			m.logger.Warn("seed peer connect failed, retrying",
+				"endpoint", endpoint, "error", err, "retry_in", interval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+				continue
+			}
+		}
+
+		peer := auth.NewPeer(&auth.PeerOptions{
+			Wallet:    m.wallet,
+			Transport: transport,
+		})
+
+		peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
+			pkHex := fmt.Sprintf("%x", senderPK.Compressed())
+
+			m.mu.Lock()
+			needsBondCheck := false
+			if mp, ok := m.peers[endpoint]; ok && mp.IdentityPK == nil {
+				mp.IdentityPK = senderPK
+				m.peers[pkHex] = mp
+				delete(m.peers, endpoint)
+				needsBondCheck = true
+			}
+			m.mu.Unlock()
+
+			if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
+				balance, err := m.bondChecker.VerifyBond(senderPK)
+				if err != nil {
+					m.logger.Warn("outbound peer rejected: insufficient bond",
+						"peer", truncate(pkHex),
+						"endpoint", endpoint,
+						"error", err.Error())
+					m.removePeer(pkHex)
+					return fmt.Errorf("bond required: %w", err)
+				}
+				m.logger.Info("outbound peer bond verified",
+					"peer", truncate(pkHex),
+					"bond_sats", balance)
+			}
+
+			return m.handleMessage(pkHex, senderPK, payload)
+		})
+
+		if err := peer.Start(); err != nil {
+			m.logger.Warn("seed peer start failed, retrying",
+				"endpoint", endpoint, "error", err, "retry_in", interval)
+			transport.Close()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+				continue
+			}
+		}
+
+		m.mu.Lock()
+		m.peers[endpoint] = &MeshPeer{
+			Peer:      peer,
+			Endpoint:  endpoint,
+			origKey:   endpoint,
+			closeFunc: transport.Close,
+		}
+		m.mu.Unlock()
+
+		m.logger.Info("seed peer connected", "endpoint", endpoint)
+
+		go transport.StartReceive()
+
+		if err := m.announceInterests(peer); err != nil {
+			m.logger.Warn("seed peer interest announce failed", "endpoint", endpoint, "error", err)
+		}
+		m.announceSHIP(peer)
+
+		// Wait for connection to drop or context cancel
+		select {
+		case <-transport.Done():
+			m.removePeer(endpoint)
+			m.logger.Warn("seed peer disconnected, reconnecting",
+				"endpoint", endpoint, "retry_in", interval)
+		case <-ctx.Done():
+			m.removePeer(endpoint)
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
 }
 
 // Stop gracefully disconnects all peers, closing their transport connections.
