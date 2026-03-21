@@ -313,6 +313,104 @@ func TestMarshalRoundTrip(t *testing.T) {
 	}
 }
 
+// --- Query ordering and limit ---
+
+func TestQueryReturnsNewestFirst(t *testing.T) {
+	s := tmpEnvelopeStore(t)
+	key := testKey()
+
+	for i, ts := range []int64{1710000000, 1710000060, 1710000030} {
+		env := &Envelope{
+			Type: "data", Topic: "order:test",
+			Payload:   "payload-" + string(rune('a'+i)),
+			TTL:       300,
+			Timestamp: ts,
+		}
+		env.Sign(key)
+		s.StoreEphemeralDirect(env)
+	}
+
+	results, err := s.QueryByTopic("order:test", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3, got %d", len(results))
+	}
+	if results[0].Timestamp != 1710000060 {
+		t.Fatalf("expected newest first (1710000060), got %d", results[0].Timestamp)
+	}
+	if results[2].Timestamp != 1710000000 {
+		t.Fatalf("expected oldest last (1710000000), got %d", results[2].Timestamp)
+	}
+}
+
+func TestQueryLimitAppliedAfterSort(t *testing.T) {
+	s := tmpEnvelopeStore(t)
+	key := testKey()
+
+	// Insert 5 envelopes with different timestamps
+	for i := 0; i < 5; i++ {
+		env := &Envelope{
+			Type: "data", Topic: "limit:test",
+			Payload:   "p" + string(rune('0'+i)),
+			TTL:       300,
+			Timestamp: int64(1710000000 + i*10),
+		}
+		env.Sign(key)
+		s.StoreEphemeralDirect(env)
+	}
+
+	// limit=1 should return the newest (ts=1710000040)
+	results, err := s.QueryByTopic("limit:test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Timestamp != 1710000040 {
+		t.Fatalf("limit=1 should return newest (1710000040), got %d", results[0].Timestamp)
+	}
+}
+
+func TestQueryMergesDurableAndEphemeral(t *testing.T) {
+	s := tmpEnvelopeStore(t)
+	key := testKey()
+
+	// Durable envelope (older)
+	durable := &Envelope{
+		Type: "data", Topic: "merge:test",
+		Payload: "durable-old", TTL: 0, Durable: true,
+		Timestamp: 1710000000,
+	}
+	durable.Sign(key)
+	if err := s.Ingest(durable); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ephemeral envelope (newer)
+	ephemeral := &Envelope{
+		Type: "data", Topic: "merge:test",
+		Payload: "ephemeral-new", TTL: 300,
+		Timestamp: 1710000060,
+	}
+	ephemeral.Sign(key)
+	s.StoreEphemeralDirect(ephemeral)
+
+	// limit=1 should return the newest (ephemeral), not the first-stored (durable)
+	results, err := s.QueryByTopic("merge:test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1, got %d", len(results))
+	}
+	if results[0].Payload != "ephemeral-new" {
+		t.Fatalf("limit=1 should return newest, got payload=%q", results[0].Payload)
+	}
+}
+
 // --- SigningDigest determinism ---
 
 func TestSigningDigestDeterministic(t *testing.T) {
