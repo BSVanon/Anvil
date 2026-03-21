@@ -129,4 +129,4 @@ curl http://localhost:9333/.well-known/x402
 
 ## License
 
-See [LICENSE](LICENSE).
+See [LICENSE](LICENSE.txt).
