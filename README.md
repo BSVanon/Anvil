@@ -93,6 +93,22 @@ curl http://localhost:9333/.well-known/x402
 | `/app/{name}` | GET | No | 3 |
 | `/explorer` | GET | No | 3 |
 
+## Live network
+
+- **Explorer:** https://anvil.sendbsv.com
+- **Direct IP:** http://212.56.43.191:9333
+- **x402 discovery:** https://anvil.sendbsv.com/.well-known/x402
+
+## Mesh peering
+
+Anvil nodes discover each other via overlay (SHIP) registration and gossip.
+
+**Bonds:** Nodes can require a minimum bond (BSV locked at the node's identity address) before accepting mesh peers. This prevents spam peering and ensures operators have skin in the game. Configure with `min_bond_sats` in the `[mesh]` section of your TOML config.
+
+**Auto-reconnect:** Seed peers automatically reconnect on disconnect (30s retry).
+
+**Node names:** Each node advertises its name via overlay gossip. Set `name` in the `[node]` section of your TOML config.
+
 ## Operations
 
 | Command | What it does |
