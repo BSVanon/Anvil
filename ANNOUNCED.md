@@ -27,3 +27,13 @@ x402 make transactions simple and instant for everyone
 It's all free, unless your App, or your Anvil or your Claw wants to charge something.   All configurations open.
 SDK: https://www.npmjs.com/package/anvil-mesh
 Docs: https://github.com/BSVanon/Anvil
+
+Tweet 3:  
+Many Apps have been developed
+Many Claws have been made
+Many capabilities go unnoticed
+
+Anvil brings it all together
+Humans and Machines and Apps finding each other
+All on BSV through SPV
+for free or for sats, you get to choose which

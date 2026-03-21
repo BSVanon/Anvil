@@ -142,7 +142,7 @@ func main() {
 				if domain == "" {
 					domain = cfg.Node.Listen
 				}
-				anviloverlay.Bootstrap(overlayDir, identityKey, domain, cfg.Overlay.Topics, logger)
+				anviloverlay.Bootstrap(overlayDir, identityKey, domain, cfg.Node.Name, cfg.Overlay.Topics, logger)
 			}
 		}
 

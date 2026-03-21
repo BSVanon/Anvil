@@ -171,13 +171,29 @@ func (s *Store) CountDurable() int {
 	return count
 }
 
-// Topics returns a map of topic → envelope count for all ephemeral envelopes.
+// Topics returns a map of topic → envelope count across both ephemeral and durable stores.
 func (s *Store) Topics() map[string]int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	topics := make(map[string]int)
-	for _, env := range s.ephemeral {
+
+	// Count durable envelopes from LevelDB
+	iter := s.db.NewIterator(util.BytesPrefix(prefixDurable), nil)
+	for iter.Next() {
+		env, err := UnmarshalEnvelope(iter.Value())
+		if err != nil {
+			continue
+		}
 		topics[env.Topic]++
 	}
+	iter.Release()
+
+	// Count ephemeral envelopes
+	s.mu.RLock()
+	for _, env := range s.ephemeral {
+		if !env.IsExpired() {
+			topics[env.Topic]++
+		}
+	}
+	s.mu.RUnlock()
+
 	return topics
 }

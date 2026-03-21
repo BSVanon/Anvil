@@ -17,6 +17,7 @@ func Bootstrap(
 	dir *Directory,
 	identityKey *ec.PrivateKey,
 	domain string,
+	nodeName string,
 	topics []string,
 	logger *slog.Logger,
 ) error {
@@ -32,6 +33,7 @@ func Bootstrap(
 		entry := &PeerEntry{
 			IdentityPub:  identityPubHex,
 			Domain:       domain,
+			NodeName:     nodeName,
 			Topic:        topic,
 			TxID:         "self-registered",
 			OutputIndex:  0,

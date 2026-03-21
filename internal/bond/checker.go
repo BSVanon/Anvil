@@ -4,14 +4,25 @@
 package bond
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 )
+
+const bondCacheTTL = 1 * time.Hour
+
+// cacheEntry holds a cached bond verification result.
+type cacheEntry struct {
+	balance   int
+	err       error
+	expiresAt time.Time
+}
 
 const defaultWoCURL = "https://api.whatsonchain.com/v1/bsv/main"
 
@@ -20,6 +31,9 @@ type Checker struct {
 	minSats int
 	apiURL  string
 	client  *http.Client
+
+	cacheMu sync.RWMutex
+	cache   map[string]cacheEntry // pubkey hex → cached result
 }
 
 // NewChecker creates a bond checker. If minSats is 0, all peers are accepted.
@@ -31,6 +45,7 @@ func NewChecker(minSats int, apiURL string) *Checker {
 		minSats: minSats,
 		apiURL:  apiURL,
 		client:  &http.Client{Timeout: 10 * time.Second},
+		cache:   make(map[string]cacheEntry),
 	}
 }
 
@@ -58,11 +73,38 @@ type wocResponse struct {
 
 // VerifyBond checks that the identity key has at least minSats in confirmed UTXOs.
 // Returns (totalBalance, nil) on success or (0, error) on failure.
+// Results are cached for 1 hour to avoid redundant WoC HTTP requests.
 func (c *Checker) VerifyBond(identityPub *ec.PublicKey) (int, error) {
 	if c.minSats <= 0 {
 		return 0, nil // bond not required
 	}
 
+	cacheKey := hex.EncodeToString(identityPub.Compressed())
+
+	// Check cache first
+	c.cacheMu.RLock()
+	if entry, ok := c.cache[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
+		c.cacheMu.RUnlock()
+		return entry.balance, entry.err
+	}
+	c.cacheMu.RUnlock()
+
+	balance, err := c.verifyBondHTTP(identityPub)
+
+	// Cache the result (both success and failure)
+	c.cacheMu.Lock()
+	c.cache[cacheKey] = cacheEntry{
+		balance:   balance,
+		err:       err,
+		expiresAt: time.Now().Add(bondCacheTTL),
+	}
+	c.cacheMu.Unlock()
+
+	return balance, err
+}
+
+// verifyBondHTTP performs the actual WoC HTTP lookup (uncached).
+func (c *Checker) verifyBondHTTP(identityPub *ec.PublicKey) (int, error) {
 	address, err := pubKeyToAddress(identityPub)
 	if err != nil {
 		return 0, fmt.Errorf("derive address: %w", err)

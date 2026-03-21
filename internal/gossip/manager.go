@@ -59,9 +59,9 @@ type Manager struct {
 // shared type definitions across packages.
 type OverlayDirectory interface {
 	// ForEachSHIP calls fn for every SHIP registration. Stop iteration by returning false.
-	ForEachSHIP(fn func(identity, domain, topic string) bool)
+	ForEachSHIP(fn func(identity, domain, nodeName, topic string) bool)
 	// AddSHIPPeerFromGossip stores a SHIP peer received from a trusted mesh peer.
-	AddSHIPPeerFromGossip(identity, domain, topic string) error
+	AddSHIPPeerFromGossip(identity, domain, nodeName, topic string) error
 }
 
 // MeshPeer represents a single authenticated mesh connection.

@@ -18,11 +18,12 @@ var (
 
 // PeerEntry is a discovered SHIP peer for a topic.
 type PeerEntry struct {
-	IdentityPub string    `json:"identity_pub"` // compressed pubkey hex
-	Domain      string    `json:"domain"`       // e.g. "relay.example.com:8333"
-	Topic       string    `json:"topic"`        // e.g. "anvil:mainnet"
-	TxID        string    `json:"txid"`         // on-chain tx containing the SHIP token
-	OutputIndex int       `json:"output_index"`
+	IdentityPub  string    `json:"identity_pub"`            // compressed pubkey hex
+	Domain       string    `json:"domain"`                  // e.g. "relay.example.com:8333"
+	NodeName     string    `json:"node_name,omitempty"`      // human-readable name from config
+	Topic        string    `json:"topic"`                   // e.g. "anvil:mainnet"
+	TxID         string    `json:"txid"`                    // on-chain tx containing the SHIP token
+	OutputIndex  int       `json:"output_index"`
 	DiscoveredAt time.Time `json:"discovered_at"`
 }
 
@@ -158,7 +159,7 @@ func (d *Directory) CountSHIP() int {
 
 // ForEachSHIP iterates all SHIP registrations, calling fn for each.
 // Satisfies gossip.OverlayDirectory interface.
-func (d *Directory) ForEachSHIP(fn func(identity, domain, topic string) bool) {
+func (d *Directory) ForEachSHIP(fn func(identity, domain, nodeName, topic string) bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -169,7 +170,7 @@ func (d *Directory) ForEachSHIP(fn func(identity, domain, topic string) bool) {
 		if err := json.Unmarshal(iter.Value(), &entry); err != nil {
 			continue
 		}
-		if !fn(entry.IdentityPub, entry.Domain, entry.Topic) {
+		if !fn(entry.IdentityPub, entry.Domain, entry.NodeName, entry.Topic) {
 			break
 		}
 	}
@@ -178,10 +179,11 @@ func (d *Directory) ForEachSHIP(fn func(identity, domain, topic string) bool) {
 // AddSHIPPeerFromGossip stores a SHIP peer received from a trusted mesh peer.
 // Skips SHIP script validation since the peer has already been authenticated.
 // Satisfies gossip.OverlayDirectory interface.
-func (d *Directory) AddSHIPPeerFromGossip(identity, domain, topic string) error {
+func (d *Directory) AddSHIPPeerFromGossip(identity, domain, nodeName, topic string) error {
 	entry := &PeerEntry{
 		IdentityPub:  identity,
 		Domain:       domain,
+		NodeName:     nodeName,
 		Topic:        topic,
 		TxID:         "gossip",
 		DiscoveredAt: time.Now(),
