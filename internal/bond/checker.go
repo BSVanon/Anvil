@@ -91,14 +91,15 @@ func (c *Checker) VerifyBond(identityPub *ec.PublicKey) (int, error) {
 
 	balance, err := c.verifyBondHTTP(identityPub)
 
-	// Cache the result (both success and failure)
-	c.cacheMu.Lock()
-	c.cache[cacheKey] = cacheEntry{
-		balance:   balance,
-		err:       err,
-		expiresAt: time.Now().Add(bondCacheTTL),
+	// Only cache successes — failures may be transient (WoC outage, network blip)
+	if err == nil {
+		c.cacheMu.Lock()
+		c.cache[cacheKey] = cacheEntry{
+			balance:   balance,
+			expiresAt: time.Now().Add(bondCacheTTL),
+		}
+		c.cacheMu.Unlock()
 	}
-	c.cacheMu.Unlock()
 
 	return balance, err
 }
