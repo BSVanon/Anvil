@@ -108,6 +108,20 @@ GET /data?topic=...&limit=...
 GET /overlay/lookup?topic=...
   → { topic, count, peers: [{ domain, identity_pub, topics }] }
 
+POST /overlay/submit
+  Body: TaggedBEEF (binary with X-Topics header, or JSON { beef, topics })
+  → STEAK: { "tm_uhrp": { outputsToAdmit: [0], coinsToRetain: [], coinsRemoved: [] } }
+
+POST /overlay/query
+  Body: { service: "ls_uhrp", query: { content_hash: "sha256..." } }
+  → { type: "output-list", outputs: [...] }
+
+GET /overlay/topics
+  → { "tm_uhrp": { documentation: "...", metadata: {...} } }
+
+GET /overlay/services
+  → { "ls_uhrp": { documentation: "...", metadata: {...}, topics: ["tm_uhrp"] } }
+
 GET /.well-known/x402
   → { version, network, scheme, endpoints: [{ method, path, price }] }
 
