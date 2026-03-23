@@ -22,6 +22,7 @@ import (
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
+	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
@@ -126,8 +127,9 @@ func main() {
 		}
 	}()
 
-	// Phase 6: Overlay directory
+	// Phase 6: Overlay directory + generic engine
 	var overlayDir *anviloverlay.Directory
+	var overlayEngine *anviloverlay.Engine
 	if cfg.Overlay.Enabled {
 		ovDir := filepath.Join(cfg.Node.DataDir, "overlay")
 		var err error
@@ -137,6 +139,18 @@ func main() {
 		}
 		defer overlayDir.Close()
 		log.Printf("overlay directory opened (topics=%v)", cfg.Overlay.Topics)
+
+		// Initialize the generic BRC-22/24 overlay engine.
+		// Uses the same LevelDB as the directory (separate key prefix "ovl:").
+		overlayEngine = anviloverlay.NewEngine(overlayDir.DB(), logger)
+
+		// Register topic managers
+		overlayEngine.RegisterTopic(topics.UHRPTopicName, topics.NewUHRPTopicManager())
+
+		// Register lookup services
+		overlayEngine.RegisterLookup(topics.UHRPLookupServiceName,
+			topics.NewUHRPLookupService(overlayEngine),
+			[]string{topics.UHRPTopicName})
 
 		// Local bootstrap: register our own SHIP tokens (dev/operator convenience)
 		if cfg.Identity.WIF != "" {
@@ -348,6 +362,13 @@ func main() {
 
 	if nodeWallet != nil {
 		nodeWallet.RegisterRoutes(srv.Mux(), srv.RequireAuth)
+	}
+
+	// Register BRC-22/24 overlay engine HTTP endpoints
+	if overlayEngine != nil {
+		overlayEngine.RegisterHTTPHandlers(srv.Mux(), srv.CorsWrap)
+		log.Printf("overlay engine: %d topics, %d lookup services",
+			len(overlayEngine.ListTopics()), len(overlayEngine.ListLookupServices()))
 	}
 
 	go func() {
