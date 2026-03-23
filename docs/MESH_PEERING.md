@@ -26,6 +26,20 @@ This prevents spam peering and ensures operators have economic skin in the game.
 
 When `min_bond_sats = 0` (default), any authenticated peer can join the mesh.
 
+### Enforcement and slashing
+
+Misbehaving peers receive `slash_warning` gossip messages with a **48-hour grace period**:
+
+| Offense | Severity | Trigger |
+|---------|----------|---------|
+| Double-publish (3+ conflicting payloads) | 100% | Immediate after 2+ unique reporters |
+| Gossip spam (sustained rate violation) | 25% | 3 warnings from 2+ unique reporters in 48h |
+| Bad SPV proofs | 50% | Manual report with proof |
+
+Enforcement is currently **soft-slash** — the offending peer is disconnected and deregistered from the overlay. On-chain bond redistribution to remaining peers is planned for v2.
+
+Gossip rate limits are loose (30 envelopes/sec per peer, burst 100) — designed to protect nodes without punishing fast publishers or reconnection bursts.
+
 ## Node names
 
 Each node advertises its name via overlay gossip. Set `name` in `[node]`:

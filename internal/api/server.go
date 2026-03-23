@@ -135,6 +135,7 @@ func (s *Server) routes() {
 	// Always register x402 discovery — shows pricing even when free (price=0).
 	// Apps and Explorer use this to discover payment capabilities.
 	s.mux.HandleFunc("GET /.well-known/x402", cors(s.handleX402Discovery))
+	s.mux.HandleFunc("GET /.well-known/x402-info", cors(s.handleX402Info))
 	s.mux.HandleFunc("GET /.well-known/anvil", cors(s.handleAnvilManifest))
 	s.mux.HandleFunc("GET /.well-known/identity", cors(s.handleIdentity))
 	s.mux.HandleFunc("GET /app/{name}", cors(s.handleAppRedirect))
@@ -175,7 +176,7 @@ func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
 func cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-App-Token, X402-Proof")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -292,6 +293,105 @@ func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// handleX402Info serves /.well-known/x402-info — a combined machine-readable
+// endpoint for AI agents. Merges identity, x402 discovery, and protocol spec
+// into one response. Compatible with Calhooon x402 agent discovery format.
+func (s *Server) handleX402Info(w http.ResponseWriter, r *http.Request) {
+	// Accept header: return markdown for LLMs, JSON for machines
+	accept := r.Header.Get("Accept")
+	if accept == "text/markdown" || accept == "text/plain" {
+		s.serveX402InfoMarkdown(w)
+		return
+	}
+
+	priceFor := func(path string) int {
+		if s.paymentGate != nil {
+			return s.paymentGate.priceForPath(path)
+		}
+		return 0
+	}
+
+	endpoints := []map[string]interface{}{
+		{"method": "GET", "path": "/status", "price": priceFor("/status"), "description": "Node health and header height"},
+		{"method": "GET", "path": "/stats", "price": priceFor("/status"), "description": "Extended stats: envelopes, peers, topics"},
+		{"method": "GET", "path": "/data", "price": priceFor("/data"), "description": "Query signed data envelopes by topic"},
+		{"method": "GET", "path": "/tx/{txid}/beef", "price": priceFor("/tx/{txid}/beef"), "description": "SPV proof in BEEF format"},
+		{"method": "GET", "path": "/overlay/lookup", "price": priceFor("/overlay/lookup"), "description": "Discover mesh peers"},
+	}
+
+	result := map[string]interface{}{
+		"version":  "0.1",
+		"protocol": "anvil-x402",
+		"network":  "bsv-mainnet",
+		"node":     s.nodeName,
+		"endpoints": endpoints,
+		"payment": map[string]interface{}{
+			"settlement":    "BSV",
+			"non_custodial": true,
+			"methods": []string{
+				"X402-Challenge/Proof (nonce-bound, replay-safe)",
+				"X-Bsv-Payment (direct raw tx in header, hex or base64)",
+			},
+			"discovery": "/.well-known/x402",
+		},
+		"authentication": map[string]interface{}{
+			"method":      "BRC-31 mutual auth via auth.Peer",
+			"key_derivation": "BRC-42",
+		},
+	}
+
+	if s.identityPub != "" {
+		result["identity_key"] = s.identityPub
+	}
+
+	if s.bondChecker != nil && s.bondChecker.Required() {
+		result["bond"] = map[string]interface{}{
+			"required": true,
+			"min_sats": s.bondChecker.MinSats(),
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// serveX402InfoMarkdown returns the protocol spec as markdown for LLM consumption.
+func (s *Server) serveX402InfoMarkdown(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	md := `# Anvil Node x402 Protocol
+
+## How to pay for data on this node
+
+This node accepts HTTP 402 micropayments in Bitcoin SV (BSV).
+
+### Discovery
+` + "GET `/.well-known/x402`" + ` — returns endpoints with prices in satoshis.
+` + "GET `/.well-known/x402-info`" + ` — this document (JSON with Accept: application/json).
+
+### Payment Method 1: Challenge-Proof (recommended)
+1. Send your request without payment.
+2. Receive 402 with ` + "`X402-Challenge`" + ` header (base64url JSON).
+3. Build a BSV transaction spending the challenge's nonce UTXO, paying declared payees.
+4. Resend request with ` + "`X402-Proof`" + ` header containing the signed proof.
+5. Receive response with ` + "`X402-Receipt`" + ` header.
+
+### Payment Method 2: Direct Payment
+1. Discover pricing via ` + "`/.well-known/x402`" + `.
+2. Build a BSV transaction paying the node's payee script the required satoshis.
+3. Send request with ` + "`X-Bsv-Payment`" + ` header containing the raw tx (hex or base64).
+4. Node verifies outputs, broadcasts to ARC, returns response with receipt.
+
+### Authentication
+BRC-31 mutual authentication via secp256k1 identity keys.
+BRC-42 key derivation for payment address generation.
+
+### Settlement
+All payments settle on BSV mainnet. Non-custodial — funds go directly to payees.
+No stablecoins. No payment channels. No facilitator servers.
+`
+	w.Write([]byte(md))
 }
 
 // handleAnvilManifest serves /.well-known/anvil — a machine-readable manifest

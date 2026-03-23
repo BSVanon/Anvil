@@ -2,7 +2,7 @@
 
 **Purpose:** This document describes what an Anvil node can do, when to use it, and how to interact with it. It is written for AI models, agents, and automated systems that need to decide whether and how to use an Anvil node.
 
-**Last updated:** 2026-03-19
+**Last updated:** 2026-03-23
 
 ---
 
@@ -81,6 +81,11 @@ Apps declare their payment model in the envelope `monetization` field (signed, t
 ### Discovery:
 `GET /.well-known/x402` returns a JSON manifest listing gated endpoints, prices, and supported `payment_models`.
 
+`GET /.well-known/x402-info` returns a combined protocol spec (identity + pricing + auth + payment methods). Supports `Accept: text/markdown` for LLM consumption.
+
+### Alternative payment (interop):
+In addition to the challenge-proof flow above, Anvil accepts a direct payment via the `X-Bsv-Payment` header — a raw BSV transaction (hex or base64) paying the declared payees. This is compatible with Rust x402 agents (bsv-rs / bsv-middleware-rs).
+
 ---
 
 ## API reference (summary)
@@ -105,9 +110,19 @@ GET /overlay/lookup?topic=...
 
 GET /.well-known/x402
   → { version, network, scheme, endpoints: [{ method, path, price }] }
+
+GET /.well-known/x402-info
+  → { version, protocol, network, node, endpoints, payment, authentication, identity_key, bond }
+  (Accept: text/markdown → protocol spec for LLMs)
+
+GET /.well-known/anvil
+  → { name, protocol, version, capabilities, payment, mesh }
+
+GET /.well-known/identity
+  → { node, version, identity_key, bond: { required, min_sats } }
 ```
 
-### Authenticated write endpoints (bearer token)
+### Authenticated write endpoints (X-Anvil-Auth header)
 
 ```
 POST /broadcast

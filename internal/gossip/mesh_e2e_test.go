@@ -11,6 +11,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/wallet"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
+	"github.com/BSVanon/Anvil/internal/overlay"
 )
 
 // TestTwoNodeMeshGossip proves end-to-end: node A submits a signed envelope
@@ -273,6 +274,117 @@ func TestMonetizedEnvelopeGossipIntegrity(t *testing.T) {
 	}
 
 	t.Logf("monetized envelope (split, 50 sats) gossiped A→B with full integrity")
+}
+
+// TestNodeNamePropagatesViaSHIPSync proves that node_name set in a SHIP
+// registration on node A reaches node B's overlay directory after gossip sync.
+//
+// Flow: A has a SHIP entry with NodeName="anvil-prime" → A connects to B →
+// announceSHIP fires → B's onSHIPSync stores the entry → B can look it up
+// with the NodeName intact.
+func TestNodeNamePropagatesViaSHIPSync(t *testing.T) {
+	// --- Overlay directories (LevelDB-backed, same as production) ---
+	dirOverlayA, _ := os.MkdirTemp("", "anvil-overlay-a-*")
+	t.Cleanup(func() { os.RemoveAll(dirOverlayA) })
+	overlayA, err := overlay.NewDirectory(dirOverlayA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer overlayA.Close()
+
+	dirOverlayB, _ := os.MkdirTemp("", "anvil-overlay-b-*")
+	t.Cleanup(func() { os.RemoveAll(dirOverlayB) })
+	overlayB, err := overlay.NewDirectory(dirOverlayB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer overlayB.Close()
+
+	// Seed node A's overlay with a SHIP registration including node_name
+	testIdentity := "02aabbccdd00112233445566778899aabbccdd00112233445566778899aabbccdd"
+	testDomain := "anvil-prime.example.com:8080"
+	testNodeName := "anvil-prime"
+	testTopic := "anvil:mainnet"
+
+	if err := overlayA.AddSHIPPeerFromGossip(testIdentity, testDomain, testNodeName, testTopic); err != nil {
+		t.Fatalf("seed overlay A: %v", err)
+	}
+
+	// --- Node B: receiver with overlay directory ---
+	dirB, _ := os.MkdirTemp("", "anvil-mesh-ship-b-*")
+	t.Cleanup(func() { os.RemoveAll(dirB) })
+	storeB, err := envelope.NewStore(dirB, 3600, 65536)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeB.Close()
+
+	walletB := wallet.NewTestWalletForRandomKey(t)
+	mgrB := NewManager(ManagerConfig{
+		Wallet:         walletB,
+		Store:          storeB,
+		LocalInterests: []string{"anvil:"},
+		MaxSeen:        100,
+		OverlayDir:     overlayB,
+	})
+	defer mgrB.Stop()
+
+	ts := httptest.NewServer(mgrB.MeshHandler())
+	defer ts.Close()
+	wsURL := "ws" + ts.URL[len("http"):]
+
+	// --- Node A: sender with overlay directory containing node_name ---
+	dirA, _ := os.MkdirTemp("", "anvil-mesh-ship-a-*")
+	t.Cleanup(func() { os.RemoveAll(dirA) })
+	storeA, err := envelope.NewStore(dirA, 3600, 65536)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeA.Close()
+
+	walletA := wallet.NewTestWalletForRandomKey(t)
+	mgrA := NewManager(ManagerConfig{
+		Wallet:         walletA,
+		Store:          storeA,
+		LocalInterests: []string{"anvil:"},
+		MaxSeen:        100,
+		OverlayDir:     overlayA,
+	})
+	defer mgrA.Stop()
+
+	// A connects to B — triggers announceSHIP which sends SHIP registrations
+	if err := mgrA.ConnectPeer(t.Context(), wsURL); err != nil {
+		t.Fatalf("ConnectPeer: %v", err)
+	}
+
+	// Wait for auth handshake + SHIP sync to complete
+	time.Sleep(1 * time.Second)
+
+	// Verify B's overlay directory received the SHIP entry with node_name
+	peers, err := overlayB.LookupSHIPByTopic(testTopic)
+	if err != nil {
+		t.Fatalf("LookupSHIPByTopic: %v", err)
+	}
+	if len(peers) == 0 {
+		t.Fatal("node B overlay directory has no SHIP peers — SHIP sync did not propagate")
+	}
+
+	var found bool
+	for _, p := range peers {
+		if p.IdentityPub == testIdentity {
+			found = true
+			if p.NodeName != testNodeName {
+				t.Fatalf("node_name mismatch: expected %q, got %q", testNodeName, p.NodeName)
+			}
+			if p.Domain != testDomain {
+				t.Fatalf("domain mismatch: expected %q, got %q", testDomain, p.Domain)
+			}
+			t.Logf("node_name %q propagated A→B via SHIP sync ✓", testNodeName)
+		}
+	}
+	if !found {
+		t.Fatalf("expected SHIP entry with identity %s not found in B's directory (found %d entries)", testIdentity[:16], len(peers))
+	}
 }
 
 // TestConnectPeerRequiresWallet verifies that ConnectPeer fails cleanly

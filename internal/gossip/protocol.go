@@ -32,6 +32,11 @@ const (
 	// MsgSHIPSync shares SHIP overlay registrations between peers.
 	// Sent on connect (full sync) and when a new registration is added.
 	MsgSHIPSync MessageType = "ship_sync"
+
+	// MsgSlashWarning notifies a peer (and the mesh) of a protocol violation.
+	// First warning starts a 48-hour grace period. Repeated violations
+	// within the grace period trigger deregistration from the overlay.
+	MsgSlashWarning MessageType = "slash_warning"
 )
 
 // Message is the wire format for all mesh messages, serialized as
@@ -71,6 +76,39 @@ type SHIPPeerInfo struct {
 	Domain      string `json:"domain"`
 	NodeName    string `json:"node_name,omitempty"`
 	Topic       string `json:"topic"`
+}
+
+// SlashReason identifies the type of protocol violation.
+type SlashReason string
+
+const (
+	SlashDoublePublish SlashReason = "double_publish" // same topic+pubkey+timestamp, different payload
+	SlashGossipSpam    SlashReason = "gossip_spam"    // sustained rate limit violation
+	SlashBadProof      SlashReason = "bad_proof"      // invalid SPV proof or forged headers
+)
+
+// SlashWarningPayload carries a protocol violation report.
+type SlashWarningPayload struct {
+	// Target is the identity pubkey hex of the offending peer.
+	Target    string      `json:"target"`
+	Reason    SlashReason `json:"reason"`
+	Evidence  string      `json:"evidence,omitempty"`  // human-readable or hash of proof
+	Timestamp int64       `json:"timestamp"`           // unix seconds
+	Reporter  string      `json:"reporter"`            // identity pubkey hex of reporting peer
+}
+
+// SlashSeverity returns the slash percentage for a given reason.
+func SlashSeverity(reason SlashReason) int {
+	switch reason {
+	case SlashDoublePublish:
+		return 100
+	case SlashGossipSpam:
+		return 25
+	case SlashBadProof:
+		return 50
+	default:
+		return 0
+	}
 }
 
 // Encode serializes a message for transport via auth.GeneralMessage.

@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-18
 **Author:** Robert + Claude
-**Status:** Policy draft — to be implemented before any app monetization goes live
+**Status:** Implemented and live (all 5 models operational as of 2026-03-19)
 **Origin:** Design conversation in SendBSV-Rates workspace while planning oracle feed monetization on the Foundry mesh
 
 ---

@@ -86,12 +86,44 @@ curl http://localhost:9333/.well-known/x402
 | `/data` | POST | Bearer or x402 | 1 |
 | `/overlay/lookup` | GET | No | 1 |
 | `/broadcast` | POST | Bearer | 0 |
-| `/wallet/scan` | POST | Bearer | 0 |
+| `/wallet/outputs` | GET | X-Anvil-Auth | 0 |
+| `/wallet/send` | POST | X-Anvil-Auth | 0 |
+| `/wallet/invoice` | POST | X-Anvil-Auth | 0 |
+| `/wallet/scan` | POST | X-Anvil-Auth | 0 |
 | `/.well-known/x402` | GET | No | 3 |
+| `/.well-known/x402-info` | GET | No | 3 |
 | `/.well-known/anvil` | GET | No | 3 |
 | `/.well-known/identity` | GET | No | 3 |
 | `/app/{name}` | GET | No | 3 |
 | `/explorer` | GET | No | 3 |
+
+## Operator wallet
+
+Node operators authenticate with the `X-Anvil-Auth` header to access wallet endpoints (balance, send, receive). The auth token is derived from your identity WIF:
+
+```bash
+# Print your auth token
+anvil token -config anvil.toml
+
+# Check balance
+curl -H "X-Anvil-Auth: $TOKEN" http://localhost:9333/wallet/outputs
+
+# Or use the Explorer — click the node dropdown → Node Login → paste token
+```
+
+## Bonds and mesh peering
+
+Nodes must hold a bond UTXO at their identity address to join the mesh. The bond amount is checked on connect and displayed in the Explorer. Misbehavior (spam, double-publish) triggers warnings via gossip with a 48-hour grace period before deregistration.
+
+See [Mesh Peering](docs/MESH_PEERING.md) for configuration.
+
+## x402 interoperability
+
+Anvil accepts payments via two methods:
+- **X402-Challenge/Proof** — nonce-bound, replay-safe (native Anvil)
+- **X-Bsv-Payment** — direct raw tx in header (compatible with Rust x402 agents)
+
+Machine-readable protocol spec: `GET /.well-known/x402-info` (JSON or markdown for LLMs via `Accept: text/markdown`)
 
 ## Live network
 
@@ -100,12 +132,14 @@ curl http://localhost:9333/.well-known/x402
 | Explorer | https://anvil.sendbsv.com |
 | Direct IP | http://212.56.43.191:9333/explorer |
 | x402 discovery | https://anvil.sendbsv.com/.well-known/x402 |
+| Protocol spec | https://anvil.sendbsv.com/.well-known/x402-info |
 
 ## Operations
 
 | Command | What it does |
 |---------|-------------|
 | `anvil -config anvil.toml` | Run the node |
+| `anvil token -config anvil.toml` | Print your API auth token |
 | `sudo anvil deploy --nodes ab` | Install systemd services, create dirs, health check |
 | `anvil doctor -config /etc/anvil/node-a.toml` | Validate config, connectivity, wallet, mesh |
 

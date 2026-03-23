@@ -26,3 +26,4 @@ anvil.toml
 coverage.out
 sdk/ts/node_modules/
 sdk/ts/dist/
+sdk/ts/*.tgz

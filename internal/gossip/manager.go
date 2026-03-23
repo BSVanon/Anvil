@@ -52,6 +52,27 @@ type Manager struct {
 
 	// bond checker (nil = no bond required)
 	bondChecker *bond.Checker
+
+	// per-peer gossip rate limiting (loose defaults: 30/s burst 100)
+	peerRates   map[string]*peerRate
+	peerRateMu  sync.Mutex
+	ratePerSec  float64
+	rateBurst   int
+
+	// double-publish detection: identity hash → count of distinct payloads
+	dupCounts  map[string]int
+	dupCountMu sync.Mutex
+
+	// slash tracking
+	slashTracker *slashTracker
+}
+
+// peerRate tracks token-bucket rate limiting for a single peer.
+type peerRate struct {
+	tokens      float64
+	lastSeen    time.Time
+	dropCount   int       // drops since last warn
+	lastWarnAt  time.Time // last spam warning sent
 }
 
 // OverlayDirectory is the interface for SHIP registration storage.
@@ -62,6 +83,8 @@ type OverlayDirectory interface {
 	ForEachSHIP(fn func(identity, domain, nodeName, topic string) bool)
 	// AddSHIPPeerFromGossip stores a SHIP peer received from a trusted mesh peer.
 	AddSHIPPeerFromGossip(identity, domain, nodeName, topic string) error
+	// RemoveSHIPPeerByIdentity removes all SHIP registrations for a given identity.
+	RemoveSHIPPeerByIdentity(identity string)
 }
 
 // MeshPeer represents a single authenticated mesh connection.
@@ -69,6 +92,7 @@ type MeshPeer struct {
 	Peer       *auth.Peer
 	IdentityPK *ec.PublicKey
 	Endpoint   string
+	BondSats   int             // verified bond amount in satoshis (0 = not checked)
 	origKey    string          // the original map key at insertion time (for cleanup after re-key)
 	closeFunc  func() error   // closes the underlying transport connection
 }
@@ -107,6 +131,11 @@ func NewManager(cfg ManagerConfig) *Manager {
 		onEnvelope:     cfg.OnEnvelope,
 		overlayDir:     cfg.OverlayDir,
 		bondChecker:    cfg.BondChecker,
+		peerRates:      make(map[string]*peerRate),
+		ratePerSec:     30,  // loose: 30 envelopes/second per peer
+		rateBurst:      100, // burst allowance
+		dupCounts:      make(map[string]int),
+		slashTracker:   newSlashTracker(),
 	}
 }
 
@@ -153,6 +182,11 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 				m.removePeer(pkHex)
 				return fmt.Errorf("bond required: %w", err)
 			}
+			m.mu.Lock()
+			if mp, ok := m.peers[pkHex]; ok {
+				mp.BondSats = balance
+			}
+			m.mu.Unlock()
 			m.logger.Info("outbound peer bond verified",
 				"peer", truncate(pkHex),
 				"bond_sats", balance)
@@ -245,6 +279,11 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 				m.removePeer(pkHex)
 				return fmt.Errorf("bond required: %w", err)
 			}
+			m.mu.Lock()
+			if mp, ok := m.peers[pkHex]; ok {
+				mp.BondSats = balance
+			}
+			m.mu.Unlock()
 			m.logger.Info("peer bond verified",
 				"peer", truncate(pkHex),
 				"bond_sats", balance)
@@ -341,6 +380,7 @@ func (m *Manager) PeerCount() int {
 type PeerInfo struct {
 	Identity string `json:"identity"`
 	Endpoint string `json:"endpoint"`
+	BondSats int    `json:"bond_sats,omitempty"`
 }
 
 // PeerList returns information about all connected mesh peers.
@@ -349,7 +389,7 @@ func (m *Manager) PeerList() []PeerInfo {
 	defer m.mu.RUnlock()
 	list := make([]PeerInfo, 0, len(m.peers))
 	for _, p := range m.peers {
-		info := PeerInfo{Endpoint: p.Endpoint}
+		info := PeerInfo{Endpoint: p.Endpoint, BondSats: p.BondSats}
 		if p.IdentityPK != nil {
 			info.Identity = fmt.Sprintf("%x", p.IdentityPK.Compressed())
 		}
@@ -403,6 +443,11 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 					m.removePeer(pkHex)
 					return fmt.Errorf("bond required: %w", err)
 				}
+				m.mu.Lock()
+				if mp, ok := m.peers[pkHex]; ok {
+					mp.BondSats = balance
+				}
+				m.mu.Unlock()
 				m.logger.Info("outbound peer bond verified",
 					"peer", truncate(pkHex),
 					"bond_sats", balance)
@@ -473,6 +518,49 @@ func (m *Manager) Stop() {
 		}
 	}
 	m.peers = make(map[string]*MeshPeer)
+}
+
+// allowPeerMessage checks if a peer is within gossip rate limits.
+// Returns true if allowed, false if rate-limited (drop silently).
+// After 50 drops in under a minute, broadcasts a gossip spam warning.
+func (m *Manager) allowPeerMessage(peerPK string) bool {
+	m.peerRateMu.Lock()
+	defer m.peerRateMu.Unlock()
+
+	now := time.Now()
+	pr, ok := m.peerRates[peerPK]
+	if !ok {
+		m.peerRates[peerPK] = &peerRate{tokens: float64(m.rateBurst) - 1, lastSeen: now}
+		return true
+	}
+
+	// Refill tokens
+	elapsed := now.Sub(pr.lastSeen).Seconds()
+	pr.tokens += elapsed * m.ratePerSec
+	if pr.tokens > float64(m.rateBurst) {
+		pr.tokens = float64(m.rateBurst)
+	}
+	pr.lastSeen = now
+
+	if pr.tokens < 1 {
+		pr.dropCount++
+		// Escalate after sustained violation: 200 drops (generous for reconnect bursts),
+		// max one warning per 10 minutes
+		if pr.dropCount >= 200 && now.Sub(pr.lastWarnAt) > 10*time.Minute {
+			pr.dropCount = 0
+			pr.lastWarnAt = now
+			// Release lock before broadcasting (broadcastSlashWarning acquires its own locks)
+			m.peerRateMu.Unlock()
+			m.logger.Warn("gossip spam detected, sending warning",
+				"peer", truncate(peerPK), "drops", 200)
+			m.broadcastSlashWarning(peerPK, SlashGossipSpam,
+				"sustained rate limit violation (200+ drops)")
+			m.peerRateMu.Lock()
+		}
+		return false
+	}
+	pr.tokens--
+	return true
 }
 
 func truncate(s string) string {

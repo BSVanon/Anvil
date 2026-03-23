@@ -23,6 +23,8 @@ const (
 	HeaderX402Challenge = "X402-Challenge"
 	HeaderX402Proof     = "X402-Proof"
 	HeaderX402Receipt   = "X402-Receipt"
+	// Calhooon x402 compatibility: direct payment in Atomic BEEF format.
+	HeaderBSVPayment = "X-Bsv-Payment"
 )
 
 // --- Challenge (server → client) ---
@@ -232,8 +234,25 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		proofHeader := r.Header.Get(HeaderX402Proof)
-		if proofHeader == "" {
+		bsvPayment := r.Header.Get(HeaderBSVPayment)
+
+		if proofHeader == "" && bsvPayment == "" {
 			pg.issueChallengeForPayees(w, r, payees)
+			return
+		}
+
+		// Calhooon compatibility: x-bsv-payment contains a raw/BEEF tx
+		// that pays the declared payees directly (no challenge-nonce binding).
+		if bsvPayment != "" && proofHeader == "" {
+			receipt, err := pg.verifyDirectPayment(bsvPayment, payees)
+			if err != nil {
+				writeError(w, http.StatusPaymentRequired, "direct payment rejected: "+err.Error())
+				return
+			}
+			receiptJSON, _ := json.Marshal(receipt)
+			w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
+			r.Header.Set("X-Anvil-Authed", "true")
+			next(w, r)
 			return
 		}
 

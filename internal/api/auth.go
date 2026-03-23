@@ -7,19 +7,40 @@ import (
 )
 
 // requireAuth rejects requests without a valid bearer token.
+// Accepts either "Authorization: Bearer <token>" or "X-App-Token: <token>".
 // If no auth token is configured, ALL writes are rejected — secure by default.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Handle CORS preflight for authenticated endpoints
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-App-Token, X-Anvil-Auth, Authorization, X402-Proof")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		if s.authToken == "" {
 			writeError(w, http.StatusForbidden, "no auth token configured — write endpoints disabled")
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		expected := "Bearer " + s.authToken
-		if auth != expected {
+
+		// Check X-Anvil-Auth (operator wallet/write auth), then Authorization header.
+		// X-App-Token is reserved for app topic gating — not used for operator auth.
+		token := r.Header.Get("X-Anvil-Auth")
+		if token == "" {
+			auth := r.Header.Get("Authorization")
+			if len(auth) > 7 && auth[:7] == "Bearer " {
+				token = auth[7:]
+			}
+		}
+
+		if token != s.authToken {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
+		// Add CORS headers to authenticated responses too
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		next(w, r)
 	}
 }

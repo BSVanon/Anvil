@@ -21,7 +21,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	work := s.headerStore.Work()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"node":    s.nodeName,
-		"version": "0.1.0",
+		"version": "0.2.0",
 		"headers": map[string]interface{}{
 			"height": tip,
 			"work":   work.String(),
@@ -35,7 +35,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := map[string]interface{}{
 		"node":    s.nodeName,
-		"version": "0.1.0",
+		"version": "0.2.0",
 		"headers": map[string]interface{}{
 			"height": tip,
 			"work":   work.String(),
@@ -60,6 +60,20 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if s.overlayDir != nil {
 		stats["overlay"] = map[string]interface{}{
 			"ship_count": s.overlayDir.CountSHIP(),
+		}
+	}
+
+	if s.bondChecker != nil && s.bondChecker.Required() {
+		stats["bond"] = map[string]interface{}{
+			"required": true,
+			"min_sats": s.bondChecker.MinSats(),
+		}
+	}
+
+	if s.gossipMgr != nil {
+		warnings := s.gossipMgr.SlashWarnings()
+		if len(warnings) > 0 {
+			stats["slash_warnings"] = warnings
 		}
 	}
 

@@ -32,7 +32,7 @@ import (
 )
 
 func main() {
-	// Subcommand routing — deploy, doctor, or run (default)
+	// Subcommand routing — deploy, doctor, token, or run (default)
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "deploy":
@@ -40,6 +40,9 @@ func main() {
 			return
 		case "doctor":
 			cmdDoctor(os.Args[2:])
+			return
+		case "token":
+			cmdToken(os.Args[2:])
 			return
 		}
 	}
@@ -62,6 +65,9 @@ func main() {
 	log.Printf("  arc:        enabled=%v", cfg.ARC.Enabled)
 	log.Printf("  junglebus:  enabled=%v", cfg.JungleBus.Enabled)
 	log.Printf("  overlay:    enabled=%v topics=%v", cfg.Overlay.Enabled, cfg.Overlay.Topics)
+	if cfg.API.AuthToken != "" {
+		log.Printf("  auth:       configured (run 'anvil token' to display)")
+	}
 
 	// Phase 2: Header store + sync
 	headerDir := filepath.Join(cfg.Node.DataDir, "headers")

@@ -111,6 +111,8 @@ func (m *Manager) handleMessage(senderPKHex string, senderPK *ec.PublicKey, payl
 		return m.onDataResponse(msg.Data)
 	case MsgSHIPSync:
 		return m.onSHIPSync(senderPKHex, msg.Data)
+	case MsgSlashWarning:
+		return m.onSlashWarning(senderPKHex, msg.Data)
 	default:
 		m.logger.Debug("unknown mesh message type", "type", msg.Type)
 	}
@@ -119,17 +121,44 @@ func (m *Manager) handleMessage(senderPKHex string, senderPK *ec.PublicKey, payl
 
 // onData handles an incoming data envelope from a peer.
 func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
+	// Gossip rate limit — loose (30/s burst 100). Drop silently, don't slash.
+	if !m.allowPeerMessage(senderPK) {
+		m.logger.Debug("peer rate-limited, dropping envelope", "peer", truncate(senderPK))
+		return nil
+	}
+
 	env, err := envelope.UnmarshalEnvelope(raw)
 	if err != nil {
 		return nil
 	}
 
 	hash := envelope.HashEnvelope(env.Topic, env.Pubkey, env.Payload, env.Timestamp)
+	// Double-publish detection: same (topic, pubkey, timestamp) with 3+ different payloads.
+	// Allows fast legitimate updates (e.g. oracle correcting a price within same second)
+	// but catches genuine conflicting-view attacks.
+	identityHash := envelope.HashEnvelope(env.Topic, env.Pubkey, "", env.Timestamp)
 	m.seenMu.Lock()
 	if _, seen := m.seen[hash]; seen {
 		m.seenMu.Unlock()
 		return nil
 	}
+	if _, exists := m.seen[identityHash]; exists {
+		m.dupCountMu.Lock()
+		m.dupCounts[identityHash]++
+		count := m.dupCounts[identityHash]
+		m.dupCountMu.Unlock()
+		// count tracks additional payloads beyond the first.
+		// count >= 2 means 3+ total distinct payloads (1 original + 2 more).
+		if count >= 2 {
+			m.seenMu.Unlock()
+			m.logger.Warn("DOUBLE PUBLISH detected (3+ conflicting payloads)",
+				"topic", env.Topic, "pubkey", truncate(env.Pubkey), "count", count)
+			m.broadcastSlashWarning(env.Pubkey, SlashDoublePublish,
+				"3+ different payloads for same topic+pubkey+timestamp")
+			return nil
+		}
+	}
+	m.seen[identityHash] = struct{}{}
 	if len(m.seen) >= m.maxSeen {
 		count := 0
 		for k := range m.seen {

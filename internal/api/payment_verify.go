@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -157,6 +158,77 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 	pg.mu.Lock()
 	delete(pg.pendingChallenges, proof.ChallengeSHA256)
 	pg.mu.Unlock()
+
+	return &X402Receipt{
+		TxID:      txid,
+		Satoshis:  totalPaid,
+		Timestamp: time.Now().Unix(),
+	}, nil
+}
+
+// verifyDirectPayment handles the x-bsv-payment header format.
+// Accepts a raw BSV transaction (hex or base64) and verifies it pays the
+// declared payees. No challenge-nonce binding — simpler but less
+// replay-resistant than the full x402 challenge-proof flow.
+func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee) (*X402Receipt, error) {
+	paymentHeader = strings.TrimSpace(paymentHeader)
+	if paymentHeader == "" {
+		return nil, fmt.Errorf("empty payment header")
+	}
+
+	// Try to decode: hex first (most common), then base64
+	txBytes, err := hex.DecodeString(paymentHeader)
+	if err != nil {
+		txBytes, err = base64.StdEncoding.DecodeString(paymentHeader)
+		if err != nil {
+			txBytes, err = base64.RawStdEncoding.DecodeString(paymentHeader)
+			if err != nil {
+				return nil, fmt.Errorf("cannot decode payment: not valid hex or base64")
+			}
+		}
+	}
+
+	tx, err := transaction.NewTransactionFromBytes(txBytes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid transaction in payment header: %w", err)
+	}
+
+	// Verify all payees are paid (same logic as challenge-proof path)
+	totalPaid := 0
+	for _, payee := range payees {
+		payeeBytes, err := hex.DecodeString(payee.LockingScriptHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid payee script (%s): %w", payee.Role, err)
+		}
+		found := false
+		for _, out := range tx.Outputs {
+			if out.Satoshis >= uint64(payee.AmountSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
+				found = true
+				totalPaid += payee.AmountSats
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("no output pays %d sats to %s payee", payee.AmountSats, payee.Role)
+		}
+	}
+
+	txid := tx.TxID().String()
+
+	// Broadcast to ARC if available (direct payments aren't challenge-bound,
+	// so mempool acceptance is important for settlement assurance)
+	if pg.arcClient != nil {
+		arcResp, err := pg.arcClient.Submit(txBytes)
+		if err != nil {
+			return nil, fmt.Errorf("ARC broadcast failed: %w", err)
+		}
+		switch arcResp.Status {
+		case "SEEN_ON_NETWORK", "MINED", "SEEN_IN_ORPHAN_MEMPOOL":
+			// OK
+		default:
+			return nil, fmt.Errorf("ARC rejected payment tx: status=%s", arcResp.Status)
+		}
+	}
 
 	return &X402Receipt{
 		TxID:      txid,

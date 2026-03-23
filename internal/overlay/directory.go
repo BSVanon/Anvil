@@ -198,6 +198,31 @@ func (d *Directory) AddSHIPPeerFromGossip(identity, domain, nodeName, topic stri
 	return d.db.Put(key, data, nil)
 }
 
+// RemoveSHIPPeerByIdentity removes all SHIP registrations for a given identity.
+// Used by slash enforcement to deregister misbehaving peers.
+func (d *Directory) RemoveSHIPPeerByIdentity(identity string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var toDelete [][]byte
+	iter := d.db.NewIterator(util.BytesPrefix(prefixSHIP), nil)
+	defer iter.Release()
+	for iter.Next() {
+		var entry PeerEntry
+		if err := json.Unmarshal(iter.Value(), &entry); err != nil {
+			continue
+		}
+		if entry.IdentityPub == identity {
+			key := make([]byte, len(iter.Key()))
+			copy(key, iter.Key())
+			toDelete = append(toDelete, key)
+		}
+	}
+	for _, key := range toDelete {
+		d.db.Delete(key, nil)
+	}
+}
+
 func shipKey(topic, identityPub string) []byte {
 	prefix := identityPub
 	if len(prefix) > 16 {
