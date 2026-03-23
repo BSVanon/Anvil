@@ -496,6 +496,11 @@ func (s *Server) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireAuth(next)
 }
 
+// CorsWrap adds CORS headers to a handler. Exported for use by overlay engine.
+func (s *Server) CorsWrap(next http.HandlerFunc) http.HandlerFunc {
+	return cors(next)
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

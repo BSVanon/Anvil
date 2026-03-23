@@ -58,6 +58,12 @@ func (d *Directory) Close() error {
 	return d.db.Close()
 }
 
+// DB returns the underlying LevelDB for shared use by the overlay engine.
+// The engine uses a separate key prefix ("ovl:") to avoid collisions.
+func (d *Directory) DB() *leveldb.DB {
+	return d.db
+}
+
 // AddSHIPPeer stores a SHIP peer entry, validated against its BRC-42 derivation.
 func (d *Directory) AddSHIPPeer(entry *PeerEntry, script []byte) error {
 	// Validate the SHIP token script against BRC-42 derivation
