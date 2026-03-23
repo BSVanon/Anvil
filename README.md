@@ -85,6 +85,10 @@ curl http://localhost:9333/.well-known/x402
 | `/data` | GET | No | 1 |
 | `/data` | POST | Bearer or x402 | 1 |
 | `/overlay/lookup` | GET | No | 1 |
+| `/overlay/submit` | POST | No | 1 |
+| `/overlay/query` | POST | No | 1 |
+| `/overlay/topics` | GET | No | 1 |
+| `/overlay/services` | GET | No | 1 |
 | `/broadcast` | POST | Bearer | 0 |
 | `/wallet/outputs` | GET | X-Anvil-Auth | 0 |
 | `/wallet/send` | POST | X-Anvil-Auth | 0 |
@@ -124,6 +128,24 @@ Anvil accepts payments via two methods:
 - **X-Bsv-Payment** — direct raw tx in header (compatible with Rust x402 agents)
 
 Machine-readable protocol spec: `GET /.well-known/x402-info` (JSON or markdown for LLMs via `Accept: text/markdown`)
+
+## Overlay services engine
+
+Generic BRC-22/24 overlay — any UTXO-based overlay type is a plugin. Topic managers decide which outputs to admit; lookup services answer queries. Babbage-compatible: TaggedBEEF submission, STEAK response, BRC-87 naming.
+
+```bash
+# What topics does this node host?
+curl https://anvil.sendbsv.com/overlay/topics
+
+# What lookup services are available?
+curl https://anvil.sendbsv.com/overlay/services
+```
+
+Built-in topic managers:
+- **SHIP/SLAP** — peer and service discovery (BRC-88)
+- **UHRP** — content hash resolution (BRC-26) — maps SHA-256 file hashes to hosting locations
+
+Adding a new overlay type is one interface implementation + one registration call. See [Capabilities Reference](docs/ANVIL_CAPABILITIES.md) for details.
 
 ## Live network
 

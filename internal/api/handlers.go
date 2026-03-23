@@ -21,7 +21,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	work := s.headerStore.Work()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"node":    s.nodeName,
-		"version": "0.2.0",
+		"version": "0.3.0",
 		"headers": map[string]interface{}{
 			"height": tip,
 			"work":   work.String(),
@@ -35,7 +35,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := map[string]interface{}{
 		"node":    s.nodeName,
-		"version": "0.2.0",
+		"version": "0.3.0",
 		"headers": map[string]interface{}{
 			"height": tip,
 			"work":   work.String(),
