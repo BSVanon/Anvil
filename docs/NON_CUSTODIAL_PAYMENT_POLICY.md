@@ -1,9 +1,6 @@
 # Non-Custodial Payment Policy for Anvil Nodes
 
-**Date:** 2026-03-18
-**Author:** Robert + Claude
-**Status:** Implemented and live (all 5 models operational as of 2026-03-19)
-**Origin:** Design conversation in SendBSV-Rates workspace while planning oracle feed monetization on the Foundry mesh
+**Status:** Implemented and live (all 5 payment models operational)
 
 ---
 

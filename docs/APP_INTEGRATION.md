@@ -18,7 +18,7 @@ That's it. Your app is a publisher. Anvil is the distribution layer.
 ## Step 1: Get access to an Anvil node
 
 You need:
-- **Node URL** — e.g. `http://212.56.43.191:9333`
+- **Node URL** — e.g. `http://your-node:9333`
 - **Auth token** — the node operator gives you a bearer token, OR you pay per-request via x402
 
 Test connectivity:
