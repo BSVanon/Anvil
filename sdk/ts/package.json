@@ -1,6 +1,6 @@
 {
   "name": "anvil-mesh",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Thin TypeScript client for the Anvil mesh network",
   "type": "module",
   "main": "dist/index.js",

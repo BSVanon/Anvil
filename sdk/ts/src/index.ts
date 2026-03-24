@@ -49,6 +49,58 @@ export interface NodeStats extends NodeStatus {
   overlay?: { ship_count: number };
 }
 
+/** BRC-22 TaggedBEEF submission format. */
+export interface TaggedBEEF {
+  beef: number[];
+  topics: string[];
+}
+
+/** BRC-22 STEAK response — per-topic admittance results. */
+export interface STEAK {
+  [topic: string]: {
+    outputsToAdmit: number[];
+    coinsToRetain: number[];
+    coinsRemoved?: number[];
+  };
+}
+
+/** BRC-24 lookup question. */
+export interface LookupQuestion {
+  service: string;
+  query: Record<string, unknown>;
+}
+
+/** BRC-24 lookup answer. */
+export interface LookupAnswer {
+  type: string;
+  outputs?: AdmittedOutput[];
+  result?: unknown;
+}
+
+/** An admitted UTXO tracked by the overlay engine. */
+export interface AdmittedOutput {
+  txid: string;
+  vout: number;
+  topic: string;
+  outputScript?: string;
+  satoshis?: number;
+  metadata?: unknown;
+  spent?: boolean;
+}
+
+/** Topic manager info from GET /overlay/topics. */
+export interface TopicInfo {
+  documentation: string;
+  metadata: Record<string, unknown>;
+}
+
+/** Lookup service info from GET /overlay/services. */
+export interface ServiceInfo {
+  documentation: string;
+  metadata: Record<string, unknown>;
+  topics: string[];
+}
+
 /** App listing for the anvil:catalog topic. */
 export interface CatalogListing {
   /** App name (e.g. "SendBSV Rates") */
@@ -165,6 +217,35 @@ export class AnvilClient {
   /** Get the public key hex. */
   getPubkey(): string {
     return this.pubkeyHex;
+  }
+
+  // ── Overlay (BRC-22/24) ──
+
+  /**
+   * Submit a transaction to the overlay engine (BRC-22).
+   * Accepts raw transaction bytes and target topic names.
+   * Returns a STEAK with per-topic admittance results.
+   */
+  async overlaySubmit(txData: number[], topics: string[]): Promise<STEAK> {
+    return this.post('/overlay/submit', { beef: txData, topics }) as Promise<STEAK>;
+  }
+
+  /**
+   * Query the overlay engine via a lookup service (BRC-24).
+   * Returns matching admitted outputs or a freeform result.
+   */
+  async overlayLookup(service: string, query: Record<string, unknown> = {}): Promise<LookupAnswer> {
+    return this.post('/overlay/query', { service, query }) as Promise<LookupAnswer>;
+  }
+
+  /** List registered topic managers. */
+  async overlayTopics(): Promise<Record<string, TopicInfo>> {
+    return this.get('/overlay/topics') as Promise<Record<string, TopicInfo>>;
+  }
+
+  /** List registered lookup services. */
+  async overlayServices(): Promise<Record<string, ServiceInfo>> {
+    return this.get('/overlay/services') as Promise<Record<string, ServiceInfo>>;
   }
 
   // ── Internal ──
