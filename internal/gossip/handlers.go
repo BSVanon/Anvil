@@ -30,11 +30,12 @@ func (m *Manager) announceSHIP(peer *auth.Peer) {
 		return
 	}
 	var peers []SHIPPeerInfo
-	m.overlayDir.ForEachSHIP(func(identity, domain, nodeName, topic string) bool {
+	m.overlayDir.ForEachSHIP(func(identity, domain, nodeName, version, topic string) bool {
 		peers = append(peers, SHIPPeerInfo{
 			IdentityPub: identity,
 			Domain:      domain,
 			NodeName:    nodeName,
+			Version:     version,
 			Topic:       topic,
 		})
 		return true
@@ -63,8 +64,16 @@ func (m *Manager) onSHIPSync(senderPK string, raw json.RawMessage) error {
 		if p.IdentityPub == "" || p.Domain == "" || p.Topic == "" {
 			continue
 		}
-		if err := m.overlayDir.AddSHIPPeerFromGossip(p.IdentityPub, p.Domain, p.NodeName, p.Topic); err == nil {
+		if err := m.overlayDir.AddSHIPPeerFromGossip(p.IdentityPub, p.Domain, p.NodeName, p.Version, p.Topic); err == nil {
 			added++
+		}
+		// Store version on connected peer if we know them
+		if p.Version != "" {
+			m.mu.Lock()
+			if mp, ok := m.peers[p.IdentityPub]; ok {
+				mp.Version = p.Version
+			}
+			m.mu.Unlock()
 		}
 	}
 	if added > 0 {
@@ -136,13 +145,15 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 	// Double-publish detection: same (topic, pubkey, timestamp) with 3+ different payloads.
 	// Allows fast legitimate updates (e.g. oracle correcting a price within same second)
 	// but catches genuine conflicting-view attacks.
+	// Skip for local pubkeys — a fast local publisher (e.g. SendBSV-Rates) is not an attack.
+	_, isLocal := m.localPubkeys[env.Pubkey]
 	identityHash := envelope.HashEnvelope(env.Topic, env.Pubkey, "", env.Timestamp)
 	m.seenMu.Lock()
 	if _, seen := m.seen[hash]; seen {
 		m.seenMu.Unlock()
 		return nil
 	}
-	if _, exists := m.seen[identityHash]; exists {
+	if _, exists := m.seen[identityHash]; !isLocal && exists {
 		m.dupCountMu.Lock()
 		m.dupCounts[identityHash]++
 		count := m.dupCounts[identityHash]

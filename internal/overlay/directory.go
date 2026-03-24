@@ -21,6 +21,7 @@ type PeerEntry struct {
 	IdentityPub  string    `json:"identity_pub"`            // compressed pubkey hex
 	Domain       string    `json:"domain"`                  // e.g. "relay.example.com:8333"
 	NodeName     string    `json:"node_name,omitempty"`      // human-readable name from config
+	Version      string    `json:"version,omitempty"`        // node software version (e.g. "0.3.0")
 	Topic        string    `json:"topic"`                   // e.g. "anvil:mainnet"
 	TxID         string    `json:"txid"`                    // on-chain tx containing the SHIP token
 	OutputIndex  int       `json:"output_index"`
@@ -165,7 +166,7 @@ func (d *Directory) CountSHIP() int {
 
 // ForEachSHIP iterates all SHIP registrations, calling fn for each.
 // Satisfies gossip.OverlayDirectory interface.
-func (d *Directory) ForEachSHIP(fn func(identity, domain, nodeName, topic string) bool) {
+func (d *Directory) ForEachSHIP(fn func(identity, domain, nodeName, version, topic string) bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -176,7 +177,7 @@ func (d *Directory) ForEachSHIP(fn func(identity, domain, nodeName, topic string
 		if err := json.Unmarshal(iter.Value(), &entry); err != nil {
 			continue
 		}
-		if !fn(entry.IdentityPub, entry.Domain, entry.NodeName, entry.Topic) {
+		if !fn(entry.IdentityPub, entry.Domain, entry.NodeName, entry.Version, entry.Topic) {
 			break
 		}
 	}
@@ -185,11 +186,12 @@ func (d *Directory) ForEachSHIP(fn func(identity, domain, nodeName, topic string
 // AddSHIPPeerFromGossip stores a SHIP peer received from a trusted mesh peer.
 // Skips SHIP script validation since the peer has already been authenticated.
 // Satisfies gossip.OverlayDirectory interface.
-func (d *Directory) AddSHIPPeerFromGossip(identity, domain, nodeName, topic string) error {
+func (d *Directory) AddSHIPPeerFromGossip(identity, domain, nodeName, version, topic string) error {
 	entry := &PeerEntry{
 		IdentityPub:  identity,
 		Domain:       domain,
 		NodeName:     nodeName,
+		Version:      version,
 		Topic:        topic,
 		TxID:         "gossip",
 		DiscoveredAt: time.Now(),

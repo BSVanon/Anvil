@@ -65,6 +65,9 @@ type Manager struct {
 
 	// slash tracking
 	slashTracker *slashTracker
+
+	// local pubkeys exempt from double-publish detection
+	localPubkeys map[string]struct{}
 }
 
 // peerRate tracks token-bucket rate limiting for a single peer.
@@ -80,9 +83,9 @@ type peerRate struct {
 // shared type definitions across packages.
 type OverlayDirectory interface {
 	// ForEachSHIP calls fn for every SHIP registration. Stop iteration by returning false.
-	ForEachSHIP(fn func(identity, domain, nodeName, topic string) bool)
+	ForEachSHIP(fn func(identity, domain, nodeName, version, topic string) bool)
 	// AddSHIPPeerFromGossip stores a SHIP peer received from a trusted mesh peer.
-	AddSHIPPeerFromGossip(identity, domain, nodeName, topic string) error
+	AddSHIPPeerFromGossip(identity, domain, nodeName, version, topic string) error
 	// RemoveSHIPPeerByIdentity removes all SHIP registrations for a given identity.
 	RemoveSHIPPeerByIdentity(identity string)
 }
@@ -93,6 +96,7 @@ type MeshPeer struct {
 	IdentityPK *ec.PublicKey
 	Endpoint   string
 	BondSats   int             // verified bond amount in satoshis (0 = not checked)
+	Version    string          // remote node version (from SHIP sync)
 	origKey    string          // the original map key at insertion time (for cleanup after re-key)
 	closeFunc  func() error   // closes the underlying transport connection
 }
@@ -107,6 +111,10 @@ type ManagerConfig struct {
 	OnEnvelope     func(*envelope.Envelope)
 	OverlayDir     OverlayDirectory
 	BondChecker    *bond.Checker
+	// LocalPubkeys are identity pubkey hexes for this node's apps.
+	// Envelopes from these pubkeys skip double-publish detection
+	// (a fast local publisher is not an attack).
+	LocalPubkeys   []string
 }
 
 // NewManager creates a gossip manager backed by go-sdk auth.Peer.
@@ -119,7 +127,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Manager{
+	m := &Manager{
 		wallet:         cfg.Wallet,
 		store:          cfg.Store,
 		logger:         logger,
@@ -136,7 +144,12 @@ func NewManager(cfg ManagerConfig) *Manager {
 		rateBurst:      100, // burst allowance
 		dupCounts:      make(map[string]int),
 		slashTracker:   newSlashTracker(),
+		localPubkeys:   make(map[string]struct{}),
 	}
+	for _, pk := range cfg.LocalPubkeys {
+		m.localPubkeys[pk] = struct{}{}
+	}
+	return m
 }
 
 // ConnectPeer establishes an authenticated mesh connection to a remote peer.
@@ -381,6 +394,7 @@ type PeerInfo struct {
 	Identity string `json:"identity"`
 	Endpoint string `json:"endpoint"`
 	BondSats int    `json:"bond_sats,omitempty"`
+	Version  string `json:"version,omitempty"`
 }
 
 // PeerList returns information about all connected mesh peers.
@@ -389,7 +403,7 @@ func (m *Manager) PeerList() []PeerInfo {
 	defer m.mu.RUnlock()
 	list := make([]PeerInfo, 0, len(m.peers))
 	for _, p := range m.peers {
-		info := PeerInfo{Endpoint: p.Endpoint, BondSats: p.BondSats}
+		info := PeerInfo{Endpoint: p.Endpoint, BondSats: p.BondSats, Version: p.Version}
 		if p.IdentityPK != nil {
 			info.Identity = fmt.Sprintf("%x", p.IdentityPK.Compressed())
 		}

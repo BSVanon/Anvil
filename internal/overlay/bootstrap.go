@@ -18,6 +18,7 @@ func Bootstrap(
 	identityKey *ec.PrivateKey,
 	domain string,
 	nodeName string,
+	version string,
 	topics []string,
 	logger *slog.Logger,
 ) error {
@@ -34,6 +35,7 @@ func Bootstrap(
 			IdentityPub:  identityPubHex,
 			Domain:       domain,
 			NodeName:     nodeName,
+			Version:      version,
 			Topic:        topic,
 			TxID:         "self-registered",
 			OutputIndex:  0,

@@ -75,6 +75,7 @@ type SHIPPeerInfo struct {
 	IdentityPub string `json:"identity_pub"`
 	Domain      string `json:"domain"`
 	NodeName    string `json:"node_name,omitempty"`
+	Version     string `json:"version,omitempty"`
 	Topic       string `json:"topic"`
 }
 

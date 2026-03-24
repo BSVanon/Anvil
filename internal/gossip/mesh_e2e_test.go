@@ -306,7 +306,7 @@ func TestNodeNamePropagatesViaSHIPSync(t *testing.T) {
 	testNodeName := "anvil-prime"
 	testTopic := "anvil:mainnet"
 
-	if err := overlayA.AddSHIPPeerFromGossip(testIdentity, testDomain, testNodeName, testTopic); err != nil {
+	if err := overlayA.AddSHIPPeerFromGossip(testIdentity, testDomain, testNodeName, "0.3.0", testTopic); err != nil {
 		t.Fatalf("seed overlay A: %v", err)
 	}
 
@@ -379,7 +379,10 @@ func TestNodeNamePropagatesViaSHIPSync(t *testing.T) {
 			if p.Domain != testDomain {
 				t.Fatalf("domain mismatch: expected %q, got %q", testDomain, p.Domain)
 			}
-			t.Logf("node_name %q propagated A→B via SHIP sync ✓", testNodeName)
+			if p.Version != "0.3.0" {
+				t.Fatalf("version mismatch: expected %q, got %q", "0.3.0", p.Version)
+			}
+			t.Logf("node_name %q + version %q propagated A→B via SHIP sync ✓", testNodeName, p.Version)
 		}
 	}
 	if !found {

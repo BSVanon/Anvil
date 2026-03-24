@@ -12,6 +12,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
+	"github.com/BSVanon/Anvil/internal/version"
 )
 
 // --- Status & Headers ---
@@ -21,7 +22,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	work := s.headerStore.Work()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"node":    s.nodeName,
-		"version": "0.3.0",
+		"version": version.Version,
 		"headers": map[string]interface{}{
 			"height": tip,
 			"work":   work.String(),
@@ -35,7 +36,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := map[string]interface{}{
 		"node":    s.nodeName,
-		"version": "0.3.0",
+		"version": version.Version,
 		"headers": map[string]interface{}{
 			"height": tip,
 			"work":   work.String(),

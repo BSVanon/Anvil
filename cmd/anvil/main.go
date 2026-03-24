@@ -22,6 +22,7 @@ import (
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
+	anvilversion "github.com/BSVanon/Anvil/internal/version"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
@@ -162,7 +163,7 @@ func main() {
 				if domain == "" {
 					domain = cfg.Node.Listen
 				}
-				anviloverlay.Bootstrap(overlayDir, identityKey, domain, cfg.Node.Name, cfg.Overlay.Topics, logger)
+				anviloverlay.Bootstrap(overlayDir, identityKey, domain, cfg.Node.Name, anvilversion.Version, cfg.Overlay.Topics, logger)
 			}
 		}
 
@@ -229,6 +230,11 @@ func main() {
 			log.Printf("bond required: %d sats minimum for mesh peering", cfg.Mesh.MinBondSats)
 		}
 
+		// Collect local pubkeys to exempt from double-publish detection
+		var localPKs []string
+		if identityPubHex != "" {
+			localPKs = append(localPKs, identityPubHex)
+		}
 		gossipMgr = anvilgossip.NewManager(anvilgossip.ManagerConfig{
 			Wallet:         nodeWallet.Wallet(),
 			Store:          envStore,
@@ -237,6 +243,7 @@ func main() {
 			MaxSeen:        10000,
 			OverlayDir:     overlayDir,
 			BondChecker:    bondCheck,
+			LocalPubkeys:   localPKs,
 			OnEnvelope: func(env *envelope.Envelope) {
 				logger.Info("mesh envelope received", "topic", env.Topic, "from", env.Pubkey[:16])
 			},
