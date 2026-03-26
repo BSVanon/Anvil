@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/BSVanon/Anvil/internal/bond"
 	"github.com/BSVanon/Anvil/internal/content"
@@ -35,6 +38,7 @@ type Server struct {
 	bondChecker     *bond.Checker
 	contentServer   *content.Server
 	explorerOrigin  string
+	publicURL       string // HTTPS public URL — used for /app/ redirects so wallet connections work
 }
 
 // ServerConfig holds all parameters for NewServer.
@@ -67,6 +71,7 @@ type ServerConfig struct {
 	P2PBlockSource   content.BlockTxSource
 	HeaderLookup     func(int) string
 	ExplorerOrigin   string // fallback content_origin for /explorer when catalog is empty
+	PublicURL        string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
 }
 
 // NewServer creates a new REST API server.
@@ -112,6 +117,7 @@ func NewServer(cfg ServerConfig) *Server {
 		bondChecker:    cfg.BondChecker,
 		contentServer:   content.NewServer("", cfg.P2PTxSource, cfg.P2PBlockSource, cfg.HeaderLookup),
 		explorerOrigin:  cfg.ExplorerOrigin,
+		publicURL:       strings.TrimRight(cfg.PublicURL, "/"),
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -151,6 +157,7 @@ func (s *Server) routes() {
 	// This lets third-party publishers submit envelopes by paying instead of
 	// needing the operator's auth token.
 	s.mux.HandleFunc("POST /data", s.authOrPay(s.handlePostData))
+	s.mux.HandleFunc("OPTIONS /data", cors(func(w http.ResponseWriter, r *http.Request) {}))
 	s.mux.HandleFunc("POST /overlay/register", s.requireAuth(s.handleOverlayRegister))
 	s.mux.HandleFunc("POST /overlay/deregister", s.requireAuth(s.handleOverlayDeregister))
 }
@@ -464,28 +471,66 @@ func (s *Server) handleAnvilManifest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// authOrPay allows either bearer auth OR x402 payment to access a write endpoint.
-// Bearer auth is checked first (free for the operator). If no bearer token is
-// provided and a payment gate exists, x402 payment is accepted instead.
+// authOrPay allows bearer auth, x402 payment, OR a valid signed envelope to
+// access a write endpoint. Checked in order:
+//  1. Bearer token (X-Anvil-Auth or Authorization header) — free for operator
+//  2. x402 payment gate — if configured
+//  3. Signed envelope — body is parsed, signature validated; proves key ownership
+//     and the inscription cost is the natural spam filter
 func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// If bearer token is present and valid, let through
-		if token := r.Header.Get("Authorization"); token != "" {
-			if s.authToken != "" && token == "Bearer "+s.authToken {
-				r.Header.Set("X-Anvil-Authed", "true")
-				next(w, r)
-				return
-			}
+		// Handle CORS preflight for authOrPay endpoints
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
 
-		// If no valid bearer token, try x402 payment
+		// Check X-Anvil-Auth first, then Authorization (same order as requireAuth)
+		token := r.Header.Get("X-Anvil-Auth")
+		if token == "" {
+			if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
+				token = auth[7:]
+			}
+		}
+		if token != "" && s.authToken != "" && token == s.authToken {
+			r.Header.Set("X-Anvil-Authed", "true")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			next(w, r)
+			return
+		}
+
+		// If no valid auth token, try x402 payment
 		if s.paymentGate != nil {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
 			s.paymentGate.Middleware(next)(w, r)
 			return
 		}
 
-		// Neither auth nor payment available
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		// Final fallback: if the body contains a signed envelope, let it
+		// through. The signature proves key ownership and the inscription
+		// cost (real sats) is the natural spam filter. Ingest() will still
+		// fully validate the envelope before accepting it.
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err == nil && len(body) > 0 {
+			env, parseErr := envelope.UnmarshalEnvelope(body)
+			if parseErr == nil && env.Signature != "" && env.Pubkey != "" {
+				if valErr := env.Validate(); valErr == nil {
+					// Valid signed envelope — replay body for handler
+					r.Body = io.NopCloser(bytes.NewReader(body))
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+					next(w, r)
+					return
+				}
+			}
+			// Signature check failed — replay body so error handler can read it
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		writeError(w, http.StatusUnauthorized, "unauthorized — provide auth token, x402 payment, or signed envelope")
 	}
 }
 

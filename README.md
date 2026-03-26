@@ -30,10 +30,11 @@ Publish signed data to the Anvil mesh. Your app signs a JSON envelope, POSTs it 
 
 ```bash
 curl -X POST http://localhost:9333/data \
-  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"data","topic":"oracle:rates:bsv","payload":"{...}","signature":"...","pubkey":"...","ttl":60,"timestamp":1710000000}'
 ```
+
+Three ways to publish: bearer token (operator), x402 payment (anyone), or signed envelope (anyone with a BSV key). Signed envelopes require no token and no payment — the signature proves key ownership.
 
 Any consumer queries it from any node: `GET /data?topic=oracle:rates:bsv`
 
@@ -83,7 +84,7 @@ curl http://localhost:9333/.well-known/x402
 | `/tx/{txid}/beef` | GET | No | 0 |
 | `/content/{txid}_{vout}` | GET | No | 0 |
 | `/data` | GET | No | 1 |
-| `/data` | POST | Bearer or x402 | 1 |
+| `/data` | POST | Bearer, x402, or signed envelope | 1 |
 | `/overlay/lookup` | GET | No | 1 |
 | `/overlay/submit` | POST | No | 1 |
 | `/overlay/query` | POST | No | 1 |
@@ -156,13 +157,27 @@ Adding a new overlay type is one interface implementation + one registration cal
 | x402 discovery | https://anvil.sendbsv.com/.well-known/x402 |
 | Protocol spec | https://anvil.sendbsv.com/.well-known/x402-info |
 
+## Quick install
+
+```bash
+curl -fsSL https://anvil.sendbsv.com/install | sudo bash
+```
+
+Downloads the binary, generates a fresh identity, creates config + systemd service, connects to the mesh. Takes ~2 minutes on a fresh VPS.
+
+Customize with environment variables:
+```bash
+ANVIL_NAME="my-node" ANVIL_SEED="wss://anvil.sendbsv.com:8333" curl -fsSL https://anvil.sendbsv.com/install | sudo bash
+```
+
 ## Operations
 
 | Command | What it does |
 |---------|-------------|
 | `anvil -config anvil.toml` | Run the node |
 | `anvil token -config anvil.toml` | Print your API auth token |
-| `sudo anvil deploy --nodes ab` | Install systemd services, create dirs, health check |
+| `sudo anvil deploy --nodes a` | Install systemd service, generate identity, create dirs, health check |
+| `sudo anvil deploy --nodes a --seed wss://peer:8333 --name my-node` | Deploy with mesh seed and custom name |
 | `anvil doctor -config /etc/anvil/node-a.toml` | Validate config, connectivity, wallet, mesh |
 
 ## Further reading

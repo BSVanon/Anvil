@@ -469,7 +469,11 @@ func (s *Server) handleAppRedirect(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if strings.EqualFold(listing.Name, appName) && listing.ContentOrigin != "" {
-			http.Redirect(w, r, "/content/"+listing.ContentOrigin, http.StatusFound)
+			target := "/content/" + listing.ContentOrigin
+			if s.publicURL != "" {
+				target = s.publicURL + target
+			}
+			http.Redirect(w, r, target, http.StatusFound)
 			return
 		}
 	}
@@ -495,7 +499,11 @@ func (s *Server) handleAppRedirectWithFallback(w http.ResponseWriter, r *http.Re
 					continue
 				}
 				if strings.EqualFold(listing.Name, appName) && listing.ContentOrigin != "" {
-					http.Redirect(w, r, "/content/"+listing.ContentOrigin, http.StatusFound)
+					target := "/content/" + listing.ContentOrigin
+					if s.publicURL != "" {
+						target = s.publicURL + target
+					}
+					http.Redirect(w, r, target, http.StatusFound)
 					return
 				}
 			}
@@ -504,7 +512,11 @@ func (s *Server) handleAppRedirectWithFallback(w http.ResponseWriter, r *http.Re
 
 	// Fall back to configured origin
 	if fallbackOrigin != "" {
-		http.Redirect(w, r, "/content/"+fallbackOrigin, http.StatusFound)
+		target := "/content/" + fallbackOrigin
+		if s.publicURL != "" {
+			target = s.publicURL + target
+		}
+		http.Redirect(w, r, target, http.StatusFound)
 		return
 	}
 
