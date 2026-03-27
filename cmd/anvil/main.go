@@ -46,6 +46,12 @@ func main() {
 		case "token":
 			cmdToken(os.Args[2:])
 			return
+		case "info":
+			cmdInfo(os.Args[2:])
+			return
+		case "help", "--help", "-h":
+			cmdHelp(os.Args[2:])
+			return
 		}
 	}
 

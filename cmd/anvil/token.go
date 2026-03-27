@@ -9,11 +9,13 @@ import (
 )
 
 // cmdToken prints the derived API auth token for the configured identity.
-// Usage: anvil token [-config anvil.toml]
+// Usage: anvil token [-config /etc/anvil/node-a.toml]
 func cmdToken(args []string) {
 	fs := flag.NewFlagSet("token", flag.ExitOnError)
-	configPath := fs.String("config", "anvil.toml", "path to config file")
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	fs.Parse(args)
+
+	loadEnvFile(*configPath)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {

@@ -76,6 +76,9 @@ func cmdDeploy(args []string) {
 		os.MkdirAll(*installDir, 0755)
 		stopServices(nodeList)
 		copyFile(selfBin, destBin, 0755)
+		// Symlink to PATH so 'anvil' works everywhere
+		os.Remove("/usr/local/bin/anvil")
+		os.Symlink(destBin, "/usr/local/bin/anvil")
 		ok("Binary installed: " + destBin)
 	}
 
@@ -193,7 +196,7 @@ func deployNode(node, configDir, dataDir, installDir, seedPeer, nodeName, public
 	// Config file (only if not already present — never overwrite existing config)
 	tomlPath := filepath.Join(configDir, fmt.Sprintf("node-%s.toml", node))
 	if _, err := os.Stat(tomlPath); os.IsNotExist(err) {
-		tomlContent := renderConfig(node, dataDir, seedPeer, nodeName, publicURL)
+		tomlContent := renderConfig(node, dataDir, seedPeer, nodeName, publicURL, configDir)
 		if dryRun {
 			fmt.Printf("  [dry-run] would write %s\n", tomlPath)
 		} else {
@@ -252,23 +255,22 @@ func renderUnit(node, configDir, dataDir, installDir string) string {
 	return buf.String()
 }
 
-func renderConfig(node, dataDir, seedPeer, nodeName, publicURL string) string {
+func renderConfig(node, dataDir, seedPeer, nodeName, publicURL, configDir string) string {
 	meshPort := "8333"
 	apiPort := "9333"
 	seeds := "seeds = []"
-	name := "anvil-prime"
 	paymentSats := "0" // default: free infrastructure
 
 	if node == "b" {
 		meshPort = "8334"
 		apiPort = "9334"
 		seeds = `seeds = ["ws://127.0.0.1:8333"]`
-		name = "anvil-one"
 	}
 
-	// Override name if --name was provided
-	if nodeName != "" {
-		name = nodeName
+	// Node name: --name flag > auto-generated from identity pubkey
+	name := nodeName
+	if name == "" {
+		name = autoNodeName(node, configDir)
 	}
 
 	// Override seeds if --seed was provided
@@ -276,10 +278,15 @@ func renderConfig(node, dataDir, seedPeer, nodeName, publicURL string) string {
 		seeds = fmt.Sprintf(`seeds = ["%s"]`, seedPeer)
 	}
 
-	// Optional public_url line
+	// Public URL — use provided value, or auto-detect public IP
 	publicURLLine := ""
 	if publicURL != "" {
 		publicURLLine = fmt.Sprintf("public_url = \"%s\"\n", publicURL)
+	} else {
+		if ip := detectPublicIP(); ip != "" {
+			publicURLLine = fmt.Sprintf("public_url = \"http://%s:%s\"\n", ip, apiPort)
+			fmt.Printf("  detected public IP: %s\n", ip)
+		}
 	}
 
 	return fmt.Sprintf(`# Anvil Node %s
@@ -312,8 +319,10 @@ max_ephemeral_ttl = 3600
 max_durable_size = 65536
 
 [api]
+explorer_origin = "ce15872085966376ffe4479ecf32d88fc6be026aed0246054bf7bfaab2ea756a_0"
 rate_limit = 100
 payment_satoshis = %s
+trust_proxy = false
 
 [api.app_payments]
 allow_passthrough = true
@@ -430,6 +439,53 @@ func generateWIF() (wif string, identityPub string) {
 		fatal("failed to generate private key: " + err.Error())
 	}
 	return key.Wif(), hex.EncodeToString(key.PubKey().Compressed())
+}
+
+func autoNodeName(node, configDir string) string {
+	// Try to read identity pubkey from the env file
+	envFile := filepath.Join(configDir, fmt.Sprintf("node-%s.env", node))
+	data, err := os.ReadFile(envFile)
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "ANVIL_IDENTITY_WIF=") {
+				wif := strings.TrimPrefix(line, "ANVIL_IDENTITY_WIF=")
+				if key, err := ec.PrivateKeyFromWif(wif); err == nil {
+					pubHex := hex.EncodeToString(key.PubKey().Compressed())
+					if len(pubHex) >= 8 {
+						return fmt.Sprintf("anvil-%s", pubHex[:8])
+					}
+				}
+			}
+		}
+	}
+	// Fallback: hostname
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "anvil-node"
+}
+
+func detectPublicIP() string {
+	services := []string{
+		"https://ifconfig.me/ip",
+		"https://api.ipify.org",
+		"https://icanhazip.com",
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, url := range services {
+		resp, err := client.Get(url)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		ip := strings.TrimSpace(string(body))
+		if ip != "" && !strings.Contains(ip, "<") {
+			return ip
+		}
+	}
+	return ""
 }
 
 func step(msg string) { fmt.Printf("\n[→] %s\n", msg) }
