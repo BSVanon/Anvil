@@ -107,10 +107,15 @@ curl http://localhost:9333/.well-known/x402
 Node operators authenticate with the `X-Anvil-Auth` header to access wallet endpoints (balance, send, receive). The auth token is derived from your identity WIF:
 
 ```bash
-# Print your auth token
-anvil token -config anvil.toml
+# Show your address, identity, and auth token
+sudo anvil info
 
-# Check balance
+# Fund your node — send BSV to the address shown above, then:
+TOKEN=$(sudo anvil token)
+curl -X POST http://localhost:9333/wallet/scan \
+  -H "Authorization: Bearer $TOKEN"
+
+# Check outputs
 curl -H "X-Anvil-Auth: $TOKEN" http://localhost:9333/wallet/outputs
 
 # Or use the Explorer — click the node dropdown → Node Login → paste token
@@ -153,7 +158,7 @@ Adding a new overlay type is one interface implementation + one registration cal
 | | URL |
 |---|---|
 | Explorer | https://anvil.sendbsv.com |
-| Direct IP | http://212.56.43.191:9333/explorer |
+| Direct IP | http://212.56.43.191:9333 |
 | x402 discovery | https://anvil.sendbsv.com/.well-known/x402 |
 | Protocol spec | https://anvil.sendbsv.com/.well-known/x402-info |
 
@@ -163,22 +168,29 @@ Adding a new overlay type is one interface implementation + one registration cal
 curl -fsSL https://anvil.sendbsv.com/install | sudo bash
 ```
 
-Downloads the binary, generates a fresh identity, creates config + systemd service, connects to the mesh. Takes ~2 minutes on a fresh VPS.
+One command. Downloads the binary, generates a fresh identity, syncs headers, shows your funding address, and connects to the mesh. The guided installer walks you through every step. Takes ~3 minutes on a fresh VPS.
 
 Customize with environment variables:
 ```bash
-ANVIL_NAME="my-node" ANVIL_SEED="wss://anvil.sendbsv.com:8333" curl -fsSL https://anvil.sendbsv.com/install | sudo bash
+ANVIL_NAME="my-node" curl -fsSL https://anvil.sendbsv.com/install | sudo bash
+```
+
+After install, open your firewall and fund your node:
+```bash
+sudo ufw allow 8333/tcp    # mesh peering
+sudo ufw allow 9333/tcp    # REST API
+sudo anvil info             # shows your funding address + auth token
 ```
 
 ## Operations
 
 | Command | What it does |
 |---------|-------------|
-| `anvil -config anvil.toml` | Run the node |
-| `anvil token -config anvil.toml` | Print your API auth token |
-| `sudo anvil deploy --nodes a` | Install systemd service, generate identity, create dirs, health check |
-| `sudo anvil deploy --nodes a --seed wss://peer:8333 --name my-node` | Deploy with mesh seed and custom name |
-| `anvil doctor -config /etc/anvil/node-a.toml` | Validate config, connectivity, wallet, mesh |
+| `anvil help` | Quick reference for all commands |
+| `sudo anvil info` | Show identity key, funding address, and auth token |
+| `sudo anvil doctor` | Validate config, connectivity, wallet, mesh health |
+| `sudo anvil token` | Print your API auth token |
+| `sudo anvil deploy --nodes a` | Install systemd service, generate identity, create dirs |
 
 ## Further reading
 

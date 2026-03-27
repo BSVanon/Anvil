@@ -86,7 +86,7 @@ This creates the `anvil` system user, data directories, systemd service, and run
 Validate your setup at any time:
 
 ```bash
-anvil doctor -config /etc/anvil/node-a.toml
+sudo anvil doctor
 ```
 
 ## Configuration reference
