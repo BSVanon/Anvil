@@ -26,7 +26,7 @@ NC='\033[0m'
 pause_msg() {
   echo ""
   echo -e "  ${DIM}press enter to continue...${NC}"
-  read -r
+  read -r < /dev/tty
 }
 
 # ── Detect architecture ──
