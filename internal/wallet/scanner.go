@@ -151,6 +151,24 @@ func (s *Scanner) ScanAddress(ctx context.Context, address string) (*ScanResult,
 			continue
 		}
 
+		// Parse transaction to get canonical TxID hash
+		txBytesRaw, txParseErr := hex.DecodeString(rawTxHex)
+		if txParseErr != nil {
+			detail.Status = "error"
+			detail.Error = fmt.Sprintf("decode raw tx: %v", txParseErr)
+			result.Errors++
+			result.Details = append(result.Details, detail)
+			continue
+		}
+		parsedTx, txParseErr := transaction.NewTransactionFromBytes(txBytesRaw)
+		if txParseErr != nil {
+			detail.Status = "error"
+			detail.Error = fmt.Sprintf("parse tx: %v", txParseErr)
+			result.Errors++
+			result.Details = append(result.Details, detail)
+			continue
+		}
+
 		// Fetch merkle proof (tries ARC then WoC TSC fallback)
 		merkleHex, err := s.fetchMerkleProof(utxo.TxHash, uint32(utxo.Height))
 		if err != nil {
@@ -161,8 +179,8 @@ func (s *Scanner) ScanAddress(ctx context.Context, address string) (*ScanResult,
 			continue
 		}
 
-		// Build BEEF from raw tx + merkle path
-		beefBytes, err := buildBEEF(rawTxHex, merkleHex)
+		// Build BEEF from parsed tx + merkle path
+		beefBytes, err := buildBEEFFromTx(parsedTx, merkleHex)
 		if err != nil {
 			detail.Status = "error"
 			detail.Error = fmt.Sprintf("build BEEF: %v", err)
@@ -352,14 +370,15 @@ func (s *Scanner) fetchMerkleProofFromWoC(txid string, blockHeight uint32) (stri
 	path := make([][]*transaction.PathElement, treeHeight)
 	offset := proof.Index
 
+	// Derive the canonical txid hash from the raw transaction bytes.
+	// We must NOT use proof.TxOrID decoded from hex — the go-sdk's chainhash
+	// internal byte order differs from manual hex decode + reverse.
+	txidHash, _ := chainhash.NewHashFromHex(proof.TxOrID)
+
 	for level := 0; level < treeHeight; level++ {
 		sibOffset := offset ^ 1
 
 		if level == 0 {
-			// Level 0: tx leaf + its sibling
-			txBytes, _ := hex.DecodeString(proof.TxOrID)
-			reverseBytes(txBytes) // display → natural
-			txHash, _ := chainhash.NewHash(txBytes)
 			isTrue := true
 
 			var elements []*transaction.PathElement
@@ -367,13 +386,13 @@ func (s *Scanner) fetchMerkleProofFromWoC(txid string, blockHeight uint32) (stri
 			// Add both in offset order (lower first)
 			if offset < sibOffset {
 				elements = append(elements, &transaction.PathElement{
-					Offset: offset, Hash: txHash, Txid: &isTrue,
+					Offset: offset, Hash: txidHash, Txid: &isTrue,
 				})
 				elements = append(elements, tscNodeToElement(proof.Nodes[0], sibOffset))
 			} else {
 				elements = append(elements, tscNodeToElement(proof.Nodes[0], sibOffset))
 				elements = append(elements, &transaction.PathElement{
-					Offset: offset, Hash: txHash, Txid: &isTrue,
+					Offset: offset, Hash: txidHash, Txid: &isTrue,
 				})
 			}
 			path[0] = elements
@@ -410,19 +429,9 @@ func reverseBytes(b []byte) {
 	}
 }
 
-// buildBEEF constructs Atomic BEEF from a raw tx hex and BRC-74 merkle path hex.
-// Atomic BEEF = version(0x01010101) + txid(32 bytes) + BEEF V2 bytes.
-// This is the format go-wallet-toolbox's InternalizeAction expects.
-func buildBEEF(rawTxHex, merklePathHex string) ([]byte, error) {
-	txBytes, err := hex.DecodeString(rawTxHex)
-	if err != nil {
-		return nil, fmt.Errorf("decode raw tx hex: %w", err)
-	}
-	tx, err := transaction.NewTransactionFromBytes(txBytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse transaction: %w", err)
-	}
-
+// buildBEEFFromTx constructs Atomic BEEF from an already-parsed transaction
+// and a BRC-74 merkle path hex string.
+func buildBEEFFromTx(tx *transaction.Transaction, merklePathHex string) ([]byte, error) {
 	mp, err := transaction.NewMerklePathFromHex(merklePathHex)
 	if err != nil {
 		return nil, fmt.Errorf("parse merkle path: %w", err)
@@ -430,7 +439,6 @@ func buildBEEF(rawTxHex, merklePathHex string) ([]byte, error) {
 
 	tx.MerklePath = mp
 
-	// Build a Beef V2 struct and serialize as Atomic BEEF
 	beef, err := transaction.NewBeefFromTransaction(tx)
 	if err != nil {
 		return nil, fmt.Errorf("build beef from tx: %w", err)
