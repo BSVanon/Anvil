@@ -30,3 +30,4 @@ sdk/ts/*.tgz
 
 # Local shared memory
 .codex-2nd-op/
+dist/
