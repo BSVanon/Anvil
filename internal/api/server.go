@@ -137,6 +137,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /status", s.openRead(s.handleStatus))
 	s.mux.HandleFunc("GET /stats", s.openRead(s.handleStats))
 	s.mux.HandleFunc("GET /mesh/status", cors(s.handleMeshStatus))
+	s.mux.HandleFunc("GET /mesh/nodes", cors(s.handleMeshNodes))
 	s.mux.HandleFunc("GET /headers/tip", s.openRead(s.handleHeadersTip))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
 	s.mux.HandleFunc("GET /data", s.openRead(s.handleQueryData))

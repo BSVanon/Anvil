@@ -70,9 +70,9 @@ type HeartbeatPayload struct {
 // The heartbeat announces this node's presence and basic stats so
 // newly connected nodes immediately see live data flowing.
 func (p *Publisher) RunHeartbeat(ctx context.Context, interval time.Duration, heightFn func() uint32, peerCountFn func() int, topicsFn func() map[string]int) {
-	ttl := int(interval.Seconds()) * 2
-	if ttl < 120 {
-		ttl = 120
+	ttl := int(interval.Seconds()) * 5
+	if ttl < 300 {
+		ttl = 300
 	}
 
 	// Publish immediately on start, then on interval

@@ -19,7 +19,7 @@ var (
 
 // DefaultSHIPTTL is the maximum age for SHIP entries before they're pruned.
 // Entries refreshed by gossip or Bootstrap within this window survive.
-const DefaultSHIPTTL = 2 * time.Hour
+const DefaultSHIPTTL = 6 * time.Hour
 
 // PeerEntry is a discovered SHIP peer for a topic.
 type PeerEntry struct {
