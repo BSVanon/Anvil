@@ -69,6 +69,40 @@ func (m *Manager) announceSHIP(peer *auth.Peer) {
 	peer.ToPeer(context.Background(), payload, nil, 5000)
 }
 
+// ReannounceToAll sends local SHIP registrations to all connected peers.
+// Call periodically to keep LastSeen fresh on remote directories and
+// prevent TTL expiry of healthy long-lived connections.
+func (m *Manager) ReannounceToAll() {
+	if m.overlayDir == nil {
+		return
+	}
+	var peers []SHIPPeerInfo
+	m.overlayDir.ForEachSHIP(func(identity, domain, nodeName, version, topic string) bool {
+		peers = append(peers, SHIPPeerInfo{
+			IdentityPub: identity,
+			Domain:      domain,
+			NodeName:    nodeName,
+			Version:     version,
+			Topic:       topic,
+		})
+		return true
+	})
+	if len(peers) == 0 {
+		return
+	}
+	payload, err := Encode(MsgSHIPSync, SHIPSyncPayload{Peers: peers})
+	if err != nil {
+		return
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, mp := range m.peers {
+		if mp.Peer != nil {
+			mp.Peer.ToPeer(context.Background(), payload, mp.IdentityPK, 5000)
+		}
+	}
+}
+
 // onSHIPSync handles SHIP registrations received from a peer.
 // Uses full-replace semantics: for each domain in the incoming sync,
 // the new entry replaces any existing entry for that domain+topic.

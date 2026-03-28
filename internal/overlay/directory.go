@@ -281,7 +281,7 @@ func (d *Directory) CleanupOnBoot(localDomains map[string]string, logger *slog.L
 			if logger != nil {
 				logger.Info("overlay cleanup: expired entry",
 					"domain", entry.Domain,
-					"identity", entry.IdentityPub[:16],
+					"identity", truncID(entry.IdentityPub),
 					"last_seen", seen.Format(time.RFC3339))
 			}
 		}
@@ -292,8 +292,8 @@ func (d *Directory) CleanupOnBoot(localDomains map[string]string, logger *slog.L
 			if logger != nil {
 				logger.Info("overlay cleanup: stale re-key entry",
 					"domain", entry.Domain,
-					"old_identity", entry.IdentityPub[:16],
-					"current_identity", currentID[:16])
+					"old_identity", truncID(entry.IdentityPub),
+					"current_identity", truncID(currentID))
 			}
 		}
 
@@ -364,6 +364,13 @@ func shipKey(topic, identityPub string) []byte {
 		prefix = prefix[:16]
 	}
 	return append(append([]byte{}, prefixSHIP...), []byte(topic+":"+prefix)...)
+}
+
+func truncID(s string) string {
+	if len(s) > 16 {
+		return s[:16]
+	}
+	return s
 }
 
 func slapKey(domain, identityPub string) []byte {

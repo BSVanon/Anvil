@@ -318,6 +318,19 @@ func main() {
 		}
 	}
 
+	// Periodic SHIP re-announcement keeps LastSeen fresh on remote peers.
+	// Without this, long-lived connections get TTL-pruned from remote directories.
+	// Runs at half the TTL interval so entries are always refreshed before expiry.
+	if gossipMgr != nil {
+		go func() {
+			ticker := time.NewTicker(45 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				gossipMgr.ReannounceToAll()
+			}
+		}()
+	}
+
 	// Built-in data feeds: heartbeat + block tip announcements.
 	// These make mesh activity immediately visible to new node operators.
 	// Requires identity key (for signing) + envelope store + gossip manager.
