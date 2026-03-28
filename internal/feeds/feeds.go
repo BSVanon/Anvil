@@ -16,21 +16,23 @@ import (
 
 // Publisher publishes signed envelopes into the local store and gossip mesh.
 type Publisher struct {
-	key      *ec.PrivateKey
-	store    *envelope.Store
+	key       *ec.PrivateKey
+	store     *envelope.Store
 	broadcast func(*envelope.Envelope)
-	logger   *slog.Logger
-	nodeName string
+	logger    *slog.Logger
+	nodeName  string
+	version   string
 }
 
 // NewPublisher creates a feed publisher backed by the node's identity key.
-func NewPublisher(key *ec.PrivateKey, store *envelope.Store, broadcast func(*envelope.Envelope), nodeName string, logger *slog.Logger) *Publisher {
+func NewPublisher(key *ec.PrivateKey, store *envelope.Store, broadcast func(*envelope.Envelope), nodeName, version string, logger *slog.Logger) *Publisher {
 	return &Publisher{
 		key:       key,
 		store:     store,
 		broadcast: broadcast,
 		logger:    logger,
 		nodeName:  nodeName,
+		version:   version,
 	}
 }
 
@@ -57,6 +59,7 @@ func (p *Publisher) publish(topic, payload string, ttl int) {
 // HeartbeatPayload is the JSON payload for mesh:heartbeat envelopes.
 type HeartbeatPayload struct {
 	Node      string   `json:"node"`
+	Version   string   `json:"version"`
 	Height    uint32   `json:"height"`
 	Peers     int      `json:"peers"`
 	Topics    []string `json:"topics"`
@@ -96,6 +99,7 @@ func (p *Publisher) publishHeartbeat(ttl int, heightFn func() uint32, peerCountF
 
 	hb := HeartbeatPayload{
 		Node:      p.nodeName,
+		Version:   p.version,
 		Height:    heightFn(),
 		Peers:     peerCountFn(),
 		Topics:    topicNames,
