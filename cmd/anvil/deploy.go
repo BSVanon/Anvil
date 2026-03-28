@@ -491,11 +491,34 @@ func detectPublicIP() string {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		ip := strings.TrimSpace(string(body))
-		if ip != "" && !strings.Contains(ip, "<") && !strings.Contains(ip, ":") {
+		if isValidPublicIPv4(ip) {
 			return ip
 		}
 	}
 	return ""
+}
+
+// isValidPublicIPv4 checks that a string looks like a valid IPv4 address
+// and is not an IPv6 address, HTML error page, or empty.
+func isValidPublicIPv4(ip string) bool {
+	if ip == "" {
+		return false
+	}
+	// Reject IPv6 (contains colons)
+	if strings.Contains(ip, ":") {
+		return false
+	}
+	// Reject HTML error pages
+	if strings.Contains(ip, "<") {
+		return false
+	}
+	// Must parse as valid IP
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	// Must be IPv4
+	return parsed.To4() != nil
 }
 
 func step(msg string) { fmt.Printf("\n[→] %s\n", msg) }
