@@ -66,6 +66,7 @@ func (d *Directory) DB() *leveldb.DB {
 }
 
 // AddSHIPPeer stores a SHIP peer entry, validated against its BRC-42 derivation.
+// Deduplicates by domain+topic to handle node re-keying.
 func (d *Directory) AddSHIPPeer(entry *PeerEntry, script []byte) error {
 	// Validate the SHIP token script against BRC-42 derivation
 	_, err := brc.ValidateSHIPToken(script)
@@ -81,6 +82,7 @@ func (d *Directory) AddSHIPPeer(entry *PeerEntry, script []byte) error {
 	key := shipKey(entry.Topic, entry.IdentityPub)
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.removeStaleDomainLocked(entry.Topic, entry.Domain, entry.IdentityPub)
 	return d.db.Put(key, data, nil)
 }
 
@@ -185,6 +187,8 @@ func (d *Directory) ForEachSHIP(fn func(identity, domain, nodeName, version, top
 
 // AddSHIPPeerFromGossip stores a SHIP peer received from a trusted mesh peer.
 // Skips SHIP script validation since the peer has already been authenticated.
+// Deduplicates by domain+topic: if a different identity registers the same
+// domain+topic, the old entry is removed (handles node re-keying).
 // Satisfies gossip.OverlayDirectory interface.
 func (d *Directory) AddSHIPPeerFromGossip(identity, domain, nodeName, version, topic string) error {
 	entry := &PeerEntry{
@@ -203,7 +207,36 @@ func (d *Directory) AddSHIPPeerFromGossip(identity, domain, nodeName, version, t
 	key := shipKey(topic, identity)
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Remove stale entries for the same domain+topic but different identity (re-key cleanup)
+	d.removeStaleDomainLocked(topic, domain, identity)
+
 	return d.db.Put(key, data, nil)
+}
+
+// removeStaleDomainLocked removes SHIP entries for a domain+topic that belong
+// to a different identity than the one being registered. Handles node re-keying
+// without leaving phantom entries. Must be called with d.mu held.
+func (d *Directory) removeStaleDomainLocked(topic, domain, currentIdentity string) {
+	prefix := append(append([]byte{}, prefixSHIP...), []byte(topic+":")...)
+	iter := d.db.NewIterator(util.BytesPrefix(prefix), nil)
+	defer iter.Release()
+
+	var toDelete [][]byte
+	for iter.Next() {
+		var entry PeerEntry
+		if err := json.Unmarshal(iter.Value(), &entry); err != nil {
+			continue
+		}
+		if entry.Domain == domain && entry.IdentityPub != currentIdentity {
+			key := make([]byte, len(iter.Key()))
+			copy(key, iter.Key())
+			toDelete = append(toDelete, key)
+		}
+	}
+	for _, key := range toDelete {
+		d.db.Delete(key, nil)
+	}
 }
 
 // RemoveSHIPPeerByIdentity removes all SHIP registrations for a given identity.

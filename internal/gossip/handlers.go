@@ -14,6 +14,25 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
+// requestCatchUp asks a peer for recent envelopes on critical topics.
+// Called after connect so new/reconnecting nodes immediately get catalog, feeds, etc.
+func (m *Manager) requestCatchUp(peer *auth.Peer) {
+	if len(m.catchUpTopics) == 0 {
+		return
+	}
+	for _, topic := range m.catchUpTopics {
+		payload, err := Encode(MsgDataRequest, DataRequestPayload{
+			Topic: topic,
+			Limit: 50,
+		})
+		if err != nil {
+			continue
+		}
+		peer.ToPeer(context.Background(), payload, nil, 5000)
+	}
+	m.logger.Debug("catch-up requested", "topics", m.catchUpTopics)
+}
+
 // announceInterests sends our topic declarations to a peer.
 func (m *Manager) announceInterests(peer *auth.Peer) error {
 	payload, err := Encode(MsgTopics, TopicsPayload{Prefixes: m.localInterests})

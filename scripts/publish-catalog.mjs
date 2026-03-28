@@ -34,12 +34,12 @@ const payload = JSON.stringify({
 })
 
 const ts = Math.floor(Date.now() / 1000)
-const ttl = 86400
-const canonical = `data\nanvil:catalog\n${payload}\n${ttl}\nfalse\n${ts}`
+const ttl = 0
+const canonical = `data\nanvil:catalog\n${payload}\n${ttl}\ntrue\n${ts}`
 const sig = pk.sign(Array.from(Buffer.from(canonical, 'utf8')))
 const sigHex = Buffer.from(sig.toDER()).toString('hex')
 
-const env = { type: 'data', topic: 'anvil:catalog', payload, signature: sigHex, pubkey, ttl, timestamp: ts }
+const env = { type: 'data', topic: 'anvil:catalog', payload, signature: sigHex, pubkey, ttl, timestamp: ts, durable: true }
 
 const res = await fetch(`${NODE_URL}/data`, {
   method: 'POST',

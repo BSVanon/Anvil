@@ -67,6 +67,9 @@ type Manager struct {
 	// slash tracking
 	slashTracker *slashTracker
 
+	// topics to request catch-up for on peer connect
+	catchUpTopics []string
+
 	// local pubkeys exempt from double-publish detection
 	localPubkeys map[string]struct{}
 
@@ -118,6 +121,9 @@ type ManagerConfig struct {
 	OnEnvelope     func(*envelope.Envelope)
 	OverlayDir     OverlayDirectory
 	BondChecker    *bond.Checker
+	// CatchUpTopics are topics to request from peers on connect.
+	// Ensures new nodes receive critical data (catalog, feeds) immediately.
+	CatchUpTopics []string
 	// LocalPubkeys are identity pubkey hexes for this node's apps.
 	// Envelopes from these pubkeys skip double-publish detection
 	// (a fast local publisher is not an attack).
@@ -154,6 +160,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		localPubkeys:   make(map[string]struct{}),
 	}
 	m.startedAt = time.Now()
+	m.catchUpTopics = cfg.CatchUpTopics
 	for _, pk := range cfg.LocalPubkeys {
 		m.localPubkeys[pk] = struct{}{}
 	}
@@ -242,6 +249,9 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 
 	// Share our SHIP registrations
 	m.announceSHIP(peer)
+
+	// Request catch-up for critical topics (catalog, feeds)
+	m.requestCatchUp(peer)
 	return nil
 }
 
@@ -337,6 +347,7 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 		return tempKey, err
 	}
 	m.announceSHIP(peer)
+	m.requestCatchUp(peer)
 	return tempKey, nil
 }
 
@@ -487,6 +498,7 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 			m.logger.Warn("seed peer interest announce failed", "endpoint", endpoint, "error", err)
 		}
 		m.announceSHIP(peer)
+		m.requestCatchUp(peer)
 
 		// Wait for connection to drop or context cancel
 		select {

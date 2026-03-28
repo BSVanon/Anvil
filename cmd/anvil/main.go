@@ -257,6 +257,7 @@ func main() {
 			OverlayDir:     overlayDir,
 			BondChecker:    bondCheck,
 			LocalPubkeys:   localPKs,
+			CatchUpTopics:  []string{"anvil:catalog", "mesh:heartbeat", "mesh:blocks"},
 			OnEnvelope: func(env *envelope.Envelope) {
 				logger.Info("mesh envelope received", "topic", env.Topic, "from", env.Pubkey[:16])
 			},
