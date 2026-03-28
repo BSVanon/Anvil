@@ -179,6 +179,70 @@ func TestDiscovererProcessSLAPScript(t *testing.T) {
 	}
 }
 
+// --- Re-key dedup ---
+
+func TestSHIPGossipDedupOnRekey(t *testing.T) {
+	d := tmpDirectory(t)
+
+	// Old identity registers for a domain+topic
+	oldIdentity := "aaaa111111111111111111111111111111111111111111111111111111111111aa"
+	d.AddSHIPPeerFromGossip(oldIdentity, "node.example.com", "MyNode", "0.4.0", "anvil:mainnet")
+
+	if d.CountSHIP() != 1 {
+		t.Fatalf("expected 1 entry, got %d", d.CountSHIP())
+	}
+
+	// New identity registers same domain+topic (node re-keyed)
+	newIdentity := "bbbb222222222222222222222222222222222222222222222222222222222222bb"
+	d.AddSHIPPeerFromGossip(newIdentity, "node.example.com", "MyNode", "0.5.0", "anvil:mainnet")
+
+	// Should have 1 entry, not 2 — old was cleaned up
+	if d.CountSHIP() != 1 {
+		t.Fatalf("expected 1 entry after re-key, got %d", d.CountSHIP())
+	}
+
+	peers, _ := d.LookupSHIPByTopic("anvil:mainnet")
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %d", len(peers))
+	}
+	if peers[0].IdentityPub != newIdentity {
+		t.Fatalf("expected new identity, got %s", peers[0].IdentityPub)
+	}
+	if peers[0].Version != "0.5.0" {
+		t.Fatalf("expected version 0.5.0, got %s", peers[0].Version)
+	}
+}
+
+func TestSHIPGossipNoDedupDifferentDomain(t *testing.T) {
+	d := tmpDirectory(t)
+
+	// Two different domains with different identities — both should stay
+	d.AddSHIPPeerFromGossip("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aa", "node-a.com", "A", "0.5.0", "anvil:mainnet")
+	d.AddSHIPPeerFromGossip("bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bb", "node-b.com", "B", "0.5.0", "anvil:mainnet")
+
+	if d.CountSHIP() != 2 {
+		t.Fatalf("expected 2 entries, got %d", d.CountSHIP())
+	}
+}
+
+func TestSHIPGossipSameIdentitySameDomain(t *testing.T) {
+	d := tmpDirectory(t)
+
+	// Same identity re-registers — should overwrite, still 1 entry
+	identity := "cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cc"
+	d.AddSHIPPeerFromGossip(identity, "node.example.com", "MyNode", "0.4.0", "anvil:mainnet")
+	d.AddSHIPPeerFromGossip(identity, "node.example.com", "MyNode", "0.5.0", "anvil:mainnet")
+
+	if d.CountSHIP() != 1 {
+		t.Fatalf("expected 1 entry, got %d", d.CountSHIP())
+	}
+
+	peers, _ := d.LookupSHIPByTopic("anvil:mainnet")
+	if peers[0].Version != "0.5.0" {
+		t.Fatalf("expected updated version, got %s", peers[0].Version)
+	}
+}
+
 func TestDiscovererRejectsInvalidScript(t *testing.T) {
 	d := tmpDirectory(t)
 	disc := NewDiscoverer(d, slog.Default())

@@ -178,6 +178,52 @@ func TestNoGossipEnvelopeNotBroadcast(t *testing.T) {
 	}
 }
 
+func TestCatchUpTopicsConfig(t *testing.T) {
+	topics := []string{"anvil:catalog", "mesh:heartbeat", "mesh:blocks"}
+	m := NewManager(ManagerConfig{
+		LocalInterests: []string{""},
+		MaxSeen:        100,
+		CatchUpTopics:  topics,
+	})
+
+	if len(m.catchUpTopics) != 3 {
+		t.Fatalf("expected 3 catch-up topics, got %d", len(m.catchUpTopics))
+	}
+	if m.catchUpTopics[0] != "anvil:catalog" {
+		t.Fatalf("expected first topic anvil:catalog, got %s", m.catchUpTopics[0])
+	}
+}
+
+func TestCatchUpEncodesDataRequest(t *testing.T) {
+	// Verify the catch-up protocol message encodes correctly
+	payload, err := Encode(MsgDataRequest, DataRequestPayload{
+		Topic: "anvil:catalog",
+		Limit: 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := Decode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Type != MsgDataRequest {
+		t.Fatalf("expected type %q, got %q", MsgDataRequest, msg.Type)
+	}
+
+	var req DataRequestPayload
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Topic != "anvil:catalog" {
+		t.Fatalf("expected topic anvil:catalog, got %s", req.Topic)
+	}
+	if req.Limit != 50 {
+		t.Fatalf("expected limit 50, got %d", req.Limit)
+	}
+}
+
 func TestGossipEnvelopeIsBroadcast(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		LocalInterests: []string{""},
