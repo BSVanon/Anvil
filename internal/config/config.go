@@ -21,6 +21,7 @@ type Config struct {
 	JungleBus JungleBusConfig `toml:"junglebus"`
 	Overlay   OverlayConfig   `toml:"overlay"`
 	Envelopes EnvelopeConfig  `toml:"envelopes"`
+	Mempool   MempoolConfig   `toml:"mempool"`
 	API       APIConfig       `toml:"api"`
 }
 
@@ -75,6 +76,16 @@ type JungleBusConfig struct {
 type OverlayConfig struct {
 	Enabled bool     `toml:"enabled"`
 	Topics  []string `toml:"topics"`
+}
+
+// MempoolConfig controls P2P mempool transaction monitoring.
+// When enabled, the node maintains a long-lived connection to a BSV peer
+// and selectively indexes transactions matching its coverage filter.
+type MempoolConfig struct {
+	Enabled      bool  `toml:"enabled"`       // opt-in (default: false)
+	Prefixes     []int `toml:"prefixes"`      // explicit coverage bytes (0-255); empty = auto
+	MaxTxSize    int   `toml:"max_tx_size"`   // skip txs larger than this (bytes, 0 = no limit)
+	TTLSeconds   int   `toml:"ttl_seconds"`   // evict entries older than this
 }
 
 type EnvelopeConfig struct {
@@ -142,6 +153,11 @@ func Load(path string) (*Config, error) {
 		Overlay: OverlayConfig{
 			Enabled: true,
 			Topics:  []string{"anvil:mainnet"},
+		},
+		Mempool: MempoolConfig{
+			Enabled:    false,
+			MaxTxSize:  1 << 20, // 1 MB
+			TTLSeconds: 3600,    // 1 hour
 		},
 		Envelopes: EnvelopeConfig{
 			MaxEphemeralTTL:   3600,

@@ -23,6 +23,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/feeds"
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
+	mempoolpkg "github.com/BSVanon/Anvil/internal/mempool"
 	"github.com/BSVanon/Anvil/internal/p2p"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	anvilversion "github.com/BSVanon/Anvil/internal/version"
@@ -31,6 +32,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/libsv/go-p2p/chaincfg/chainhash"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/libsv/go-p2p/wire"
@@ -142,6 +144,65 @@ func main() {
 			}
 		}
 	}()
+
+	// P2P mempool monitoring (optional — connects to BSV peer, listens for tx inv)
+	var mempoolIdx *mempoolpkg.Index
+	if cfg.Mempool.Enabled && len(cfg.BSV.Nodes) > 0 {
+		mempoolIdx = mempoolpkg.NewIndex()
+
+		// Build coverage map from config prefixes (or default to first 5 bytes)
+		coverage := make(map[byte]struct{})
+		if len(cfg.Mempool.Prefixes) > 0 {
+			for _, p := range cfg.Mempool.Prefixes {
+				if p >= 0 && p <= 255 {
+					coverage[byte(p)] = struct{}{}
+				}
+			}
+		} else {
+			// Default: cover first 5 prefix bytes (~2% of txids)
+			for i := byte(0); i < 5; i++ {
+				coverage[i] = struct{}{}
+			}
+		}
+
+		monitor := p2p.NewMempoolMonitor(
+			cfg.BSV.Nodes[0], wire.MainNet, coverage,
+			func(txHash chainhash.Hash, raw []byte) {
+				var id [32]byte
+				copy(id[:], txHash[:])
+				mempoolIdx.Add(id, mempoolpkg.TxMeta{
+					FirstSeen: time.Now(),
+					Size:      uint32(len(raw)),
+				})
+			},
+			logger,
+		)
+
+		monCtx, monCancel := context.WithCancel(context.Background())
+		defer monCancel()
+		if err := monitor.Start(monCtx); err != nil {
+			log.Printf("mempool monitor failed (non-fatal): %v", err)
+		} else {
+			defer monitor.Stop()
+			log.Printf("mempool monitor: connected to %s, coverage=%d prefixes", cfg.BSV.Nodes[0], len(coverage))
+
+			// Periodic eviction
+			go func() {
+				ttl := time.Duration(cfg.Mempool.TTLSeconds) * time.Second
+				if ttl == 0 {
+					ttl = time.Hour
+				}
+				ticker := time.NewTicker(5 * time.Minute)
+				defer ticker.Stop()
+				for range ticker.C {
+					cutoff := time.Now().Add(-ttl)
+					if n := mempoolIdx.ExpireBefore(cutoff); n > 0 {
+						logger.Info("mempool evicted expired entries", "count", n)
+					}
+				}
+			}()
+		}
+	}
 
 	// Phase 6: Overlay directory + generic engine
 	var overlayDir *anviloverlay.Directory
