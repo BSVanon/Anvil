@@ -69,22 +69,26 @@ func (m *Manager) announceSHIP(peer *auth.Peer) {
 	peer.ToPeer(context.Background(), payload, nil, 5000)
 }
 
-// ReannounceToAll sends local SHIP registrations to all connected peers.
-// Call periodically to keep LastSeen fresh on remote directories and
-// prevent TTL expiry of healthy long-lived connections.
+// ReannounceToAll sends this node's own SHIP registrations to all connected peers.
+// Only sends self-registered entries (TxID == "self-registered") to prevent
+// keeping dead remote peers alive by re-gossiping their stale entries.
+// Call periodically to keep LastSeen fresh on remote directories.
 func (m *Manager) ReannounceToAll() {
 	if m.overlayDir == nil {
 		return
 	}
 	var peers []SHIPPeerInfo
 	m.overlayDir.ForEachSHIP(func(identity, domain, nodeName, version, topic string) bool {
-		peers = append(peers, SHIPPeerInfo{
-			IdentityPub: identity,
-			Domain:      domain,
-			NodeName:    nodeName,
-			Version:     version,
-			Topic:       topic,
-		})
+		// Only include entries owned by local pubkeys — skip learned gossip entries
+		if _, isLocal := m.localPubkeys[identity]; isLocal {
+			peers = append(peers, SHIPPeerInfo{
+				IdentityPub: identity,
+				Domain:      domain,
+				NodeName:    nodeName,
+				Version:     version,
+				Topic:       topic,
+			})
+		}
 		return true
 	})
 	if len(peers) == 0 {
