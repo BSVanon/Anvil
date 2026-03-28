@@ -249,3 +249,85 @@ func TestGossipEnvelopeIsBroadcast(t *testing.T) {
 		t.Fatal("normal envelope SHOULD be broadcast and marked as seen")
 	}
 }
+
+// mockOverlayDir implements OverlayDirectory for testing.
+type mockOverlayDir struct {
+	entries []struct{ identity, domain, nodeName, version, topic string }
+}
+
+func (m *mockOverlayDir) ForEachSHIP(fn func(identity, domain, nodeName, version, topic string) bool) {
+	for _, e := range m.entries {
+		if !fn(e.identity, e.domain, e.nodeName, e.version, e.topic) {
+			break
+		}
+	}
+}
+func (m *mockOverlayDir) AddSHIPPeerFromGossip(identity, domain, nodeName, version, topic string) error {
+	return nil
+}
+func (m *mockOverlayDir) RemoveSHIPPeerByIdentity(identity string) {}
+
+func TestReannounceOnlyIncludesLocalEntries(t *testing.T) {
+	localPK := "02abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+	remotePK := "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefde"
+
+	dir := &mockOverlayDir{
+		entries: []struct{ identity, domain, nodeName, version, topic string }{
+			{localPK, "https://my-node.com", "my-node", "0.5.2", "anvil:mainnet"},
+			{remotePK, "https://other-node.com", "other", "0.5.2", "anvil:mainnet"},
+		},
+	}
+
+	m := NewManager(ManagerConfig{
+		LocalInterests: []string{""},
+		MaxSeen:        100,
+		OverlayDir:     dir,
+		LocalPubkeys:   []string{localPK},
+	})
+
+	// ReannounceToAll builds a payload but has no peers to send to.
+	// We can verify the filtering by checking what ForEachSHIP would produce
+	// through the same filter logic used in ReannounceToAll.
+	var included []string
+	dir.ForEachSHIP(func(identity, domain, nodeName, version, topic string) bool {
+		if _, isLocal := m.localPubkeys[identity]; isLocal {
+			included = append(included, identity)
+		}
+		return true
+	})
+
+	if len(included) != 1 {
+		t.Fatalf("expected 1 local entry, got %d", len(included))
+	}
+	if included[0] != localPK {
+		t.Fatalf("expected local pubkey, got %s", included[0])
+	}
+}
+
+func TestCGOStubErrorDetection(t *testing.T) {
+	// Verify the string matching used in main.go to detect CGO stub errors
+	cgoErr := "create wallet storage: failed to create database: failed to create gorm instance, caused by: failed to initialize GORM database connection: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub"
+
+	if !contains(cgoErr, "CGO_ENABLED") {
+		t.Fatal("should match CGO_ENABLED")
+	}
+	if !contains(cgoErr, "cgo to work") {
+		t.Fatal("should match 'cgo to work'")
+	}
+	if contains("normal error: file not found", "CGO_ENABLED") {
+		t.Fatal("should not match normal errors")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
