@@ -1,0 +1,335 @@
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+
+	anvilversion "github.com/BSVanon/Anvil/internal/version"
+)
+
+const (
+	githubRepo   = "BSVanon/Anvil"
+	githubAPI    = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
+	githubDL     = "https://github.com/" + githubRepo + "/releases/download"
+	githubLatest = "https://github.com/" + githubRepo + "/releases/latest/download"
+)
+
+// cmdUpgrade handles `anvil upgrade` — downloads the latest release binary,
+// replaces the installed binary, and restarts systemd services.
+//
+// Safe by design:
+//   - Downloads to temp file first, only overwrites on success
+//   - Verifies the new binary runs (help subcommand)
+//   - Restarts only services that were running
+//   - No config or data changes — only the binary
+func cmdUpgrade(args []string) {
+	fs := flag.NewFlagSet("upgrade", flag.ExitOnError)
+	installDir := fs.String("install-dir", "/opt/anvil", "directory containing the anvil binary")
+	version := fs.String("version", "latest", "version to install (e.g. v0.5.0, or 'latest')")
+	check := fs.Bool("check", false, "check for updates without installing")
+	force := fs.Bool("force", false, "install even if already on the latest version")
+	fs.Parse(args)
+
+	current := anvilversion.Version
+
+	// Resolve latest version from GitHub
+	latest, downloadURL := resolveRelease(*version)
+
+	if *check {
+		printVersionCheck(current, latest)
+		return
+	}
+
+	// Compare without "v" prefix — don't downgrade
+	latestClean := strings.TrimPrefix(latest, "v")
+	if versionNewerOrEqual(current, latestClean) && !*force {
+		if current == latestClean {
+			fmt.Printf("  Already on %s (latest). Use --force to reinstall.\n", current)
+		} else {
+			fmt.Printf("  Current %s is ahead of release %s. Use --force to downgrade.\n", current, latest)
+		}
+		return
+	}
+
+	assertRoot()
+
+	fmt.Println("=== Anvil Upgrade ===")
+	fmt.Printf("  current:  %s\n", current)
+	fmt.Printf("  target:   %s\n", latest)
+	fmt.Println()
+
+	// Download to temp file
+	step("Downloading binary")
+	tmpFile, err := os.CreateTemp("", "anvil-upgrade-*")
+	if err != nil {
+		fatal("create temp file: " + err.Error())
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		fatal("download failed: " + err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		fatal(fmt.Sprintf("download returned %d (URL: %s)", resp.StatusCode, downloadURL))
+	}
+
+	written, err := io.Copy(tmpFile, resp.Body)
+	tmpFile.Close()
+	if err != nil {
+		fatal("download write failed: " + err.Error())
+	}
+	os.Chmod(tmpPath, 0755)
+	ok(fmt.Sprintf("Downloaded %s (%.1f MB)", latest, float64(written)/(1024*1024)))
+
+	// Verify the new binary runs
+	step("Verifying new binary")
+	out, err := exec.Command(tmpPath, "help").CombinedOutput()
+	if err != nil {
+		fatal(fmt.Sprintf("new binary failed to run: %v\n%s", err, string(out)))
+	}
+	ok("Binary verified")
+
+	// Find running services to restart after
+	step("Checking running services")
+	services := runningAnvilServices()
+	if len(services) > 0 {
+		fmt.Printf("    running: %s\n", strings.Join(services, ", "))
+	} else {
+		fmt.Println("    no anvil services running")
+	}
+
+	// Install binary atomically BEFORE stopping services.
+	// Strategy: write to temp file in install dir (same filesystem),
+	// then os.Rename (atomic on Linux). Services keep running until
+	// the new binary is fully on disk.
+	step("Installing binary")
+	destBin := filepath.Join(*installDir, "anvil")
+	os.MkdirAll(*installDir, 0755)
+
+	// Backup old binary for rollback
+	backupBin := destBin + ".bak"
+	backedUp := false
+	if _, err := os.Stat(destBin); err == nil {
+		if err := copyFileE(destBin, backupBin, 0755); err != nil {
+			fmt.Printf("    WARNING: could not backup old binary: %v\n", err)
+		} else {
+			backedUp = true
+		}
+	}
+
+	// Atomic replace: copy tmp → install dir staging file, then rename
+	stagingBin := destBin + ".new"
+	if err := copyFileE(tmpPath, stagingBin, 0755); err != nil {
+		fatal("write staging binary failed: " + err.Error())
+	}
+	if err := os.Rename(stagingBin, destBin); err != nil {
+		os.Remove(stagingBin)
+		fatal("atomic rename failed: " + err.Error())
+	}
+
+	// Update symlink atomically: create new symlink, then rename over old
+	symlinkPath := "/usr/local/bin/anvil"
+	symlinkTmp := symlinkPath + ".new"
+	os.Remove(symlinkTmp)
+	if err := os.Symlink(destBin, symlinkTmp); err != nil {
+		fmt.Printf("    WARNING: symlink create failed: %v\n", err)
+	} else if err := os.Rename(symlinkTmp, symlinkPath); err != nil {
+		os.Remove(symlinkTmp)
+		fmt.Printf("    WARNING: symlink rename failed: %v\n", err)
+	}
+	ok("Binary installed: " + destBin)
+
+	// Now stop and restart services (binary already on disk)
+	for _, svc := range services {
+		exec.Command("systemctl", "stop", svc).Run()
+	}
+	if len(services) > 0 {
+		time.Sleep(1 * time.Second)
+		ok("Services stopped")
+	}
+
+	// Restart services — roll back if all fail to start
+	if len(services) > 0 {
+		step("Restarting services")
+		startFails := 0
+		for _, svc := range services {
+			if err := exec.Command("systemctl", "start", svc).Run(); err != nil {
+				fmt.Printf("    WARNING: failed to start %s: %v\n", svc, err)
+				startFails++
+			}
+		}
+		if startFails == len(services) && backedUp {
+			fmt.Println("    All services failed to start — rolling back")
+			if err := os.Rename(backupBin, destBin); err == nil {
+				for _, svc := range services {
+					exec.Command("systemctl", "start", svc).Run()
+				}
+				fatal("upgrade rolled back — all services failed with new binary")
+			}
+			fatal("rollback also failed — manual intervention required")
+		}
+		time.Sleep(2 * time.Second)
+		ok("Services restarted: " + strings.Join(services, ", "))
+	}
+
+	// Clean up backup
+	if backedUp {
+		os.Remove(backupBin)
+	}
+
+	// Quick health check
+	step("Health check")
+	time.Sleep(1 * time.Second)
+	healthResp, err := http.Get("http://localhost:9333/status")
+	if err == nil {
+		defer healthResp.Body.Close()
+		if healthResp.StatusCode == 200 {
+			ok("Node responding on :9333")
+		} else {
+			fmt.Printf("    WARNING: /status returned %d\n", healthResp.StatusCode)
+		}
+	} else {
+		fmt.Println("    WARNING: could not reach localhost:9333 (may still be starting)")
+	}
+
+	fmt.Println()
+	fmt.Printf("  Upgrade complete: %s → %s\n", current, latest)
+	fmt.Println()
+}
+
+// resolveRelease determines the download URL for a given version.
+func resolveRelease(version string) (tag, url string) {
+	binary := binaryName()
+
+	if version == "latest" {
+		tag = fetchLatestTag()
+		return tag, githubLatest + "/" + binary
+	}
+
+	// Normalize: ensure "v" prefix
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
+	return version, githubDL + "/" + version + "/" + binary
+}
+
+// fetchLatestTag queries the GitHub API for the latest release tag.
+func fetchLatestTag() string {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(githubAPI)
+	if err != nil {
+		fatal("GitHub API request failed: " + err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		fatal(fmt.Sprintf("GitHub API returned %d", resp.StatusCode))
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		fatal("parse GitHub response: " + err.Error())
+	}
+	if release.TagName == "" {
+		fatal("no releases found on GitHub")
+	}
+	return release.TagName
+}
+
+// binaryName returns the expected release artifact name for this platform.
+func binaryName() string {
+	arch := runtime.GOARCH
+	switch arch {
+	case "amd64":
+		return "anvil-linux-amd64"
+	case "arm64":
+		return "anvil-linux-arm64"
+	default:
+		fatal("unsupported architecture: " + arch)
+		return ""
+	}
+}
+
+// runningAnvilServices returns systemd service names that are currently active.
+func runningAnvilServices() []string {
+	var running []string
+	for _, svc := range []string{"<node-a>", "<node-b>"} {
+		out, err := exec.Command("systemctl", "is-active", svc).Output()
+		if err == nil && strings.TrimSpace(string(out)) == "active" {
+			running = append(running, svc)
+		}
+	}
+	return running
+}
+
+// copyFileE copies src to dst with given permissions, returning any error.
+// Unlike copyFile (deploy.go), this does not call fatal — the caller decides.
+func copyFileE(src, dst string, perm os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dst, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return fmt.Errorf("write %s: %w", dst, err)
+	}
+	return out.Close()
+}
+
+func printVersionCheck(current, latest string) {
+	fmt.Printf("  current: %s\n", current)
+	fmt.Printf("  latest:  %s\n", latest)
+	latestClean := strings.TrimPrefix(latest, "v")
+	if current == latestClean || current == latest {
+		fmt.Println("  up to date")
+	} else if versionNewerOrEqual(current, latestClean) {
+		fmt.Println("  up to date (ahead of latest release)")
+	} else {
+		fmt.Println("  upgrade available")
+		fmt.Println()
+		fmt.Println("  Run: sudo anvil upgrade")
+	}
+}
+
+// versionNewerOrEqual returns true if a >= b using simple semver comparison.
+func versionNewerOrEqual(a, b string) bool {
+	ap := parseVersion(a)
+	bp := parseVersion(b)
+	for i := 0; i < 3; i++ {
+		if ap[i] > bp[i] {
+			return true
+		}
+		if ap[i] < bp[i] {
+			return false
+		}
+	}
+	return true // equal
+}
+
+func parseVersion(v string) [3]int {
+	v = strings.TrimPrefix(v, "v")
+	var parts [3]int
+	fmt.Sscanf(v, "%d.%d.%d", &parts[0], &parts[1], &parts[2])
+	return parts
+}

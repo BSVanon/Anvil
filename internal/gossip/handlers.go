@@ -194,6 +194,8 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 		}
 	}
 
+	m.IncrReceived()
+
 	if m.onEnvelope != nil {
 		m.onEnvelope(env)
 	}
@@ -291,6 +293,7 @@ func (m *Manager) forwardToInterested(senderPK string, topic string, rawEnvelope
 			if strings.HasPrefix(topic, prefix) {
 				if peer.Peer != nil {
 					peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
+					m.IncrSent()
 				}
 				break
 			}

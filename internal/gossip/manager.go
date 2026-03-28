@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bsv-blockchain/go-sdk/auth"
@@ -68,6 +69,11 @@ type Manager struct {
 
 	// local pubkeys exempt from double-publish detection
 	localPubkeys map[string]struct{}
+
+	// activity counters (lock-free atomics — safe to increment under RLock)
+	envsReceived atomic.Int64
+	envsSent     atomic.Int64
+	startedAt    time.Time
 }
 
 // peerRate tracks token-bucket rate limiting for a single peer.
@@ -97,6 +103,7 @@ type MeshPeer struct {
 	Endpoint   string
 	BondSats   int             // verified bond amount in satoshis (0 = not checked)
 	Version    string          // remote node version (from SHIP sync)
+	ConnectedAt time.Time      // when this peer connected
 	origKey    string          // the original map key at insertion time (for cleanup after re-key)
 	closeFunc  func() error   // closes the underlying transport connection
 }
@@ -146,6 +153,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		slashTracker:   newSlashTracker(),
 		localPubkeys:   make(map[string]struct{}),
 	}
+	m.startedAt = time.Now()
 	for _, pk := range cfg.LocalPubkeys {
 		m.localPubkeys[pk] = struct{}{}
 	}
@@ -214,10 +222,11 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 
 	m.mu.Lock()
 	m.peers[endpoint] = &MeshPeer{
-		Peer:      peer,
-		Endpoint:  endpoint,
-		origKey:   endpoint,
-		closeFunc: transport.Close,
+		Peer:        peer,
+		Endpoint:    endpoint,
+		ConnectedAt: time.Now(),
+		origKey:     endpoint,
+		closeFunc:   transport.Close,
 	}
 	m.mu.Unlock()
 
@@ -311,10 +320,11 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 
 	m.mu.Lock()
 	m.peers[tempKey] = &MeshPeer{
-		Peer:      peer,
-		Endpoint:  "inbound",
-		origKey:   tempKey,
-		closeFunc: transport.Close,
+		Peer:        peer,
+		Endpoint:    "inbound",
+		ConnectedAt: time.Now(),
+		origKey:     tempKey,
+		closeFunc:   transport.Close,
 	}
 	m.mu.Unlock()
 
@@ -389,29 +399,6 @@ func (m *Manager) PeerCount() int {
 	return len(m.peers)
 }
 
-// PeerInfo holds public information about a connected mesh peer.
-type PeerInfo struct {
-	Identity string `json:"identity"`
-	Endpoint string `json:"endpoint"`
-	BondSats int    `json:"bond_sats,omitempty"`
-	Version  string `json:"version,omitempty"`
-}
-
-// PeerList returns information about all connected mesh peers.
-func (m *Manager) PeerList() []PeerInfo {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	list := make([]PeerInfo, 0, len(m.peers))
-	for _, p := range m.peers {
-		info := PeerInfo{Endpoint: p.Endpoint, BondSats: p.BondSats, Version: p.Version}
-		if p.IdentityPK != nil {
-			info.Identity = fmt.Sprintf("%x", p.IdentityPK.Compressed())
-		}
-		list = append(list, info)
-	}
-	return list
-}
-
 // ConnectSeedWithReconnect connects to a seed peer and automatically
 // reconnects if the connection drops. Blocks until ctx is cancelled.
 // Designed to run in a goroutine per seed peer.
@@ -484,10 +471,11 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 
 		m.mu.Lock()
 		m.peers[endpoint] = &MeshPeer{
-			Peer:      peer,
-			Endpoint:  endpoint,
-			origKey:   endpoint,
-			closeFunc: transport.Close,
+			Peer:        peer,
+			Endpoint:    endpoint,
+			ConnectedAt: time.Now(),
+			origKey:     endpoint,
+			closeFunc:   transport.Close,
 		}
 		m.mu.Unlock()
 

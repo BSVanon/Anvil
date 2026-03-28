@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/bond"
 	"github.com/BSVanon/Anvil/internal/content"
@@ -39,6 +40,7 @@ type Server struct {
 	contentServer   *content.Server
 	explorerOrigin  string
 	publicURL       string // HTTPS public URL — used for /app/ redirects so wallet connections work
+	meshTopicCache  *topicCache
 }
 
 // ServerConfig holds all parameters for NewServer.
@@ -118,6 +120,7 @@ func NewServer(cfg ServerConfig) *Server {
 		contentServer:   content.NewServer("", cfg.P2PTxSource, cfg.P2PBlockSource, cfg.HeaderLookup),
 		explorerOrigin:  cfg.ExplorerOrigin,
 		publicURL:       strings.TrimRight(cfg.PublicURL, "/"),
+		meshTopicCache:  newTopicCache(10 * time.Second),
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -133,6 +136,7 @@ func (s *Server) routes() {
 	}))
 	s.mux.HandleFunc("GET /status", s.openRead(s.handleStatus))
 	s.mux.HandleFunc("GET /stats", s.openRead(s.handleStats))
+	s.mux.HandleFunc("GET /mesh/status", cors(s.handleMeshStatus))
 	s.mux.HandleFunc("GET /headers/tip", s.openRead(s.handleHeadersTip))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
 	s.mux.HandleFunc("GET /data", s.openRead(s.handleQueryData))
@@ -237,6 +241,12 @@ func (s *Server) handleX402Discovery(w http.ResponseWriter, r *http.Request) {
 			"path":        "/overlay/lookup",
 			"price":       priceFor("/overlay/lookup"),
 			"description": "Discover other nodes in the mesh via overlay registrations. Use ?topic=anvil:mainnet",
+		},
+		{
+			"method":      "GET",
+			"path":        "/mesh/status",
+			"price":       0,
+			"description": "Live mesh status: connected peers, active topics, data flow counters, uptime",
 		},
 		{
 			"method":      "GET",

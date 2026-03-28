@@ -171,6 +171,33 @@ func (s *Store) CountDurable() int {
 	return count
 }
 
+// LatestByTopic returns the most recent envelope timestamp (unix) per topic.
+func (s *Store) LatestByTopic() map[string]int64 {
+	latest := make(map[string]int64)
+
+	iter := s.db.NewIterator(util.BytesPrefix(prefixDurable), nil)
+	for iter.Next() {
+		env, err := UnmarshalEnvelope(iter.Value())
+		if err != nil {
+			continue
+		}
+		if env.Timestamp > latest[env.Topic] {
+			latest[env.Topic] = env.Timestamp
+		}
+	}
+	iter.Release()
+
+	s.mu.RLock()
+	for _, env := range s.ephemeral {
+		if !env.IsExpired() && env.Timestamp > latest[env.Topic] {
+			latest[env.Topic] = env.Timestamp
+		}
+	}
+	s.mu.RUnlock()
+
+	return latest
+}
+
 // Topics returns a map of topic → envelope count across both ephemeral and durable stores.
 func (s *Store) Topics() map[string]int {
 	topics := make(map[string]int)

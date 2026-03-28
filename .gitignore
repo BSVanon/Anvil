@@ -27,3 +27,6 @@ coverage.out
 sdk/ts/node_modules/
 sdk/ts/dist/
 sdk/ts/*.tgz
+
+# Local shared memory
+.codex-2nd-op/
