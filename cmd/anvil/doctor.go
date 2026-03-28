@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/config"
+	anvilversion "github.com/BSVanon/Anvil/internal/version"
 )
 
 // cmdDoctor handles `anvil doctor` — validates config, dirs, connectivity, and mesh health.
@@ -49,6 +50,20 @@ func cmdDoctor(args []string) {
 		issues++
 	} else {
 		pass("auth token derived (%s...)", cfg.API.AuthToken[:12])
+	}
+
+	// ── 1b. Version ──
+	section("Version")
+	pass("running v%s", anvilversion.Version)
+	if latest := doctorCheckLatest(); latest != "" {
+		latestClean := strings.TrimPrefix(latest, "v")
+		if versionNewerOrEqual(anvilversion.Version, latestClean) {
+			pass("up to date (latest release: %s)", latest)
+		} else {
+			warn("update available: %s → run: sudo anvil upgrade", latest)
+		}
+	} else {
+		warn("could not check GitHub for latest release")
 	}
 
 	// ── 2. Data directories ──
@@ -306,6 +321,21 @@ func normalizePort(listen string) string {
 	// Extract :port from 0.0.0.0:9333
 	parts := strings.Split(listen, ":")
 	return ":" + parts[len(parts)-1]
+}
+
+// doctorCheckLatest returns the latest GitHub release tag, or "" on failure.
+func doctorCheckLatest() string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(githubAPI)
+	if err != nil || resp.StatusCode != 200 {
+		return ""
+	}
+	defer resp.Body.Close()
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	json.NewDecoder(resp.Body).Decode(&release)
+	return release.TagName
 }
 
 func meshSeedToAPI(seed string) string {

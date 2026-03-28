@@ -27,7 +27,7 @@ func testPublisher(t *testing.T) (*Publisher, *envelope.Store, []*envelope.Envel
 	var broadcast []*envelope.Envelope
 	pub := NewPublisher(key, store, func(env *envelope.Envelope) {
 		broadcast = append(broadcast, env)
-	}, "test-node", slog.Default())
+	}, "test-node", "0.5.0", slog.Default())
 
 	return pub, store, broadcast
 }

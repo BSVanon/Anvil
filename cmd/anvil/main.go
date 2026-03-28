@@ -69,7 +69,7 @@ func main() {
 
 	logger := slog.Default()
 
-	log.Printf("anvil node %q starting", cfg.Node.Name)
+	log.Printf("anvil node %q v%s starting", cfg.Node.Name, anvilversion.Version)
 	log.Printf("  data_dir:   %s", cfg.Node.DataDir)
 	log.Printf("  mesh:       %s", cfg.Node.Listen)
 	log.Printf("  api:        %s", cfg.Node.APIListen)
@@ -80,6 +80,9 @@ func main() {
 	if cfg.API.AuthToken != "" {
 		log.Printf("  auth:       configured (run 'anvil token' to display)")
 	}
+
+	// Background version check — one HTTP call, doesn't block startup
+	go checkForUpdate(logger)
 
 	// Phase 2: Header store + sync
 	headerDir := filepath.Join(cfg.Node.DataDir, "headers")
@@ -300,7 +303,7 @@ func main() {
 	if cfg.Identity.WIF != "" && gossipMgr != nil {
 		feedKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
 		if err == nil {
-			pub := feeds.NewPublisher(feedKey, envStore, gossipMgr.BroadcastEnvelope, cfg.Node.Name, logger)
+			pub := feeds.NewPublisher(feedKey, envStore, gossipMgr.BroadcastEnvelope, cfg.Node.Name, anvilversion.Version, logger)
 
 			feedCtx, feedCancel := context.WithCancel(context.Background())
 			defer feedCancel()

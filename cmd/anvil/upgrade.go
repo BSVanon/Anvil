@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -332,4 +333,32 @@ func parseVersion(v string) [3]int {
 	var parts [3]int
 	fmt.Sscanf(v, "%d.%d.%d", &parts[0], &parts[1], &parts[2])
 	return parts
+}
+
+// checkForUpdate queries GitHub for the latest release and logs if behind.
+// Called once on startup in a goroutine — never blocks the node.
+func checkForUpdate(logger *slog.Logger) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(githubAPI)
+	if err != nil {
+		return // silent — don't spam logs if offline
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil || release.TagName == "" {
+		return
+	}
+	latestClean := strings.TrimPrefix(release.TagName, "v")
+	current := anvilversion.Version
+	if !versionNewerOrEqual(current, latestClean) {
+		logger.Warn("update available",
+			"current", current,
+			"latest", release.TagName,
+			"upgrade", "sudo anvil upgrade")
+	}
 }
