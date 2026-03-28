@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/BSVanon/Anvil/pkg/brc"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
@@ -102,6 +103,86 @@ func TestCountSHIP(t *testing.T) {
 
 	if d.CountSHIP() != 1 {
 		t.Fatalf("expected 1, got %d", d.CountSHIP())
+	}
+}
+
+// --- TTL + Sweep ---
+
+func TestSweepExpiredEntries(t *testing.T) {
+	d := tmpDirectory(t)
+	d.ttl = 100 * time.Millisecond
+
+	// Add an entry
+	d.AddSHIPPeerFromGossip("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aa", "node.com", "A", "0.5.0", "anvil:mainnet")
+	if d.CountSHIP() != 1 {
+		t.Fatalf("expected 1, got %d", d.CountSHIP())
+	}
+
+	// Wait for TTL to expire
+	time.Sleep(150 * time.Millisecond)
+
+	swept := d.SweepExpired()
+	if swept != 1 {
+		t.Fatalf("expected 1 swept, got %d", swept)
+	}
+	if d.CountSHIP() != 0 {
+		t.Fatalf("expected 0 after sweep, got %d", d.CountSHIP())
+	}
+}
+
+func TestSweepKeepsFreshEntries(t *testing.T) {
+	d := tmpDirectory(t)
+	d.ttl = 1 * time.Hour
+
+	d.AddSHIPPeerFromGossip("bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bb", "node.com", "B", "0.5.0", "anvil:mainnet")
+
+	swept := d.SweepExpired()
+	if swept != 0 {
+		t.Fatalf("expected 0 swept for fresh entry, got %d", swept)
+	}
+	if d.CountSHIP() != 1 {
+		t.Fatalf("expected 1, got %d", d.CountSHIP())
+	}
+}
+
+func TestCleanupOnBoot(t *testing.T) {
+	d := tmpDirectory(t)
+	d.ttl = 100 * time.Millisecond
+
+	// Add entries: one local (different identity = re-key phantom), one remote
+	d.AddSHIPPeerFromGossip("old_identity_old_identity_old_identity_old_identity_old_identity_00", "local.com", "Local", "0.4.0", "anvil:mainnet")
+	d.AddSHIPPeerFromGossip("remote_identity_remote_identity_remote_identity_remote_identity_00", "remote.com", "Remote", "0.5.0", "anvil:mainnet")
+
+	// Wait for TTL
+	time.Sleep(150 * time.Millisecond)
+
+	// Cleanup: local.com should be cleaned (re-key + expired), remote.com should be cleaned (expired)
+	localDomains := map[string]string{"local.com": "new_identity_new_identity_new_identity_new_identity_new_identity_00"}
+	cleaned := d.CleanupOnBoot(localDomains, nil)
+	if cleaned != 2 {
+		t.Fatalf("expected 2 cleaned, got %d", cleaned)
+	}
+	if d.CountSHIP() != 0 {
+		t.Fatalf("expected 0, got %d", d.CountSHIP())
+	}
+}
+
+func TestCleanupOnBootKeepsFreshRemote(t *testing.T) {
+	d := tmpDirectory(t)
+	d.ttl = 1 * time.Hour
+
+	// Fresh remote entry should survive
+	d.AddSHIPPeerFromGossip("remote_id_remote_id_remote_id_remote_id_remote_id_remote_id_remote", "remote.com", "Remote", "0.5.0", "anvil:mainnet")
+	// Stale local re-key should be cleaned
+	d.AddSHIPPeerFromGossip("old_local_old_local_old_local_old_local_old_local_old_local_old_loc", "local.com", "Local", "0.4.0", "anvil:mainnet")
+
+	localDomains := map[string]string{"local.com": "new_local_new_local_new_local_new_local_new_local_new_local_new_loc"}
+	cleaned := d.CleanupOnBoot(localDomains, nil)
+	if cleaned != 1 {
+		t.Fatalf("expected 1 cleaned (re-key only), got %d", cleaned)
+	}
+	if d.CountSHIP() != 1 {
+		t.Fatalf("expected 1 remaining (fresh remote), got %d", d.CountSHIP())
 	}
 }
 

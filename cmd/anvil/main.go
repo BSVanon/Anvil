@@ -176,9 +176,29 @@ func main() {
 				if domain == "" {
 					domain = cfg.Node.Listen
 				}
+				identityHex := fmt.Sprintf("%x", identityKey.PubKey().Compressed())
+
+				// Clean stale SHIP entries before self-registering.
+				// Removes expired entries and re-key phantoms.
+				localDomains := map[string]string{domain: identityHex}
+				if cleaned := overlayDir.CleanupOnBoot(localDomains, logger); cleaned > 0 {
+					log.Printf("overlay: cleaned %d stale SHIP entries on boot", cleaned)
+				}
+
 				anviloverlay.Bootstrap(overlayDir, identityKey, domain, cfg.Node.Name, anvilversion.Version, cfg.Overlay.Topics, logger)
 			}
 		}
+
+		// Periodic SHIP entry sweep — prune entries not refreshed within TTL
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				if n := overlayDir.SweepExpired(); n > 0 {
+					logger.Info("overlay: swept expired SHIP entries", "count", n)
+				}
+			}
+		}()
 
 		// Live discovery: JungleBus subscription for real-time SHIP/SLAP detection
 		if cfg.JungleBus.Enabled {

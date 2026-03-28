@@ -17,6 +17,10 @@ func (e *Engine) RegisterHTTPHandlers(mux *http.ServeMux, corsWrap func(http.Han
 	mux.HandleFunc("POST /overlay/query", corsWrap(e.handleLookup))
 	mux.HandleFunc("GET /overlay/topics", corsWrap(e.handleListTopics))
 	mux.HandleFunc("GET /overlay/services", corsWrap(e.handleListServices))
+	// OPTIONS preflight for POST endpoints — browsers send OPTIONS before cross-origin POST.
+	// Without these, Foundry's browser-based UHRP submission fails from different origins.
+	mux.HandleFunc("OPTIONS /overlay/submit", corsWrap(func(w http.ResponseWriter, r *http.Request) {}))
+	mux.HandleFunc("OPTIONS /overlay/query", corsWrap(func(w http.ResponseWriter, r *http.Request) {}))
 }
 
 // handleSubmit processes a BRC-22 transaction submission.
