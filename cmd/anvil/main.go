@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -285,9 +286,15 @@ func main() {
 			BondChecker:    bondCheck,
 			LocalPubkeys:   localPKs,
 			CatchUpTopics:  []string{"anvil:catalog", "mesh:heartbeat", "mesh:blocks"},
-			OnEnvelope: func(env *envelope.Envelope) {
-				logger.Info("mesh envelope received", "topic", env.Topic, "from", env.Pubkey[:16])
-			},
+			OnEnvelope: func() func(*envelope.Envelope) {
+				var firstData sync.Once
+				return func(env *envelope.Envelope) {
+					firstData.Do(func() {
+						log.Printf("mesh: receiving live data from peers (first: %s)", env.Topic)
+					})
+					logger.Debug("mesh envelope received", "topic", env.Topic, "from", env.Pubkey[:16])
+				}
+			}(),
 		})
 		defer gossipMgr.Stop()
 

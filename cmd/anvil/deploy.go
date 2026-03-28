@@ -229,6 +229,9 @@ ExecStart={{.InstallDir}}/anvil -config {{.ConfigDir}}/node-{{.Node}}.toml
 EnvironmentFile={{.ConfigDir}}/node-{{.Node}}.env
 Restart=on-failure
 RestartSec=5
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
 LimitNOFILE=65536
 
 # Security hardening
