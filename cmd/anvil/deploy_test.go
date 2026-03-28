@@ -7,10 +7,11 @@ func TestIsValidPublicIPv4(t *testing.T) {
 		input string
 		want  bool
 	}{
-		// Valid IPv4
+		// Valid public IPv4
 		{"89.144.47.58", true},
 		{"212.56.43.191", true},
 		{"1.2.3.4", true},
+		{"8.8.8.8", true},
 
 		// IPv6 — must reject
 		{"2a0f:85c1:b73:5dd::a", false},
@@ -22,8 +23,20 @@ func TestIsValidPublicIPv4(t *testing.T) {
 		{"not-an-ip", false},
 		{"<html>error</html>", false},
 
-		// Localhost — technically valid IPv4, but parseable
-		{"127.0.0.1", true},
+		// Loopback — reject
+		{"127.0.0.1", false},
+		{"127.0.0.2", false},
+
+		// Private ranges — reject
+		{"10.0.0.1", false},
+		{"172.16.0.1", false},
+		{"192.168.1.1", false},
+
+		// Link-local — reject
+		{"169.254.1.1", false},
+
+		// Unspecified — reject
+		{"0.0.0.0", false},
 
 		// IPv4-mapped IPv6 — contains colon, rejected
 		{"::ffff:89.144.47.58", false},

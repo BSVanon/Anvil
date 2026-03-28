@@ -498,27 +498,21 @@ func detectPublicIP() string {
 	return ""
 }
 
-// isValidPublicIPv4 checks that a string looks like a valid IPv4 address
-// and is not an IPv6 address, HTML error page, or empty.
+// isValidPublicIPv4 checks that a string is a valid, publicly routable IPv4 address.
+// Rejects IPv6, private ranges, loopback, link-local, and garbage.
 func isValidPublicIPv4(ip string) bool {
-	if ip == "" {
+	if ip == "" || strings.Contains(ip, ":") || strings.Contains(ip, "<") {
 		return false
 	}
-	// Reject IPv6 (contains colons)
-	if strings.Contains(ip, ":") {
-		return false
-	}
-	// Reject HTML error pages
-	if strings.Contains(ip, "<") {
-		return false
-	}
-	// Must parse as valid IP
 	parsed := net.ParseIP(ip)
-	if parsed == nil {
+	if parsed == nil || parsed.To4() == nil {
 		return false
 	}
-	// Must be IPv4
-	return parsed.To4() != nil
+	// Reject non-public ranges
+	if parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() || parsed.IsUnspecified() {
+		return false
+	}
+	return true
 }
 
 func step(msg string) { fmt.Printf("\n[→] %s\n", msg) }
