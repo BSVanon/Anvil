@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -240,6 +241,12 @@ func main() {
 		walletDir := filepath.Join(cfg.Node.DataDir, "wallet")
 		nw, err := anvilwallet.New(cfg.Identity.WIF, walletDir, headerStore, proofStore, broadcaster, arcClient, logger)
 		if err != nil {
+			if strings.Contains(err.Error(), "CGO_ENABLED") || strings.Contains(err.Error(), "cgo to work") {
+				log.Fatalf("FATAL: binary was built with CGO_ENABLED=0 but the wallet requires CGO.\n"+
+					"  Rebuild with: CGO_ENABLED=1 go build ./cmd/anvil\n"+
+					"  Or use: make build\n"+
+					"  Error: %v", err)
+			}
 			log.Printf("wallet init failed (non-fatal): %v", err)
 		} else {
 			nodeWallet = nw
