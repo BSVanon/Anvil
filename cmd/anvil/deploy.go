@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -472,7 +474,15 @@ func detectPublicIP() string {
 		"https://api.ipify.org",
 		"https://icanhazip.com",
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	// Force IPv4 — dual-stack VPSes return IPv6 by default, which breaks
+	// browser access and Explorer redirects for most users.
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp4", addr)
+		},
+	}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
 	for _, url := range services {
 		resp, err := client.Get(url)
 		if err != nil {
@@ -481,7 +491,7 @@ func detectPublicIP() string {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		ip := strings.TrimSpace(string(body))
-		if ip != "" && !strings.Contains(ip, "<") {
+		if ip != "" && !strings.Contains(ip, "<") && !strings.Contains(ip, ":") {
 			return ip
 		}
 	}
