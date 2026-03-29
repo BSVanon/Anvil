@@ -37,8 +37,9 @@ type MempoolMonitor struct {
 	addr     string
 	network  wire.BitcoinNet
 	logger   *slog.Logger
-	coverage map[byte]struct{}
-	onTx     func(txHash chainhash.Hash, raw []byte)
+	coverage   map[byte]struct{}
+	maxTxSize  int // skip txs larger than this (0 = no limit)
+	onTx       func(txHash chainhash.Hash, raw []byte)
 
 	conn   net.Conn
 	connMu sync.Mutex
@@ -64,15 +65,16 @@ type MempoolMonitor struct {
 // NewMempoolMonitor creates a monitor that connects to a BSV peer and listens
 // for transaction announcements. The coverage map determines which txid prefix
 // bytes to fetch (nil or empty = fetch nothing, act as observer only).
-func NewMempoolMonitor(addr string, network wire.BitcoinNet, coverage map[byte]struct{}, onTx func(chainhash.Hash, []byte), logger *slog.Logger) *MempoolMonitor {
+func NewMempoolMonitor(addr string, network wire.BitcoinNet, coverage map[byte]struct{}, maxTxSize int, onTx func(chainhash.Hash, []byte), logger *slog.Logger) *MempoolMonitor {
 	return &MempoolMonitor{
-		addr:     addr,
-		network:  network,
-		logger:   logger,
-		coverage: coverage,
-		onTx:     onTx,
-		pending:  make(map[chainhash.Hash]time.Time),
-		done:     make(chan struct{}),
+		addr:      addr,
+		network:   network,
+		logger:    logger,
+		coverage:  coverage,
+		maxTxSize: maxTxSize,
+		onTx:      onTx,
+		pending:   make(map[chainhash.Hash]time.Time),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -236,10 +238,13 @@ func (m *MempoolMonitor) handleTx(msg *wire.MsgTx) {
 	m.pendingMu.Unlock()
 
 	if m.onTx != nil {
-		// Serialize tx for the callback
 		var buf []byte
 		w := &byteWriter{buf: &buf}
 		msg.Serialize(w)
+		// Enforce max tx size — skip large inscriptions/data txs
+		if m.maxTxSize > 0 && len(buf) > m.maxTxSize {
+			return
+		}
 		m.onTx(hash, buf)
 	}
 }

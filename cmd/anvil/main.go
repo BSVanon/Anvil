@@ -166,7 +166,7 @@ func main() {
 		}
 
 		monitor := p2p.NewMempoolMonitor(
-			cfg.BSV.Nodes[0], wire.MainNet, coverage,
+			cfg.BSV.Nodes[0], wire.MainNet, coverage, cfg.Mempool.MaxTxSize,
 			func(txHash chainhash.Hash, raw []byte) {
 				var id [32]byte
 				copy(id[:], txHash[:])
