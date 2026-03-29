@@ -55,24 +55,30 @@ func (st *slashTracker) addWarning(w SlashWarningPayload) (shouldDeregister bool
 
 	rec.Warnings = append(rec.Warnings, w)
 
-	// Double-publish: immediate deregistration. Self-detection is trusted because
-	// the detecting node has cryptographic proof (two conflicting signed envelopes).
-	// Remote reports still require 2+ unique reporters for spam resistance.
+	// Double-publish requires corroboration from multiple peers before we
+	// disconnect. Envelope timestamps are only second-granular, so a single
+	// node's local observation can be a false positive for fast publishers.
+	// Count only same-reason warnings to prevent mixed-reason accumulation.
 	if w.Reason == SlashDoublePublish {
-		return true
+		count, reporters := st.countByReason(rec, SlashDoublePublish)
+		return count >= 2 && reporters >= 2
 	}
 
-	// Spam: require 3+ warnings from 2+ unique reporters
-	return len(rec.Warnings) >= slashSpamThreshold && st.uniqueReporters(rec) >= 2
+	// Spam: require 3+ same-reason warnings from 2+ unique reporters
+	count, reporters := st.countByReason(rec, w.Reason)
+	return count >= slashSpamThreshold && reporters >= 2
 }
 
-// uniqueReporters counts distinct reporter identities in a record.
-func (st *slashTracker) uniqueReporters(rec *slashRecord) int {
+// countByReason counts warnings and unique reporters for a specific reason.
+func (st *slashTracker) countByReason(rec *slashRecord, reason SlashReason) (count, reporters int) {
 	seen := make(map[string]struct{})
 	for _, w := range rec.Warnings {
-		seen[w.Reporter] = struct{}{}
+		if w.Reason == reason {
+			count++
+			seen[w.Reporter] = struct{}{}
+		}
 	}
-	return len(seen)
+	return count, len(seen)
 }
 
 // activeWarnings returns all unexpired warnings for a peer.

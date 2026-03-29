@@ -44,6 +44,17 @@ func NewServerWSTransport(conn *websocket.Conn) *ServerWSTransport {
 // Done returns a channel that is closed when the connection is lost.
 func (s *ServerWSTransport) Done() <-chan struct{} { return s.done }
 
+func (s *ServerWSTransport) RemoteAddr() string {
+	if s.conn == nil {
+		return ""
+	}
+	addr := s.conn.RemoteAddr()
+	if addr == nil {
+		return ""
+	}
+	return addr.String()
+}
+
 // Close closes the underlying WebSocket connection, causing StartReceive to exit.
 func (s *ServerWSTransport) Close() error { return s.conn.Close() }
 

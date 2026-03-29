@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	prefixDurable   = []byte("d:")   // d:<topic>:<key> → envelope JSON
-	prefixEphemeral = []byte("e:")   // in-memory only, not persisted
+	prefixDurable   = []byte("d:") // d:<topic>:<key> → envelope JSON
+	prefixEphemeral = []byte("e:") // in-memory only, not persisted
 )
 
 // Store manages both ephemeral and durable data envelopes.
@@ -83,6 +83,34 @@ func (s *Store) storeEphemeral(env *Envelope) error {
 	defer s.mu.Unlock()
 	s.ephemeral[env.Key()] = env
 	return nil
+}
+
+// Delete removes an envelope by topic and key from both durable and ephemeral
+// storage. Returns whether anything was deleted.
+func (s *Store) Delete(topic, key string) (bool, error) {
+	if topic == "" || key == "" {
+		return false, fmt.Errorf("topic and key required")
+	}
+
+	deleted := false
+	durableKey := append(append([]byte{}, prefixDurable...), []byte(topic+":"+key)...)
+	if ok, err := s.db.Has(durableKey, nil); err != nil {
+		return false, fmt.Errorf("check durable envelope: %w", err)
+	} else if ok {
+		if err := s.db.Delete(durableKey, nil); err != nil {
+			return false, fmt.Errorf("delete durable envelope: %w", err)
+		}
+		deleted = true
+	}
+
+	s.mu.Lock()
+	if _, ok := s.ephemeral[key]; ok {
+		delete(s.ephemeral, key)
+		deleted = true
+	}
+	s.mu.Unlock()
+
+	return deleted, nil
 }
 
 // StoreEphemeralDirect stores an envelope without validation. For testing only.

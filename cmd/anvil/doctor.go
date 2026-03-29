@@ -51,6 +51,16 @@ func cmdDoctor(args []string) {
 	} else {
 		pass("auth token derived (%s...)", cfg.API.AuthToken[:12])
 	}
+	if len(cfg.Mesh.Seeds) == 0 {
+		warn("no mesh seeds configured — this node will not auto-connect to the mesh")
+	} else {
+		pass("%d mesh seed(s) configured", len(cfg.Mesh.Seeds))
+		for _, seed := range cfg.Mesh.Seeds {
+			if !strings.HasPrefix(seed, "wss://") {
+				warn("mesh seed is not wss:// — %s", seed)
+			}
+		}
+	}
 
 	// ── 1b. Version ──
 	section("Version")
@@ -114,6 +124,28 @@ func cmdDoctor(args []string) {
 		if h, ok := statusResp["headers"].(map[string]interface{}); ok {
 			if height, ok := h["height"].(float64); ok {
 				pass("header height: %d", int(height))
+			}
+			if lag, ok := h["sync_lag_secs"].(float64); ok {
+				if int(lag) > 1800 {
+					warn("header sync lag: %ds", int(lag))
+				} else {
+					pass("header sync lag: %ds", int(lag))
+				}
+			}
+		}
+		if spvInfo, ok := statusResp["spv"].(map[string]interface{}); ok {
+			if proofs, ok := spvInfo["proofs_stored"].(float64); ok {
+				pass("stored proofs: %d", int(proofs))
+			}
+			if validations, ok := spvInfo["validations"].(map[string]interface{}); ok {
+				if invalid, ok := validations["invalid"].(float64); ok && invalid > 0 {
+					warn("SPV invalid count observed: %d", int(invalid))
+				}
+			}
+		}
+		if warnings, ok := statusResp["warnings"].([]interface{}); ok {
+			for _, warning := range warnings {
+				warn("node warning: %v", warning)
 			}
 		}
 	} else {
@@ -182,6 +214,19 @@ func cmdDoctor(args []string) {
 		envResp := httpGet(apiURL + "/data?topic=*&limit=0")
 		if envResp != nil {
 			pass("envelope store responding")
+		}
+	}
+
+	meshResp := httpGet(apiURL + "/mesh/status")
+	if meshResp != nil {
+		if mesh, ok := meshResp["mesh"].(map[string]interface{}); ok {
+			if peers, ok := mesh["peers"].(float64); ok {
+				if int(peers) > 0 {
+					pass("live mesh peers: %d", int(peers))
+				} else if len(cfg.Mesh.Seeds) > 0 {
+					warn("live mesh peers: 0 — check firewall, seed config, and remote node health")
+				}
+			}
 		}
 	}
 

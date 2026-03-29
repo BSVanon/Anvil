@@ -15,7 +15,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-App-Token, X-Anvil-Auth, Authorization, X402-Proof")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

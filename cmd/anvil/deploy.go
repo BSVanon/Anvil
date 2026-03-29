@@ -140,7 +140,7 @@ func cmdDeploy(args []string) {
 
 func preflight(node, configDir, dataDir string, dryRun bool) {
 	// Required subdirs for the data directory
-	subdirs := []string{"headers", "envelopes", "overlay", "wallet", "invoices", "proofs"}
+	subdirs := []string{"headers", "envelopes", "overlay", "wallet", "invoices", "proofs", "mesh"}
 	for _, sub := range subdirs {
 		dir := filepath.Join(dataDir, sub)
 		if dryRun {
@@ -229,9 +229,10 @@ ExecStart={{.InstallDir}}/anvil -config {{.ConfigDir}}/node-{{.Node}}.toml
 EnvironmentFile={{.ConfigDir}}/node-{{.Node}}.env
 Restart=on-failure
 RestartSec=5
-KillMode=mixed
+KillMode=control-group
 KillSignal=SIGTERM
-TimeoutStopSec=10
+TimeoutStopSec=30
+FinalKillSignal=SIGKILL
 LimitNOFILE=65536
 
 # Security hardening

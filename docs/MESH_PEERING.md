@@ -8,7 +8,7 @@ Configure seed peers in `[mesh]` to connect to existing nodes:
 
 ```toml
 [mesh]
-seeds = ["ws://127.0.0.1:8333"]
+seeds = ["wss://anvil.sendbsv.com/mesh"]
 ```
 
 Seed connections auto-reconnect on disconnect (30-second retry loop).
@@ -39,6 +39,15 @@ Misbehaving peers receive `slash_warning` gossip messages with a **48-hour grace
 Enforcement is currently **soft-slash** — the offending peer is disconnected and deregistered from the overlay. On-chain bond redistribution to remaining peers is planned for v2.
 
 Gossip rate limits are loose (30 envelopes/sec per peer, burst 100) — designed to protect nodes without punishing fast publishers or reconnection bursts.
+
+If you run a fast local publisher on the same node, exempt its pubkey from double-publish slashing:
+
+```toml
+[mesh]
+local_pubkeys = ["02...your-app-pubkey..."]
+```
+
+Recent peer connect/disconnect events are written to `<data_dir>/mesh/connections.jsonl` (default `/var/lib/anvil/mesh/connections.jsonl`).
 
 ## Node names
 
@@ -82,8 +91,9 @@ api_listen = "0.0.0.0:9333"
 public_url = "https://my-node.example.com"
 
 [mesh]
-seeds = ["ws://seed-node.example.com:8333"]
+seeds = ["wss://seed-node.example.com/mesh"]
 min_bond_sats = 10000
+local_pubkeys = ["02...optional-local-app-pubkey..."]
 
 [overlay]
 enabled = true

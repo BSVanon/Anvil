@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIsValidPublicIPv4(t *testing.T) {
 	tests := []struct {
@@ -46,5 +49,15 @@ func TestIsValidPublicIPv4(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("isValidPublicIPv4(%q) = %v, want %v", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestRenderUnitUsesControlGroupStop(t *testing.T) {
+	unit := renderUnit("a", "/etc/anvil", "/var/lib/anvil", "/opt/anvil")
+	if !strings.Contains(unit, "KillMode=control-group") {
+		t.Fatal("expected KillMode=control-group in generated unit")
+	}
+	if !strings.Contains(unit, "TimeoutStopSec=30") {
+		t.Fatal("expected TimeoutStopSec=30 in generated unit")
 	}
 }

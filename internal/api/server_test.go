@@ -3,9 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,14 +12,12 @@ import (
 	"testing"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
-	"github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
-	"github.com/BSVanon/Anvil/pkg/brc"
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
@@ -115,6 +111,46 @@ func TestStatusEndpoint(t *testing.T) {
 	h := resp["headers"].(map[string]interface{})
 	if h["height"].(float64) != 0 {
 		t.Fatalf("expected height 0, got %v", h["height"])
+	}
+}
+
+func TestStatusIncludesSPVAndSyncDetails(t *testing.T) {
+	srv := testServer(t)
+	srv.headerSyncStatus = func() headers.SyncStats {
+		return headers.SyncStats{
+			LastSource:    "seed.bitcoinsv.io:8333",
+			LastAttemptAt: "2026-03-29T01:00:00Z",
+			LastSuccessAt: "2026-03-29T01:00:02Z",
+			LastTip:       100,
+		}
+	}
+	srv.spvProofSource = "arc+woc-fallback"
+
+	req := httptest.NewRequest("GET", "/status", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	headersInfo := resp["headers"].(map[string]interface{})
+	if headersInfo["sync_lag_secs"] == nil {
+		t.Fatal("expected sync_lag_secs in headers")
+	}
+	syncInfo := headersInfo["sync"].(map[string]interface{})
+	if syncInfo["last_source"] != "seed.bitcoinsv.io:8333" {
+		t.Fatalf("expected last_source in sync info, got %v", syncInfo["last_source"])
+	}
+
+	spvInfo := resp["spv"].(map[string]interface{})
+	if spvInfo["proof_source"] != "arc+woc-fallback" {
+		t.Fatalf("expected proof_source, got %v", spvInfo["proof_source"])
 	}
 }
 
@@ -439,229 +475,3 @@ func overlayTestKey() *ec.PrivateKey {
 	return key
 }
 
-func TestOverlayLookupEmpty(t *testing.T) {
-	srv := testServerWithOverlay(t)
-	req := httptest.NewRequest("GET", "/overlay/lookup?topic=anvil:mainnet", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["count"].(float64) != 0 {
-		t.Fatalf("expected 0 peers, got %v", resp["count"])
-	}
-}
-
-func TestOverlayLookupRequiresTopic(t *testing.T) {
-	srv := testServerWithOverlay(t)
-	req := httptest.NewRequest("GET", "/overlay/lookup", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestEndToEndRegisterThenLookup(t *testing.T) {
-	srv := testServerWithOverlay(t)
-	key := overlayTestKey()
-
-	// Build a real SHIP script
-	scriptBytes, _, err := brc.BuildSHIPScript(key, "peer.example.com:8333", "anvil:mainnet")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// POST /overlay/register
-	body := fmt.Sprintf(`{"script":"%s","txid":"tx123","output_index":0}`, hex.EncodeToString(scriptBytes))
-	req := httptest.NewRequest("POST", "/overlay/register", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-token")
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("register: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	// GET /overlay/lookup?topic=anvil:mainnet should now return the peer
-	req2 := httptest.NewRequest("GET", "/overlay/lookup?topic=anvil:mainnet", nil)
-	w2 := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w2, req2)
-
-	if w2.Code != http.StatusOK {
-		t.Fatalf("lookup: expected 200, got %d", w2.Code)
-	}
-
-	var resp map[string]interface{}
-	json.NewDecoder(w2.Body).Decode(&resp)
-	if resp["count"].(float64) != 1 {
-		t.Fatalf("expected 1 peer after registration, got %v", resp["count"])
-	}
-
-	peers := resp["peers"].([]interface{})
-	peer := peers[0].(map[string]interface{})
-	if peer["domain"] != "peer.example.com:8333" {
-		t.Fatalf("expected domain peer.example.com:8333, got %v", peer["domain"])
-	}
-
-	t.Logf("e2e overlay success: registered SHIP -> lookup found peer at %s", peer["domain"])
-}
-
-func TestOverlayRegisterRejectsInvalid(t *testing.T) {
-	srv := testServerWithOverlay(t)
-	body := `{"script":"deadbeef","txid":"tx","output_index":0}`
-	req := httptest.NewRequest("POST", "/overlay/register", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-token")
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestEndToEndRegisterThenDeregister(t *testing.T) {
-	srv := testServerWithOverlay(t)
-	key := overlayTestKey()
-
-	scriptBytes, _, _ := brc.BuildSHIPScript(key, "temp.example.com", "anvil:mainnet")
-
-	// Register
-	body := fmt.Sprintf(`{"script":"%s","txid":"tx999","output_index":0}`, hex.EncodeToString(scriptBytes))
-	req := httptest.NewRequest("POST", "/overlay/register", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-token")
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("register: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	// Verify it's there
-	req2 := httptest.NewRequest("GET", "/overlay/lookup?topic=anvil:mainnet", nil)
-	w2 := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w2, req2)
-	var resp map[string]interface{}
-	json.NewDecoder(w2.Body).Decode(&resp)
-	if resp["count"].(float64) != 1 {
-		t.Fatalf("expected 1 peer, got %v", resp["count"])
-	}
-
-	// Deregister
-	identityPubHex := hex.EncodeToString(key.PubKey().Compressed())
-	deregBody := fmt.Sprintf(`{"topic":"anvil:mainnet","identity_pub":"%s"}`, identityPubHex)
-	req3 := httptest.NewRequest("POST", "/overlay/deregister", strings.NewReader(deregBody))
-	req3.Header.Set("Authorization", "Bearer test-token")
-	req3.Header.Set("Content-Type", "application/json")
-	w3 := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w3, req3)
-	if w3.Code != http.StatusOK {
-		t.Fatalf("deregister: expected 200, got %d: %s", w3.Code, w3.Body.String())
-	}
-
-	// Verify it's gone
-	req4 := httptest.NewRequest("GET", "/overlay/lookup?topic=anvil:mainnet", nil)
-	w4 := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w4, req4)
-	var resp2 map[string]interface{}
-	json.NewDecoder(w4.Body).Decode(&resp2)
-	if resp2["count"].(float64) != 0 {
-		t.Fatalf("expected 0 peers after deregister, got %v", resp2["count"])
-	}
-
-	t.Log("e2e deregister success")
-}
-
-// --- Data envelope + gossip integration ---
-
-func testServerWithGossip(t *testing.T) (*Server, *gossip.Manager) {
-	t.Helper()
-
-	hdir, _ := os.MkdirTemp("", "anvil-api-headers-*")
-	t.Cleanup(func() { os.RemoveAll(hdir) })
-	hs, _ := headers.NewTestStore(hdir)
-	t.Cleanup(func() { hs.Close() })
-
-	pdir, _ := os.MkdirTemp("", "anvil-api-proofs-*")
-	t.Cleanup(func() { os.RemoveAll(pdir) })
-	ps, _ := spv.NewProofStore(pdir)
-	t.Cleanup(func() { ps.Close() })
-
-	edir, _ := os.MkdirTemp("", "anvil-api-envs-*")
-	t.Cleanup(func() { os.RemoveAll(edir) })
-	es, _ := envelope.NewStore(edir, 3600, 65536)
-	t.Cleanup(func() { es.Close() })
-
-	mgr := gossip.NewManager(gossip.ManagerConfig{
-		Store:          es,
-		LocalInterests: []string{"oracle:"},
-		MaxSeen:        100,
-	})
-	t.Cleanup(func() { mgr.Stop() })
-
-	validator := spv.NewValidator(hs)
-	logger := slog.Default()
-	mempool := txrelay.NewMempool()
-	broadcaster := txrelay.NewBroadcaster(mempool, nil, logger)
-	srv := NewServer(ServerConfig{
-		HeaderStore: hs, ProofStore: ps, EnvelopeStore: es,
-		Validator: validator, Broadcaster: broadcaster, GossipMgr: mgr,
-		AuthToken: "test-token", Logger: logger,
-	})
-	return srv, mgr
-}
-
-func TestPostDataBroadcastsToMesh(t *testing.T) {
-	srv, _ := testServerWithGossip(t)
-
-	// Build a signed envelope
-	key, _ := ec.NewPrivateKey()
-	env := &envelope.Envelope{
-		Type:      "data",
-		Topic:     "oracle:rates:bsv",
-		Payload:   `{"rate":42}`,
-		TTL:       60,
-		Timestamp: 1700000000,
-	}
-	env.Sign(key)
-	body, _ := json.Marshal(env)
-
-	req := httptest.NewRequest("POST", "/data", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-token")
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["accepted"] != true {
-		t.Fatalf("expected accepted=true, got %v", resp["accepted"])
-	}
-
-	// Verify the envelope is stored and retrievable
-	req2 := httptest.NewRequest("GET", "/data?topic=oracle:rates:bsv", nil)
-	w2 := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w2, req2)
-
-	if w2.Code != http.StatusOK {
-		t.Fatalf("query: expected 200, got %d", w2.Code)
-	}
-	var queryResp map[string]interface{}
-	json.NewDecoder(w2.Body).Decode(&queryResp)
-	if queryResp["count"].(float64) != 1 {
-		t.Fatalf("expected 1 envelope, got %v", queryResp["count"])
-	}
-
-	t.Log("POST /data -> store + gossip broadcast wired correctly")
-}

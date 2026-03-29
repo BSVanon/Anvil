@@ -27,9 +27,10 @@ type Config struct {
 
 // MeshConfig defines Anvil mesh peering via go-sdk auth.Peer + WebSocket.
 type MeshConfig struct {
-	Seeds          []string `toml:"seeds"`            // WebSocket endpoints of seed peers
-	MinBondSats    int      `toml:"min_bond_sats"`    // minimum bond UTXO required to peer (0 = no bond required)
-	BondCheckURL   string   `toml:"bond_check_url"`   // UTXO lookup API (default: WoC)
+	Seeds        []string `toml:"seeds"`          // WebSocket endpoints of seed peers
+	MinBondSats  int      `toml:"min_bond_sats"`  // minimum bond UTXO required to peer (0 = no bond required)
+	BondCheckURL string   `toml:"bond_check_url"` // UTXO lookup API (default: WoC)
+	LocalPubkeys []string `toml:"local_pubkeys"`  // app pubkeys exempt from double-publish slashing on this node
 }
 
 type NodeConfig struct {
@@ -53,12 +54,12 @@ type BSVConfig struct {
 }
 
 type ARCConfig struct {
-	Enabled      bool   `toml:"enabled"`
-	URL          string `toml:"url"`           // primary ARC (default: GorillaPool, free)
-	APIKey       string `toml:"api_key"`       // for primary ARC if it requires auth
-	TAALEnabled  bool   `toml:"taal_enabled"`  // optional TAAL failover
-	TAALURL      string `toml:"taal_url"`      // default: https://arc.taal.com
-	TAALAPIKey   string `toml:"taal_api_key"`  // TAAL API key (recommended but not required)
+	Enabled     bool   `toml:"enabled"`
+	URL         string `toml:"url"`          // primary ARC (default: GorillaPool, free)
+	APIKey      string `toml:"api_key"`      // for primary ARC if it requires auth
+	TAALEnabled bool   `toml:"taal_enabled"` // optional TAAL failover
+	TAALURL     string `toml:"taal_url"`     // default: https://arc.taal.com
+	TAALAPIKey  string `toml:"taal_api_key"` // TAAL API key (recommended but not required)
 }
 
 type JungleBusSubscription struct {
@@ -82,10 +83,10 @@ type OverlayConfig struct {
 // When enabled, the node maintains a long-lived connection to a BSV peer
 // and selectively indexes transactions matching its coverage filter.
 type MempoolConfig struct {
-	Enabled      bool  `toml:"enabled"`       // opt-in (default: false)
-	Prefixes     []int `toml:"prefixes"`      // explicit coverage bytes (0-255); empty = auto
-	MaxTxSize    int   `toml:"max_tx_size"`   // skip txs larger than this (bytes, 0 = no limit)
-	TTLSeconds   int   `toml:"ttl_seconds"`   // evict entries older than this
+	Enabled    bool  `toml:"enabled"`     // opt-in (default: false)
+	Prefixes   []int `toml:"prefixes"`    // explicit coverage bytes (0-255); empty = auto
+	MaxTxSize  int   `toml:"max_tx_size"` // skip txs larger than this (bytes, 0 = no limit)
+	TTLSeconds int   `toml:"ttl_seconds"` // evict entries older than this
 }
 
 type EnvelopeConfig struct {
@@ -96,16 +97,16 @@ type EnvelopeConfig struct {
 }
 
 type APIConfig struct {
-	AuthToken        string            `toml:"auth_token"`
-	TLSCert          string            `toml:"tls_cert"`
-	TLSKey           string            `toml:"tls_key"`
-	RateLimit        int               `toml:"rate_limit"`
-	TrustProxy       bool              `toml:"trust_proxy"`
-	PaymentSatoshis  int               `toml:"payment_satoshis"`    // default per-request price; 0 = free
-	RequireMempool   bool              `toml:"require_mempool"`     // require ARC SEEN_ON_NETWORK before accepting x402 payment
-	EndpointPrices   map[string]int    `toml:"endpoint_prices"`     // per-endpoint price overrides (path → sats)
-	AppPayments      AppPaymentConfig  `toml:"app_payments"`
-	ExplorerOrigin   string            `toml:"explorer_origin"`     // fallback content_origin for /explorer (survives catalog expiry)
+	AuthToken       string           `toml:"auth_token"`
+	TLSCert         string           `toml:"tls_cert"`
+	TLSKey          string           `toml:"tls_key"`
+	RateLimit       int              `toml:"rate_limit"`
+	TrustProxy      bool             `toml:"trust_proxy"`
+	PaymentSatoshis int              `toml:"payment_satoshis"` // default per-request price; 0 = free
+	RequireMempool  bool             `toml:"require_mempool"`  // require ARC SEEN_ON_NETWORK before accepting x402 payment
+	EndpointPrices  map[string]int   `toml:"endpoint_prices"`  // per-endpoint price overrides (path → sats)
+	AppPayments     AppPaymentConfig `toml:"app_payments"`
+	ExplorerOrigin  string           `toml:"explorer_origin"` // fallback content_origin for /explorer (survives catalog expiry)
 }
 
 // AppPaymentConfig controls which non-custodial payment models apps can use.
@@ -115,8 +116,8 @@ type APIConfig struct {
 // hardcoded prohibitions enforced by the absence of any code path that could
 // perform them.
 type AppPaymentConfig struct {
-	AllowPassthrough bool `toml:"allow_passthrough"` // allow apps to set their own payee scripts (Model 2)
-	AllowSplit       bool `toml:"allow_split"`       // allow dual-output node+app payments (Model 3)
+	AllowPassthrough bool `toml:"allow_passthrough"`  // allow apps to set their own payee scripts (Model 2)
+	AllowSplit       bool `toml:"allow_split"`        // allow dual-output node+app payments (Model 3)
 	AllowTokenGating bool `toml:"allow_token_gating"` // allow apps to gate via signed credentials (Model 4)
 	MaxAppPriceSats  int  `toml:"max_app_price_sats"` // cap on app-declared prices; 0 = no cap
 }

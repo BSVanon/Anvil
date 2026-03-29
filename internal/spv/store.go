@@ -5,6 +5,7 @@ import (
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
 var (
@@ -59,4 +60,15 @@ func (s *ProofStore) HasBEEF(txid string) bool {
 	key := append(append([]byte{}, prefixBeef...), []byte(txid)...)
 	ok, _ := s.db.Has(key, nil)
 	return ok
+}
+
+// Count returns the number of persisted BEEF proofs.
+func (s *ProofStore) Count() int {
+	count := 0
+	iter := s.db.NewIterator(util.BytesPrefix(prefixBeef), nil)
+	defer iter.Release()
+	for iter.Next() {
+		count++
+	}
+	return count
 }

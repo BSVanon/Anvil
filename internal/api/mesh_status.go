@@ -65,6 +65,9 @@ func (s *Server) handleMeshStatus(w http.ResponseWriter, r *http.Request) {
 			"started_at":  activity.StartedAt,
 			"uptime_secs": activity.UptimeSecs,
 		}
+		if recent := s.gossipMgr.RecentConnections(10); len(recent) > 0 {
+			result["recent_connections"] = recent
+		}
 		result["activity"] = map[string]interface{}{
 			"envelopes_received": activity.EnvsReceived,
 			"envelopes_sent":     activity.EnvsSent,
