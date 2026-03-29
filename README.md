@@ -4,12 +4,13 @@
 
 <h1 align="center">Anvil</h1>
 
-<p align="center">A single-binary BSV node. No blockchain download required.</p>
+<p align="center">A single-binary BSV overlay node. No blockchain download required.</p>
 
 ## What it does
 
 - **Verify** — Syncs ~940k block headers in 30 seconds, then verifies any BSV transaction via BEEF/SPV proofs
 - **Publish** — Signed data envelopes propagate across the mesh in real time via authenticated gossip
+- **Subscribe** — Real-time push via SSE. Clients receive new envelopes the moment they arrive
 - **Earn** — Non-custodial x402 micropayments per request. Your node enforces payment but never holds funds
 - **Discover** — Machines find services via `/.well-known/x402`, pay, and consume. Zero onboarding
 
@@ -65,8 +66,8 @@ const data = await anvil.query('oracle:rates:bsv');
 | [Discover](docs/DISCOVER.md) | Machine economy, automated discovery, AI agents |
 | [Add Your App](docs/ADD_YOUR_APP.md) | 5-minute path from app to live mesh publisher |
 | [App Integration](docs/APP_INTEGRATION.md) | Step-by-step guide for connecting your app |
-| [Mesh Peering](docs/MESH_PEERING.md) | Bonds, node names, overlay discovery |
-| [API Reference](docs/API_REFERENCE.md) | All endpoints, auth methods, response formats |
+| [Mesh Peering](docs/MESH_PEERING.md) | Bonds, node names, overlay discovery, connection logging |
+| [API Reference](docs/API_REFERENCE.md) | All endpoints, SSE subscription, auth, response formats |
 | [Payment Policy](docs/NON_CUSTODIAL_PAYMENT_POLICY.md) | Non-custodial design constraints |
 | [Capabilities](docs/ANVIL_CAPABILITIES.md) | Machine-readable reference for AI agents |
 
