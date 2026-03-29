@@ -1,6 +1,17 @@
 #!/bin/bash
 # Anvil Mesh Node — One-liner installer
-# Usage: curl -fsSL https://anvil.sendbsv.com/install | sudo bash
+#
+# Secure install (pinned to a release tag):
+#   curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v0.7.1/scripts/install.sh | sudo bash
+#
+# Latest (follows main — less secure, but always current):
+#   curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/main/scripts/install.sh | sudo bash
+#
+# Supply chain security:
+#   - Script is served from GitHub (not VPS) — immutable at tagged commits
+#   - Binary is downloaded from GitHub Releases
+#   - SHA256 checksum is verified against checksums.txt from the same release
+#   - All source code is public at https://github.com/BSVanon/Anvil
 #
 # Requirements: Linux (amd64 or arm64), root/sudo, ~50MB disk
 
@@ -43,7 +54,13 @@ esac
 # ── Check root ──
 if [ "$(id -u)" -ne 0 ]; then
   echo -e "${RED}Error: run with sudo or as root${NC}"
-  echo "  curl -fsSL https://anvil.sendbsv.com/install | sudo bash"
+  echo "  curl -fsSL https://raw.githubusercontent.com/${ANVIL_REPO}/main/scripts/install.sh | sudo bash"
+  exit 1
+fi
+
+# ── Check sha256sum available ──
+if ! command -v sha256sum &>/dev/null; then
+  echo -e "${RED}Error: sha256sum required for binary verification${NC}"
   exit 1
 fi
 
@@ -71,7 +88,7 @@ echo -e "  Anvil mesh node in about 3 minutes."
 echo ""
 echo -e "  ${DIM}What happens next:${NC}"
 echo ""
-echo -e "    ${GREEN}▸${NC} Download the Anvil binary"
+echo -e "    ${GREEN}▸${NC} Download the Anvil binary (with checksum verification)"
 echo -e "    ${GREEN}▸${NC} Generate your node's unique identity"
 echo -e "    ${GREEN}▸${NC} Sync BSV block headers"
 echo -e "    ${GREEN}▸${NC} Show your wallet address to fund"
@@ -83,7 +100,7 @@ echo ""
 pause_msg
 
 # ══════════════════════════════════════════════════════════════
-# SCREEN 2: Download + Install
+# SCREEN 2: Download + Verify + Install
 # ══════════════════════════════════════════════════════════════
 
 clear
@@ -96,27 +113,53 @@ echo -e "  ${DIM}Downloading binary for ${ARCH}...${NC}"
 echo ""
 
 TMPBIN=$(mktemp /tmp/anvil-install.XXXXXX)
-trap "rm -f $TMPBIN" EXIT
+TMPCHK=$(mktemp /tmp/anvil-checksums.XXXXXX)
+trap "rm -f $TMPBIN $TMPCHK" EXIT
 
 # Allow local binary for testing: ANVIL_LOCAL_BINARY=/path/to/anvil
 if [ -n "${ANVIL_LOCAL_BINARY:-}" ] && [ -f "$ANVIL_LOCAL_BINARY" ]; then
   cp "$ANVIL_LOCAL_BINARY" "$TMPBIN"
-  echo -e "    ${DIM}(using local binary: ${ANVIL_LOCAL_BINARY})${NC}"
+  echo -e "    ${DIM}(using local binary: ${ANVIL_LOCAL_BINARY} — checksum skip)${NC}"
 else
   if [ "$ANVIL_VERSION" = "latest" ]; then
-    DOWNLOAD_URL="https://github.com/${ANVIL_REPO}/releases/latest/download/${BINARY}"
+    RELEASE_BASE="https://github.com/${ANVIL_REPO}/releases/latest/download"
   else
-    DOWNLOAD_URL="https://github.com/${ANVIL_REPO}/releases/download/${ANVIL_VERSION}/${BINARY}"
+    RELEASE_BASE="https://github.com/${ANVIL_REPO}/releases/download/${ANVIL_VERSION}"
   fi
+
+  DOWNLOAD_URL="${RELEASE_BASE}/${BINARY}"
+  CHECKSUM_URL="${RELEASE_BASE}/checksums.txt"
 
   if command -v curl &>/dev/null; then
     curl -fsSL "$DOWNLOAD_URL" -o "$TMPBIN"
+    curl -fsSL "$CHECKSUM_URL" -o "$TMPCHK"
   elif command -v wget &>/dev/null; then
     wget -q "$DOWNLOAD_URL" -O "$TMPBIN"
+    wget -q "$CHECKSUM_URL" -O "$TMPCHK"
   else
     echo -e "  ${RED}Error: curl or wget required${NC}"
     exit 1
   fi
+
+  # ── Verify SHA256 checksum ──
+  EXPECTED=$(grep "${BINARY}" "$TMPCHK" | awk '{print $1}')
+  if [ -z "$EXPECTED" ]; then
+    echo -e "  ${RED}Error: no checksum found for ${BINARY} in checksums.txt${NC}"
+    echo -e "  ${DIM}This could mean the release is incomplete or tampered with.${NC}"
+    exit 1
+  fi
+
+  ACTUAL=$(sha256sum "$TMPBIN" | awk '{print $1}')
+  if [ "$ACTUAL" != "$EXPECTED" ]; then
+    echo -e "  ${RED}Error: SHA256 checksum mismatch!${NC}"
+    echo -e "  ${RED}  Expected: ${EXPECTED}${NC}"
+    echo -e "  ${RED}  Got:      ${ACTUAL}${NC}"
+    echo ""
+    echo -e "  ${RED}The binary may have been tampered with. Aborting.${NC}"
+    exit 1
+  fi
+
+  echo -e "    ${GREEN}✓${NC} SHA256 verified: ${DIM}${ACTUAL:0:16}...${NC}"
 fi
 chmod 755 "$TMPBIN"
 
