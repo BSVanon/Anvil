@@ -17,10 +17,12 @@
 ## Install
 
 ```bash
-curl -fsSL https://anvil.sendbsv.com/install | sudo bash
+curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v0.7.1/scripts/install.sh | sudo bash
 ```
 
-The guided installer downloads the binary, generates your identity, syncs headers, and shows your funding address. Takes about 3 minutes.
+The guided installer downloads the binary from GitHub Releases, verifies the SHA256 checksum, generates your identity, syncs headers, and shows your funding address. Takes about 3 minutes.
+
+The install script is served from GitHub (not a VPS) and is immutable at tagged commits. See [RELEASING.md](RELEASING.md) for supply chain details.
 
 After install:
 
