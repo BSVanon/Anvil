@@ -24,17 +24,17 @@ import (
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
 	mempoolpkg "github.com/BSVanon/Anvil/internal/mempool"
-	"github.com/BSVanon/Anvil/internal/p2p"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
-	anvilversion "github.com/BSVanon/Anvil/internal/version"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
+	"github.com/BSVanon/Anvil/internal/p2p"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
+	anvilversion "github.com/BSVanon/Anvil/internal/version"
 	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
-	"github.com/libsv/go-p2p/chaincfg/chainhash"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
+	"github.com/libsv/go-p2p/chaincfg/chainhash"
 	"github.com/libsv/go-p2p/wire"
 )
 
@@ -333,9 +333,30 @@ func main() {
 		}
 
 		// Collect local pubkeys to exempt from double-publish detection
+		localPKSet := make(map[string]struct{})
 		var localPKs []string
 		if identityPubHex != "" {
+			localPKSet[identityPubHex] = struct{}{}
 			localPKs = append(localPKs, identityPubHex)
+		}
+		for _, pk := range cfg.Mesh.LocalPubkeys {
+			pk = strings.ToLower(strings.TrimSpace(pk))
+			if pk == "" {
+				continue
+			}
+			if _, exists := localPKSet[pk]; exists {
+				continue
+			}
+			localPKSet[pk] = struct{}{}
+			localPKs = append(localPKs, pk)
+		}
+		var connLog *anvilgossip.ConnectionLog
+		connLogPath := filepath.Join(cfg.Node.DataDir, "mesh", "connections.jsonl")
+		if cl, err := anvilgossip.NewConnectionLog(connLogPath, 50); err != nil {
+			log.Printf("mesh connection log disabled: %v", err)
+		} else {
+			connLog = cl
+			log.Printf("mesh connection log: %s", connLogPath)
 		}
 		gossipMgr = anvilgossip.NewManager(anvilgossip.ManagerConfig{
 			Wallet:         nodeWallet.Wallet(),
@@ -346,6 +367,7 @@ func main() {
 			OverlayDir:     overlayDir,
 			BondChecker:    bondCheck,
 			LocalPubkeys:   localPKs,
+			ConnectionLog:  connLog,
 			CatchUpTopics:  []string{"anvil:catalog", "mesh:heartbeat", "mesh:blocks"},
 			OnEnvelope: func() func(*envelope.Envelope) {
 				var firstData sync.Once
@@ -513,8 +535,15 @@ func main() {
 		BondChecker:      bondCheck,
 		ExplorerOrigin:   cfg.API.ExplorerOrigin,
 		PublicURL:        cfg.Node.PublicURL,
-		P2PTxSource:      p2pTxFetcher,
-		P2PBlockSource:   p2pBlockFetcher,
+		HeaderSyncStatus: syncer.Stats,
+		SPVProofSource: func() string {
+			if cfg.ARC.Enabled {
+				return "arc+woc-fallback"
+			}
+			return "woc"
+		}(),
+		P2PTxSource:    p2pTxFetcher,
+		P2PBlockSource: p2pBlockFetcher,
 		HeaderLookup: func(height int) string {
 			hash, err := headerStore.HashAtHeight(uint32(height))
 			if err != nil || hash == nil {
@@ -526,6 +555,11 @@ func main() {
 
 	if nodeWallet != nil {
 		nodeWallet.RegisterRoutes(srv.Mux(), srv.RequireAuth)
+	}
+
+	// Wire SSE notifications: mesh-received envelopes push to API subscribers
+	if gossipMgr != nil {
+		gossipMgr.SetOnEnvelopeHook(srv.NotifyEnvelope)
 	}
 
 	// Register BRC-22/24 overlay engine HTTP endpoints
@@ -564,4 +598,3 @@ func main() {
 	fmt.Println()
 	log.Printf("received %v, shutting down", s)
 }
-

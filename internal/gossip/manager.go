@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,14 +56,15 @@ type Manager struct {
 	bondChecker *bond.Checker
 
 	// per-peer gossip rate limiting (loose defaults: 30/s burst 100)
-	peerRates   map[string]*peerRate
-	peerRateMu  sync.Mutex
-	ratePerSec  float64
-	rateBurst   int
+	peerRates  map[string]*peerRate
+	peerRateMu sync.Mutex
+	ratePerSec float64
+	rateBurst  int
 
 	// double-publish detection: identity hash → count of distinct payloads
-	dupCounts  map[string]int
-	dupCountMu sync.Mutex
+	dupCounts   map[string]int
+	dupReported map[string]struct{}
+	dupCountMu  sync.Mutex
 
 	// slash tracking
 	slashTracker *slashTracker
@@ -72,6 +74,7 @@ type Manager struct {
 
 	// local pubkeys exempt from double-publish detection
 	localPubkeys map[string]struct{}
+	connLog      *ConnectionLog
 
 	// activity counters (lock-free atomics — safe to increment under RLock)
 	envsReceived atomic.Int64
@@ -81,10 +84,10 @@ type Manager struct {
 
 // peerRate tracks token-bucket rate limiting for a single peer.
 type peerRate struct {
-	tokens      float64
-	lastSeen    time.Time
-	dropCount   int       // drops since last warn
-	lastWarnAt  time.Time // last spam warning sent
+	tokens     float64
+	lastSeen   time.Time
+	dropCount  int       // drops since last warn
+	lastWarnAt time.Time // last spam warning sent
 }
 
 // OverlayDirectory is the interface for SHIP registration storage.
@@ -101,14 +104,15 @@ type OverlayDirectory interface {
 
 // MeshPeer represents a single authenticated mesh connection.
 type MeshPeer struct {
-	Peer       *auth.Peer
-	IdentityPK *ec.PublicKey
-	Endpoint   string
-	BondSats   int             // verified bond amount in satoshis (0 = not checked)
-	Version    string          // remote node version (from SHIP sync)
-	ConnectedAt time.Time      // when this peer connected
-	origKey    string          // the original map key at insertion time (for cleanup after re-key)
-	closeFunc  func() error   // closes the underlying transport connection
+	Peer        *auth.Peer
+	IdentityPK  *ec.PublicKey
+	Endpoint    string
+	Direction   string
+	BondSats    int          // verified bond amount in satoshis (0 = not checked)
+	Version     string       // remote node version (from SHIP sync)
+	ConnectedAt time.Time    // when this peer connected
+	origKey     string       // the original map key at insertion time (for cleanup after re-key)
+	closeFunc   func() error // closes the underlying transport connection
 }
 
 // ManagerConfig holds configuration for the gossip manager.
@@ -127,7 +131,8 @@ type ManagerConfig struct {
 	// LocalPubkeys are identity pubkey hexes for this node's apps.
 	// Envelopes from these pubkeys skip double-publish detection
 	// (a fast local publisher is not an attack).
-	LocalPubkeys   []string
+	LocalPubkeys  []string
+	ConnectionLog *ConnectionLog
 }
 
 // NewManager creates a gossip manager backed by go-sdk auth.Peer.
@@ -156,12 +161,18 @@ func NewManager(cfg ManagerConfig) *Manager {
 		ratePerSec:     30,  // loose: 30 envelopes/second per peer
 		rateBurst:      100, // burst allowance
 		dupCounts:      make(map[string]int),
+		dupReported:    make(map[string]struct{}),
 		slashTracker:   newSlashTracker(),
 		localPubkeys:   make(map[string]struct{}),
+		connLog:        cfg.ConnectionLog,
 	}
 	m.startedAt = time.Now()
 	m.catchUpTopics = cfg.CatchUpTopics
 	for _, pk := range cfg.LocalPubkeys {
+		pk = strings.ToLower(strings.TrimSpace(pk))
+		if pk == "" {
+			continue
+		}
 		m.localPubkeys[pk] = struct{}{}
 	}
 	return m
@@ -207,7 +218,14 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 					"peer", truncate(pkHex),
 					"endpoint", endpoint,
 					"error", err.Error())
-				m.removePeer(pkHex)
+				m.recordConnectionEvent(ConnectionEvent{
+					Direction: "outbound",
+					Event:     "rejected",
+					Endpoint:  endpoint,
+					Identity:  pkHex,
+					Reason:    err.Error(),
+				})
+				m.removePeerWithReason(pkHex, "bond_rejected")
 				return fmt.Errorf("bond required: %w", err)
 			}
 			m.mu.Lock()
@@ -218,6 +236,9 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 			m.logger.Info("outbound peer bond verified",
 				"peer", truncate(pkHex),
 				"bond_sats", balance)
+		}
+		if needsBondCheck {
+			m.notePeerIdentity(pkHex)
 		}
 
 		return m.handleMessage(pkHex, senderPK, payload)
@@ -231,13 +252,22 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 	m.peers[endpoint] = &MeshPeer{
 		Peer:        peer,
 		Endpoint:    endpoint,
+		Direction:   "outbound",
 		ConnectedAt: time.Now(),
 		origKey:     endpoint,
 		closeFunc:   transport.Close,
 	}
+	peerCount := len(m.peers)
 	m.mu.Unlock()
 
 	m.logger.Info("mesh peer connecting", "endpoint", endpoint)
+	m.recordConnectionEvent(ConnectionEvent{
+		Direction: "outbound",
+		Event:     "connected",
+		Endpoint:  endpoint,
+		PeerCount: peerCount,
+	})
+	m.logLiveDataReady(peerCount)
 
 	// Start the read loop for incoming messages
 	go transport.StartReceive()
@@ -254,7 +284,6 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 	m.requestCatchUp(peer)
 	return nil
 }
-
 
 // BroadcastEnvelope sends an envelope to all interested peers.
 // Called by the API layer when a new envelope is submitted via HTTP.
@@ -308,7 +337,14 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 				m.logger.Warn("peer rejected: insufficient bond",
 					"peer", truncate(pkHex),
 					"error", err.Error())
-				m.removePeer(pkHex)
+				m.recordConnectionEvent(ConnectionEvent{
+					Direction: "inbound",
+					Event:     "rejected",
+					Endpoint:  transport.RemoteAddr(),
+					Identity:  pkHex,
+					Reason:    err.Error(),
+				})
+				m.removePeerWithReason(pkHex, "bond_rejected")
 				return fmt.Errorf("bond required: %w", err)
 			}
 			m.mu.Lock()
@@ -319,6 +355,9 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 			m.logger.Info("peer bond verified",
 				"peer", truncate(pkHex),
 				"bond_sats", balance)
+		}
+		if needsBondCheck {
+			m.notePeerIdentity(pkHex)
 		}
 
 		return m.handleMessage(pkHex, senderPK, payload)
@@ -331,14 +370,23 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 	m.mu.Lock()
 	m.peers[tempKey] = &MeshPeer{
 		Peer:        peer,
-		Endpoint:    "inbound",
+		Endpoint:    transport.RemoteAddr(),
+		Direction:   "inbound",
 		ConnectedAt: time.Now(),
 		origKey:     tempKey,
 		closeFunc:   transport.Close,
 	}
+	peerCount := len(m.peers)
 	m.mu.Unlock()
 
 	m.logger.Info("mesh peer accepted (inbound)")
+	m.recordConnectionEvent(ConnectionEvent{
+		Direction: "inbound",
+		Event:     "connected",
+		Endpoint:  transport.RemoteAddr(),
+		PeerCount: peerCount,
+	})
+	m.logLiveDataReady(peerCount)
 
 	// Start the read loop in a goroutine; when it exits the done channel closes
 	go transport.StartReceive()
@@ -356,17 +404,24 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 // After re-keying (temp key → identity pubkey), the peer's origKey field
 // identifies it unambiguously even with multiple inbound peers.
 func (m *Manager) removePeer(origKey string) {
+	m.removePeerWithReason(origKey, "")
+}
+
+func (m *Manager) removePeerWithReason(origKey, reason string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var event ConnectionEvent
 
 	// Fast path: key hasn't been re-keyed yet
 	if p, ok := m.peers[origKey]; ok {
+		event = m.disconnectEventForPeer(p, reason, len(m.peers)-1)
 		p.Peer.Stop()
 		if p.closeFunc != nil {
 			p.closeFunc()
 		}
 		delete(m.peers, origKey)
 		delete(m.interests, origKey)
+		m.mu.Unlock()
+		m.recordConnectionEvent(event)
 		return
 	}
 
@@ -374,15 +429,19 @@ func (m *Manager) removePeer(origKey string) {
 	// Find it by matching origKey on the MeshPeer struct.
 	for k, p := range m.peers {
 		if p.origKey == origKey {
+			event = m.disconnectEventForPeer(p, reason, len(m.peers)-1)
 			p.Peer.Stop()
 			if p.closeFunc != nil {
 				p.closeFunc()
 			}
 			delete(m.peers, k)
 			delete(m.interests, k)
+			m.mu.Unlock()
+			m.recordConnectionEvent(event)
 			return
 		}
 	}
+	m.mu.Unlock()
 }
 
 // MeshHandler returns an http.Handler that accepts inbound WebSocket
@@ -398,9 +457,22 @@ func (m *Manager) MeshHandler() http.Handler {
 
 		// Block until the connection closes, then clean up the peer.
 		<-transport.Done()
-		m.removePeer(peerKey)
+		m.removePeerWithReason(peerKey, "transport_closed")
 		m.logger.Info("inbound peer disconnected, cleaned up", "key", truncate(peerKey))
 	})
+}
+
+// SetOnEnvelopeHook adds an additional callback invoked for each mesh-received
+// envelope. The existing onEnvelope callback (if any) continues to fire.
+// Used to wire SSE push notifications from the API server.
+func (m *Manager) SetOnEnvelopeHook(fn func(*envelope.Envelope)) {
+	prev := m.onEnvelope
+	m.onEnvelope = func(env *envelope.Envelope) {
+		if prev != nil {
+			prev(env)
+		}
+		fn(env)
+	}
 }
 
 // PeerCount returns the number of connected mesh peers.
@@ -408,178 +480,4 @@ func (m *Manager) PeerCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.peers)
-}
-
-// ConnectSeedWithReconnect connects to a seed peer and automatically
-// reconnects if the connection drops. Blocks until ctx is cancelled.
-// Designed to run in a goroutine per seed peer.
-func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string, interval time.Duration) {
-	for {
-		transport, err := NewWSTransportAdapter(endpoint)
-		if err != nil {
-			m.logger.Warn("seed peer connect failed, retrying",
-				"endpoint", endpoint, "error", err, "retry_in", interval)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(interval):
-				continue
-			}
-		}
-
-		peer := auth.NewPeer(&auth.PeerOptions{
-			Wallet:    m.wallet,
-			Transport: transport,
-		})
-
-		peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
-			pkHex := fmt.Sprintf("%x", senderPK.Compressed())
-
-			m.mu.Lock()
-			needsBondCheck := false
-			if mp, ok := m.peers[endpoint]; ok && mp.IdentityPK == nil {
-				mp.IdentityPK = senderPK
-				m.peers[pkHex] = mp
-				delete(m.peers, endpoint)
-				needsBondCheck = true
-			}
-			m.mu.Unlock()
-
-			if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
-				balance, err := m.bondChecker.VerifyBond(senderPK)
-				if err != nil {
-					m.logger.Warn("outbound peer rejected: insufficient bond",
-						"peer", truncate(pkHex),
-						"endpoint", endpoint,
-						"error", err.Error())
-					m.removePeer(pkHex)
-					return fmt.Errorf("bond required: %w", err)
-				}
-				m.mu.Lock()
-				if mp, ok := m.peers[pkHex]; ok {
-					mp.BondSats = balance
-				}
-				m.mu.Unlock()
-				m.logger.Info("outbound peer bond verified",
-					"peer", truncate(pkHex),
-					"bond_sats", balance)
-			}
-
-			return m.handleMessage(pkHex, senderPK, payload)
-		})
-
-		if err := peer.Start(); err != nil {
-			m.logger.Warn("seed peer start failed, retrying",
-				"endpoint", endpoint, "error", err, "retry_in", interval)
-			transport.Close()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(interval):
-				continue
-			}
-		}
-
-		m.mu.Lock()
-		m.peers[endpoint] = &MeshPeer{
-			Peer:        peer,
-			Endpoint:    endpoint,
-			ConnectedAt: time.Now(),
-			origKey:     endpoint,
-			closeFunc:   transport.Close,
-		}
-		m.mu.Unlock()
-
-		m.logger.Info("seed peer connected", "endpoint", endpoint)
-
-		go transport.StartReceive()
-
-		if err := m.announceInterests(peer); err != nil {
-			m.logger.Warn("seed peer interest announce failed", "endpoint", endpoint, "error", err)
-		}
-		m.announceSHIP(peer)
-		m.requestCatchUp(peer)
-
-		// Wait for connection to drop or context cancel
-		select {
-		case <-transport.Done():
-			m.removePeer(endpoint)
-			m.logger.Warn("seed peer disconnected, reconnecting",
-				"endpoint", endpoint, "retry_in", interval)
-		case <-ctx.Done():
-			m.removePeer(endpoint)
-			return
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(interval):
-		}
-	}
-}
-
-// Stop gracefully disconnects all peers, closing their transport connections.
-func (m *Manager) Stop() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, peer := range m.peers {
-		if peer.Peer != nil {
-			peer.Peer.Stop()
-		}
-		if peer.closeFunc != nil {
-			peer.closeFunc()
-		}
-	}
-	m.peers = make(map[string]*MeshPeer)
-}
-
-// allowPeerMessage checks if a peer is within gossip rate limits.
-// Returns true if allowed, false if rate-limited (drop silently).
-// After 50 drops in under a minute, broadcasts a gossip spam warning.
-func (m *Manager) allowPeerMessage(peerPK string) bool {
-	m.peerRateMu.Lock()
-	defer m.peerRateMu.Unlock()
-
-	now := time.Now()
-	pr, ok := m.peerRates[peerPK]
-	if !ok {
-		m.peerRates[peerPK] = &peerRate{tokens: float64(m.rateBurst) - 1, lastSeen: now}
-		return true
-	}
-
-	// Refill tokens
-	elapsed := now.Sub(pr.lastSeen).Seconds()
-	pr.tokens += elapsed * m.ratePerSec
-	if pr.tokens > float64(m.rateBurst) {
-		pr.tokens = float64(m.rateBurst)
-	}
-	pr.lastSeen = now
-
-	if pr.tokens < 1 {
-		pr.dropCount++
-		// Escalate after sustained violation: 200 drops (generous for reconnect bursts),
-		// max one warning per 10 minutes
-		if pr.dropCount >= 200 && now.Sub(pr.lastWarnAt) > 10*time.Minute {
-			pr.dropCount = 0
-			pr.lastWarnAt = now
-			// Release lock before broadcasting (broadcastSlashWarning acquires its own locks)
-			m.peerRateMu.Unlock()
-			m.logger.Warn("gossip spam detected, sending warning",
-				"peer", truncate(peerPK), "drops", 200)
-			m.broadcastSlashWarning(peerPK, SlashGossipSpam,
-				"sustained rate limit violation (200+ drops)")
-			m.peerRateMu.Lock()
-		}
-		return false
-	}
-	pr.tokens--
-	return true
-}
-
-func truncate(s string) string {
-	if len(s) > 16 {
-		return s[:16] + "..."
-	}
-	return s
 }

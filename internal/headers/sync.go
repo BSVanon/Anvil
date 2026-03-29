@@ -3,6 +3,7 @@ package headers
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/p2p"
@@ -27,6 +28,18 @@ type Syncer struct {
 	store   *Store
 	network wire.BitcoinNet
 	logger  *slog.Logger
+
+	mu    sync.RWMutex
+	stats SyncStats
+}
+
+// SyncStats is a snapshot of the most recent header sync attempt.
+type SyncStats struct {
+	LastSource    string `json:"last_source,omitempty"`
+	LastAttemptAt string `json:"last_attempt_at,omitempty"`
+	LastSuccessAt string `json:"last_success_at,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
+	LastTip       uint32 `json:"last_tip,omitempty"`
 }
 
 // NewSyncer creates a header syncer.
@@ -41,13 +54,21 @@ func NewSyncer(store *Store, network wire.BitcoinNet, logger *slog.Logger) *Sync
 // SyncFrom connects to the given address and syncs headers to the chain tip.
 // Returns the final height reached.
 func (s *Syncer) SyncFrom(address string) (uint32, error) {
+	s.recordAttempt(address)
 	peer, err := p2p.Connect(address, s.network, s.logger)
 	if err != nil {
+		s.recordFailure(address, err)
 		return 0, err
 	}
 	defer peer.Close()
 
-	return s.SyncWith(peer)
+	tip, err := s.SyncWith(peer)
+	if err != nil {
+		s.recordFailure(address, err)
+		return 0, err
+	}
+	s.recordSuccess(address, tip)
+	return tip, nil
 }
 
 // SyncWith syncs headers using the given peer (useful for testing with mock peers).
@@ -96,6 +117,41 @@ func (s *Syncer) SyncWith(peer HeaderPeer) (uint32, error) {
 		"synced", finalTip-startHeight,
 	)
 	return finalTip, nil
+}
+
+func (s *Syncer) Stats() SyncStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stats
+}
+
+func (s *Syncer) recordAttempt(source string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stats.LastSource = source
+	s.stats.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
+	s.stats.LastError = ""
+}
+
+func (s *Syncer) recordSuccess(source string, tip uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC().Format(time.RFC3339)
+	s.stats.LastSource = source
+	s.stats.LastAttemptAt = now
+	s.stats.LastSuccessAt = now
+	s.stats.LastError = ""
+	s.stats.LastTip = tip
+}
+
+func (s *Syncer) recordFailure(source string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stats.LastSource = source
+	s.stats.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
+	if err != nil {
+		s.stats.LastError = err.Error()
+	}
 }
 
 // buildLocator creates a block locator hash list from the current chain.

@@ -203,13 +203,14 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 		return nil
 	}
 
-	hash := envelope.HashEnvelope(env.Topic, env.Pubkey, env.Payload, env.Timestamp)
+	pubkey := strings.ToLower(env.Pubkey)
+	hash := envelope.HashEnvelope(env.Topic, pubkey, env.Payload, env.Timestamp)
 	// Double-publish detection: same (topic, pubkey, timestamp) with 3+ different payloads.
 	// Allows fast legitimate updates (e.g. oracle correcting a price within same second)
 	// but catches genuine conflicting-view attacks.
 	// Skip for local pubkeys — a fast local publisher (e.g. SendBSV-Rates) is not an attack.
-	_, isLocal := m.localPubkeys[env.Pubkey]
-	identityHash := envelope.HashEnvelope(env.Topic, env.Pubkey, "", env.Timestamp)
+	_, isLocal := m.localPubkeys[pubkey]
+	identityHash := envelope.HashEnvelope(env.Topic, pubkey, "", env.Timestamp)
 	m.seenMu.Lock()
 	if _, seen := m.seen[hash]; seen {
 		m.seenMu.Unlock()
@@ -219,14 +220,18 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 		m.dupCountMu.Lock()
 		m.dupCounts[identityHash]++
 		count := m.dupCounts[identityHash]
+		_, alreadyReported := m.dupReported[identityHash]
+		if count >= 2 && !alreadyReported {
+			m.dupReported[identityHash] = struct{}{}
+		}
 		m.dupCountMu.Unlock()
 		// count tracks additional payloads beyond the first.
 		// count >= 2 means 3+ total distinct payloads (1 original + 2 more).
-		if count >= 2 {
+		if count >= 2 && !alreadyReported {
 			m.seenMu.Unlock()
 			m.logger.Warn("DOUBLE PUBLISH detected (3+ conflicting payloads)",
-				"topic", env.Topic, "pubkey", truncate(env.Pubkey), "count", count)
-			m.broadcastSlashWarning(env.Pubkey, SlashDoublePublish,
+				"topic", env.Topic, "pubkey", truncate(pubkey), "count", count)
+			m.broadcastSlashWarning(pubkey, SlashDoublePublish,
 				"3+ different payloads for same topic+pubkey+timestamp")
 			return nil
 		}

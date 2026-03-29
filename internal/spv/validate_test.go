@@ -219,3 +219,18 @@ func TestValidatorCreation(t *testing.T) {
 		t.Fatal("expected non-nil validator")
 	}
 }
+
+func TestValidatorStatsTrackFailures(t *testing.T) {
+	v := NewValidator(&gullibleTracker{})
+
+	if _, err := v.ValidateBEEF(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	stats := v.Stats()
+	if stats.Total != 1 || stats.Invalid != 1 {
+		t.Fatalf("expected 1 invalid validation, got total=%d invalid=%d", stats.Total, stats.Invalid)
+	}
+	if stats.FailureByReason["empty_input"] != 1 {
+		t.Fatalf("expected empty_input failure count, got %+v", stats.FailureByReason)
+	}
+}

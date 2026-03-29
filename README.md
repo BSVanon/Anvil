@@ -63,6 +63,7 @@ const data = await anvil.query('oracle:rates:bsv');
 | [Publish](docs/PUBLISH.md) | Data envelopes, signing, topics, mesh gossip |
 | [Earn](docs/EARN.md) | Payment models, x402 flow, monetization |
 | [Discover](docs/DISCOVER.md) | Machine economy, automated discovery, AI agents |
+| [Add Your App](docs/ADD_YOUR_APP.md) | 5-minute path from app to live mesh publisher |
 | [App Integration](docs/APP_INTEGRATION.md) | Step-by-step guide for connecting your app |
 | [Mesh Peering](docs/MESH_PEERING.md) | Bonds, node names, overlay discovery |
 | [API Reference](docs/API_REFERENCE.md) | All endpoints, auth methods, response formats |

@@ -40,7 +40,7 @@ func TestSlashTrackerGracePeriod(t *testing.T) {
 	}
 }
 
-func TestSlashDoublePublishImmediate(t *testing.T) {
+func TestSlashDoublePublishRequiresCorroboration(t *testing.T) {
 	st := newSlashTracker()
 
 	w := SlashWarningPayload{
@@ -51,9 +51,55 @@ func TestSlashDoublePublishImmediate(t *testing.T) {
 		Timestamp: time.Now().Unix(),
 	}
 
-	// Double-publish is immediate — even from a single reporter
+	if st.addWarning(w) {
+		t.Fatal("single-reporter double-publish should not deregister")
+	}
+
+	w.Reporter = "peer-2"
+	w.Timestamp++
 	if !st.addWarning(w) {
-		t.Fatal("double-publish should trigger immediate deregistration")
+		t.Fatal("double-publish should deregister after corroboration from a second reporter")
+	}
+}
+
+func TestSlashMixedReasonsDoNotCrossContaminate(t *testing.T) {
+	st := newSlashTracker()
+
+	// One gossip_spam warning from reporter-1
+	spam := SlashWarningPayload{
+		Target:    "peer-mixed",
+		Reason:    SlashGossipSpam,
+		Reporter:  "reporter-1",
+		Timestamp: time.Now().Unix(),
+	}
+	if st.addWarning(spam) {
+		t.Fatal("single spam warning should not deregister")
+	}
+
+	// One double_publish warning from reporter-2 — different reason, different reporter
+	dp := SlashWarningPayload{
+		Target:    "peer-mixed",
+		Reason:    SlashDoublePublish,
+		Reporter:  "reporter-2",
+		Evidence:  "conflicting payloads",
+		Timestamp: time.Now().Unix(),
+	}
+	// This should NOT deregister: only 1 double_publish warning from 1 reporter,
+	// even though there are 2 total warnings from 2 unique reporters.
+	if st.addWarning(dp) {
+		t.Fatal("mixed reasons should not cross-contaminate: 1 spam + 1 double_publish should not trigger deregistration")
+	}
+
+	// Second double_publish from a third reporter — now 2 double_publish from 2 reporters
+	dp2 := SlashWarningPayload{
+		Target:    "peer-mixed",
+		Reason:    SlashDoublePublish,
+		Reporter:  "reporter-3",
+		Evidence:  "conflicting payloads",
+		Timestamp: time.Now().Unix() + 1,
+	}
+	if !st.addWarning(dp2) {
+		t.Fatal("2 double_publish from 2 reporters should deregister")
 	}
 }
 

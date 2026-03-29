@@ -21,26 +21,29 @@ import (
 
 // Server is the Anvil REST API server.
 type Server struct {
-	headerStore   *headers.Store
-	proofStore    *spv.ProofStore
-	envelopeStore *envelope.Store
-	overlayDir    *overlay.Directory
-	validator     *spv.Validator
-	broadcaster   *txrelay.Broadcaster
-	gossipMgr     *gossip.Manager
-	rateLimiter   *RateLimiter
-	paymentGate   *PaymentGate
-	tokenGate     *TokenGate
-	logger        *slog.Logger
-	mux           *http.ServeMux
-	authToken     string
-	nodeName      string
-	identityPub    string
-	bondChecker     *bond.Checker
-	contentServer   *content.Server
-	explorerOrigin  string
-	publicURL       string // HTTPS public URL — used for /app/ redirects so wallet connections work
-	meshTopicCache  *topicCache
+	headerStore      *headers.Store
+	proofStore       *spv.ProofStore
+	envelopeStore    *envelope.Store
+	overlayDir       *overlay.Directory
+	validator        *spv.Validator
+	broadcaster      *txrelay.Broadcaster
+	gossipMgr        *gossip.Manager
+	rateLimiter      *RateLimiter
+	paymentGate      *PaymentGate
+	tokenGate        *TokenGate
+	logger           *slog.Logger
+	mux              *http.ServeMux
+	authToken        string
+	nodeName         string
+	identityPub      string
+	bondChecker      *bond.Checker
+	contentServer    *content.Server
+	explorerOrigin   string
+	publicURL        string // HTTPS public URL — used for /app/ redirects so wallet connections work
+	meshTopicCache   *topicCache
+	headerSyncStatus func() headers.SyncStats
+	spvProofSource   string
+	sseHub           *envelopeHub
 }
 
 // ServerConfig holds all parameters for NewServer.
@@ -74,6 +77,8 @@ type ServerConfig struct {
 	HeaderLookup     func(int) string
 	ExplorerOrigin   string // fallback content_origin for /explorer when catalog is empty
 	PublicURL        string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
+	HeaderSyncStatus func() headers.SyncStats
+	SPVProofSource   string
 }
 
 // NewServer creates a new REST API server.
@@ -101,26 +106,29 @@ func NewServer(cfg ServerConfig) *Server {
 		logger = slog.Default()
 	}
 	s := &Server{
-		headerStore:   cfg.HeaderStore,
-		proofStore:    cfg.ProofStore,
-		envelopeStore: cfg.EnvelopeStore,
-		overlayDir:    cfg.OverlayDir,
-		validator:     cfg.Validator,
-		broadcaster:   cfg.Broadcaster,
-		gossipMgr:     cfg.GossipMgr,
-		rateLimiter:   rl,
-		paymentGate:   pg,
-		tokenGate:     tg,
-		logger:        logger,
-		mux:           http.NewServeMux(),
-		authToken:     cfg.AuthToken,
-		nodeName:      cfg.NodeName,
-		identityPub:    cfg.IdentityPub,
-		bondChecker:    cfg.BondChecker,
-		contentServer:   content.NewServer("", cfg.P2PTxSource, cfg.P2PBlockSource, cfg.HeaderLookup),
-		explorerOrigin:  cfg.ExplorerOrigin,
-		publicURL:       strings.TrimRight(cfg.PublicURL, "/"),
-		meshTopicCache:  newTopicCache(10 * time.Second),
+		headerStore:      cfg.HeaderStore,
+		proofStore:       cfg.ProofStore,
+		envelopeStore:    cfg.EnvelopeStore,
+		overlayDir:       cfg.OverlayDir,
+		validator:        cfg.Validator,
+		broadcaster:      cfg.Broadcaster,
+		gossipMgr:        cfg.GossipMgr,
+		rateLimiter:      rl,
+		paymentGate:      pg,
+		tokenGate:        tg,
+		logger:           logger,
+		mux:              http.NewServeMux(),
+		authToken:        cfg.AuthToken,
+		nodeName:         cfg.NodeName,
+		identityPub:      cfg.IdentityPub,
+		bondChecker:      cfg.BondChecker,
+		contentServer:    content.NewServer("", cfg.P2PTxSource, cfg.P2PBlockSource, cfg.HeaderLookup),
+		explorerOrigin:   cfg.ExplorerOrigin,
+		publicURL:        strings.TrimRight(cfg.PublicURL, "/"),
+		meshTopicCache:   newTopicCache(10 * time.Second),
+		headerSyncStatus: cfg.HeaderSyncStatus,
+		spvProofSource:   cfg.SPVProofSource,
+		sseHub:           newEnvelopeHub(),
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -141,6 +149,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /headers/tip", s.openRead(s.handleHeadersTip))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
 	s.mux.HandleFunc("GET /data", s.openRead(s.handleQueryData))
+	s.mux.HandleFunc("GET /data/subscribe", s.openRead(s.handleSubscribe))
+	s.mux.HandleFunc("DELETE /data", s.requireAuth(s.handleDeleteData))
 	s.mux.HandleFunc("GET /overlay/lookup", s.openRead(s.handleOverlayLookup))
 
 	// Always register x402 discovery — shows pricing even when free (price=0).
@@ -188,7 +198,7 @@ func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
 func cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -302,8 +312,8 @@ func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
 
 	if s.bondChecker != nil && s.bondChecker.Required() {
 		result["bond"] = map[string]interface{}{
-			"required":  true,
-			"min_sats":  s.bondChecker.MinSats(),
+			"required": true,
+			"min_sats": s.bondChecker.MinSats(),
 		}
 	} else {
 		result["bond"] = map[string]interface{}{
@@ -341,10 +351,10 @@ func (s *Server) handleX402Info(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := map[string]interface{}{
-		"version":  "0.1",
-		"protocol": "anvil-x402",
-		"network":  "bsv-mainnet",
-		"node":     s.nodeName,
+		"version":   "0.1",
+		"protocol":  "anvil-x402",
+		"network":   "bsv-mainnet",
+		"node":      s.nodeName,
 		"endpoints": endpoints,
 		"payment": map[string]interface{}{
 			"settlement":    "BSV",
@@ -356,7 +366,7 @@ func (s *Server) handleX402Info(w http.ResponseWriter, r *http.Request) {
 			"discovery": "/.well-known/x402",
 		},
 		"authentication": map[string]interface{}{
-			"method":      "BRC-31 mutual auth via auth.Peer",
+			"method":         "BRC-31 mutual auth via auth.Peer",
 			"key_derivation": "BRC-42",
 		},
 	}
@@ -424,10 +434,10 @@ func (s *Server) handleAnvilManifest(w http.ResponseWriter, r *http.Request) {
 	if s.envelopeStore != nil {
 		for topic, count := range s.envelopeStore.Topics() {
 			cap := map[string]interface{}{
-				"type":        "data-feed",
-				"topic":       topic,
-				"envelopes":   count,
-				"access":      "GET /data?topic=" + topic,
+				"type":      "data-feed",
+				"topic":     topic,
+				"envelopes": count,
+				"access":    "GET /data?topic=" + topic,
 			}
 			if s.paymentGate != nil && s.paymentGate.priceForPath("/data") > 0 {
 				cap["payment"] = "HTTP-402"
@@ -547,6 +557,12 @@ func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) Handler() http.Handler { return s.mux }
+
+// NotifyEnvelope pushes an envelope to all SSE subscribers on its topic.
+// Called by the gossip onEnvelope callback for mesh-received envelopes.
+func (s *Server) NotifyEnvelope(env *envelope.Envelope) {
+	s.sseHub.notify(env)
+}
 func (s *Server) Mux() *http.ServeMux   { return s.mux }
 
 func (s *Server) RequireAuth(next http.HandlerFunc) http.HandlerFunc {

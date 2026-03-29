@@ -3,6 +3,8 @@ package spv
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/chaintracker"
@@ -31,11 +33,31 @@ type Result struct {
 // Validator verifies BEEF-encoded transactions against a local header chain.
 type Validator struct {
 	tracker chaintracker.ChainTracker
+
+	mu    sync.Mutex
+	stats ValidationStats
+}
+
+// ValidationStats captures operator-visible SPV verification metrics.
+type ValidationStats struct {
+	Total           int64            `json:"total"`
+	Valid           int64            `json:"valid"`
+	Invalid         int64            `json:"invalid"`
+	LastValidatedAt string           `json:"last_validated_at,omitempty"`
+	LastError       string           `json:"last_error,omitempty"`
+	ByConfidence    map[string]int64 `json:"by_confidence,omitempty"`
+	FailureByReason map[string]int64 `json:"failure_by_reason,omitempty"`
 }
 
 // NewValidator creates an SPV validator backed by the given ChainTracker.
 func NewValidator(tracker chaintracker.ChainTracker) *Validator {
-	return &Validator{tracker: tracker}
+	return &Validator{
+		tracker: tracker,
+		stats: ValidationStats{
+			ByConfidence:    make(map[string]int64),
+			FailureByReason: make(map[string]int64),
+		},
+	}
 }
 
 // ValidateBEEF parses a BEEF binary and verifies all merkle proofs against
@@ -49,31 +71,37 @@ func NewValidator(tracker chaintracker.ChainTracker) *Validator {
 //   - invalid: BEEF failed structural or proof validation
 func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, error) {
 	if len(beef) == 0 {
-		return &Result{
+		result := &Result{
 			Valid:      false,
 			Confidence: ConfidenceInvalid,
 			Message:    "empty BEEF input",
-		}, nil
+		}
+		v.recordResult(result, "empty_input")
+		return result, nil
 	}
 
 	// Parse the full Beef structure — go-sdk handles all BEEF versions
 	b, err := transaction.NewBeefFromBytes(beef)
 	if err != nil {
-		return &Result{
+		result := &Result{
 			Valid:      false,
 			Confidence: ConfidenceInvalid,
 			Message:    fmt.Sprintf("parse BEEF: %v", err),
-		}, nil
+		}
+		v.recordResult(result, "parse_beef")
+		return result, nil
 	}
 
 	// Parse the final transaction for its txid
 	tx, err := transaction.NewTransactionFromBEEF(beef)
 	if err != nil {
-		return &Result{
+		result := &Result{
 			Valid:      false,
 			Confidence: ConfidenceInvalid,
 			Message:    fmt.Sprintf("parse transaction from BEEF: %v", err),
-		}, nil
+		}
+		v.recordResult(result, "parse_transaction")
+		return result, nil
 	}
 	txid := tx.TxID().String()
 
@@ -81,12 +109,14 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 
 	if totalBumps == 0 {
 		// No merkle proofs at all — fully unconfirmed
-		return &Result{
+		result := &Result{
 			Valid:      true,
 			TxID:       txid,
 			Confidence: ConfidenceUnconfirmed,
 			Message:    "no merkle proofs in BEEF — fully unconfirmed ancestry",
-		}, nil
+		}
+		v.recordResult(result, "")
+		return result, nil
 	}
 
 	// Use go-sdk's Beef.Verify() — it walks all BUMPs, computes roots,
@@ -94,21 +124,25 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 	// path walking.
 	valid, err := b.Verify(ctx, v.tracker, false)
 	if err != nil {
-		return &Result{
+		result := &Result{
 			Valid:      false,
 			TxID:       txid,
 			Confidence: ConfidenceInvalid,
 			Message:    fmt.Sprintf("BEEF verification: %v", err),
-		}, nil
+		}
+		v.recordResult(result, "verify_error")
+		return result, nil
 	}
 
 	if !valid {
-		return &Result{
+		result := &Result{
 			Valid:      false,
 			TxID:       txid,
 			Confidence: ConfidenceInvalid,
 			Message:    "merkle proofs did not verify against local header chain",
-		}, nil
+		}
+		v.recordResult(result, "root_mismatch")
+		return result, nil
 	}
 
 	// All BUMPs verified. Classify confidence by how much of the
@@ -116,21 +150,66 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 	totalTxs := len(b.Transactions)
 	if totalBumps >= totalTxs-1 {
 		// All ancestor txs have proofs (minus the top-level unconfirmed tx)
-		return &Result{
+		result := &Result{
 			Valid:      true,
 			TxID:       txid,
 			Confidence: ConfidenceSPVVerified,
 			Message:    fmt.Sprintf("all %d merkle proofs verified against local headers", totalBumps),
-		}, nil
+		}
+		v.recordResult(result, "")
+		return result, nil
 	}
 
 	// Some txs in the ancestry lack proofs
-	return &Result{
+	result := &Result{
 		Valid:      true,
 		TxID:       txid,
 		Confidence: ConfidencePartiallyVerified,
 		Message:    fmt.Sprintf("%d merkle proofs verified, %d ancestor txs unconfirmed", totalBumps, totalTxs-1-totalBumps),
-	}, nil
+	}
+	v.recordResult(result, "")
+	return result, nil
+}
+
+func (v *Validator) Stats() ValidationStats {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	stats := v.stats
+	stats.ByConfidence = cloneCountMap(v.stats.ByConfidence)
+	stats.FailureByReason = cloneCountMap(v.stats.FailureByReason)
+	return stats
+}
+
+func (v *Validator) recordResult(result *Result, failureReason string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	v.stats.Total++
+	v.stats.LastValidatedAt = time.Now().UTC().Format(time.RFC3339)
+	v.stats.ByConfidence[result.Confidence]++
+	if result.Valid {
+		v.stats.Valid++
+		v.stats.LastError = ""
+		return
+	}
+
+	v.stats.Invalid++
+	v.stats.LastError = result.Message
+	if failureReason != "" {
+		v.stats.FailureByReason[failureReason]++
+	}
+}
+
+func cloneCountMap(in map[string]int64) map[string]int64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // classifyConfidence is used by tests to verify the classification logic

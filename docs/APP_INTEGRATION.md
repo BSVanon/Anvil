@@ -2,6 +2,8 @@
 
 How to connect your app to an Anvil node.
 
+If you want the shortest path instead of the full protocol walkthrough, start with [Add Your App To The Mesh](ADD_YOUR_APP.md).
+
 ---
 
 ## The short version

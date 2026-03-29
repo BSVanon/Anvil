@@ -68,6 +68,7 @@ const answer = await anvil.overlayLookup('ls_uhrp', { content_hash: 'sha256-hex.
 
 ## Links
 
+- [Example: mesh hello](examples/mesh-hello.ts)
 - [Anvil](https://github.com/BSVanon/Anvil) — the node
 - [Anvil Explorer](https://github.com/BSVanon/Anvil-Explorer) — the dashboard
 - [@SendBSV](https://x.com/SendBSV)

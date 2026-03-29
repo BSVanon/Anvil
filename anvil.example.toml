@@ -15,6 +15,11 @@ api_listen = "0.0.0.0:9333"      # REST API — HTTPS when TLS configured
 seeds = [
   # "wss://peer1.example.com:8333",
 ]
+# local_pubkeys = [
+#   "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+# ]
+# Use local_pubkeys for fast local publishers that should not trigger
+# double-publish slashing on this node (for example, a local oracle feed).
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333"]

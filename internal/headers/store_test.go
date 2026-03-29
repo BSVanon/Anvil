@@ -3,6 +3,7 @@ package headers
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"os"
@@ -404,6 +405,34 @@ func TestSyncWithMockPeer(t *testing.T) {
 	}
 	if s.Tip() != 5 {
 		t.Fatalf("store tip should be 5, got %d", s.Tip())
+	}
+}
+
+func TestSyncerStatsRecordSuccessAndFailure(t *testing.T) {
+	s := tmpStore(t)
+	logger := testLogger()
+	syncer := NewSyncer(s, wire.TestNet3, logger)
+
+	syncer.recordAttempt("seed-a")
+	syncer.recordFailure("seed-a", fmt.Errorf("dial failed"))
+	stats := syncer.Stats()
+	if stats.LastSource != "seed-a" {
+		t.Fatalf("expected last source seed-a, got %q", stats.LastSource)
+	}
+	if stats.LastError == "" {
+		t.Fatal("expected last error after failed attempt")
+	}
+
+	syncer.recordSuccess("seed-b", 123)
+	stats = syncer.Stats()
+	if stats.LastSource != "seed-b" {
+		t.Fatalf("expected last source seed-b, got %q", stats.LastSource)
+	}
+	if stats.LastTip != 123 {
+		t.Fatalf("expected last tip 123, got %d", stats.LastTip)
+	}
+	if stats.LastSuccessAt == "" {
+		t.Fatal("expected last success timestamp")
 	}
 }
 

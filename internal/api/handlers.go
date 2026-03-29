@@ -12,87 +12,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
-	"github.com/BSVanon/Anvil/internal/version"
 )
-
-// --- Status & Headers ---
-
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	tip := s.headerStore.Tip()
-	work := s.headerStore.Work()
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"node":    s.nodeName,
-		"version": version.Version,
-		"headers": map[string]interface{}{
-			"height": tip,
-			"work":   work.String(),
-		},
-	})
-}
-
-func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	tip := s.headerStore.Tip()
-	work := s.headerStore.Work()
-
-	stats := map[string]interface{}{
-		"node":    s.nodeName,
-		"version": version.Version,
-		"headers": map[string]interface{}{
-			"height": tip,
-			"work":   work.String(),
-		},
-	}
-
-	if s.envelopeStore != nil {
-		stats["envelopes"] = map[string]interface{}{
-			"ephemeral": s.envelopeStore.CountEphemeral(),
-			"durable":   s.envelopeStore.CountDurable(),
-			"topics":    s.envelopeStore.Topics(),
-		}
-	}
-
-	if s.gossipMgr != nil {
-		stats["mesh"] = map[string]interface{}{
-			"peers":     s.gossipMgr.PeerCount(),
-			"peer_list": s.gossipMgr.PeerList(),
-		}
-	}
-
-	if s.overlayDir != nil {
-		stats["overlay"] = map[string]interface{}{
-			"ship_count": s.overlayDir.CountSHIP(),
-		}
-	}
-
-	if s.bondChecker != nil && s.bondChecker.Required() {
-		stats["bond"] = map[string]interface{}{
-			"required": true,
-			"min_sats": s.bondChecker.MinSats(),
-		}
-	}
-
-	if s.gossipMgr != nil {
-		warnings := s.gossipMgr.SlashWarnings()
-		if len(warnings) > 0 {
-			stats["slash_warnings"] = warnings
-		}
-	}
-
-	writeJSON(w, http.StatusOK, stats)
-}
-
-func (s *Server) handleHeadersTip(w http.ResponseWriter, r *http.Request) {
-	tip := s.headerStore.Tip()
-	hash, err := s.headerStore.HashAtHeight(tip)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get tip hash")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"height": tip,
-		"hash":   hash.String(),
-	})
-}
 
 // --- BEEF ---
 
@@ -246,6 +166,9 @@ func (s *Server) handlePostData(w http.ResponseWriter, r *http.Request) {
 		s.gossipMgr.BroadcastEnvelope(env)
 	}
 
+	// Notify SSE subscribers (local POST)
+	s.sseHub.notify(env)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"accepted": true,
 		"topic":    env.Topic,
@@ -274,10 +197,26 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var since int64
+	if s := r.URL.Query().Get("since"); s != "" {
+		fmt.Sscanf(s, "%d", &since)
+	}
+
 	envs, err := s.envelopeStore.QueryByTopic(topic, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query error: %v", err))
 		return
+	}
+
+	// Filter by timestamp if since is set (results are newest-first)
+	if since > 0 {
+		filtered := envs[:0]
+		for _, env := range envs {
+			if env.Timestamp > since {
+				filtered = append(filtered, env)
+			}
+		}
+		envs = filtered
 	}
 
 	// Redact paid payloads for unauthenticated requests.
@@ -303,6 +242,36 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		"topic":     topic,
 		"count":     len(responseEnvs),
 		"envelopes": responseEnvs,
+	})
+}
+
+func (s *Server) handleDeleteData(w http.ResponseWriter, r *http.Request) {
+	if s.envelopeStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "envelope store not configured")
+		return
+	}
+
+	topic := r.URL.Query().Get("topic")
+	key := r.URL.Query().Get("key")
+	if topic == "" || key == "" {
+		writeError(w, http.StatusBadRequest, "topic and key required (query params)")
+		return
+	}
+
+	deleted, err := s.envelopeStore.Delete(topic, key)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("delete error: %v", err))
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusNotFound, "envelope not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"deleted": true,
+		"topic":   topic,
+		"key":     key,
 	})
 }
 
