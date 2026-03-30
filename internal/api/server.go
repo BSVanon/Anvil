@@ -14,6 +14,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
+	"github.com/BSVanon/Anvil/internal/mempool"
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
@@ -44,6 +45,7 @@ type Server struct {
 	headerSyncStatus func() headers.SyncStats
 	spvProofSource   string
 	sseHub           *envelopeHub
+	watcher          *mempool.Watcher
 }
 
 // ServerConfig holds all parameters for NewServer.
@@ -79,6 +81,7 @@ type ServerConfig struct {
 	PublicURL        string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
 	HeaderSyncStatus func() headers.SyncStats
 	SPVProofSource   string
+	Watcher          *mempool.Watcher
 }
 
 // NewServer creates a new REST API server.
@@ -129,6 +132,7 @@ func NewServer(cfg ServerConfig) *Server {
 		headerSyncStatus: cfg.HeaderSyncStatus,
 		spvProofSource:   cfg.SPVProofSource,
 		sseHub:           newEnvelopeHub(),
+		watcher:          cfg.Watcher,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -166,6 +170,13 @@ func (s *Server) routes() {
 	}))
 	s.mux.HandleFunc("POST /bootstrap/block/{blockHash}", s.requireAuth(s.contentServer.BootstrapBlock))
 	s.mux.HandleFunc("GET /content/{origin}", s.openRead(s.contentServer.ServeContent))
+
+	// Address watching (mempool)
+	s.mux.HandleFunc("POST /mempool/watch", s.requireAuth(s.handleAddWatch))
+	s.mux.HandleFunc("DELETE /mempool/watch", s.requireAuth(s.handleRemoveWatch))
+	s.mux.HandleFunc("GET /mempool/watch", s.openRead(s.handleListWatch))
+	s.mux.HandleFunc("GET /mempool/watch/history", s.openRead(s.handleWatchHistory))
+	s.mux.HandleFunc("GET /mempool/watch/subscribe", s.openRead(s.handleWatchSubscribe))
 
 	s.mux.HandleFunc("POST /broadcast", s.requireAuth(s.handleBroadcast))
 	// POST /data accepts bearer auth OR x402 payment (if payment gate exists).
