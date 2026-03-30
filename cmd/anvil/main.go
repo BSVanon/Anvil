@@ -492,6 +492,7 @@ func main() {
 			}
 			return nil
 		}(),
+		ProofFetcher:   spv.NewProofFetcher(arcClient, logger),
 		P2PTxSource:    p2pTxFetcher,
 		P2PBlockSource: p2pBlockFetcher,
 		HeaderLookup: func(height int) string {

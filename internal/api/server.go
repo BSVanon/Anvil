@@ -46,6 +46,7 @@ type Server struct {
 	spvProofSource   string
 	sseHub           *envelopeHub
 	watcher          *mempool.Watcher
+	proofFetcher     *spv.ProofFetcher
 }
 
 // ServerConfig holds all parameters for NewServer.
@@ -82,6 +83,7 @@ type ServerConfig struct {
 	HeaderSyncStatus func() headers.SyncStats
 	SPVProofSource   string
 	Watcher          *mempool.Watcher
+	ProofFetcher     *spv.ProofFetcher
 }
 
 // NewServer creates a new REST API server.
@@ -133,6 +135,7 @@ func NewServer(cfg ServerConfig) *Server {
 		spvProofSource:   cfg.SPVProofSource,
 		sseHub:           newEnvelopeHub(),
 		watcher:          cfg.Watcher,
+		proofFetcher:     cfg.ProofFetcher,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
