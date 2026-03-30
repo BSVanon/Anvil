@@ -16,7 +16,12 @@ import (
 
 // --- BEEF ---
 
-// handleGetBEEF serves a stored transaction as a complete BEEF envelope.
+// handleGetBEEF serves a transaction as a complete BEEF envelope.
+// First checks the local proof store cache. On cache miss, fetches the raw
+// transaction and merkle proof from external sources (ARC/WhatsOnChain),
+// builds Atomic BEEF, validates against local headers, caches the result,
+// and returns it. Returns 404 only if the tx is genuinely unconfirmed or
+// cannot be found.
 func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 	txid := r.PathValue("txid")
 	if len(txid) != 64 {
@@ -24,12 +29,46 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1. Cache hit — serve from proof store
 	beefBytes, err := s.proofStore.GetBEEF(txid)
-	if err != nil {
+	if err != nil && s.proofFetcher != nil {
+		// 2. Cache miss — fetch on demand
+		fetched, fetchErr := s.proofFetcher.FetchBEEF(txid)
+		if fetchErr != nil {
+			s.logger.Debug("BEEF fetch failed", "txid", txid, "error", fetchErr)
+			writeError(w, http.StatusNotFound, "no BEEF available: "+fetchErr.Error())
+			return
+		}
+
+		// 3. Validate against local headers before caching
+		if s.validator != nil {
+			valResult, valErr := s.validator.ValidateBEEF(r.Context(), fetched)
+			if valErr != nil {
+				s.logger.Warn("fetched BEEF validation error", "txid", txid, "error", valErr)
+				writeError(w, http.StatusNotFound, "fetched proof failed local validation")
+				return
+			}
+			if valResult.Confidence == spv.ConfidenceInvalid {
+				s.logger.Warn("fetched BEEF invalid confidence", "txid", txid, "message", valResult.Message)
+				writeError(w, http.StatusNotFound, "fetched proof failed local header verification")
+				return
+			}
+		}
+
+		// 4. Cache for future requests
+		if _, storeErr := s.proofStore.StoreBEEF(fetched); storeErr != nil {
+			s.logger.Warn("failed to cache fetched BEEF", "txid", txid, "error", storeErr)
+			// Non-fatal — still serve the response
+		}
+
+		beefBytes = fetched
+	} else if err != nil {
+		// No fetcher configured — plain cache miss
 		writeError(w, http.StatusNotFound, "no BEEF envelope found for this txid")
 		return
 	}
 
+	// Serve as binary if requested
 	if strings.Contains(r.Header.Get("Accept"), "application/octet-stream") {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
