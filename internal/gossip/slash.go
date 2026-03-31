@@ -55,16 +55,8 @@ func (st *slashTracker) addWarning(w SlashWarningPayload) (shouldDeregister bool
 
 	rec.Warnings = append(rec.Warnings, w)
 
-	// Double-publish requires corroboration from multiple peers before we
-	// disconnect. Envelope timestamps are only second-granular, so a single
-	// node's local observation can be a false positive for fast publishers.
-	// Count only same-reason warnings to prevent mixed-reason accumulation.
-	if w.Reason == SlashDoublePublish {
-		count, reporters := st.countByReason(rec, SlashDoublePublish)
-		return count >= 2 && reporters >= 2
-	}
-
-	// Spam: require 3+ same-reason warnings from 2+ unique reporters
+	// Require 3+ same-reason warnings from 2+ unique reporters before deregistering.
+	// This prevents single-node false positives from triggering mesh-wide action.
 	count, reporters := st.countByReason(rec, w.Reason)
 	return count >= slashSpamThreshold && reporters >= 2
 }

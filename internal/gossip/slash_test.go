@@ -40,28 +40,6 @@ func TestSlashTrackerGracePeriod(t *testing.T) {
 	}
 }
 
-func TestSlashDoublePublishRequiresCorroboration(t *testing.T) {
-	st := newSlashTracker()
-
-	w := SlashWarningPayload{
-		Target:    "peer-b",
-		Reason:    SlashDoublePublish,
-		Reporter:  "self",
-		Evidence:  "3+ different payloads for same topic+pubkey+timestamp",
-		Timestamp: time.Now().Unix(),
-	}
-
-	if st.addWarning(w) {
-		t.Fatal("single-reporter double-publish should not deregister")
-	}
-
-	w.Reporter = "peer-2"
-	w.Timestamp++
-	if !st.addWarning(w) {
-		t.Fatal("double-publish should deregister after corroboration from a second reporter")
-	}
-}
-
 func TestSlashMixedReasonsDoNotCrossContaminate(t *testing.T) {
 	st := newSlashTracker()
 
@@ -76,30 +54,41 @@ func TestSlashMixedReasonsDoNotCrossContaminate(t *testing.T) {
 		t.Fatal("single spam warning should not deregister")
 	}
 
-	// One double_publish warning from reporter-2 — different reason, different reporter
-	dp := SlashWarningPayload{
+	// One bad_proof warning from reporter-2 — different reason, different reporter
+	bp := SlashWarningPayload{
 		Target:    "peer-mixed",
-		Reason:    SlashDoublePublish,
+		Reason:    SlashBadProof,
 		Reporter:  "reporter-2",
-		Evidence:  "conflicting payloads",
+		Evidence:  "invalid merkle proof",
 		Timestamp: time.Now().Unix(),
 	}
-	// This should NOT deregister: only 1 double_publish warning from 1 reporter,
-	// even though there are 2 total warnings from 2 unique reporters.
-	if st.addWarning(dp) {
-		t.Fatal("mixed reasons should not cross-contaminate: 1 spam + 1 double_publish should not trigger deregistration")
+	// Should NOT deregister: only 1 bad_proof from 1 reporter
+	if st.addWarning(bp) {
+		t.Fatal("mixed reasons should not cross-contaminate: 1 spam + 1 bad_proof should not trigger deregistration")
 	}
 
-	// Second double_publish from a third reporter — now 2 double_publish from 2 reporters
-	dp2 := SlashWarningPayload{
+	// Second bad_proof from reporter-1 — now 2 bad_proof but only 1 unique reporter
+	bp2 := SlashWarningPayload{
 		Target:    "peer-mixed",
-		Reason:    SlashDoublePublish,
-		Reporter:  "reporter-3",
-		Evidence:  "conflicting payloads",
+		Reason:    SlashBadProof,
+		Reporter:  "reporter-1",
+		Evidence:  "another invalid proof",
 		Timestamp: time.Now().Unix() + 1,
 	}
-	if !st.addWarning(dp2) {
-		t.Fatal("2 double_publish from 2 reporters should deregister")
+	if st.addWarning(bp2) {
+		t.Fatal("2 bad_proof from 1 reporter should not deregister")
+	}
+
+	// Third bad_proof from reporter-3 — now 3 bad_proof from 2 unique reporters
+	bp3 := SlashWarningPayload{
+		Target:    "peer-mixed",
+		Reason:    SlashBadProof,
+		Reporter:  "reporter-3",
+		Evidence:  "yet another invalid proof",
+		Timestamp: time.Now().Unix() + 2,
+	}
+	if !st.addWarning(bp3) {
+		t.Fatal("3 bad_proof from 2 reporters should deregister")
 	}
 }
 
