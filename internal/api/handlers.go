@@ -72,7 +72,7 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(r.Header.Get("Accept"), "application/octet-stream") {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
-		w.Write(beefBytes)
+		_, _ = w.Write(beefBytes) // error is client-side disconnect, nothing to do
 		return
 	}
 
@@ -230,7 +230,7 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 
 	limit := 100
 	if l := r.URL.Query().Get("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &limit)
+		_, _ = fmt.Sscanf(l, "%d", &limit) // bad input keeps default
 		if limit <= 0 || limit > 1000 {
 			limit = 100
 		}
@@ -238,7 +238,7 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 
 	var since int64
 	if s := r.URL.Query().Get("since"); s != "" {
-		fmt.Sscanf(s, "%d", &since)
+		_, _ = fmt.Sscanf(s, "%d", &since) // bad input keeps zero
 	}
 
 	envs, err := s.envelopeStore.QueryByTopic(topic, limit)

@@ -37,6 +37,16 @@ const (
 	// First warning starts a 48-hour grace period. Repeated violations
 	// within the grace period trigger deregistration from the overlay.
 	MsgSlashWarning MessageType = "slash_warning"
+
+	// MsgTxAnnounce announces a transaction by txid. Peers that don't
+	// have it can request the full tx via MsgTxRequest.
+	MsgTxAnnounce MessageType = "tx_announce"
+
+	// MsgTxRequest asks a peer for a transaction by txid.
+	MsgTxRequest MessageType = "tx_request"
+
+	// MsgTxResponse carries the raw transaction hex in response to a request.
+	MsgTxResponse MessageType = "tx_response"
 )
 
 // Message is the wire format for all mesh messages, serialized as
@@ -77,6 +87,23 @@ type SHIPPeerInfo struct {
 	NodeName    string `json:"node_name,omitempty"`
 	Version     string `json:"version,omitempty"`
 	Topic       string `json:"topic"`
+}
+
+// TxAnnouncePayload announces a transaction by its txid.
+type TxAnnouncePayload struct {
+	TxID string `json:"txid"`
+	Size int    `json:"size,omitempty"` // tx size in bytes (hint for receiver)
+}
+
+// TxRequestPayload requests a full transaction by txid.
+type TxRequestPayload struct {
+	TxID string `json:"txid"`
+}
+
+// TxResponsePayload carries the raw transaction hex.
+type TxResponsePayload struct {
+	TxID  string `json:"txid"`
+	RawHex string `json:"raw_hex"`
 }
 
 // SlashReason identifies the type of protocol violation.

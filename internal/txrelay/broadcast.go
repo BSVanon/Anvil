@@ -17,13 +17,16 @@ type BroadcastResult struct {
 	Message   string `json:"message,omitempty"`
 }
 
-// Broadcaster handles transaction admission to the local mempool and optionally
-// ARC submission. Transactions stay local to this node — mesh forwarding
-// of raw transactions is not yet implemented (envelope gossip is separate).
+// MeshAnnouncer is called when a new transaction should be announced to the mesh.
+type MeshAnnouncer func(txid string, size int)
+
+// Broadcaster handles transaction admission to the local mempool, optional
+// ARC submission, and mesh announcement to connected peers.
 type Broadcaster struct {
-	mempool *Mempool
-	arc     *ARCClient // nil if ARC is disabled
-	logger  *slog.Logger
+	mempool       *Mempool
+	arc           *ARCClient    // nil if ARC is disabled
+	meshAnnounce  MeshAnnouncer // nil if mesh relay is disabled
+	logger        *slog.Logger
 }
 
 // NewBroadcaster creates a new broadcaster.
@@ -33,6 +36,12 @@ func NewBroadcaster(mempool *Mempool, arc *ARCClient, logger *slog.Logger) *Broa
 		arc:     arc,
 		logger:  logger,
 	}
+}
+
+// SetMeshAnnouncer sets the callback for announcing txs to the mesh.
+// Called after gossip manager is created (avoids circular dependency).
+func (b *Broadcaster) SetMeshAnnouncer(fn MeshAnnouncer) {
+	b.meshAnnounce = fn
 }
 
 // Mempool returns the underlying mempool for direct access.
@@ -53,12 +62,17 @@ func (b *Broadcaster) BroadcastBEEF(beef []byte) (*BroadcastResult, error) {
 	rawBytes := tx.Bytes()
 
 	// Add to mempool (idempotent — ignore if already present)
-	b.mempool.Add(txid, rawBytes)
+	_ = b.mempool.Add(txid, rawBytes)
 
 	result := &BroadcastResult{
 		TxID:     txid,
 		Accepted: true,
-		Message:  "added to local mempool (P2P peer relay not yet implemented)",
+		Message:  "added to mempool",
+	}
+
+	// Announce to mesh peers
+	if b.meshAnnounce != nil {
+		b.meshAnnounce(txid, len(rawBytes))
 	}
 
 	b.logger.Info("mempool admit",
@@ -77,12 +91,17 @@ func (b *Broadcaster) BroadcastRaw(raw []byte) (*BroadcastResult, error) {
 	}
 
 	txid := tx.TxID().String()
-	b.mempool.Add(txid, raw)
+	_ = b.mempool.Add(txid, raw) // idempotent — duplicate is not an error
 
 	result := &BroadcastResult{
 		TxID:     txid,
 		Accepted: true,
 		Message:  "added to mempool",
+	}
+
+	// Announce to mesh peers
+	if b.meshAnnounce != nil {
+		b.meshAnnounce(txid, len(raw))
 	}
 
 	b.logger.Info("mempool admit raw",

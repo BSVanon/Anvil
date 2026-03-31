@@ -21,6 +21,19 @@
 | `/.well-known/anvil` | GET | No | Node metadata |
 | `/app/{name}` | GET | No | Redirect to registered app |
 
+## Address watching (mempool)
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/mempool/watch` | POST | Bearer | Add BSV addresses to watch list |
+| `/mempool/watch` | DELETE | Bearer | Remove addresses from watch list |
+| `/mempool/watch` | GET | No | List watched addresses + hit/spend stats |
+| `/mempool/watch/history` | GET | No | Persisted hits for an address (`?address=X&limit=N`) |
+| `/mempool/watch/subscribe` | GET | No | SSE stream of watch hits (`?address=X` or all) |
+
+Watch hits include: txid, vout, address, satoshis, script_hex, timestamp.
+Spend detection emits hits with `spent: true` and `spent_by: "txid"`.
+
 ## Overlay endpoints (BRC-22/24)
 
 | Endpoint | Method | Auth | Description |

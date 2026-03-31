@@ -15,13 +15,17 @@ import (
 	"github.com/syndtr/goleveldb/leveldb"
 )
 
+// MempoolMeshAnnouncer is called to announce a P2P-observed tx to the mesh.
+type MempoolMeshAnnouncer func(txid string, size int)
+
 // mempoolComponents holds the mempool monitoring subsystem.
 type mempoolComponents struct {
-	index   *mempoolpkg.Index
-	watcher *mempoolpkg.Watcher
-	monitor *p2p.MempoolMonitor
-	watchDB *leveldb.DB
-	cancel  context.CancelFunc
+	index        *mempoolpkg.Index
+	watcher      *mempoolpkg.Watcher
+	monitor      *p2p.MempoolMonitor
+	watchDB      *leveldb.DB
+	cancel       context.CancelFunc
+	meshAnnounce MempoolMeshAnnouncer
 }
 
 // setupMempool initialises the P2P mempool monitor, sharded index, and address
@@ -56,6 +60,9 @@ func setupMempool(cfg *config.Config, logger *slog.Logger) *mempoolComponents {
 		}
 	}
 
+	// mc is declared early so the onTx callback can reference meshAnnounce via closure
+	mc := &mempoolComponents{index: idx, watcher: watcher, watchDB: watchDB}
+
 	monitor := p2p.NewMempoolMonitor(
 		cfg.BSV.Nodes[0], wire.MainNet, coverage, cfg.Mempool.MaxTxSize,
 		func(txHash chainhash.Hash, raw []byte) {
@@ -63,9 +70,13 @@ func setupMempool(cfg *config.Config, logger *slog.Logger) *mempoolComponents {
 			copy(id[:], txHash[:])
 			idx.Add(id, mempoolpkg.TxMeta{
 				FirstSeen: time.Now(),
-				Size:      uint32(len(raw)),
+				Size:      uint32(len(raw)), // #nosec G115 // len() non-negative, bounded by wire protocol
 			})
 			watcher.CheckTx(txHash, raw)
+			// Announce to mesh peers (if wired)
+			if mc.meshAnnounce != nil {
+				mc.meshAnnounce(txHash.String(), len(raw))
+			}
 		},
 		logger,
 	)
@@ -74,7 +85,7 @@ func setupMempool(cfg *config.Config, logger *slog.Logger) *mempoolComponents {
 	if err := monitor.Start(ctx); err != nil {
 		cancel()
 		log.Printf("mempool monitor failed (non-fatal): %v", err)
-		return &mempoolComponents{index: idx, watcher: watcher, watchDB: watchDB}
+		return mc
 	}
 
 	log.Printf("mempool monitor: connected to %s, coverage=%d prefixes", cfg.BSV.Nodes[0], len(coverage))
@@ -95,13 +106,9 @@ func setupMempool(cfg *config.Config, logger *slog.Logger) *mempoolComponents {
 		}
 	}()
 
-	return &mempoolComponents{
-		index:   idx,
-		watcher: watcher,
-		monitor: monitor,
-		watchDB: watchDB,
-		cancel:  cancel,
-	}
+	mc.monitor = monitor
+	mc.cancel = cancel
+	return mc
 }
 
 // Close shuts down the mempool monitor and closes the watch database.
@@ -116,6 +123,6 @@ func (mc *mempoolComponents) Close() {
 		mc.monitor.Stop()
 	}
 	if mc.watchDB != nil {
-		mc.watchDB.Close()
+		_ = mc.watchDB.Close()
 	}
 }

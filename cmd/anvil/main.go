@@ -192,7 +192,7 @@ func main() {
 					log.Printf("overlay: cleaned %d stale SHIP entries on boot", cleaned)
 				}
 
-				anviloverlay.Bootstrap(overlayDir, identityKey, domain, cfg.Node.Name, anvilversion.Version, cfg.Overlay.Topics, logger)
+				_ = anviloverlay.Bootstrap(overlayDir, identityKey, domain, cfg.Node.Name, anvilversion.Version, cfg.Overlay.Topics, logger)
 			}
 		}
 
@@ -312,6 +312,7 @@ func main() {
 			BondChecker:    bondCheck,
 			LocalPubkeys:   localPKs,
 			ConnectionLog:  connLog,
+			TxMempool:      anvilgossip.NewTxRelayMempool(mempool),
 			CatchUpTopics:  []string{"anvil:catalog", "mesh:heartbeat", "mesh:blocks"},
 			OnEnvelope: func() func(*envelope.Envelope) {
 				var firstData sync.Once
@@ -334,10 +335,17 @@ func main() {
 			log.Printf("anvil mesh: connecting to %d seed peers (auto-reconnect enabled)", len(cfg.Mesh.Seeds))
 		}
 
-		// NOTE: TX mesh forwarding is NOT implemented. Envelope gossip works
-		// (proven by mesh_e2e_test.go), but raw transaction forwarding across
-		// the mesh requires a dedicated wire message type and is deferred.
-		// Transactions are local mempool + optional ARC submission only.
+		// TX mesh relay: wire both local tx sources → mesh announcement.
+		// 1. API broadcaster (POST /broadcast) → announce to mesh
+		broadcaster.SetMeshAnnouncer(func(txid string, size int) {
+			gossipMgr.AnnounceTx(txid, size, "")
+		})
+		// 2. P2P mempool monitor → announce observed txs to mesh
+		if mpool != nil {
+			mpool.meshAnnounce = func(txid string, size int) {
+				gossipMgr.AnnounceTx(txid, size, "")
+			}
+		}
 
 		// Inbound mesh listener: accept authenticated WebSocket peers.
 		// Uses TLS (wss://) when cert/key are configured — required for production.
@@ -346,12 +354,23 @@ func main() {
 				handler := gossipMgr.MeshHandler()
 				if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
 					log.Printf("mesh listener on %s (wss, TLS)", cfg.Node.Listen)
-					if err := http.ListenAndServeTLS(cfg.Node.Listen, cfg.API.TLSCert, cfg.API.TLSKey, handler); err != nil {
+					meshSrv := &http.Server{
+						Addr:              cfg.Node.Listen,
+						Handler:           handler,
+						ReadHeaderTimeout: 10 * time.Second,
+						TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
+					}
+					if err := meshSrv.ListenAndServeTLS(cfg.API.TLSCert, cfg.API.TLSKey); err != nil {
 						log.Fatalf("mesh listener: %v", err)
 					}
 				} else {
 					log.Printf("mesh listener on %s (ws, no TLS — dev only)", cfg.Node.Listen)
-					if err := http.ListenAndServe(cfg.Node.Listen, handler); err != nil {
+					meshSrv := &http.Server{
+						Addr:              cfg.Node.Listen,
+						Handler:           handler,
+						ReadHeaderTimeout: 10 * time.Second,
+					}
+					if err := meshSrv.ListenAndServe(); err != nil {
 						log.Fatalf("mesh listener: %v", err)
 					}
 				}
@@ -496,7 +515,10 @@ func main() {
 		P2PTxSource:    p2pTxFetcher,
 		P2PBlockSource: p2pBlockFetcher,
 		HeaderLookup: func(height int) string {
-			hash, err := headerStore.HashAtHeight(uint32(height))
+			if height < 0 {
+				return ""
+			}
+			hash, err := headerStore.HashAtHeight(uint32(height)) // #nosec G115 // guarded by < 0 check above
 			if err != nil || hash == nil {
 				return ""
 			}
@@ -525,8 +547,9 @@ func main() {
 		if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
 			log.Printf("REST API listening on %s (TLS)", cfg.Node.APIListen)
 			tlsSrv := &http.Server{
-				Addr:    cfg.Node.APIListen,
-				Handler: handler,
+				Addr:              cfg.Node.APIListen,
+				Handler:           handler,
+				ReadHeaderTimeout: 10 * time.Second,
 				TLSConfig: &tls.Config{
 					MinVersion: tls.VersionTLS12,
 				},
@@ -536,7 +559,12 @@ func main() {
 			}
 		} else {
 			log.Printf("REST API listening on %s (no TLS — use reverse proxy for production)", cfg.Node.APIListen)
-			if err := http.ListenAndServe(cfg.Node.APIListen, handler); err != nil {
+			apiSrv := &http.Server{
+				Addr:              cfg.Node.APIListen,
+				Handler:           handler,
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+			if err := apiSrv.ListenAndServe(); err != nil {
 				log.Fatalf("api server: %v", err)
 			}
 		}
@@ -546,6 +574,6 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	s := <-sig
-	fmt.Println()
+	_, _ = fmt.Println()
 	log.Printf("received %v, shutting down", s)
 }

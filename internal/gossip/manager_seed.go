@@ -80,7 +80,7 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 		if err := peer.Start(); err != nil {
 			m.logger.Warn("seed peer start failed, retrying",
 				"endpoint", endpoint, "error", err, "retry_in", interval)
-			transport.Close()
+			_ = transport.Close()
 			select {
 			case <-ctx.Done():
 				return
@@ -145,10 +145,10 @@ func (m *Manager) Stop() {
 	for _, peer := range m.peers {
 		events = append(events, m.disconnectEventForPeer(peer, "shutdown", len(m.peers)-1))
 		if peer.Peer != nil {
-			peer.Peer.Stop()
+			_ = peer.Peer.Stop()
 		}
 		if peer.closeFunc != nil {
-			peer.closeFunc()
+			_ = peer.closeFunc()
 		}
 	}
 	m.peers = make(map[string]*MeshPeer)

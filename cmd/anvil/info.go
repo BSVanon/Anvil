@@ -23,7 +23,7 @@ func cmdInfo(args []string) {
 	fs := flag.NewFlagSet("info", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	jsonOut := fs.Bool("json", false, "output as JSON")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	// Auto-load the matching env file (e.g. node-a.toml → node-a.env)
 	loadEnvFile(*configPath)
@@ -62,7 +62,7 @@ func cmdInfo(args []string) {
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(out)
+		_ = enc.Encode(out)
 	} else {
 		fmt.Printf("Identity:  %s\n", identityHex)
 		fmt.Printf("Address:   %s\n", addr.AddressString)
@@ -83,8 +83,9 @@ func defaultConfigPath() string {
 // not already present in the environment. Derives the env file path
 // from the config path: /etc/anvil/node-a.toml → /etc/anvil/node-a.env
 func loadEnvFile(configPath string) {
-	ext := filepath.Ext(configPath)
-	envPath := strings.TrimSuffix(configPath, ext) + ".env"
+	configDir := filepath.Dir(configPath)
+	configBase := strings.TrimSuffix(filepath.Base(configPath), filepath.Ext(configPath))
+	envPath := filepath.Join(configDir, configBase+".env")
 
 	f, err := os.Open(envPath)
 	if err != nil {
@@ -106,7 +107,7 @@ func loadEnvFile(configPath string) {
 		val := strings.TrimSpace(parts[1])
 		// Don't override existing env vars
 		if os.Getenv(key) == "" {
-			os.Setenv(key, val)
+			_ = os.Setenv(key, val)
 		}
 	}
 }

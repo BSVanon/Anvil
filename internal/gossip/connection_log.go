@@ -44,7 +44,7 @@ func NewConnectionLog(path string, maxRecent int) (*ConnectionLog, error) {
 	if err != nil {
 		return nil, err
 	}
-	f.Close()
+	_ = f.Close()
 	return &ConnectionLog{path: path, maxRecent: maxRecent}, nil
 }
 

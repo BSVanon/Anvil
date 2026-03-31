@@ -245,7 +245,7 @@ func (d *Directory) SweepExpired() int {
 		}
 	}
 	for _, key := range toDelete {
-		d.db.Delete(key, nil)
+		_ = d.db.Delete(key, nil) // best-effort cleanup
 	}
 	return len(toDelete)
 }
@@ -304,7 +304,7 @@ func (d *Directory) CleanupOnBoot(localDomains map[string]string, logger *slog.L
 		}
 	}
 	for _, key := range toDelete {
-		d.db.Delete(key, nil)
+		_ = d.db.Delete(key, nil) // best-effort cleanup
 	}
 	return len(toDelete)
 }
@@ -329,7 +329,7 @@ func (d *Directory) removeStaleDomainLocked(topic, domain, currentIdentity strin
 		}
 	}
 	for _, key := range toDelete {
-		d.db.Delete(key, nil)
+		_ = d.db.Delete(key, nil) // best-effort cleanup
 	}
 }
 
@@ -354,7 +354,7 @@ func (d *Directory) RemoveSHIPPeerByIdentity(identity string) {
 		}
 	}
 	for _, key := range toDelete {
-		d.db.Delete(key, nil)
+		_ = d.db.Delete(key, nil) // best-effort cleanup
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 func cmdDoctor(args []string) {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	loadEnvFile(*configPath)
 
@@ -305,7 +305,7 @@ func httpGet(url string) map[string]interface{} {
 	}
 	defer resp.Body.Close()
 	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
+	_ = json.NewDecoder(resp.Body).Decode(&result)
 	return result
 }
 
@@ -319,7 +319,7 @@ func httpGetAuth(url, token string) map[string]interface{} {
 	}
 	defer resp.Body.Close()
 	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
+	_ = json.NewDecoder(resp.Body).Decode(&result)
 	return result
 }
 
@@ -379,7 +379,7 @@ func doctorCheckLatest() string {
 	var release struct {
 		TagName string `json:"tag_name"`
 	}
-	json.NewDecoder(resp.Body).Decode(&release)
+	_ = json.NewDecoder(resp.Body).Decode(&release)
 	return release.TagName
 }
 

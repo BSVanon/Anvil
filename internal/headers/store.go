@@ -49,11 +49,11 @@ func NewStore(path string) (*Store, error) {
 	if err == leveldb.ErrNotFound {
 		// Empty store — write genesis
 		if err := s.writeGenesis(); err != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, err
 		}
 	} else if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("read tip: %w", err)
 	} else {
 		s.tip = binary.BigEndian.Uint32(tipBytes)
@@ -64,7 +64,7 @@ func NewStore(path string) (*Store, error) {
 	if err == nil {
 		s.work.SetBytes(workBytes)
 	} else if err != leveldb.ErrNotFound {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("read work: %w", err)
 	}
 
@@ -315,7 +315,7 @@ var genesisHeaderBytes = func() []byte {
 	)
 	h.Timestamp = time.Unix(1231006505, 0)
 	var buf bytes.Buffer
-	h.Serialize(&buf)
+	_ = h.Serialize(&buf) // genesis header serialization can't fail
 	return buf.Bytes()
 }()
 

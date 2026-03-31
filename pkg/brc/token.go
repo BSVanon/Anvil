@@ -42,7 +42,7 @@ func buildPushDropScript(lockingPub *ec.PublicKey, fields [][]byte) (*script.Scr
 
 	// Lock-before: pubkey + CHECKSIG first
 	pubBytes := lockingPub.Compressed()
-	chunks = append(chunks, &script.ScriptChunk{Op: byte(len(pubBytes)), Data: pubBytes})
+	chunks = append(chunks, &script.ScriptChunk{Op: byte(len(pubBytes)), Data: pubBytes}) // #nosec G115 // compressed pubkey is always 33 bytes
 	chunks = append(chunks, &script.ScriptChunk{Op: script.OpCHECKSIG})
 
 	// Data fields

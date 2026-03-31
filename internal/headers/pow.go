@@ -118,7 +118,7 @@ func BigToCompact(target *big.Int) uint32 {
 		return 0
 	}
 	b := target.Bytes()
-	size := uint32(len(b))
+	size := uint32(len(b)) // #nosec G115 // len() is always non-negative, max 32 for SHA-256
 
 	var mantissa uint32
 	if size <= 3 {

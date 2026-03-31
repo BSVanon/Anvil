@@ -13,7 +13,7 @@ import (
 func cmdToken(args []string) {
 	fs := flag.NewFlagSet("token", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	loadEnvFile(*configPath)
 

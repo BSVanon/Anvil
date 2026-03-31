@@ -114,7 +114,7 @@ func (s *Server) handleWatchHistory(w http.ResponseWriter, r *http.Request) {
 
 	limit := 50
 	if l := r.URL.Query().Get("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &limit)
+		_, _ = fmt.Sscanf(l, "%d", &limit) // bad input keeps default
 		if limit <= 0 || limit > 500 {
 			limit = 50
 		}

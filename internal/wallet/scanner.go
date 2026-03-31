@@ -170,6 +170,13 @@ func (s *Scanner) ScanAddress(ctx context.Context, address string) (*ScanResult,
 		}
 
 		// Fetch merkle proof (tries ARC then WoC TSC fallback)
+		if utxo.Height > int64(^uint32(0)) {
+			detail.Status = "error"
+			detail.Error = "block height exceeds uint32 range"
+			result.Errors++
+			result.Details = append(result.Details, detail)
+			continue
+		}
 		merkleHex, err := s.fetchMerkleProof(utxo.TxHash, uint32(utxo.Height))
 		if err != nil {
 			detail.Status = "error"
@@ -520,12 +527,3 @@ func buildBEEFFromTx(tx *transaction.Transaction, merklePathHex string) ([]byte,
 	return atomicBytes, nil
 }
 
-// buildLockingScript returns the P2PKH locking script for an address.
-// Exported for use by the scan handler.
-func buildLockingScript(addr *script.Address) ([]byte, error) {
-	lockScript, err := p2pkh.Lock(addr)
-	if err != nil {
-		return nil, err
-	}
-	return []byte(*lockScript), nil
-}

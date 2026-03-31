@@ -68,7 +68,7 @@ func (f *BlockTxFetcher) FetchTxFromBlock(txid string, blockHashHex string) (str
 		}
 
 		txMap, err := f.fetchBlock(peer, blockHash)
-		peer.Close()
+		_ = peer.Close()
 
 		if err != nil {
 			f.logger.Debug("block fetch failed", "addr", addr, "error", err)
@@ -155,7 +155,7 @@ func (f *BlockTxFetcher) fetchBlock(peer *Peer, blockHash *chainhash.Hash) (map[
 	}
 
 	// Read the block response — use very long timeout for large blocks
-	peer.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	_ = peer.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 	for {
 		wireMsg, _, err := wire.ReadMessage(peer.conn, protocolVersion, peer.network)
 		if err != nil {
@@ -185,7 +185,7 @@ func (f *BlockTxFetcher) fetchBlock(peer *Peer, blockHash *chainhash.Hash) (map[
 
 		case *wire.MsgPing:
 			pong := wire.NewMsgPong(m.Nonce)
-			peer.writeMsg(pong)
+			_ = peer.writeMsg(pong)
 
 		case *wire.MsgNotFound:
 			return nil, fmt.Errorf("block not found by peer")
