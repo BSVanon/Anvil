@@ -61,18 +61,13 @@ type Manager struct {
 	ratePerSec float64
 	rateBurst  int
 
-	// double-publish detection: identity hash → count of distinct payloads
-	dupCounts   map[string]int
-	dupReported map[string]struct{}
-	dupCountMu  sync.Mutex
-
 	// slash tracking
 	slashTracker *slashTracker
 
 	// topics to request catch-up for on peer connect
 	catchUpTopics []string
 
-	// local pubkeys exempt from double-publish detection
+	// local pubkeys used for SHIP re-announce filtering
 	localPubkeys map[string]struct{}
 	connLog      *ConnectionLog
 
@@ -160,8 +155,6 @@ func NewManager(cfg ManagerConfig) *Manager {
 		peerRates:      make(map[string]*peerRate),
 		ratePerSec:     30,  // loose: 30 envelopes/second per peer
 		rateBurst:      100, // burst allowance
-		dupCounts:      make(map[string]int),
-		dupReported:    make(map[string]struct{}),
 		slashTracker:   newSlashTracker(),
 		localPubkeys:   make(map[string]struct{}),
 		connLog:        cfg.ConnectionLog,

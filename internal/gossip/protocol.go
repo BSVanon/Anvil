@@ -83,9 +83,13 @@ type SHIPPeerInfo struct {
 type SlashReason string
 
 const (
-	SlashDoublePublish SlashReason = "double_publish" // same topic+pubkey+timestamp, different payload
-	SlashGossipSpam    SlashReason = "gossip_spam"    // sustained rate limit violation
-	SlashBadProof      SlashReason = "bad_proof"      // invalid SPV proof or forged headers
+	// SlashDoublePublish is retained for wire compatibility with older nodes
+	// but is no longer generated. Second-granular timestamps make fast publishers
+	// (oracles, IoT, agents) indistinguishable from attackers. Existing defenses
+	// (rate limiting, dedup, bonds) cover the real threat surface.
+	SlashDoublePublish SlashReason = "double_publish"
+	SlashGossipSpam    SlashReason = "gossip_spam" // sustained rate limit violation
+	SlashBadProof      SlashReason = "bad_proof"   // invalid SPV proof or forged headers
 )
 
 // SlashWarningPayload carries a protocol violation report.
@@ -101,8 +105,6 @@ type SlashWarningPayload struct {
 // SlashSeverity returns the slash percentage for a given reason.
 func SlashSeverity(reason SlashReason) int {
 	switch reason {
-	case SlashDoublePublish:
-		return 100
 	case SlashGossipSpam:
 		return 25
 	case SlashBadProof:
