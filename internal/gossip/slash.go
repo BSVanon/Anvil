@@ -122,6 +122,13 @@ func (m *Manager) onSlashWarning(senderPK string, raw json.RawMessage) error {
 		return nil
 	}
 
+	// Ignore double_publish warnings entirely. This reason was removed in v1.0.0
+	// because second-granular timestamps make it a false-positive factory for fast
+	// publishers. Old nodes may still send these — drop silently, don't forward.
+	if w.Reason == SlashDoublePublish {
+		return nil
+	}
+
 	// Dedup: use seen map to prevent gossip loops. Hash the warning payload.
 	warnHash := fmt.Sprintf("slash:%s:%s:%s:%d", w.Target, w.Reporter, w.Reason, w.Timestamp)
 	m.seenMu.Lock()
