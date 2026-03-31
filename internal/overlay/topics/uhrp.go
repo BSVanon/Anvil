@@ -230,28 +230,30 @@ func BuildUHRPScript(contentHash string, url string, contentType string) ([]byte
 
 	// Push "UHRP"
 	protocol := []byte(UHRPProtocolID)
-	script = append(script, byte(len(protocol)))
+	script = append(script, byte(len(protocol))) // #nosec G115 // "UHRP" is always 4 bytes
 	script = append(script, protocol...)
 
 	// Push hash (32 bytes)
-	script = append(script, byte(len(hashBytes)))
+	script = append(script, byte(len(hashBytes))) // #nosec G115 // SHA-256 hash is always 32 bytes
 	script = append(script, hashBytes...)
 
-	// Optional: push URL
+	// Optional: push URL (truncate to 255 bytes if needed — single-byte pushdata limit)
 	if url != "" {
 		urlBytes := []byte(url)
-		if len(urlBytes) <= 75 {
-			script = append(script, byte(len(urlBytes)))
-		} else {
-			script = append(script, 0x4c, byte(len(urlBytes))) // OP_PUSHDATA1
+		if len(urlBytes) > 255 {
+			urlBytes = urlBytes[:255]
 		}
+		script = appendPushData(script, urlBytes)
 		script = append(script, urlBytes...)
 	}
 
-	// Optional: push content type
+	// Optional: push content type (truncate to 255 bytes if needed)
 	if contentType != "" {
 		ctBytes := []byte(contentType)
-		script = append(script, byte(len(ctBytes)))
+		if len(ctBytes) > 255 {
+			ctBytes = ctBytes[:255]
+		}
+		script = appendPushData(script, ctBytes)
 		script = append(script, ctBytes...)
 	}
 
@@ -262,4 +264,15 @@ func BuildUHRPScript(contentHash string, url string, contentType string) ([]byte
 var _ overlay.TopicManager = (*UHRPTopicManager)(nil)
 
 // suppress unused import
+// appendPushData appends the correct Bitcoin script push opcode for a data slice.
+// Caller must ensure len(data) <= 255 before calling.
+// <=75 bytes: direct push. 76-255: OP_PUSHDATA1.
+func appendPushData(script, data []byte) []byte {
+	l := len(data)
+	if l <= 75 {
+		return append(script, byte(l)) // #nosec G115 // bounded by <= 75
+	}
+	return append(script, 0x4c, byte(l)) // #nosec G115 // caller ensures <= 255
+}
+
 var _ = json.Marshal

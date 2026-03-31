@@ -87,7 +87,7 @@ func (m *MempoolMonitor) Start(ctx context.Context) error {
 	m.conn = conn
 
 	if err := m.handshake(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("handshake %s: %w", m.addr, err)
 	}
 
@@ -105,7 +105,7 @@ func (m *MempoolMonitor) Stop() {
 	}
 	m.connMu.Lock()
 	if m.conn != nil {
-		m.conn.Close()
+		_ = m.conn.Close()
 	}
 	m.connMu.Unlock()
 	<-m.done
@@ -189,7 +189,7 @@ func (m *MempoolMonitor) readLoop(ctx context.Context) {
 		case *wire.MsgTx:
 			m.handleTx(msg)
 		case *wire.MsgPing:
-			m.writeMsg(wire.NewMsgPong(msg.Nonce))
+			_ = m.writeMsg(wire.NewMsgPong(msg.Nonce))
 		case *wire.MsgNotFound:
 			m.handleNotFound(msg)
 		default:
@@ -240,7 +240,9 @@ func (m *MempoolMonitor) handleTx(msg *wire.MsgTx) {
 	if m.onTx != nil {
 		var buf []byte
 		w := &byteWriter{buf: &buf}
-		msg.Serialize(w)
+		if err := msg.Serialize(w); err != nil {
+			return
+		}
 		// Enforce max tx size — skip large inscriptions/data txs
 		if m.maxTxSize > 0 && len(buf) > m.maxTxSize {
 			return
@@ -292,9 +294,9 @@ func (m *MempoolMonitor) flushBatch() {
 		msg := wire.NewMsgGetData()
 		for _, h := range hashes[i:end] {
 			h := h
-			msg.AddInvVect(wire.NewInvVect(wire.InvTypeTx, &h))
+			_ = msg.AddInvVect(wire.NewInvVect(wire.InvTypeTx, &h))
 		}
-		m.writeMsg(msg)
+		_ = m.writeMsg(msg)
 	}
 }
 
@@ -304,12 +306,12 @@ func (m *MempoolMonitor) writeMsg(msg wire.Message) error {
 	if m.conn == nil {
 		return fmt.Errorf("not connected")
 	}
-	m.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	_ = m.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	return wire.WriteMessage(m.conn, msg, protocolVersion, m.network)
 }
 
 func (m *MempoolMonitor) readMsg(timeout time.Duration) (wire.Message, error) {
-	m.conn.SetReadDeadline(time.Now().Add(timeout))
+	_ = m.conn.SetReadDeadline(time.Now().Add(timeout))
 	msg, _, err := wire.ReadMessage(m.conn, protocolVersion, m.network)
 	return msg, err
 }

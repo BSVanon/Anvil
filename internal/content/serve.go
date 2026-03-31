@@ -166,7 +166,7 @@ func serveInscription(w http.ResponseWriter, insc *inscription) {
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Write(insc.Data)
+	_, _ = w.Write(insc.Data)
 }
 
 // fetchRawTx gets the raw transaction hex.
@@ -337,7 +337,9 @@ func (s *Server) fetchRawTxFromWoC(txid string) (string, error) {
 	}
 
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(resp.Body)
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		return "", fmt.Errorf("read response body: %w", err)
+	}
 	return strings.TrimSpace(buf.String()), nil
 }
 
@@ -389,12 +391,18 @@ func extractOutputScript(tx []byte, vout int) ([]byte, error) {
 	pos += n
 
 	// Skip all inputs
-	for i := 0; i < int(inputCount); i++ {
+	if inputCount > uint64(len(tx)) {
+		return nil, fmt.Errorf("input count %d exceeds tx length", inputCount)
+	}
+	for i := uint64(0); i < inputCount; i++ {
 		pos += 32 // prev txid
 		pos += 4  // prev vout
 		scriptLen, n := readVarInt(tx[pos:])
 		pos += n
-		pos += int(scriptLen) // script
+		if scriptLen > uint64(len(tx)-pos) { // #nosec G115 // len()-pos is non-negative here
+			return nil, fmt.Errorf("input %d script length exceeds tx boundary", i)
+		}
+		pos += int(scriptLen) // #nosec G115 // bounded by len(tx) via check above
 		pos += 4              // sequence
 		if pos > len(tx) {
 			return nil, fmt.Errorf("input %d exceeds tx boundary", i)
@@ -405,12 +413,15 @@ func extractOutputScript(tx []byte, vout int) ([]byte, error) {
 	outputCount, n := readVarInt(tx[pos:])
 	pos += n
 
-	if vout >= int(outputCount) {
-		return nil, fmt.Errorf("vout %d >= output count %d", vout, outputCount)
+	if outputCount > uint64(len(tx)) {
+		return nil, fmt.Errorf("output count %d exceeds tx length", outputCount)
+	}
+	if vout < 0 || uint64(vout) >= outputCount {
+		return nil, fmt.Errorf("vout %d out of range (output count %d)", vout, outputCount)
 	}
 
 	// Read outputs until we reach the target vout
-	for i := 0; i < int(outputCount); i++ {
+	for i := uint64(0); i < outputCount; i++ {
 		if pos+8 > len(tx) {
 			return nil, fmt.Errorf("output %d exceeds tx boundary", i)
 		}
@@ -418,14 +429,14 @@ func extractOutputScript(tx []byte, vout int) ([]byte, error) {
 		scriptLen, n := readVarInt(tx[pos:])
 		pos += n
 
-		if pos+int(scriptLen) > len(tx) {
-			return nil, fmt.Errorf("output %d script exceeds tx boundary", i)
+		if scriptLen > uint64(len(tx)-pos) { // #nosec G115 // len()-pos is non-negative here
+			return nil, fmt.Errorf("output %d script length exceeds tx boundary", i)
 		}
 
-		if i == vout {
-			return tx[pos : pos+int(scriptLen)], nil
+		if i == uint64(vout) {
+			return tx[pos : pos+int(scriptLen)], nil // #nosec G115 // bounded by len(tx) via check above
 		}
-		pos += int(scriptLen)
+		pos += int(scriptLen) // #nosec G115 // bounded by len(tx) via check above
 	}
 
 	return nil, fmt.Errorf("output %d not found", vout)

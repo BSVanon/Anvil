@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,17 +75,18 @@ func TestHeartbeatPublish(t *testing.T) {
 func TestBlockTipPublish(t *testing.T) {
 	pub, store, _ := testPublisher(t)
 
-	height := uint32(100)
+	var height atomic.Uint32
+	height.Store(100)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go pub.RunBlockTip(ctx, 50*time.Millisecond,
-		func() uint32 { return height },
+		func() uint32 { return height.Load() },
 		func(h uint32) string { return "00000000abcdef1234567890abcdef1234567890abcdef1234567890abcdef12" },
 	)
 
 	// Wait, then advance height
 	time.Sleep(80 * time.Millisecond)
-	height = 101
+	height.Store(101)
 	time.Sleep(80 * time.Millisecond)
 	cancel()
 
@@ -108,16 +110,17 @@ func TestBlockTipPublish(t *testing.T) {
 func TestBlockTipSkipsEmptyHash(t *testing.T) {
 	pub, store, _ := testPublisher(t)
 
-	height := uint32(100)
+	var height atomic.Uint32
+	height.Store(100)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go pub.RunBlockTip(ctx, 50*time.Millisecond,
-		func() uint32 { return height },
+		func() uint32 { return height.Load() },
 		func(h uint32) string { return "" }, // simulate hash lookup failure
 	)
 
 	time.Sleep(80 * time.Millisecond)
-	height = 101
+	height.Store(101)
 	time.Sleep(80 * time.Millisecond)
 	cancel()
 

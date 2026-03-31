@@ -31,8 +31,7 @@ import (
 
 // LevelDB key prefixes for watch data.
 var (
-	prefixUTXO  = []byte("wu:") // wu:<address>:<txid>:<vout> → WatchHit JSON
-	prefixSpend = []byte("ws:") // ws:<address>:<txid>:<vout> → SpendHit JSON
+	prefixUTXO = []byte("wu:") // wu:<address>:<txid>:<vout> → WatchHit JSON
 )
 
 // WatchHit represents a matching transaction output for a watched address.
@@ -326,7 +325,7 @@ func (w *Watcher) persist(hit WatchHit) {
 	if err != nil {
 		return
 	}
-	w.db.Put([]byte(key), data, nil)
+	_ = w.db.Put([]byte(key), data, nil) // best-effort persist
 }
 
 // persistSpend marks a UTXO as spent in LevelDB.
@@ -342,7 +341,7 @@ func (w *Watcher) persistSpend(hit WatchHit) {
 			orig.Spent = true
 			orig.SpentBy = hit.SpentBy
 			if data, err := json.Marshal(orig); err == nil {
-				w.db.Put([]byte(utxoKey), data, nil)
+				_ = w.db.Put([]byte(utxoKey), data, nil) // best-effort persist
 			}
 		}
 	}

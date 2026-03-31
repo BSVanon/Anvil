@@ -372,7 +372,7 @@ func (e *Engine) Reconcile(checker UTXOChecker) (removed int, checked int, err e
 	}
 
 	for _, key := range toDelete {
-		e.db.Delete(key, nil)
+		_ = e.db.Delete(key, nil) // best-effort cleanup
 		removed++
 	}
 
@@ -401,7 +401,7 @@ func (e *Engine) storeOutput(out AdmittedOutput) error {
 
 func (e *Engine) removeOutput(txid string, vout int, topic string) {
 	key := outputKey(topic, txid, vout)
-	e.db.Delete(key, nil)
+	_ = e.db.Delete(key, nil) // best-effort removal
 }
 
 // findSpentUTXOs checks if any inputs in the transaction spend previously-admitted UTXOs.

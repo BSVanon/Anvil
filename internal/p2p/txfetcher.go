@@ -55,7 +55,7 @@ func (f *TxFetcher) FetchRawTx(txid string) (string, error) {
 			return rawHex, nil
 		}
 		f.logger.Debug("p2p tx fetch failed on existing peer, reconnecting", "error", err)
-		f.peer.Close()
+		_ = f.peer.Close()
 		f.peer = nil
 	}
 
@@ -70,7 +70,7 @@ func (f *TxFetcher) FetchRawTx(txid string) (string, error) {
 		rawHex, err := f.fetchFromPeer(peer, hash)
 		if err != nil {
 			f.logger.Debug("p2p tx fetch failed", "addr", addr, "error", err)
-			peer.Close()
+			_ = peer.Close()
 			continue
 		}
 
@@ -87,7 +87,7 @@ func (f *TxFetcher) Close() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.peer != nil {
-		f.peer.Close()
+		_ = f.peer.Close()
 		f.peer = nil
 	}
 }

@@ -28,7 +28,7 @@ func (m *Manager) requestCatchUp(peer *auth.Peer) {
 		if err != nil {
 			continue
 		}
-		peer.ToPeer(context.Background(), payload, nil, 5000)
+		_ = peer.ToPeer(context.Background(), payload, nil, 5000)
 	}
 	m.logger.Debug("catch-up requested", "topics", m.catchUpTopics)
 }
@@ -66,7 +66,7 @@ func (m *Manager) announceSHIP(peer *auth.Peer) {
 	if err != nil {
 		return
 	}
-	peer.ToPeer(context.Background(), payload, nil, 5000)
+	_ = peer.ToPeer(context.Background(), payload, nil, 5000)
 }
 
 // ReannounceToAll sends this node's own SHIP registrations to all connected peers.
@@ -102,7 +102,7 @@ func (m *Manager) ReannounceToAll() {
 	defer m.mu.RUnlock()
 	for _, mp := range m.peers {
 		if mp.Peer != nil {
-			mp.Peer.ToPeer(context.Background(), payload, mp.IdentityPK, 5000)
+			_ = mp.Peer.ToPeer(context.Background(), payload, mp.IdentityPK, 5000)
 		}
 	}
 }
@@ -158,7 +158,7 @@ func (m *Manager) forwardSHIPToAll(senderPK string, rawPayload json.RawMessage) 
 			continue
 		}
 		if peer.Peer != nil {
-			peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
+			_ = peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
 		}
 	}
 }
@@ -184,6 +184,12 @@ func (m *Manager) handleMessage(senderPKHex string, senderPK *ec.PublicKey, payl
 		return m.onSHIPSync(senderPKHex, msg.Data)
 	case MsgSlashWarning:
 		return m.onSlashWarning(senderPKHex, msg.Data)
+	case MsgTxAnnounce:
+		return m.onTxAnnounce(senderPKHex, senderPK, msg.Data)
+	case MsgTxRequest:
+		return m.onTxRequest(senderPKHex, senderPK, msg.Data)
+	case MsgTxResponse:
+		return m.onTxResponse(senderPKHex, msg.Data)
 	default:
 		m.logger.Debug("unknown mesh message type", "type", msg.Type)
 	}
@@ -308,7 +314,7 @@ func (m *Manager) onDataResponse(raw json.RawMessage) error {
 			continue
 		}
 		if m.store != nil {
-			m.store.Ingest(env)
+			_ = m.store.Ingest(env)
 		}
 	}
 	return nil
@@ -333,7 +339,7 @@ func (m *Manager) forwardToInterested(senderPK string, topic string, rawEnvelope
 		for _, prefix := range prefixes {
 			if strings.HasPrefix(topic, prefix) {
 				if peer.Peer != nil {
-					peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
+					_ = peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
 					m.IncrSent()
 				}
 				break

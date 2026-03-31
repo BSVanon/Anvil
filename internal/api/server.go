@@ -434,7 +434,7 @@ BRC-42 key derivation for payment address generation.
 All payments settle on BSV mainnet. Non-custodial — funds go directly to payees.
 No stablecoins. No payment channels. No facilitator servers.
 `
-	w.Write([]byte(md))
+	_, _ = w.Write([]byte(md))
 }
 
 // handleAnvilManifest serves /.well-known/anvil — a machine-readable manifest
@@ -591,7 +591,7 @@ func (s *Server) CorsWrap(next http.HandlerFunc) http.HandlerFunc {
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

@@ -85,6 +85,91 @@ func TestHashContent(t *testing.T) {
 	}
 }
 
+func TestBuildUHRPScriptLongURL(t *testing.T) {
+	contentHash := HashContent([]byte("long-url-test"))
+
+	// Build a URL that's 100 bytes — exceeds 75-byte direct push, needs OP_PUSHDATA1
+	longURL := "https://anvil.sendbsv.com/content/" + string(make([]byte, 66))
+	for i := range longURL[34:] {
+		longURL = longURL[:34+i] + string(rune('a'+i%26)) + longURL[35+i:]
+	}
+	// Simpler: just repeat a character
+	longURL = "https://anvil.sendbsv.com/content/"
+	for len(longURL) < 100 {
+		longURL += "x"
+	}
+
+	script, err := BuildUHRPScript(contentHash, longURL, "text/html")
+	if err != nil {
+		t.Fatalf("BuildUHRPScript with long URL: %v", err)
+	}
+
+	entry := parseUHRPOutput(script)
+	if entry == nil {
+		t.Fatal("parseUHRPOutput returned nil for long-URL script")
+	}
+	if entry.ContentHash != contentHash {
+		t.Fatalf("hash mismatch: got %s, want %s", entry.ContentHash, contentHash)
+	}
+	if entry.URL != longURL {
+		t.Fatalf("URL mismatch: got len=%d, want len=%d", len(entry.URL), len(longURL))
+	}
+}
+
+func TestBuildUHRPScriptVeryLongURL(t *testing.T) {
+	contentHash := HashContent([]byte("very-long-url-test"))
+
+	// Build a URL that's 300 bytes — exceeds 255-byte OP_PUSHDATA1 limit, should truncate
+	longURL := "https://anvil.sendbsv.com/content/"
+	for len(longURL) < 300 {
+		longURL += "y"
+	}
+
+	script, err := BuildUHRPScript(contentHash, longURL, "text/html")
+	if err != nil {
+		t.Fatalf("BuildUHRPScript with very long URL: %v", err)
+	}
+
+	entry := parseUHRPOutput(script)
+	if entry == nil {
+		t.Fatal("parseUHRPOutput returned nil for very-long-URL script")
+	}
+	if entry.ContentHash != contentHash {
+		t.Fatalf("hash mismatch: got %s, want %s", entry.ContentHash, contentHash)
+	}
+	// URL should be truncated to 255 bytes
+	if len(entry.URL) != 255 {
+		t.Fatalf("URL should be truncated to 255 bytes, got %d", len(entry.URL))
+	}
+	// First part should match
+	if entry.URL[:34] != "https://anvil.sendbsv.com/content/" {
+		t.Fatalf("truncated URL prefix mismatch: got %s", entry.URL[:34])
+	}
+}
+
+func TestBuildUHRPScriptLongContentType(t *testing.T) {
+	contentHash := HashContent([]byte("long-ct-test"))
+
+	// Build a content type that's 100 bytes — needs OP_PUSHDATA1
+	longCT := "application/x-custom-very-long-content-type-"
+	for len(longCT) < 100 {
+		longCT += "z"
+	}
+
+	script, err := BuildUHRPScript(contentHash, "https://example.com", longCT)
+	if err != nil {
+		t.Fatalf("BuildUHRPScript with long content type: %v", err)
+	}
+
+	entry := parseUHRPOutput(script)
+	if entry == nil {
+		t.Fatal("parseUHRPOutput returned nil for long content-type script")
+	}
+	if entry.ContentType != longCT {
+		t.Fatalf("content type mismatch: got len=%d, want len=%d", len(entry.ContentType), len(longCT))
+	}
+}
+
 func TestParsePushDataFields(t *testing.T) {
 	// Build: 0x04 "UHRP" 0x20 <32 zero bytes>
 	var script []byte

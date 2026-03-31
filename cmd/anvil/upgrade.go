@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -38,7 +39,7 @@ func cmdUpgrade(args []string) {
 	version := fs.String("version", "latest", "version to install (e.g. v0.5.0, or 'latest')")
 	check := fs.Bool("check", false, "check for updates without installing")
 	force := fs.Bool("force", false, "install even if already on the latest version")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	current := anvilversion.Version
 
@@ -75,7 +76,7 @@ func cmdUpgrade(args []string) {
 		fatal("create temp file: " + err.Error())
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	resp, err := http.Get(downloadURL)
 	if err != nil {
@@ -88,12 +89,59 @@ func cmdUpgrade(args []string) {
 	}
 
 	written, err := io.Copy(tmpFile, resp.Body)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 	if err != nil {
 		fatal("download write failed: " + err.Error())
 	}
-	os.Chmod(tmpPath, 0755)
+	_ = os.Chmod(tmpPath, 0755)
 	ok(fmt.Sprintf("Downloaded %s (%.1f MB)", latest, float64(written)/(1024*1024)))
+
+	// Verify SHA256 checksum against checksums.txt from the same release
+	step("Verifying checksum")
+	checksumURL := ""
+	if *version == "latest" {
+		checksumURL = githubLatest + "/checksums.txt"
+	} else {
+		v := latest
+		if !strings.HasPrefix(v, "v") {
+			v = "v" + v
+		}
+		checksumURL = githubDL + "/" + v + "/checksums.txt"
+	}
+	chkResp, err := http.Get(checksumURL)
+	if err != nil {
+		fatal("download checksums.txt failed: " + err.Error())
+	}
+	defer chkResp.Body.Close()
+	if chkResp.StatusCode != 200 {
+		fatal(fmt.Sprintf("checksums.txt returned %d", chkResp.StatusCode))
+	}
+	chkBody, err := io.ReadAll(chkResp.Body)
+	if err != nil {
+		fatal("read checksums.txt: " + err.Error())
+	}
+
+	expectedHash := ""
+	binaryFile := binaryName()
+	for _, line := range strings.Split(string(chkBody), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 2 && parts[1] == binaryFile {
+			expectedHash = parts[0]
+			break
+		}
+	}
+	if expectedHash == "" {
+		fatal("no checksum found for " + binaryFile + " in checksums.txt")
+	}
+
+	actualHash, err := fileSHA256(tmpPath)
+	if err != nil {
+		fatal("compute checksum: " + err.Error())
+	}
+	if actualHash != expectedHash {
+		fatal(fmt.Sprintf("SHA256 MISMATCH!\n  expected: %s\n  got:      %s\n  The binary may have been tampered with.", expectedHash, actualHash))
+	}
+	ok("SHA256 verified: " + actualHash[:16] + "...")
 
 	// Verify the new binary runs
 	step("Verifying new binary")
@@ -118,7 +166,9 @@ func cmdUpgrade(args []string) {
 	// the new binary is fully on disk.
 	step("Installing binary")
 	destBin := filepath.Join(*installDir, "anvil")
-	os.MkdirAll(*installDir, 0755)
+	if err := os.MkdirAll(*installDir, 0755); err != nil {
+		fatal("create install dir: " + err.Error())
+	}
 
 	// Backup old binary for rollback
 	backupBin := destBin + ".bak"
@@ -137,25 +187,25 @@ func cmdUpgrade(args []string) {
 		fatal("write staging binary failed: " + err.Error())
 	}
 	if err := os.Rename(stagingBin, destBin); err != nil {
-		os.Remove(stagingBin)
+		_ = os.Remove(stagingBin)
 		fatal("atomic rename failed: " + err.Error())
 	}
 
 	// Update symlink atomically: create new symlink, then rename over old
 	symlinkPath := "/usr/local/bin/anvil"
 	symlinkTmp := symlinkPath + ".new"
-	os.Remove(symlinkTmp)
+	_ = os.Remove(symlinkTmp)
 	if err := os.Symlink(destBin, symlinkTmp); err != nil {
 		fmt.Printf("    WARNING: symlink create failed: %v\n", err)
 	} else if err := os.Rename(symlinkTmp, symlinkPath); err != nil {
-		os.Remove(symlinkTmp)
+		_ = os.Remove(symlinkTmp)
 		fmt.Printf("    WARNING: symlink rename failed: %v\n", err)
 	}
 	ok("Binary installed: " + destBin)
 
 	// Now stop and restart services (binary already on disk)
 	for _, svc := range services {
-		exec.Command("systemctl", "stop", svc).Run()
+		_ = exec.Command("systemctl", "stop", svc).Run()
 	}
 	if len(services) > 0 {
 		time.Sleep(1 * time.Second)
@@ -176,7 +226,7 @@ func cmdUpgrade(args []string) {
 			fmt.Println("    All services failed to start — rolling back")
 			if err := os.Rename(backupBin, destBin); err == nil {
 				for _, svc := range services {
-					exec.Command("systemctl", "start", svc).Run()
+					_ = exec.Command("systemctl", "start", svc).Run()
 				}
 				fatal("upgrade rolled back — all services failed with new binary")
 			}
@@ -188,7 +238,7 @@ func cmdUpgrade(args []string) {
 
 	// Clean up backup
 	if backedUp {
-		os.Remove(backupBin)
+		_ = os.Remove(backupBin)
 	}
 
 	// Quick health check
@@ -285,14 +335,14 @@ func copyFileE(src, dst string, perm os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", src, err)
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", dst, err)
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(dst)
+		_ = out.Close()
+		_ = os.Remove(dst)
 		return fmt.Errorf("write %s: %w", dst, err)
 	}
 	return out.Close()
@@ -331,8 +381,22 @@ func versionNewerOrEqual(a, b string) bool {
 func parseVersion(v string) [3]int {
 	v = strings.TrimPrefix(v, "v")
 	var parts [3]int
-	fmt.Sscanf(v, "%d.%d.%d", &parts[0], &parts[1], &parts[2])
+	_, _ = fmt.Sscanf(v, "%d.%d.%d", &parts[0], &parts[1], &parts[2])
 	return parts
+}
+
+// fileSHA256 computes the SHA256 hash of a file and returns it as a hex string.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 // checkForUpdate queries GitHub for the latest release and logs if behind.

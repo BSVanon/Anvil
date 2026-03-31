@@ -327,7 +327,7 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 	w.Header().Set(HeaderX402Challenge, base64Url(challengeJSON))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusPaymentRequired)
-	json.NewEncoder(w).Encode(challenge)
+	_ = json.NewEncoder(w).Encode(challenge)
 }
 
 // cleanExpired removes challenges older than their expiry.

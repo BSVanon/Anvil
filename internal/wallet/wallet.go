@@ -146,7 +146,7 @@ func (nw *NodeWallet) Wallet() sdk.Interface {
 func (nw *NodeWallet) Close() {
 	nw.inner.Close()
 	if nw.invoiceDB != nil {
-		nw.invoiceDB.Close()
+		_ = nw.invoiceDB.Close() // best-effort close on shutdown
 	}
 }
 
@@ -381,9 +381,9 @@ func (nw *NodeWallet) handleGetInvoice(w http.ResponseWriter, r *http.Request) {
 // Body: {"to": "<address>", "satoshis": <amount>, "description": "..."}
 //
 // Uses go-wallet-toolbox's CreateAction + SignAction to build, sign,
-// and add the tx to the local mempool. Note: P2P peer relay is not
-// yet implemented — the tx is only in the local mempool until that
-// is wired.
+// and add the tx to the local mempool. The response includes BEEF
+// (Binary Envelope Format) so the receiver can verify the payment
+// offline using SPV against their own header chain.
 func (nw *NodeWallet) handleSend(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -442,22 +442,30 @@ func (nw *NodeWallet) handleSend(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("sign action: %v", err)})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
+		resp := map[string]interface{}{
 			"txid":     signResult.Txid.String(),
 			"satoshis": req.Satoshis,
 			"to":       req.To,
-			"note":     "tx added to local mempool; P2P peer relay not yet implemented",
-		})
+		}
+		// Include BEEF if available (wallet-toolbox Tx field is BEEF format)
+		if len(signResult.Tx) > 0 {
+			resp["beef"] = hex.EncodeToString(signResult.Tx)
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
 	// If no signing needed (already complete)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"txid":     createResult.Txid.String(),
 		"satoshis": req.Satoshis,
 		"to":       req.To,
-		"note":     "tx added to local mempool; P2P peer relay not yet implemented",
-	})
+	}
+	// Include BEEF if available
+	if len(createResult.Tx) > 0 {
+		resp["beef"] = hex.EncodeToString(createResult.Tx)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (nw *NodeWallet) handleCreateAction(w http.ResponseWriter, r *http.Request) {
@@ -590,6 +598,6 @@ func (nw *NodeWallet) handleInternalize(w http.ResponseWriter, r *http.Request) 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v) // best-effort HTTP response
 }
 

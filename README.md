@@ -8,16 +8,18 @@
 
 ## What it does
 
-- **Verify** — Syncs ~940k block headers in 30 seconds, then verifies any BSV transaction via BEEF/SPV proofs
+- **Verify** — Syncs ~942k block headers in 30 seconds, then verifies any BSV transaction via BEEF/SPV proofs. On-demand proof building for any confirmed tx.
 - **Publish** — Signed data envelopes propagate across the mesh in real time via authenticated gossip
 - **Subscribe** — Real-time push via SSE. Clients receive new envelopes the moment they arrive
-- **Earn** — Non-custodial x402 micropayments per request. Your node enforces payment but never holds funds
+- **Watch** — Monitor BSV addresses in real time from the mempool. SSE notifications on receive and spend.
+- **Relay** — Transactions propagate across the mesh via announce/request/response protocol
+- **Earn** — Non-custodial x402 micropayments per request. Payment signatures verified via script interpreter.
 - **Discover** — Machines find services via `/.well-known/x402`, pay, and consume. Zero onboarding
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v0.7.1/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v1.0.0/scripts/install.sh | sudo bash
 ```
 
 The guided installer downloads the binary from GitHub Releases, verifies the SHA256 checksum, generates your identity, syncs headers, and shows your funding address. Takes about 3 minutes.
@@ -69,7 +71,7 @@ const data = await anvil.query('oracle:rates:bsv');
 | [Add Your App](docs/ADD_YOUR_APP.md) | 5-minute path from app to live mesh publisher |
 | [App Integration](docs/APP_INTEGRATION.md) | Step-by-step guide for connecting your app |
 | [Mesh Peering](docs/MESH_PEERING.md) | Bonds, node names, overlay discovery, connection logging |
-| [API Reference](docs/API_REFERENCE.md) | All endpoints, SSE subscription, auth, response formats |
+| [API Reference](docs/API_REFERENCE.md) | All endpoints, SSE subscription, address watching, auth, response formats |
 | [Payment Policy](docs/NON_CUSTODIAL_PAYMENT_POLICY.md) | Non-custodial design constraints |
 | [Capabilities](docs/ANVIL_CAPABILITIES.md) | Machine-readable reference for AI agents |
 
@@ -84,8 +86,10 @@ const data = await anvil.query('oracle:rates:bsv');
 ## Requirements
 
 - Linux (amd64 or arm64)
-- 1 GB RAM, 20 GB disk
-- Go 1.25+ (build from source only — binary has no runtime dependencies)
+- 512 MB RAM minimum, 1 GB recommended
+- 500 MB disk (headers ~75MB + data stores)
+- Go 1.26+ (build from source only — binary has no runtime dependencies)
+- No full blockchain download. Headers only (~80 bytes x 942K blocks).
 
 ## License
 

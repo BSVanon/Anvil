@@ -173,7 +173,7 @@ func (m *Manager) forwardSlashWarning(senderPK string, rawPayload json.RawMessag
 			continue
 		}
 		if peer.Peer != nil {
-			peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
+			_ = peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
 		}
 	}
 }
@@ -205,7 +205,7 @@ func (m *Manager) broadcastSlashWarning(target string, reason SlashReason, evide
 	defer m.mu.RUnlock()
 	for _, peer := range m.peers {
 		if peer.Peer != nil {
-			peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
+			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
 		}
 	}
 

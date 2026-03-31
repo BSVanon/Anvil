@@ -62,16 +62,6 @@ func (h *envelopeHub) nextID() int64 {
 	return h.seqID.Add(1)
 }
 
-// subscriberCount returns the total number of active SSE subscribers.
-func (h *envelopeHub) subscriberCount() int {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	n := 0
-	for _, chs := range h.subs {
-		n += len(chs)
-	}
-	return n
-}
 
 // handleSubscribe is the SSE endpoint: GET /data/subscribe?topic=X
 // Routed through openRead so rate limiting, payment gates, and token gates apply.

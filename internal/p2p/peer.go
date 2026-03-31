@@ -47,7 +47,7 @@ func Connect(address string, network wire.BitcoinNet, logger *slog.Logger) (*Pee
 	}
 
 	if err := p.handshake(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("handshake %s: %w", address, err)
 	}
 
@@ -129,7 +129,7 @@ func (p *Peer) ReadHeaders() ([]*wire.BlockHeader, error) {
 		case *wire.MsgPing:
 			// Respond to pings during sync
 			pong := wire.NewMsgPong(m.Nonce)
-			p.writeMsg(pong)
+			_ = p.writeMsg(pong)
 		default:
 			// Ignore inv, addr, sendheaders, etc.
 			p.logger.Debug("sync: ignoring", "cmd", msg.Command())
@@ -165,7 +165,7 @@ func (p *Peer) ReadTransaction(targetHash *chainhash.Hash) (*wire.MsgTx, error) 
 			p.logger.Debug("tx: ignoring unexpected", "got", gotHash.String(), "want", targetHash.String())
 		case *wire.MsgPing:
 			pong := wire.NewMsgPong(m.Nonce)
-			p.writeMsg(pong)
+			_ = p.writeMsg(pong)
 		case *wire.MsgNotFound:
 			return nil, fmt.Errorf("transaction not found by peer")
 		default:
@@ -182,7 +182,7 @@ func (p *Peer) Close() error {
 func (p *Peer) writeMsg(msg wire.Message) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	_ = p.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	return wire.WriteMessage(p.conn, msg, protocolVersion, p.network)
 }
 
@@ -195,7 +195,7 @@ func (p *Peer) readMsgLarge() (wire.Message, error) {
 }
 
 func (p *Peer) readMsgTimeout(timeout time.Duration) (wire.Message, error) {
-	p.conn.SetReadDeadline(time.Now().Add(timeout))
+	_ = p.conn.SetReadDeadline(time.Now().Add(timeout))
 	msg, _, err := wire.ReadMessage(p.conn, protocolVersion, p.network)
 	if err != nil {
 		if err == io.EOF {

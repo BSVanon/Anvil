@@ -77,7 +77,7 @@ func (s *JungleBusSubscriber) Start(ctx context.Context) error {
 
 	// Block until context cancelled
 	<-ctx.Done()
-	s.client.Unsubscribe()
+	_ = s.client.Unsubscribe() // best-effort cleanup on shutdown
 	return nil
 }
 

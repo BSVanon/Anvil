@@ -100,7 +100,7 @@ func (s *ServerWSTransport) StartReceive() {
 		fn := s.onDataFunc
 		s.mu.Unlock()
 		if fn != nil {
-			fn(context.Background(), &msg)
+			_ = fn(context.Background(), &msg)
 		}
 	}
 }

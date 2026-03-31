@@ -71,6 +71,10 @@ type Manager struct {
 	localPubkeys map[string]struct{}
 	connLog      *ConnectionLog
 
+	// TX relay
+	txMempool    Mempool      // nil = TX relay disabled
+	onTxCallback OnTxCallback // called when new tx received via mesh
+
 	// activity counters (lock-free atomics — safe to increment under RLock)
 	envsReceived atomic.Int64
 	envsSent     atomic.Int64
@@ -124,10 +128,13 @@ type ManagerConfig struct {
 	// Ensures new nodes receive critical data (catalog, feeds) immediately.
 	CatchUpTopics []string
 	// LocalPubkeys are identity pubkey hexes for this node's apps.
-	// Envelopes from these pubkeys skip double-publish detection
-	// (a fast local publisher is not an attack).
 	LocalPubkeys  []string
 	ConnectionLog *ConnectionLog
+	// TxMempool enables mesh TX relay. When set, the manager announces
+	// txids to peers and responds to tx requests from the local mempool.
+	TxMempool    Mempool
+	// OnTx is called when a new transaction is received via the mesh.
+	OnTx         OnTxCallback
 }
 
 // NewManager creates a gossip manager backed by go-sdk auth.Peer.
@@ -158,6 +165,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 		slashTracker:   newSlashTracker(),
 		localPubkeys:   make(map[string]struct{}),
 		connLog:        cfg.ConnectionLog,
+		txMempool:      cfg.TxMempool,
+		onTxCallback:   cfg.OnTx,
 	}
 	m.startedAt = time.Now()
 	m.catchUpTopics = cfg.CatchUpTopics
@@ -407,9 +416,9 @@ func (m *Manager) removePeerWithReason(origKey, reason string) {
 	// Fast path: key hasn't been re-keyed yet
 	if p, ok := m.peers[origKey]; ok {
 		event = m.disconnectEventForPeer(p, reason, len(m.peers)-1)
-		p.Peer.Stop()
+		_ = p.Peer.Stop()
 		if p.closeFunc != nil {
-			p.closeFunc()
+			_ = p.closeFunc()
 		}
 		delete(m.peers, origKey)
 		delete(m.interests, origKey)
@@ -423,9 +432,9 @@ func (m *Manager) removePeerWithReason(origKey, reason string) {
 	for k, p := range m.peers {
 		if p.origKey == origKey {
 			event = m.disconnectEventForPeer(p, reason, len(m.peers)-1)
-			p.Peer.Stop()
+			_ = p.Peer.Stop()
 			if p.closeFunc != nil {
-				p.closeFunc()
+				_ = p.closeFunc()
 			}
 			delete(m.peers, k)
 			delete(m.interests, k)

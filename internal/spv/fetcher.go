@@ -139,8 +139,8 @@ func (f *ProofFetcher) fetchBlockHeight(txid string) (uint32, error) {
 	if err := json.Unmarshal(body, &info); err != nil {
 		return 0, fmt.Errorf("parse WoC tx info: %w", err)
 	}
-	if info.BlockHeight <= 0 {
-		return 0, nil // unconfirmed
+	if info.BlockHeight <= 0 || info.BlockHeight > int64(^uint32(0)) {
+		return 0, nil // unconfirmed or out of uint32 range
 	}
 	return uint32(info.BlockHeight), nil
 }

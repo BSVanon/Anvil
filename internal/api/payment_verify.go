@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	bsvscript "github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/script/interpreter"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
@@ -98,7 +100,7 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 		nonceSpent := false
 		for _, input := range tx.Inputs {
 			inputTxID := input.SourceTXID.String()
-			if inputTxID == challenge.NonceUTXO.TxID && input.SourceTxOutIndex == uint32(challenge.NonceUTXO.Vout) {
+			if challenge.NonceUTXO.Vout >= 0 && inputTxID == challenge.NonceUTXO.TxID && input.SourceTxOutIndex == uint32(challenge.NonceUTXO.Vout) { // #nosec G115 // guarded by >= 0 check
 				nonceSpent = true
 				break
 			}
@@ -106,6 +108,16 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 		if !nonceSpent {
 			return nil, fmt.Errorf("nonce UTXO not spent: expected %s:%d",
 				challenge.NonceUTXO.TxID, challenge.NonceUTXO.Vout)
+		}
+	}
+
+	// Step 6b: Verify nonce input signature (script execution).
+	// This prevents forged transactions that claim to spend the nonce UTXO
+	// but have invalid signatures. Without this, an attacker could construct
+	// a tx with correct outputs but fake input signatures and get served data.
+	if challenge.NonceUTXO != nil && challenge.NonceUTXO.LockingScriptHex != "dev-mode-no-real-utxo" {
+		if err := verifyNonceInputSignature(tx, challenge.NonceUTXO); err != nil {
+			return nil, fmt.Errorf("nonce input signature invalid: %w", err)
 		}
 	}
 
@@ -118,7 +130,7 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 		}
 		found := false
 		for _, out := range tx.Outputs {
-			if out.Satoshis >= uint64(payee.AmountSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
+			if payee.AmountSats >= 0 && out.Satoshis >= uint64(payee.AmountSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
 				found = true
 				totalPaid += payee.AmountSats
 				break
@@ -166,6 +178,57 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 	}, nil
 }
 
+// verifyNonceInputSignature runs the BSV script interpreter to verify that
+// the input spending the nonce UTXO has a valid signature. This catches
+// forged transactions where the outputs are correct but the input signature
+// is invalid (meaning the tx would be rejected by miners).
+func verifyNonceInputSignature(tx *transaction.Transaction, nonce *NonceUTXO) error {
+	// Find the input that spends the nonce UTXO
+	inputIdx := -1
+	for i, input := range tx.Inputs {
+		if input.SourceTXID != nil && input.SourceTXID.String() == nonce.TxID &&
+			nonce.Vout >= 0 && input.SourceTxOutIndex == uint32(nonce.Vout) { // #nosec G115 // guarded
+			inputIdx = i
+			break
+		}
+	}
+	if inputIdx < 0 {
+		return fmt.Errorf("nonce input not found in transaction")
+	}
+
+	// Decode the nonce UTXO's locking script
+	lockingBytes, err := hex.DecodeString(nonce.LockingScriptHex)
+	if err != nil {
+		return fmt.Errorf("invalid nonce locking script hex: %w", err)
+	}
+	lockingScript := bsvscript.Script(lockingBytes)
+
+	input := tx.Inputs[inputIdx]
+	if input.UnlockingScript == nil || len(*input.UnlockingScript) == 0 {
+		return fmt.Errorf("nonce input has no unlocking script")
+	}
+
+	// Run the script interpreter: unlocking + locking script
+	if nonce.Satoshis < 0 {
+		return fmt.Errorf("nonce UTXO has negative satoshis: %d", nonce.Satoshis)
+	}
+	engine := interpreter.NewEngine()
+	err = engine.Execute(
+		interpreter.WithTx(tx, inputIdx, &transaction.TransactionOutput{
+			LockingScript: &lockingScript,
+			Satoshis:      uint64(nonce.Satoshis), // #nosec G115 // guarded by < 0 check above
+		}),
+		interpreter.WithForkID(),
+		interpreter.WithAfterGenesis(),
+		interpreter.WithScripts(&lockingScript, input.UnlockingScript),
+	)
+	if err != nil {
+		return fmt.Errorf("script execution failed: %w", err)
+	}
+
+	return nil
+}
+
 // verifyDirectPayment handles the x-bsv-payment header format.
 // Accepts a raw BSV transaction (hex or base64) and verifies it pays the
 // declared payees. No challenge-nonce binding — simpler but less
@@ -202,7 +265,7 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 		}
 		found := false
 		for _, out := range tx.Outputs {
-			if out.Satoshis >= uint64(payee.AmountSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
+			if payee.AmountSats >= 0 && out.Satoshis >= uint64(payee.AmountSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
 				found = true
 				totalPaid += payee.AmountSats
 				break

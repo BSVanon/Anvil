@@ -11,8 +11,7 @@ import (
 )
 
 var (
-	prefixDurable   = []byte("d:") // d:<topic>:<key> → envelope JSON
-	prefixEphemeral = []byte("e:") // in-memory only, not persisted
+	prefixDurable = []byte("d:") // d:<topic>:<key> → envelope JSON
 )
 
 // Store manages both ephemeral and durable data envelopes.
