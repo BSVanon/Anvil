@@ -84,10 +84,8 @@ func main() {
 		log.Printf("  auth:       configured (run 'anvil token' to display)")
 	}
 
-	// Background version check — one HTTP call, doesn't block startup
 	go checkForUpdate(logger)
 
-	// Phase 2: Header store + sync
 	headerDir := filepath.Join(cfg.Node.DataDir, "headers")
 	headerStore, err := headers.NewStore(headerDir)
 	if err != nil {
@@ -107,7 +105,25 @@ func main() {
 		break
 	}
 
-	// Phase 7: SPV proof store
+	// Periodic header re-sync (without this, headers go stale after boot)
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			before := headerStore.Tip()
+			for _, node := range cfg.BSV.Nodes {
+				tip, err := syncer.SyncFrom(node)
+				if err != nil {
+					continue
+				}
+				if tip > before {
+					logger.Info("header re-sync", "from", before, "to", tip, "new", tip-before)
+				}
+				break
+			}
+		}
+	}()
+
 	proofDir := filepath.Join(cfg.Node.DataDir, "proofs")
 	proofStore, err := spv.NewProofStore(proofDir)
 	if err != nil {
@@ -115,16 +131,19 @@ func main() {
 	}
 	defer proofStore.Close()
 
-	// Phase 3: TX relay + broadcast
 	mempool := txrelay.NewMempool()
 	var arcClient *txrelay.ARCClient
 	if cfg.ARC.Enabled {
 		arcClient = txrelay.NewARCClient(cfg.ARC.URL, cfg.ARC.APIKey)
-		log.Printf("ARC enabled: %s", cfg.ARC.URL)
+		if cfg.ARC.TAALEnabled && cfg.ARC.TAALURL != "" {
+			arcClient.SetFailover(cfg.ARC.TAALURL, cfg.ARC.TAALAPIKey)
+			log.Printf("ARC enabled: %s (failover: %s)", cfg.ARC.URL, cfg.ARC.TAALURL)
+		} else {
+			log.Printf("ARC enabled: %s", cfg.ARC.URL)
+		}
 	}
 	broadcaster := txrelay.NewBroadcaster(mempool, arcClient, logger)
 
-	// Phase 5: Data envelope store
 	envDir := filepath.Join(cfg.Node.DataDir, "envelopes")
 	envStore, err := envelope.NewStore(envDir, cfg.Envelopes.MaxEphemeralTTL, cfg.Envelopes.MaxDurableSize)
 	if err != nil {
@@ -133,8 +152,7 @@ func main() {
 	defer envStore.Close()
 	log.Printf("envelope store opened (max TTL=%ds, max durable=%d bytes)", cfg.Envelopes.MaxEphemeralTTL, cfg.Envelopes.MaxDurableSize)
 
-	// Periodic ephemeral envelope sweeper
-	go func() {
+	go func() { // ephemeral envelope sweeper
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -144,11 +162,9 @@ func main() {
 		}
 	}()
 
-	// P2P mempool monitoring + address watcher
 	mpool := setupMempool(cfg, logger)
 	defer mpool.Close()
 
-	// Phase 6: Overlay directory + generic engine
 	var overlayDir *anviloverlay.Directory
 	var overlayEngine *anviloverlay.Engine
 	if cfg.Overlay.Enabled {
@@ -161,20 +177,14 @@ func main() {
 		defer overlayDir.Close()
 		log.Printf("overlay directory opened (topics=%v)", cfg.Overlay.Topics)
 
-		// Initialize the generic BRC-22/24 overlay engine.
-		// Uses the same LevelDB as the directory (separate key prefix "ovl:").
 		overlayEngine = anviloverlay.NewEngine(overlayDir.DB(), logger)
 
-		// Register topic managers
 		overlayEngine.RegisterTopic(topics.UHRPTopicName, topics.NewUHRPTopicManager())
-
-		// Register lookup services
 		overlayEngine.RegisterLookup(topics.UHRPLookupServiceName,
 			topics.NewUHRPLookupService(overlayEngine),
 			[]string{topics.UHRPTopicName})
 
-		// Local bootstrap: register our own SHIP tokens (dev/operator convenience)
-		if cfg.Identity.WIF != "" {
+		if cfg.Identity.WIF != "" { // local SHIP bootstrap
 			identityKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
 			if err != nil {
 				log.Printf("overlay bootstrap: invalid WIF: %v", err)
@@ -185,8 +195,6 @@ func main() {
 				}
 				identityHex := fmt.Sprintf("%x", identityKey.PubKey().Compressed())
 
-				// Clean stale SHIP entries before self-registering.
-				// Removes expired entries and re-key phantoms.
 				localDomains := map[string]string{domain: identityHex}
 				if cleaned := overlayDir.CleanupOnBoot(localDomains, logger); cleaned > 0 {
 					log.Printf("overlay: cleaned %d stale SHIP entries on boot", cleaned)
@@ -196,8 +204,7 @@ func main() {
 			}
 		}
 
-		// Periodic SHIP entry sweep — prune entries not refreshed within TTL
-		go func() {
+		go func() { // SHIP TTL sweep
 			ticker := time.NewTicker(5 * time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
@@ -207,8 +214,7 @@ func main() {
 			}
 		}()
 
-		// Live discovery: JungleBus subscription for real-time SHIP/SLAP detection
-		if cfg.JungleBus.Enabled {
+		if cfg.JungleBus.Enabled { // live SHIP/SLAP discovery via JungleBus
 			discoverer := anviloverlay.NewDiscoverer(overlayDir, logger)
 			for _, sub := range cfg.JungleBus.Subscriptions {
 				jbSub, err := anviloverlay.NewJungleBusSubscriber(
@@ -232,7 +238,6 @@ func main() {
 		}
 	}
 
-	// Phase 5.5: Node wallet (optional — requires identity WIF)
 	var identityPubHex string
 	if cfg.Identity.WIF != "" {
 		if ik, err := ec.PrivateKeyFromWif(cfg.Identity.WIF); err == nil {
@@ -240,8 +245,7 @@ func main() {
 		}
 	}
 
-	var bondCheck *bond.Checker // may be set in mesh block below
-
+	var bondCheck *bond.Checker
 	var nodeWallet *anvilwallet.NodeWallet
 	if cfg.Identity.WIF != "" {
 		walletDir := filepath.Join(cfg.Node.DataDir, "wallet")
@@ -258,11 +262,14 @@ func main() {
 			nodeWallet = nw
 			defer nodeWallet.Close()
 			log.Printf("wallet initialized")
+			// Auto-scan: discover external UTXOs on boot, then every 30 min.
+			// Without this, funds sent from other wallets are invisible and
+			// nonce minting / x402 silently fails.
+			go nodeWallet.RunAutoScan(context.Background(), 30*time.Minute)
 		}
 	}
 
-	// Anvil mesh — uses go-sdk auth.Peer for authenticated WebSocket peering.
-	// Requires a wallet for authenticated identity: mesh is disabled without identity.wif.
+	// Anvil mesh — go-sdk auth.Peer over WebSocket. Requires wallet for identity.
 	var gossipMgr *anvilgossip.Manager
 	meshWanted := len(cfg.Mesh.Seeds) > 0 || cfg.Node.Listen != ""
 	if meshWanted && nodeWallet == nil {
@@ -276,8 +283,7 @@ func main() {
 			log.Printf("bond required: %d sats minimum for mesh peering", cfg.Mesh.MinBondSats)
 		}
 
-		// Collect local pubkeys to exempt from double-publish detection
-		localPKSet := make(map[string]struct{})
+		localPKSet := make(map[string]struct{}) // local pubkeys exempt from double-publish
 		var localPKs []string
 		if identityPubHex != "" {
 			localPKSet[identityPubHex] = struct{}{}
@@ -326,8 +332,7 @@ func main() {
 		})
 		defer gossipMgr.Stop()
 
-		// Connect to seed peers with automatic reconnection.
-		// Each seed gets a goroutine that reconnects on disconnect (30s retry).
+		// Connect to seed peers (auto-reconnect on disconnect, 30s retry)
 		for _, seed := range cfg.Mesh.Seeds {
 			go gossipMgr.ConnectSeedWithReconnect(context.Background(), seed, 30*time.Second)
 		}
@@ -335,20 +340,17 @@ func main() {
 			log.Printf("anvil mesh: connecting to %d seed peers (auto-reconnect enabled)", len(cfg.Mesh.Seeds))
 		}
 
-		// TX mesh relay: wire both local tx sources → mesh announcement.
-		// 1. API broadcaster (POST /broadcast) → announce to mesh
+		// TX mesh relay: API broadcast + P2P mempool → mesh announcement
 		broadcaster.SetMeshAnnouncer(func(txid string, size int) {
 			gossipMgr.AnnounceTx(txid, size, "")
 		})
-		// 2. P2P mempool monitor → announce observed txs to mesh
 		if mpool != nil {
 			mpool.meshAnnounce = func(txid string, size int) {
 				gossipMgr.AnnounceTx(txid, size, "")
 			}
 		}
 
-		// Inbound mesh listener: accept authenticated WebSocket peers.
-		// Uses TLS (wss://) when cert/key are configured — required for production.
+		// Inbound mesh listener (wss:// with TLS, ws:// without)
 		if cfg.Node.Listen != "" {
 			go func() {
 				handler := gossipMgr.MeshHandler()
@@ -378,9 +380,7 @@ func main() {
 		}
 	}
 
-	// Periodic SHIP re-announcement keeps LastSeen fresh on remote peers.
-	// Without this, long-lived connections get TTL-pruned from remote directories.
-	// Runs at half the TTL interval so entries are always refreshed before expiry.
+	// SHIP re-announce at half the TTL so entries survive on remote directories
 	if gossipMgr != nil {
 		go func() {
 			ticker := time.NewTicker(45 * time.Minute)
@@ -391,9 +391,7 @@ func main() {
 		}()
 	}
 
-	// Built-in data feeds: heartbeat + block tip announcements.
-	// These make mesh activity immediately visible to new node operators.
-	// Requires identity key (for signing) + envelope store + gossip manager.
+	// Built-in feeds: heartbeat (60s) + block tip (10s poll)
 	if cfg.Identity.WIF != "" && gossipMgr != nil {
 		feedKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
 		if err == nil {
@@ -402,14 +400,12 @@ func main() {
 			feedCtx, feedCancel := context.WithCancel(context.Background())
 			defer feedCancel()
 
-			// Heartbeat: every 60s, announces node presence + basic stats
 			go pub.RunHeartbeat(feedCtx, 60*time.Second,
 				headerStore.Tip,
 				gossipMgr.PeerCount,
 				envStore.Topics,
 			)
 
-			// Block tip: polls every 10s, publishes when chain advances
 			go pub.RunBlockTip(feedCtx, 10*time.Second,
 				headerStore.Tip,
 				func(h uint32) string {
@@ -425,14 +421,11 @@ func main() {
 		}
 	}
 
-	// x402 payment gating requires both identity.wif (for payee script) and
-	// a wallet (for nonce UTXO minting). If either is missing, payment gating
-	// is forced off — payment_satoshis is zeroed so no dev-mode gate can leak through.
+	// x402 payment gating — requires identity.wif + wallet; forced off without both
 	paymentSatoshis := cfg.API.PaymentSatoshis
 	var payeeScriptHex string
 	var nonceProvider api.NonceProvider
-	// Create nonce provider whenever wallet exists — needed for app passthrough/split
-	// payments even when the node itself charges 0 (payment_satoshis = 0).
+	// Nonce provider: needed for app passthrough/split even when node is free
 	if cfg.Identity.WIF != "" && nodeWallet != nil {
 		payeeKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
 		if err != nil {
@@ -460,7 +453,6 @@ func main() {
 		paymentSatoshis = 0
 	}
 
-	// P2P fetchers for content CDN — uses BSV nodes directly, WoC as fallback
 	var p2pTxFetcher *p2p.TxFetcher
 	var p2pBlockFetcher *p2p.BlockTxFetcher
 	if len(cfg.BSV.Nodes) > 0 {
@@ -469,7 +461,7 @@ func main() {
 		defer p2pTxFetcher.Close()
 	}
 
-	// REST API — gossip manager wired in so POST /data can broadcast to mesh
+	// REST API
 	validator := spv.NewValidator(headerStore)
 	srv := api.NewServer(api.ServerConfig{
 		HeaderStore:      headerStore,
@@ -530,16 +522,45 @@ func main() {
 		nodeWallet.RegisterRoutes(srv.Mux(), srv.RequireAuth)
 	}
 
-	// Wire SSE notifications: mesh-received envelopes push to API subscribers
-	if gossipMgr != nil {
+	if gossipMgr != nil { // SSE notifications from mesh
 		gossipMgr.SetOnEnvelopeHook(srv.NotifyEnvelope)
 	}
 
-	// Register BRC-22/24 overlay engine HTTP endpoints
 	if overlayEngine != nil {
 		overlayEngine.RegisterHTTPHandlers(srv.Mux(), srv.CorsWrap)
 		log.Printf("overlay engine: %d topics, %d lookup services",
 			len(overlayEngine.ListTopics()), len(overlayEngine.ListLookupServices()))
+	}
+
+	// Subsystem health checks — surfaced in /status warnings
+	if nodeWallet != nil {
+		srv.RegisterHealthCheck("wallet", func() string {
+			if nodeWallet.SpendableOutputCount() == 0 {
+				return "wallet has zero spendable outputs — run POST /wallet/scan or fund the identity address"
+			}
+			return ""
+		})
+	} else if cfg.Identity.WIF != "" {
+		srv.RegisterHealthCheck("wallet", func() string {
+			return "wallet failed to initialize — check logs, CGO may be disabled"
+		})
+	}
+	if cfg.API.PaymentSatoshis > 0 {
+		srv.RegisterHealthCheck("nonce_pool", func() string {
+			if srv.NoncePoolSize() == 0 {
+				return "x402 nonce pool is empty — payment challenges will be slow or fail (wallet may need funding)"
+			}
+			return ""
+		})
+	}
+	if mpool != nil && mpool.monitor != nil {
+		srv.RegisterHealthCheck("mempool_monitor", func() string {
+			stats := mpool.monitor.Stats()
+			if !stats.Connected {
+				return "mempool monitor disconnected from BSV peer (auto-reconnect active)"
+			}
+			return ""
+		})
 	}
 
 	go func() {

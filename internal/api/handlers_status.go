@@ -35,6 +35,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			warnings = append(warnings, "mesh has zero connected peers")
 		}
 	}
+	// Run all registered subsystem health checks
+	for _, hc := range s.healthChecks {
+		if msg := hc.Check(); msg != "" {
+			warnings = append(warnings, msg)
+		}
+	}
 	if len(warnings) > 0 {
 		resp["warnings"] = warnings
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
@@ -23,7 +24,13 @@ import (
 	"github.com/bsv-blockchain/go-wallet-toolbox/pkg/storage"
 	"github.com/bsv-blockchain/go-wallet-toolbox/pkg/wallet"
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/opt"
 )
+
+// invoiceSyncWrite forces fsync on invoice store writes so invoice records
+// survive unclean shutdowns. Low volume (one write per invoice creation),
+// so the performance cost is negligible.
+var invoiceSyncWrite = &opt.WriteOptions{Sync: true}
 
 // Invoice is the stored state for a created invoice, keyed by ID.
 type Invoice struct {
@@ -143,6 +150,64 @@ func (nw *NodeWallet) Wallet() sdk.Interface {
 	return nw.inner
 }
 
+// RunAutoScan runs a UTXO scan immediately, then every interval. This ensures
+// external payments (from other wallets, exchanges, etc.) are discovered and
+// internalized without operator intervention. Without this, nonce minting and
+// wallet operations silently fail because go-wallet-toolbox only knows about
+// UTXOs it created or internalized via BEEF.
+//
+// Blocks until ctx is cancelled. Run in a goroutine.
+func (nw *NodeWallet) RunAutoScan(ctx context.Context, interval time.Duration) {
+	if nw.scanner == nil {
+		nw.logger.Warn("auto-scan disabled: no ARC client for merkle proofs")
+		return
+	}
+	// Scan immediately on boot
+	nw.runScan()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			nw.runScan()
+		}
+	}
+}
+
+func (nw *NodeWallet) runScan() {
+	result, err := nw.scanner.Scan(context.Background())
+	if err != nil {
+		nw.logger.Warn("auto-scan failed", "error", err)
+		return
+	}
+	if result.Internalized > 0 {
+		nw.logger.Info("auto-scan: internalized new UTXOs",
+			"found", result.UTXOsFound,
+			"internalized", result.Internalized,
+			"sats", result.TotalSatoshis)
+	}
+}
+
+// ScannerAvailable reports whether the UTXO scanner is configured.
+func (nw *NodeWallet) ScannerAvailable() bool {
+	return nw.scanner != nil
+}
+
+// SpendableOutputCount returns the number of wallet-tracked outputs.
+// Used by status checks to detect empty wallets.
+func (nw *NodeWallet) SpendableOutputCount() int {
+	result, err := nw.inner.ListOutputs(context.Background(), sdk.ListOutputsArgs{
+		Basket: "default",
+	}, "anvil")
+	if err != nil {
+		return 0
+	}
+	return len(result.Outputs)
+}
+
 // Close shuts down the wallet and invoice store.
 func (nw *NodeWallet) Close() {
 	nw.inner.Close()
@@ -157,7 +222,7 @@ func (nw *NodeWallet) saveInvoice(inv *Invoice) error {
 	if err != nil {
 		return err
 	}
-	return nw.invoiceDB.Put([]byte(inv.ID), data, nil)
+	return nw.invoiceDB.Put([]byte(inv.ID), data, invoiceSyncWrite)
 }
 
 // loadInvoice loads an invoice from LevelDB by ID.

@@ -83,13 +83,12 @@ func setupMempool(cfg *config.Config, logger *slog.Logger) *mempoolComponents {
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := monitor.Start(ctx); err != nil {
-		cancel()
-		log.Printf("mempool monitor failed (non-fatal): %v", err)
-		return mc
-	}
+	// Auto-reconnect: if the BSV peer disconnects, retry every 30s.
+	// Without this, a single peer disconnect kills mempool monitoring
+	// for the lifetime of the node process.
+	go monitor.StartWithReconnect(ctx, 30*time.Second)
 
-	log.Printf("mempool monitor: connected to %s, coverage=%d prefixes", cfg.BSV.Nodes[0], len(coverage))
+	log.Printf("mempool monitor: connecting to %s, coverage=%d prefixes (auto-reconnect)", cfg.BSV.Nodes[0], len(coverage))
 
 	// Periodic eviction
 	ttl := time.Duration(cfg.Mempool.TTLSeconds) * time.Second

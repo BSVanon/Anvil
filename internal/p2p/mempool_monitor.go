@@ -98,7 +98,44 @@ func (m *MempoolMonitor) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop shuts down the monitor.
+// StartWithReconnect connects to the BSV peer and automatically reconnects
+// if the connection drops. Blocks until ctx is cancelled. Run in a goroutine.
+// This is the production entry point — Start is for single-attempt use.
+func (m *MempoolMonitor) StartWithReconnect(ctx context.Context, retryInterval time.Duration) {
+	defer func() {
+		// Guarantee done is closed so Stop never blocks, whether we
+		// connected successfully or never got past dial/handshake.
+		select {
+		case <-m.done:
+		default:
+			close(m.done)
+		}
+	}()
+	for {
+		if err := m.Start(ctx); err != nil {
+			m.logger.Warn("mempool monitor connect failed, retrying",
+				"peer", m.addr, "error", err, "retry_in", retryInterval)
+		} else {
+			// Start succeeded — block until readLoop exits (disconnect/error)
+			<-m.done
+			if ctx.Err() != nil {
+				return
+			}
+			m.logger.Warn("mempool monitor disconnected, reconnecting",
+				"peer", m.addr, "retry_in", retryInterval)
+		}
+		// Reset done channel for next cycle
+		m.done = make(chan struct{})
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(retryInterval):
+		}
+	}
+}
+
+// Stop shuts down the monitor. Safe to call whether the monitor connected
+// or is still retrying — StartWithReconnect guarantees done is closed on exit.
 func (m *MempoolMonitor) Stop() {
 	if m.cancel != nil {
 		m.cancel()

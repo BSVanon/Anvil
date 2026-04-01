@@ -47,6 +47,14 @@ type Server struct {
 	sseHub           *envelopeHub
 	watcher          *mempool.Watcher
 	proofFetcher     *spv.ProofFetcher
+	healthChecks     []HealthCheck // registered subsystem health checks
+}
+
+// HealthCheck is a named subsystem health probe. Returns a warning string
+// if the subsystem is degraded, or "" if healthy.
+type HealthCheck struct {
+	Name  string
+	Check func() string
 }
 
 // ServerConfig holds all parameters for NewServer.
@@ -581,6 +589,25 @@ func (s *Server) Mux() *http.ServeMux   { return s.mux }
 
 func (s *Server) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireAuth(next)
+}
+
+// RegisterHealthCheck adds a subsystem health probe that is evaluated on
+// every /status request. The check function returns a warning string if
+// the subsystem is degraded, or "" if healthy.
+func (s *Server) RegisterHealthCheck(name string, check func() string) {
+	s.healthChecks = append(s.healthChecks, HealthCheck{Name: name, Check: check})
+}
+
+// NoncePoolSize returns the number of ready nonces in the x402 payment gate.
+// Returns 0 if no payment gate or nonce pool is configured.
+func (s *Server) NoncePoolSize() int {
+	if s.paymentGate == nil || s.paymentGate.nonceProvider == nil {
+		return 0
+	}
+	if pool, ok := s.paymentGate.nonceProvider.(*UTXONoncePool); ok {
+		return pool.PoolSize()
+	}
+	return -1 // unknown provider type, don't alarm
 }
 
 // CorsWrap adds CORS headers to a handler. Exported for use by overlay engine.
