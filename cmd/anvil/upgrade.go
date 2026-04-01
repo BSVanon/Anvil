@@ -203,12 +203,18 @@ func cmdUpgrade(args []string) {
 	}
 	ok("Binary installed: " + destBin)
 
-	// Now stop and restart services (binary already on disk)
+	// Stop services and kill any zombie processes holding ports.
+	// systemctl stop can miss processes started outside systemd (manual runs),
+	// leaving the old binary serving on the port. Without this, the upgrade
+	// silently fails and the old version keeps running.
 	for _, svc := range services {
 		_ = exec.Command("systemctl", "stop", svc).Run()
 	}
 	if len(services) > 0 {
 		time.Sleep(1 * time.Second)
+		for _, svc := range services {
+			killZombieOnPort(apiPort(strings.TrimPrefix(svc, "anvil-")))
+		}
 		ok("Services stopped")
 	}
 
@@ -241,23 +247,33 @@ func cmdUpgrade(args []string) {
 		_ = os.Remove(backupBin)
 	}
 
-	// Quick health check
-	step("Health check")
-	time.Sleep(1 * time.Second)
-	healthResp, err := http.Get("http://localhost:9333/status")
-	if err == nil {
-		defer healthResp.Body.Close()
-		if healthResp.StatusCode == 200 {
-			ok("Node responding on :9333")
+	// Verify each service is running the new version — catches zombie processes,
+	// failed starts, and port conflicts that systemctl doesn't report.
+	step("Verifying upgrade")
+	time.Sleep(2 * time.Second)
+	allVerified := true
+	for _, svc := range services {
+		port := apiPort(strings.TrimPrefix(svc, "anvil-"))
+		runningVersion := fetchRunningVersion(port)
+		latestClean := strings.TrimPrefix(latest, "v")
+		if runningVersion == latestClean {
+			ok(fmt.Sprintf("%s on :%s running v%s", svc, port, runningVersion))
+		} else if runningVersion != "" {
+			fmt.Printf("  ✗ %s on :%s still running v%s (expected %s)\n", svc, port, runningVersion, latestClean)
+			fmt.Printf("    Try: sudo systemctl restart %s\n", svc)
+			allVerified = false
 		} else {
-			fmt.Printf("    WARNING: /status returned %d\n", healthResp.StatusCode)
+			fmt.Printf("  ✗ %s on :%s not responding\n", svc, port)
+			allVerified = false
 		}
-	} else {
-		fmt.Println("    WARNING: could not reach localhost:9333 (may still be starting)")
 	}
 
 	fmt.Println()
-	fmt.Printf("  Upgrade complete: %s → %s\n", current, latest)
+	if allVerified {
+		fmt.Printf("  Upgrade complete: %s → %s\n", current, latest)
+	} else {
+		fmt.Printf("  Upgrade partial: binary is %s but some services need manual restart\n", latest)
+	}
 	fmt.Println()
 }
 
@@ -397,6 +413,38 @@ func fileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// killZombieOnPort finds and kills any process listening on the given port.
+// Handles the case where systemctl stop misses processes started outside systemd.
+func killZombieOnPort(port string) {
+	out, err := exec.Command("fuser", fmt.Sprintf("%s/tcp", port)).Output()
+	if err != nil || len(out) == 0 {
+		return // nothing on this port
+	}
+	pids := strings.Fields(strings.TrimSpace(string(out)))
+	for _, pid := range pids {
+		fmt.Printf("    killing zombie PID %s on port %s\n", pid, port)
+		_ = exec.Command("kill", "-9", pid).Run()
+	}
+	time.Sleep(500 * time.Millisecond)
+}
+
+// fetchRunningVersion queries a node's /status endpoint and returns the version string.
+func fetchRunningVersion(port string) string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/status", port))
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var status struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return ""
+	}
+	return status.Version
 }
 
 // checkForUpdate queries GitHub for the latest release and logs if behind.
