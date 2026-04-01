@@ -13,6 +13,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/spv"
+	anvilstore "github.com/BSVanon/Anvil/internal/store"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
@@ -103,7 +104,7 @@ func New(
 	}
 
 	// Open persistent invoice store
-	invoiceDB, err := leveldb.OpenFile(dataDir+"/invoices", nil)
+	invoiceDB, err := anvilstore.OpenWithRecover(dataDir+"/invoices", nil)
 	if err != nil {
 		return nil, fmt.Errorf("open invoice store: %w", err)
 	}

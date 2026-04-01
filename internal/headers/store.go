@@ -12,6 +12,7 @@ import (
 	sdkchainhash "github.com/bsv-blockchain/go-sdk/chainhash"
 	p2pwire "github.com/libsv/go-p2p/chaincfg/chainhash"
 	"github.com/libsv/go-p2p/wire"
+	"github.com/BSVanon/Anvil/internal/store"
 	"github.com/syndtr/goleveldb/leveldb"
 )
 
@@ -37,7 +38,7 @@ type Store struct {
 // NewStore opens or creates a header store at the given path.
 // If the store is empty, it writes the genesis header at height 0.
 func NewStore(path string) (*Store, error) {
-	db, err := leveldb.OpenFile(path, nil)
+	db, err := store.OpenWithRecover(path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open header store: %w", err)
 	}

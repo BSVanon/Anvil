@@ -3,6 +3,7 @@ package spv
 import (
 	"fmt"
 
+	"github.com/BSVanon/Anvil/internal/store"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
@@ -21,7 +22,7 @@ type ProofStore struct {
 
 // NewProofStore opens or creates a proof store at the given path.
 func NewProofStore(path string) (*ProofStore, error) {
-	db, err := leveldb.OpenFile(path, nil)
+	db, err := store.OpenWithRecover(path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open proof store: %w", err)
 	}
