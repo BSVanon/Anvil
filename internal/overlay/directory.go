@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/store"
 	"github.com/BSVanon/Anvil/pkg/brc"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
@@ -54,7 +55,7 @@ type Directory struct {
 
 // NewDirectory opens or creates an overlay directory.
 func NewDirectory(path string) (*Directory, error) {
-	db, err := leveldb.OpenFile(path, nil)
+	db, err := store.OpenWithRecover(path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open overlay directory: %w", err)
 	}

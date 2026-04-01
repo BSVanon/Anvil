@@ -10,6 +10,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/config"
 	mempoolpkg "github.com/BSVanon/Anvil/internal/mempool"
 	"github.com/BSVanon/Anvil/internal/p2p"
+	anvilstore "github.com/BSVanon/Anvil/internal/store"
 	"github.com/libsv/go-p2p/chaincfg/chainhash"
 	"github.com/libsv/go-p2p/wire"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -40,7 +41,7 @@ func setupMempool(cfg *config.Config, logger *slog.Logger) *mempoolComponents {
 
 	// Open LevelDB for persistent watch hits
 	watchDir := filepath.Join(cfg.Node.DataDir, "watch")
-	watchDB, err := leveldb.OpenFile(watchDir, nil)
+	watchDB, err := anvilstore.OpenWithRecover(watchDir, nil)
 	if err != nil {
 		log.Printf("watch store failed (non-fatal, in-memory only): %v", err)
 	}

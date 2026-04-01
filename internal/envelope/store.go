@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/store"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
@@ -28,7 +29,7 @@ type Store struct {
 
 // NewStore opens or creates an envelope store.
 func NewStore(path string, maxEphemeralTTL, maxDurableSize int) (*Store, error) {
-	db, err := leveldb.OpenFile(path, nil)
+	db, err := store.OpenWithRecover(path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open envelope store: %w", err)
 	}
