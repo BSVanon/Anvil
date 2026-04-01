@@ -90,7 +90,7 @@ The installer should show `✓ SHA256 verified` during step 1.
 Pin to a specific tag (immutable on GitHub):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v1.1.0/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v1.1.1/scripts/install.sh | sudo bash
 ```
 
 Or clone and build from source:
@@ -98,7 +98,7 @@ Or clone and build from source:
 ```bash
 git clone https://github.com/BSVanon/Anvil.git
 cd Anvil
-git checkout v1.1.0
+git checkout v1.1.1
 make build
 sudo ./anvil deploy --nodes a --seed wss://anvil.sendbsv.com/mesh
 ```

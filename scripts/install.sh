@@ -2,7 +2,7 @@
 # Anvil Mesh Node — One-liner installer
 #
 # Secure install (pinned to a release tag):
-#   curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v1.1.0/scripts/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v1.1.1/scripts/install.sh | sudo bash
 #
 # Latest (follows main — less secure, but always current):
 #   curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/main/scripts/install.sh | sudo bash
