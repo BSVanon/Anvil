@@ -39,7 +39,15 @@ func cmdDoctor(args []string) {
 	pass("config loaded from %s", *configPath)
 
 	if cfg.Identity.WIF == "" {
-		fail("no identity WIF configured (set ANVIL_IDENTITY_WIF)")
+		// Check if the env file exists but wasn't loaded (e.g. permissions)
+		configDir := filepath.Dir(*configPath)
+		configBase := strings.TrimSuffix(filepath.Base(*configPath), filepath.Ext(*configPath))
+		envPath := filepath.Join(configDir, configBase+".env")
+		if _, err := os.Stat(envPath); err == nil {
+			fail("no identity WIF in environment, but env file exists at %s — check file permissions or run under systemd", envPath)
+		} else {
+			fail("no identity WIF configured (set ANVIL_IDENTITY_WIF or create %s)", envPath)
+		}
 		issues++
 	} else {
 		pass("identity WIF present (%s...)", cfg.Identity.WIF[:8])
