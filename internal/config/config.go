@@ -31,6 +31,8 @@ type MeshConfig struct {
 	MinBondSats  int      `toml:"min_bond_sats"`  // minimum bond UTXO required to peer (0 = no bond required)
 	BondCheckURL string   `toml:"bond_check_url"` // UTXO lookup API (default: WoC)
 	LocalPubkeys []string `toml:"local_pubkeys"`  // app pubkeys exempt from double-publish slashing on this node
+	RatePerSec   float64  `toml:"rate_per_sec"`   // per-peer envelope rate limit (default: 30)
+	RateBurst    int      `toml:"rate_burst"`      // per-peer burst allowance (default: 100)
 }
 
 type NodeConfig struct {

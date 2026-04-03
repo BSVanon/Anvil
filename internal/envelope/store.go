@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/store"
@@ -23,8 +24,10 @@ type Store struct {
 	ephemeral map[string]*Envelope // key → envelope
 	mu        sync.RWMutex
 
-	maxEphemeralTTL int // max TTL seconds for ephemeral envelopes
-	maxDurableSize  int // max payload size in bytes for durable envelopes
+	maxEphemeralTTL  int // max TTL seconds for ephemeral envelopes
+	maxDurableSize   int // max payload size in bytes for durable envelopes
+	maxDurableStoreB int64 // max total durable store size in bytes (0 = unlimited)
+	durableFull      atomic.Bool // set by CheckDurableCapacity, checked on write
 }
 
 // NewStore opens or creates an envelope store.
@@ -41,6 +44,33 @@ func NewStore(path string, maxEphemeralTTL, maxDurableSize int) (*Store, error) 
 	}, nil
 }
 
+// SetMaxDurableStoreMB sets the maximum durable store size in megabytes.
+// When exceeded, new durable writes are rejected. Call CheckDurableCapacity
+// periodically to update the full flag.
+func (s *Store) SetMaxDurableStoreMB(mb int) {
+	if mb > 0 {
+		s.maxDurableStoreB = int64(mb) * 1024 * 1024
+	}
+}
+
+// CheckDurableCapacity estimates durable store size and sets the full flag.
+// Call periodically (e.g., every 30 seconds alongside ephemeral sweep).
+// Returns (sizeBytes, isFull).
+func (s *Store) CheckDurableCapacity() (int64, bool) {
+	if s.maxDurableStoreB <= 0 {
+		return 0, false
+	}
+	var size int64
+	iter := s.db.NewIterator(util.BytesPrefix(prefixDurable), nil)
+	for iter.Next() {
+		size += int64(len(iter.Key()) + len(iter.Value()))
+	}
+	iter.Release()
+	full := size >= s.maxDurableStoreB
+	s.durableFull.Store(full)
+	return size, full
+}
+
 // Close closes the underlying LevelDB.
 func (s *Store) Close() error {
 	return s.db.Close()
@@ -54,6 +84,13 @@ func (s *Store) Ingest(env *Envelope) error {
 
 	env.ReceivedAt = time.Now()
 
+	// Backfill missing timestamp after signature verification passes.
+	// Legacy envelopes signed with timestamp=0 verify correctly (digest
+	// computed with 0), then get a receive-time timestamp for storage/query.
+	if env.Timestamp == 0 {
+		env.Timestamp = env.ReceivedAt.Unix()
+	}
+
 	if env.Durable {
 		return s.storeDurable(env)
 	}
@@ -61,6 +98,9 @@ func (s *Store) Ingest(env *Envelope) error {
 }
 
 func (s *Store) storeDurable(env *Envelope) error {
+	if s.durableFull.Load() {
+		return fmt.Errorf("durable store full: max capacity reached, rejecting new writes")
+	}
 	if len(env.Payload) > s.maxDurableSize {
 		return fmt.Errorf("payload %d bytes exceeds max %d", len(env.Payload), s.maxDurableSize)
 	}

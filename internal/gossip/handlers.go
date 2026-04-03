@@ -14,13 +14,34 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
-// requestCatchUp asks a peer for recent envelopes on critical topics.
+// requestCatchUp asks a peer for recent envelopes on topics this node cares about.
 // Called after connect so new/reconnecting nodes immediately get catalog, feeds, etc.
+// Catches up on: (1) built-in catchUpTopics, (2) non-empty local interest prefixes.
 func (m *Manager) requestCatchUp(peer *auth.Peer) {
-	if len(m.catchUpTopics) == 0 {
+	// Merge built-in topics with non-empty interest prefixes (deduped).
+	seen := make(map[string]struct{})
+	var topics []string
+	for _, t := range m.catchUpTopics {
+		if _, ok := seen[t]; !ok {
+			seen[t] = struct{}{}
+			topics = append(topics, t)
+		}
+	}
+	for _, prefix := range m.localInterests {
+		if prefix == "" {
+			continue // wildcard = "forward everything live", not "backfill entire store"
+		}
+		if _, ok := seen[prefix]; !ok {
+			seen[prefix] = struct{}{}
+			topics = append(topics, prefix)
+		}
+	}
+	if len(topics) == 0 {
 		return
 	}
-	for _, topic := range m.catchUpTopics {
+	// No round counter reset needed here — catchUpRounds is keyed by
+	// "peerPK:topic", so a new peer naturally starts at 0 for all topics.
+	for _, topic := range topics {
 		payload, err := Encode(MsgDataRequest, DataRequestPayload{
 			Topic: topic,
 			Limit: 50,
@@ -30,7 +51,7 @@ func (m *Manager) requestCatchUp(peer *auth.Peer) {
 		}
 		_ = peer.ToPeer(context.Background(), payload, nil, 5000)
 	}
-	m.logger.Debug("catch-up requested", "topics", m.catchUpTopics)
+	m.logger.Debug("catch-up requested", "topics", topics)
 }
 
 // announceInterests sends our topic declarations to a peer.
@@ -179,17 +200,15 @@ func (m *Manager) handleMessage(senderPKHex string, senderPK *ec.PublicKey, payl
 	case MsgDataRequest:
 		return m.onDataRequest(senderPKHex, senderPK, msg.Data)
 	case MsgDataResponse:
-		return m.onDataResponse(msg.Data)
+		return m.onDataResponse(senderPKHex, senderPK, msg.Data)
 	case MsgSHIPSync:
 		return m.onSHIPSync(senderPKHex, msg.Data)
 	case MsgSlashWarning:
 		return m.onSlashWarning(senderPKHex, msg.Data)
-	case MsgTxAnnounce:
-		return m.onTxAnnounce(senderPKHex, senderPK, msg.Data)
-	case MsgTxRequest:
-		return m.onTxRequest(senderPKHex, senderPK, msg.Data)
-	case MsgTxResponse:
-		return m.onTxResponse(senderPKHex, msg.Data)
+	case MsgTxAnnounce, MsgTxRequest, MsgTxResponse:
+		// Deprecated: tx relay messages accepted but not processed.
+		// Mempool-era feature, no longer relevant post-Teranode.
+		return nil
 	default:
 		m.logger.Debug("unknown mesh message type", "type", msg.Type)
 	}
@@ -282,12 +301,36 @@ func (m *Manager) onDataRequest(senderPKHex string, senderPK *ec.PublicKey, raw 
 	if limit <= 0 {
 		limit = 100
 	}
-	results, _ := m.store.QueryByTopic(req.Topic, limit)
+	if limit > 100 {
+		limit = 100
+	}
+
+	// Fetch one extra to detect HasMore.
+	allResults, _ := m.store.QueryByTopic(req.Topic, limit+1)
+
+	// Filter by Since timestamp if set. Results are newest-first.
+	// Since acts as an "older than" cursor: return envelopes with
+	// timestamps strictly less than Since, enabling backward pagination.
+	if req.Since > 0 {
+		var filtered []*envelope.Envelope
+		for _, env := range allResults {
+			if env.Timestamp < req.Since {
+				filtered = append(filtered, env)
+			}
+		}
+		allResults = filtered
+	}
+
+	hasMore := len(allResults) > limit
+	results := allResults
+	if hasMore {
+		results = allResults[:limit]
+	}
 
 	resp, err := Encode(MsgDataResponse, DataResponsePayload{
 		Topic:     req.Topic,
 		Envelopes: results,
-		HasMore:   false,
+		HasMore:   hasMore,
 	})
 	if err != nil {
 		return err
@@ -303,18 +346,55 @@ func (m *Manager) onDataRequest(senderPKHex string, senderPK *ec.PublicKey, raw 
 }
 
 // onDataResponse handles catch-up response. Stores locally without re-gossiping.
-func (m *Manager) onDataResponse(raw json.RawMessage) error {
+// If HasMore is true, sends a follow-up request with Since set to the oldest
+// timestamp received, up to maxCatchUpRounds total per topic.
+func (m *Manager) onDataResponse(senderPKHex string, senderPK *ec.PublicKey, raw json.RawMessage) error {
 	var resp DataResponsePayload
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil
 	}
 
+	var oldestTS int64
 	for _, env := range resp.Envelopes {
 		if err := env.Validate(); err != nil {
 			continue
 		}
 		if m.store != nil {
 			_ = m.store.Ingest(env)
+		}
+		if oldestTS == 0 || env.Timestamp < oldestTS {
+			oldestTS = env.Timestamp
+		}
+	}
+
+	// Follow up if the responder has more data and we haven't exceeded the
+	// catch-up round limit (5 rounds = max 500 envelopes per topic per peer).
+	if resp.HasMore && oldestTS > 0 {
+		roundKey := senderPKHex + ":" + resp.Topic
+		m.mu.RLock()
+		rounds := m.catchUpRounds[roundKey]
+		m.mu.RUnlock()
+		if rounds < maxCatchUpRounds {
+			m.mu.Lock()
+			if m.catchUpRounds == nil {
+				m.catchUpRounds = make(map[string]int)
+			}
+			m.catchUpRounds[roundKey] = rounds + 1
+			m.mu.Unlock()
+
+			payload, err := Encode(MsgDataRequest, DataRequestPayload{
+				Topic: resp.Topic,
+				Limit: 100,
+				Since: oldestTS,
+			})
+			if err == nil {
+				m.mu.RLock()
+				peer, ok := m.peers[senderPKHex]
+				m.mu.RUnlock()
+				if ok && peer.Peer != nil {
+					_ = peer.Peer.ToPeer(context.Background(), payload, senderPK, 5000)
+				}
+			}
 		}
 	}
 	return nil

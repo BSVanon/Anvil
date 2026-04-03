@@ -13,18 +13,32 @@ import (
 // reconnects if the connection drops. Blocks until ctx is cancelled.
 // Designed to run in a goroutine per seed peer.
 func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string, interval time.Duration) {
+	consecutiveFails := 0
 	for {
+		// Anti-thrash: exponential backoff after consecutive failures,
+		// capped at 5 minutes. Resets on successful connection.
+		retryDelay := interval
+		if consecutiveFails > 0 {
+			retryDelay = interval * time.Duration(1<<min(consecutiveFails, 4)) // 30s, 60s, 120s, 240s, 300s cap
+			if retryDelay > 5*time.Minute {
+				retryDelay = 5 * time.Minute
+			}
+		}
+
 		transport, err := NewWSTransportAdapter(endpoint)
 		if err != nil {
+			consecutiveFails++
 			m.logger.Warn("seed peer connect failed, retrying",
-				"endpoint", endpoint, "error", err, "retry_in", interval)
+				"endpoint", endpoint, "error", err, "retry_in", retryDelay,
+				"consecutive_fails", consecutiveFails)
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(interval):
+			case <-time.After(retryDelay):
 				continue
 			}
 		}
+		consecutiveFails = 0 // reset on successful connect
 
 		peer := auth.NewPeer(&auth.PeerOptions{
 			Wallet:    m.wallet,
