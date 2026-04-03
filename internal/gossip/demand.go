@@ -43,3 +43,19 @@ func (m *Manager) MergeDemand(remote map[string]int) {
 		}
 	}
 }
+
+// DecayDemand halves all demand counters. Call periodically (e.g., every
+// 5 minutes) so demand naturally drops when queries/subscriptions stop.
+// Removes entries that decay to zero.
+func (m *Manager) DecayDemand() {
+	m.demandMu.Lock()
+	defer m.demandMu.Unlock()
+	for topic, count := range m.demandMap {
+		halved := count / 2
+		if halved <= 0 {
+			delete(m.demandMap, topic)
+		} else {
+			m.demandMap[topic] = halved
+		}
+	}
+}
