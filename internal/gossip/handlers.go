@@ -258,6 +258,10 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 		if err := m.store.Ingest(env); err != nil {
 			m.logger.Warn("envelope store error", "error", err)
 		}
+		// Catalog dedup: one entry per publisher, latest wins.
+		if env.Topic == "anvil:catalog" && env.Durable {
+			m.store.DeduplicateDurable(env)
+		}
 	}
 
 	m.IncrReceived()

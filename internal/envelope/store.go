@@ -153,6 +153,39 @@ func (s *Store) Delete(topic, key string) (bool, error) {
 	return deleted, nil
 }
 
+// DeduplicateDurable removes older durable envelopes that share the same
+// topic and publisher pubkey as the given envelope, keeping only the newest.
+// Used for topics like anvil:catalog where one entry per publisher should win.
+// Returns the number of entries removed.
+func (s *Store) DeduplicateDurable(env *Envelope) int {
+	prefix := append(append([]byte{}, prefixDurable...), []byte(env.Topic+":")...)
+	currentKey := append(append([]byte{}, prefixDurable...), []byte(env.Topic+":"+env.Key())...)
+
+	var toDelete [][]byte
+	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
+	for iter.Next() {
+		k := iter.Key()
+		if string(k) == string(currentKey) {
+			continue // keep the new entry
+		}
+		old, err := UnmarshalEnvelope(iter.Value())
+		if err != nil {
+			continue
+		}
+		if old.Pubkey == env.Pubkey {
+			keyCopy := make([]byte, len(k))
+			copy(keyCopy, k)
+			toDelete = append(toDelete, keyCopy)
+		}
+	}
+	iter.Release()
+
+	for _, k := range toDelete {
+		_ = s.db.Delete(k, nil)
+	}
+	return len(toDelete)
+}
+
 // StoreEphemeralDirect stores an envelope without validation. For testing only.
 func (s *Store) StoreEphemeralDirect(env *Envelope) {
 	s.mu.Lock()
