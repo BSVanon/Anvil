@@ -43,6 +43,7 @@ func TestHeartbeatPublish(t *testing.T) {
 		func() uint32 { return 100 },
 		func() int { return 2 },
 		func() map[string]int { return map[string]int{"test:topic": 5} },
+		func() map[string]int { return map[string]int{"test:topic": 3} },
 	)
 
 	// Wait for at least 2 heartbeats

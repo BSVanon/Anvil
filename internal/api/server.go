@@ -172,6 +172,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /data", s.requireAuth(s.handleDeleteData))
 	s.mux.HandleFunc("GET /overlay/lookup", s.openRead(s.handleOverlayLookup))
 
+	// Topic + identity discovery (v2.0)
+	s.mux.HandleFunc("GET /topics", s.openRead(s.handleListTopics))
+	s.mux.HandleFunc("GET /topics/{topic...}", s.openRead(s.handleGetTopic))
+	s.mux.HandleFunc("GET /identity/{pubkey}", s.openRead(s.handleGetIdentity))
+
 	// Always register x402 discovery — shows pricing even when free (price=0).
 	// Apps and Explorer use this to discover payment capabilities.
 	s.mux.HandleFunc("GET /.well-known/x402", cors(s.handleX402Discovery))
