@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -359,6 +360,14 @@ func main() {
 						log.Printf("mesh: receiving live data from peers (first: %s)", env.Topic)
 					})
 					logger.Debug("mesh envelope received", "topic", env.Topic, "from", env.Pubkey[:16])
+
+					// Merge demand from peer heartbeats.
+					if env.Topic == "mesh:heartbeat" {
+						var hb feeds.HeartbeatPayload
+						if err := json.Unmarshal([]byte(env.Payload), &hb); err == nil && len(hb.Demand) > 0 {
+							gossipMgr.MergeDemand(hb.Demand)
+						}
+					}
 				}
 			}(),
 		})

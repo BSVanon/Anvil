@@ -147,13 +147,16 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	m.seen[dedup] = struct{}{}
 	m.seenMu.Unlock()
 
-	// Verify sender signature if present.
-	if fwd.Signature != "" {
-		if !verifyMessageSignature(msg, fwd.Signature) {
-			m.logger.Warn("forwarded message signature invalid",
-				"sender", msg.Sender[:16], "recipient", msg.Recipient[:16])
-			return nil
-		}
+	// Require and verify sender signature. Reject unsigned forwards
+	// to prevent sender identity forgery by authenticated peers.
+	if fwd.Signature == "" {
+		m.logger.Debug("forwarded message rejected: no signature")
+		return nil
+	}
+	if !verifyMessageSignature(msg, fwd.Signature) {
+		m.logger.Warn("forwarded message signature invalid",
+			"sender", msg.Sender[:16], "recipient", msg.Recipient[:16])
+		return nil
 	}
 
 	// Store using Deliver (preserves original MessageID) — only if we
