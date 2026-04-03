@@ -19,6 +19,22 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
+const maxCatchUpRounds = 5 // max pagination rounds per topic on reconnect
+
+func cfgRatePerSec(v float64) float64 {
+	if v > 0 {
+		return v
+	}
+	return 30 // default: 30 envelopes/second per peer
+}
+
+func cfgRateBurst(v int) int {
+	if v > 0 {
+		return v
+	}
+	return 100 // default: burst 100
+}
+
 // Manager wraps go-sdk auth.Peer instances for mesh communication.
 // Each connected mesh peer is an authenticated session via auth.Peer.
 // The auth layer handles identity verification and transport;
@@ -65,7 +81,8 @@ type Manager struct {
 	slashTracker *slashTracker
 
 	// topics to request catch-up for on peer connect
-	catchUpTopics []string
+	catchUpTopics  []string
+	catchUpRounds  map[string]int // tracks pagination rounds per "peer:topic" key
 
 	// local pubkeys used for SHIP re-announce filtering
 	localPubkeys map[string]struct{}
@@ -130,6 +147,10 @@ type ManagerConfig struct {
 	// LocalPubkeys are identity pubkey hexes for this node's apps.
 	LocalPubkeys  []string
 	ConnectionLog *ConnectionLog
+	// RatePerSec is the per-peer envelope rate limit (default: 30).
+	RatePerSec float64
+	// RateBurst is the per-peer burst allowance (default: 100).
+	RateBurst int
 	// TxMempool enables mesh TX relay. When set, the manager announces
 	// txids to peers and responds to tx requests from the local mempool.
 	TxMempool    Mempool
@@ -160,8 +181,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 		overlayDir:     cfg.OverlayDir,
 		bondChecker:    cfg.BondChecker,
 		peerRates:      make(map[string]*peerRate),
-		ratePerSec:     30,  // loose: 30 envelopes/second per peer
-		rateBurst:      100, // burst allowance
+		ratePerSec:     cfgRatePerSec(cfg.RatePerSec),
+		rateBurst:      cfgRateBurst(cfg.RateBurst),
 		slashTracker:   newSlashTracker(),
 		localPubkeys:   make(map[string]struct{}),
 		connLog:        cfg.ConnectionLog,
@@ -170,6 +191,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	}
 	m.startedAt = time.Now()
 	m.catchUpTopics = cfg.CatchUpTopics
+	m.catchUpRounds = make(map[string]int)
 	for _, pk := range cfg.LocalPubkeys {
 		pk = strings.ToLower(strings.TrimSpace(pk))
 		if pk == "" {

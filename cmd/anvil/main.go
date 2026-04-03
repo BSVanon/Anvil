@@ -151,13 +151,19 @@ func main() {
 	}
 	defer envStore.Close()
 	log.Printf("envelope store opened (max TTL=%ds, max durable=%d bytes)", cfg.Envelopes.MaxEphemeralTTL, cfg.Envelopes.MaxDurableSize)
+	envStore.SetMaxDurableStoreMB(cfg.Envelopes.MaxDurableStoreMB)
 
-	go func() { // ephemeral envelope sweeper
+	go func() { // ephemeral envelope sweeper + durable capacity check
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			if n := envStore.ExpireEphemeral(); n > 0 {
 				logger.Info("expired ephemeral envelopes", "count", n)
+			}
+			if sizeB, full := envStore.CheckDurableCapacity(); full {
+				logger.Warn("durable store full — rejecting new durable writes",
+					"size_mb", sizeB/(1024*1024),
+					"max_mb", cfg.Envelopes.MaxDurableStoreMB)
 			}
 		}
 	}()
@@ -318,8 +324,10 @@ func main() {
 			BondChecker:    bondCheck,
 			LocalPubkeys:   localPKs,
 			ConnectionLog:  connLog,
+			RatePerSec:     cfg.Mesh.RatePerSec,
+			RateBurst:      cfg.Mesh.RateBurst,
 			TxMempool:      anvilgossip.NewTxRelayMempool(mempool),
-			CatchUpTopics:  []string{"anvil:catalog", "mesh:heartbeat", "mesh:blocks"},
+			CatchUpTopics:  []string{"anvil:catalog", "mesh:heartbeat"},
 			OnEnvelope: func() func(*envelope.Envelope) {
 				var firstData sync.Once
 				return func(env *envelope.Envelope) {
@@ -340,15 +348,8 @@ func main() {
 			log.Printf("anvil mesh: connecting to %d seed peers (auto-reconnect enabled)", len(cfg.Mesh.Seeds))
 		}
 
-		// TX mesh relay: API broadcast + P2P mempool → mesh announcement
-		broadcaster.SetMeshAnnouncer(func(txid string, size int) {
-			gossipMgr.AnnounceTx(txid, size, "")
-		})
-		if mpool != nil {
-			mpool.meshAnnounce = func(txid string, size int) {
-				gossipMgr.AnnounceTx(txid, size, "")
-			}
-		}
+		// TX mesh relay deprecated (post-Teranode: no mempool to relay).
+		// Keeping code but not wiring announcers.
 
 		// Inbound mesh listener (wss:// with TLS, ws:// without)
 		if cfg.Node.Listen != "" {
@@ -406,18 +407,10 @@ func main() {
 				envStore.Topics,
 			)
 
-			go pub.RunBlockTip(feedCtx, 10*time.Second,
-				headerStore.Tip,
-				func(h uint32) string {
-					hash, err := headerStore.HashAtHeight(h)
-					if err != nil || hash == nil {
-						return ""
-					}
-					return hash.String()
-				},
-			)
+			// Block tip feed removed — experimental, no consumers.
+			// Header sync continues internally for x402 payment verification.
 
-			log.Printf("feeds: heartbeat (60s) + block tip (10s poll) publishers started")
+			log.Printf("feeds: heartbeat (60s) publisher started")
 		}
 	}
 

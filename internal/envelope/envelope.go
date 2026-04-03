@@ -89,6 +89,7 @@ func (m *Monetization) Validate() error {
 // sha256(type + "\n" + topic + "\n" + payload + "\n" + ttl + "\n" + durable + "\n" + timestamp)
 // This prevents any field from being changed without breaking the signature.
 type Envelope struct {
+	Version   int    `json:"version,omitempty"`   // protocol version (0/absent = v0, future-proofing)
 	Type      string `json:"type"`                // always "data"
 	Topic     string `json:"topic"`               // topic string e.g. "oracle:rates:bsv"
 	Payload   string `json:"payload"`             // application data (opaque to the node)
@@ -96,7 +97,7 @@ type Envelope struct {
 	Pubkey    string `json:"pubkey"`              // compressed pubkey hex of the signer
 	TTL       int    `json:"ttl"`                 // seconds until expiry (0 = check Durable)
 	Durable   bool   `json:"durable,omitempty"`   // if true + TTL==0: persist forever
-	Timestamp int64  `json:"timestamp,omitempty"` // unix timestamp when created
+	Timestamp int64  `json:"timestamp"`           // unix timestamp when created (required)
 
 	// Gossip controls whether this envelope is forwarded to mesh peers.
 	// Default (false/absent) = gossip to all peers. Set true to keep local-only.
@@ -135,6 +136,12 @@ func (e *Envelope) SigningDigest() [32]byte {
 	// envelopes that don't set it (digest is identical to before).
 	if e.NoGossip {
 		canonical += "\nno_gossip"
+	}
+
+	// Version is appended when > 0 — backwards compatible with
+	// v0 envelopes (digest is identical to before).
+	if e.Version > 0 {
+		canonical += "\nv" + strconv.Itoa(e.Version)
 	}
 
 	// Monetization is appended when present — backwards compatible with
@@ -182,6 +189,8 @@ func (e *Envelope) Validate() error {
 	if e.TTL < 0 {
 		return fmt.Errorf("negative TTL")
 	}
+	// Timestamp=0 is accepted for backward compat with legacy envelopes.
+	// Callers (e.g. Store.Ingest) backfill after signature verification.
 	if e.TTL == 0 && !e.Durable {
 		return fmt.Errorf("TTL=0 requires durable=true")
 	}
