@@ -96,6 +96,11 @@ type Manager struct {
 	// Point-to-point messaging (BRC-33)
 	msgStore *messaging.Store // nil = messaging forwarding disabled
 
+	// Demand tracking: topic → subscriber/query count (local node).
+	// Updated by SSE hub and query handlers. Gossiped in heartbeat.
+	demandMu  sync.RWMutex
+	demandMap map[string]int
+
 	// activity counters (lock-free atomics — safe to increment under RLock)
 	envsReceived atomic.Int64
 	envsSent     atomic.Int64

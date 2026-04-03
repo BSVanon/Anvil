@@ -98,6 +98,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	flusher.Flush()
 
+	// Track demand for this topic.
+	if s.gossipMgr != nil {
+		s.gossipMgr.IncrDemand(topic)
+	}
+
 	ch := make(chan *envelope.Envelope, 16)
 	unsub := s.sseHub.subscribe(topic, ch)
 	defer unsub()

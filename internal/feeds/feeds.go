@@ -58,25 +58,26 @@ func (p *Publisher) publish(topic, payload string, ttl int) {
 
 // HeartbeatPayload is the JSON payload for mesh:heartbeat envelopes.
 type HeartbeatPayload struct {
-	Node      string   `json:"node"`
-	Version   string   `json:"version"`
-	Height    uint32   `json:"height"`
-	Peers     int      `json:"peers"`
-	Topics    []string `json:"topics"`
-	Timestamp int64    `json:"ts"`
+	Node      string         `json:"node"`
+	Version   string         `json:"version"`
+	Height    uint32         `json:"height"`
+	Peers     int            `json:"peers"`
+	Topics    []string       `json:"topics"`
+	Demand    map[string]int `json:"demand,omitempty"` // topic → subscriber/query count
+	Timestamp int64          `json:"ts"`
 }
 
 // RunHeartbeat publishes a mesh:heartbeat envelope every interval.
 // The heartbeat announces this node's presence and basic stats so
 // newly connected nodes immediately see live data flowing.
-func (p *Publisher) RunHeartbeat(ctx context.Context, interval time.Duration, heightFn func() uint32, peerCountFn func() int, topicsFn func() map[string]int) {
+func (p *Publisher) RunHeartbeat(ctx context.Context, interval time.Duration, heightFn func() uint32, peerCountFn func() int, topicsFn func() map[string]int, demandFn func() map[string]int) {
 	ttl := int(interval.Seconds()) * 5
 	if ttl < 300 {
 		ttl = 300
 	}
 
 	// Publish immediately on start, then on interval
-	p.publishHeartbeat(ttl, heightFn, peerCountFn, topicsFn)
+	p.publishHeartbeat(ttl, heightFn, peerCountFn, topicsFn, demandFn)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -85,16 +86,21 @@ func (p *Publisher) RunHeartbeat(ctx context.Context, interval time.Duration, he
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.publishHeartbeat(ttl, heightFn, peerCountFn, topicsFn)
+			p.publishHeartbeat(ttl, heightFn, peerCountFn, topicsFn, demandFn)
 		}
 	}
 }
 
-func (p *Publisher) publishHeartbeat(ttl int, heightFn func() uint32, peerCountFn func() int, topicsFn func() map[string]int) {
+func (p *Publisher) publishHeartbeat(ttl int, heightFn func() uint32, peerCountFn func() int, topicsFn func() map[string]int, demandFn func() map[string]int) {
 	topicMap := topicsFn()
 	topicNames := make([]string, 0, len(topicMap))
 	for t := range topicMap {
 		topicNames = append(topicNames, t)
+	}
+
+	var demand map[string]int
+	if demandFn != nil {
+		demand = demandFn()
 	}
 
 	hb := HeartbeatPayload{
@@ -103,6 +109,7 @@ func (p *Publisher) publishHeartbeat(ttl int, heightFn func() uint32, peerCountF
 		Height:    heightFn(),
 		Peers:     peerCountFn(),
 		Topics:    topicNames,
+		Demand:    demand,
 		Timestamp: time.Now().Unix(),
 	}
 	data, _ := json.Marshal(hb)

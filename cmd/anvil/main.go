@@ -426,6 +426,7 @@ func main() {
 				headerStore.Tip,
 				gossipMgr.PeerCount,
 				envStore.Topics,
+				gossipMgr.DemandMap,
 			)
 
 			// Block tip feed removed — experimental, no consumers.
