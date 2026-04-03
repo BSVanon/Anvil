@@ -201,6 +201,13 @@ func (s *Server) handlePostData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Catalog dedup: one entry per publisher per topic. Latest wins.
+	if env.Topic == "anvil:catalog" && env.Durable {
+		if n := s.envelopeStore.DeduplicateDurable(env); n > 0 {
+			s.logger.Info("catalog dedup: removed older entries", "pubkey", env.Pubkey[:16], "removed", n)
+		}
+	}
+
 	if s.gossipMgr != nil {
 		s.gossipMgr.BroadcastEnvelope(env)
 	}
