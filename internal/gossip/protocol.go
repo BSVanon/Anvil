@@ -47,6 +47,10 @@ const (
 
 	// MsgTxResponse carries the raw transaction hex in response to a request.
 	MsgTxResponse MessageType = "tx_response"
+
+	// MsgForward forwards a point-to-point message to the recipient's node.
+	// Used for cross-node BRC-33 message delivery.
+	MsgForward MessageType = "msg_forward"
 )
 
 // Message is the wire format for all mesh messages, serialized as

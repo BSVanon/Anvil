@@ -17,6 +17,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/bond"
 	"github.com/BSVanon/Anvil/internal/envelope"
+	"github.com/BSVanon/Anvil/internal/messaging"
 )
 
 const maxCatchUpRounds = 5 // max pagination rounds per topic on reconnect
@@ -91,6 +92,9 @@ type Manager struct {
 	// TX relay
 	txMempool    Mempool      // nil = TX relay disabled
 	onTxCallback OnTxCallback // called when new tx received via mesh
+
+	// Point-to-point messaging (BRC-33)
+	msgStore *messaging.Store // nil = messaging forwarding disabled
 
 	// activity counters (lock-free atomics — safe to increment under RLock)
 	envsReceived atomic.Int64

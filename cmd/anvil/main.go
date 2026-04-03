@@ -24,6 +24,7 @@ import (
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/headers"
 	mempoolpkg "github.com/BSVanon/Anvil/internal/mempool"
+	anvilmsg "github.com/BSVanon/Anvil/internal/messaging"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/BSVanon/Anvil/internal/p2p"
@@ -164,6 +165,26 @@ func main() {
 				logger.Warn("durable store full — rejecting new durable writes",
 					"size_mb", sizeB/(1024*1024),
 					"max_mb", cfg.Envelopes.MaxDurableStoreMB)
+			}
+		}
+	}()
+
+	// Point-to-point messaging (BRC-33)
+	msgDir := filepath.Join(cfg.Node.DataDir, "messages")
+	msgStore, err := anvilmsg.NewStore(msgDir, 7*24*3600) // 7-day TTL
+	if err != nil {
+		log.Fatalf("message store: %v", err)
+	}
+	defer msgStore.Close()
+	log.Printf("message store opened (7-day TTL)")
+
+	// Periodic message expiry (alongside envelope sweep)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if n := msgStore.ExpireOld(); n > 0 {
+				logger.Info("expired old messages", "count", n)
 			}
 		}
 	}()
@@ -499,6 +520,7 @@ func main() {
 		ProofFetcher:   spv.NewProofFetcher(arcClient, logger),
 		P2PTxSource:    p2pTxFetcher,
 		P2PBlockSource: p2pBlockFetcher,
+		MsgStore: msgStore,
 		HeaderLookup: func(height int) string {
 			if height < 0 {
 				return ""
@@ -517,6 +539,7 @@ func main() {
 
 	if gossipMgr != nil { // SSE notifications from mesh
 		gossipMgr.SetOnEnvelopeHook(srv.NotifyEnvelope)
+		gossipMgr.SetMsgStore(msgStore) // enable cross-node message forwarding
 	}
 
 	if overlayEngine != nil {

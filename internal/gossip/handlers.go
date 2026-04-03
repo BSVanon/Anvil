@@ -209,6 +209,8 @@ func (m *Manager) handleMessage(senderPKHex string, senderPK *ec.PublicKey, payl
 		// Deprecated: tx relay messages accepted but not processed.
 		// Mempool-era feature, no longer relevant post-Teranode.
 		return nil
+	case MsgForward:
+		return m.onMsgForward(senderPKHex, msg.Data)
 	default:
 		m.logger.Debug("unknown mesh message type", "type", msg.Type)
 	}
