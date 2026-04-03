@@ -162,23 +162,36 @@ func (s *Store) DeduplicateDurable(env *Envelope) int {
 	currentKey := append(append([]byte{}, prefixDurable...), []byte(env.Topic+":"+env.Key())...)
 
 	var toDelete [][]byte
+	newerExists := false
 	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
 	for iter.Next() {
 		k := iter.Key()
 		if string(k) == string(currentKey) {
-			continue // keep the new entry
+			continue // skip self
 		}
 		old, err := UnmarshalEnvelope(iter.Value())
 		if err != nil {
 			continue
 		}
-		if old.Pubkey == env.Pubkey {
-			keyCopy := make([]byte, len(k))
-			copy(keyCopy, k)
-			toDelete = append(toDelete, keyCopy)
+		if old.Pubkey != env.Pubkey {
+			continue
 		}
+		if old.Timestamp > env.Timestamp {
+			// A newer entry already exists — the incoming envelope is stale.
+			newerExists = true
+			break
+		}
+		keyCopy := make([]byte, len(k))
+		copy(keyCopy, k)
+		toDelete = append(toDelete, keyCopy)
 	}
 	iter.Release()
+
+	if newerExists {
+		// Stale envelope arrived late. Remove it instead of the newer one.
+		_ = s.db.Delete(currentKey, nil)
+		return 0
+	}
 
 	for _, k := range toDelete {
 		_ = s.db.Delete(k, nil)
