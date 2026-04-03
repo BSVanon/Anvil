@@ -94,7 +94,8 @@ type Manager struct {
 	onTxCallback OnTxCallback // called when new tx received via mesh
 
 	// Point-to-point messaging (BRC-33)
-	msgStore *messaging.Store // nil = messaging forwarding disabled
+	msgStore    *messaging.Store // nil = messaging forwarding disabled
+	identityKey *ec.PrivateKey   // node identity key for signing messages
 
 	// Demand tracking: topic → subscriber/query count (local node).
 	// Updated by SSE hub and query handlers. Gossiped in heartbeat.
@@ -156,6 +157,8 @@ type ManagerConfig struct {
 	// LocalPubkeys are identity pubkey hexes for this node's apps.
 	LocalPubkeys  []string
 	ConnectionLog *ConnectionLog
+	// IdentityKey is the node's private key for signing messages.
+	IdentityKey *ec.PrivateKey
 	// RatePerSec is the per-peer envelope rate limit (default: 30).
 	RatePerSec float64
 	// RateBurst is the per-peer burst allowance (default: 100).
@@ -201,6 +204,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	m.startedAt = time.Now()
 	m.catchUpTopics = cfg.CatchUpTopics
 	m.catchUpRounds = make(map[string]int)
+	m.identityKey = cfg.IdentityKey
 	for _, pk := range cfg.LocalPubkeys {
 		pk = strings.ToLower(strings.TrimSpace(pk))
 		if pk == "" {

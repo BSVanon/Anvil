@@ -70,10 +70,12 @@ func (m *Manager) ForwardMessage(msg *messaging.Message) {
 
 	// Sign the message with this node's identity key.
 	var sigHex string
-	if m.wallet != nil {
-		// Get the signing key from the wallet.
-		// The sender field should already be set to the correct pubkey.
-		// We sign with the node's identity key as the forwarding node.
+	if m.identityKey != nil {
+		var err error
+		sigHex, err = signMessage(msg, m.identityKey)
+		if err != nil {
+			m.logger.Warn("failed to sign message for forwarding", "error", err)
+		}
 	}
 
 	payload, err := Encode(MsgForward, MsgForwardPayload{

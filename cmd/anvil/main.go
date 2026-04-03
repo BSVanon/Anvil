@@ -178,7 +178,7 @@ func main() {
 	defer msgStore.Close()
 	log.Printf("message store opened (7-day TTL)")
 
-	// Periodic message expiry (alongside envelope sweep)
+	// Periodic message expiry (demand decay added after gossipMgr init)
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
@@ -266,9 +266,11 @@ func main() {
 	}
 
 	var identityPubHex string
+	var identityPrivKey *ec.PrivateKey
 	if cfg.Identity.WIF != "" {
 		if ik, err := ec.PrivateKeyFromWif(cfg.Identity.WIF); err == nil {
 			identityPubHex = fmt.Sprintf("%x", ik.PubKey().Compressed())
+			identityPrivKey = ik
 		}
 	}
 
@@ -345,6 +347,7 @@ func main() {
 			BondChecker:    bondCheck,
 			LocalPubkeys:   localPKs,
 			ConnectionLog:  connLog,
+			IdentityKey:    identityPrivKey,
 			RatePerSec:     cfg.Mesh.RatePerSec,
 			RateBurst:      cfg.Mesh.RateBurst,
 			TxMempool:      anvilgossip.NewTxRelayMempool(mempool),
@@ -541,6 +544,15 @@ func main() {
 	if gossipMgr != nil { // SSE notifications from mesh
 		gossipMgr.SetOnEnvelopeHook(srv.NotifyEnvelope)
 		gossipMgr.SetMsgStore(msgStore) // enable cross-node message forwarding
+
+		// Periodic demand decay (halve counters every 5 min)
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				gossipMgr.DecayDemand()
+			}
+		}()
 	}
 
 	if overlayEngine != nil {

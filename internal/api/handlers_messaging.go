@@ -26,7 +26,6 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Sender     string `json:"sender"`
 		Recipient  string `json:"recipient"`
 		MessageBox string `json:"messageBox"`
 		Body       string `json:"body"`
@@ -40,15 +39,11 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "recipient must be 66-char compressed pubkey hex")
 		return
 	}
-	// Default sender to node identity if not provided.
-	sender := req.Sender
-	if sender == "" {
-		sender = s.identityPub
-	}
-	if len(sender) != 66 {
-		writeError(w, http.StatusBadRequest, "sender must be 66-char compressed pubkey hex")
-		return
-	}
+	// Sender is always the node's identity for API-submitted messages.
+	// The node signs the forwarded message, so sender identity is verifiable.
+	// Apps that need a different sender identity should sign the message
+	// client-side and submit via the mesh gossip layer directly.
+	sender := s.identityPub
 
 	msg := &messaging.Message{
 		Sender:     sender,
@@ -64,8 +59,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward to mesh for cross-node delivery.
+	// ForwardMessage signs with the node's identity key.
 	if s.gossipMgr != nil {
-		s.gossipMgr.ForwardSignedMessage(msg, "")
+		s.gossipMgr.ForwardMessage(msg)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

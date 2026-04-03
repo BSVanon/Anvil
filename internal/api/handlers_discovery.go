@@ -106,7 +106,10 @@ func (s *Server) handleGetTopic(w http.ResponseWriter, r *http.Request) {
 	if info.Publisher != "" {
 		idEnvs, _ := s.envelopeStore.QueryByTopic("identity:"+info.Publisher, 1)
 		if len(idEnvs) > 0 {
-			identity = json.RawMessage(idEnvs[0].Payload)
+			raw := json.RawMessage(idEnvs[0].Payload)
+			if json.Valid(raw) {
+				identity = raw
+			}
 		}
 	}
 
@@ -124,7 +127,10 @@ func (s *Server) handleGetTopic(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enrichTopicInfo(info *TopicInfo) {
 	metaEnvs, _ := s.envelopeStore.QueryByTopic("meta:"+info.Topic, 1)
 	if len(metaEnvs) > 0 {
-		info.Metadata = json.RawMessage(metaEnvs[0].Payload)
+		raw := json.RawMessage(metaEnvs[0].Payload)
+		if json.Valid(raw) {
+			info.Metadata = raw
+		}
 	}
 }
 
@@ -148,8 +154,13 @@ func (s *Server) handleGetIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	raw := json.RawMessage(envs[0].Payload)
+	if !json.Valid(raw) {
+		writeError(w, http.StatusInternalServerError, "identity payload is not valid JSON")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"pubkey":   pubkey,
-		"identity": json.RawMessage(envs[0].Payload),
+		"identity": raw,
 	})
 }

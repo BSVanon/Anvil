@@ -235,6 +235,11 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Track demand for this topic.
+	if s.gossipMgr != nil {
+		s.gossipMgr.IncrDemand(topic)
+	}
+
 	limit := 100
 	if l := r.URL.Query().Get("limit"); l != "" {
 		_, _ = fmt.Sscanf(l, "%d", &limit) // bad input keeps default
