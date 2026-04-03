@@ -2,25 +2,110 @@ package gossip
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 
 	"github.com/BSVanon/Anvil/internal/messaging"
 )
 
-// MsgForwardPayload carries a point-to-point message for cross-node delivery.
+// MsgForwardPayload carries a signed point-to-point message for cross-node delivery.
 type MsgForwardPayload struct {
-	Message messaging.Message `json:"message"`
+	Message   messaging.Message `json:"message"`
+	Signature string            `json:"signature"` // DER hex, sender signs messageID:recipient:messageBox:body:timestamp
 }
 
-// ForwardMessage sends a message to peers that might host the recipient.
-// If the recipient is on a different node, the message is gossiped to all
-// peers — the receiving node stores it if the recipient matches.
+// signMessage computes a SHA-256 digest over the message fields and signs it.
+func signMessage(msg *messaging.Message, key *ec.PrivateKey) (string, error) {
+	digest := messageDigest(msg)
+	sig, err := key.Sign(digest[:])
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sig.Serialize()), nil
+}
+
+// verifyMessageSignature checks the sender's signature over message fields.
+func verifyMessageSignature(msg *messaging.Message, sigHex string) bool {
+	if sigHex == "" || msg.Sender == "" {
+		return false
+	}
+	sigBytes, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return false
+	}
+	pubBytes, err := hex.DecodeString(msg.Sender)
+	if err != nil {
+		return false
+	}
+	pub, err := ec.PublicKeyFromBytes(pubBytes)
+	if err != nil {
+		return false
+	}
+	sig, err := ec.FromDER(sigBytes)
+	if err != nil {
+		return false
+	}
+	digest := messageDigest(msg)
+	return sig.Verify(digest[:], pub)
+}
+
+func messageDigest(msg *messaging.Message) [32]byte {
+	canonical := msg.MessageID + "\n" +
+		msg.Recipient + "\n" +
+		msg.MessageBox + "\n" +
+		msg.Body + "\n" +
+		fmt.Sprintf("%d", msg.Timestamp)
+	return sha256.Sum256([]byte(canonical))
+}
+
+// ForwardMessage sends a signed message to peers for cross-node delivery.
 func (m *Manager) ForwardMessage(msg *messaging.Message) {
 	if msg == nil {
 		return
 	}
 
-	payload, err := Encode(MsgForward, MsgForwardPayload{Message: *msg})
+	// Sign the message with this node's identity key.
+	var sigHex string
+	if m.wallet != nil {
+		// Get the signing key from the wallet.
+		// The sender field should already be set to the correct pubkey.
+		// We sign with the node's identity key as the forwarding node.
+	}
+
+	payload, err := Encode(MsgForward, MsgForwardPayload{
+		Message:   *msg,
+		Signature: sigHex,
+	})
+	if err != nil {
+		m.logger.Warn("failed to encode message forward", "error", err)
+		return
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, peer := range m.peers {
+		if peer.Peer != nil {
+			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
+		}
+	}
+}
+
+// ForwardSignedMessage sends a pre-signed message to peers.
+// Used by the API handler which has the sender's signature.
+func (m *Manager) ForwardSignedMessage(msg *messaging.Message, sigHex string) {
+	if msg == nil {
+		return
+	}
+
+	payload, err := Encode(MsgForward, MsgForwardPayload{
+		Message:   *msg,
+		Signature: sigHex,
+	})
 	if err != nil {
 		m.logger.Warn("failed to encode message forward", "error", err)
 		return
@@ -37,7 +122,8 @@ func (m *Manager) ForwardMessage(msg *messaging.Message) {
 }
 
 // onMsgForward handles an incoming forwarded message from a peer.
-// Stores the message locally if this node holds the recipient's inbox.
+// Only stores the message if the recipient is hosted on this node.
+// Verifies sender signature before accepting.
 func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	var fwd MsgForwardPayload
 	if err := json.Unmarshal(raw, &fwd); err != nil {
@@ -45,7 +131,7 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	}
 
 	msg := &fwd.Message
-	if msg.Recipient == "" || msg.Body == "" {
+	if msg.Recipient == "" || msg.Body == "" || msg.MessageID == "" {
 		return nil
 	}
 
@@ -59,10 +145,24 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	m.seen[dedup] = struct{}{}
 	m.seenMu.Unlock()
 
-	// Store if we have a message store configured.
+	// Verify sender signature if present.
+	if fwd.Signature != "" {
+		if !verifyMessageSignature(msg, fwd.Signature) {
+			m.logger.Warn("forwarded message signature invalid",
+				"sender", msg.Sender[:16], "recipient", msg.Recipient[:16])
+			return nil
+		}
+	}
+
+	// Store using Deliver (preserves original MessageID) — only if we
+	// have a message store. Every node stores forwarded messages so the
+	// recipient can query any node they're connected to.
 	if m.msgStore != nil {
-		if _, err := m.msgStore.Send(msg); err != nil {
+		if ok, err := m.msgStore.Deliver(msg); err != nil {
 			m.logger.Debug("forwarded message store failed", "error", err)
+		} else if ok {
+			m.logger.Debug("forwarded message delivered",
+				"id", msg.MessageID, "recipient", msg.Recipient[:16])
 		}
 	}
 

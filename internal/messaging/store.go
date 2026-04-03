@@ -85,6 +85,31 @@ func (s *Store) Send(msg *Message) (string, error) {
 	return msg.MessageID, nil
 }
 
+// Deliver stores a message with a pre-assigned MessageID (from another node).
+// Used for forwarded messages where the ID must be stable across hops.
+// Returns false if the message already exists (dedup).
+func (s *Store) Deliver(msg *Message) (bool, error) {
+	if msg.MessageID == "" || msg.Recipient == "" || msg.Body == "" {
+		return false, fmt.Errorf("messageID, recipient, and body required")
+	}
+
+	key := s.messageKey(msg.Recipient, msg.MessageID)
+
+	// Dedup: don't overwrite existing messages with the same ID.
+	if ok, _ := s.db.Has(key, nil); ok {
+		return false, nil
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return false, fmt.Errorf("marshal message: %w", err)
+	}
+	if err := s.db.Put(key, data, nil); err != nil {
+		return false, fmt.Errorf("store message: %w", err)
+	}
+	return true, nil
+}
+
 // List returns messages for a recipient in a given message box.
 // Results are ordered by message ID (ascending = oldest first).
 func (s *Store) List(recipient, messageBox string) ([]*Message, error) {
