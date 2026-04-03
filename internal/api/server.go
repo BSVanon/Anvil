@@ -13,6 +13,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/content"
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/gossip"
+	"github.com/BSVanon/Anvil/internal/messaging"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/mempool"
 	"github.com/BSVanon/Anvil/internal/overlay"
@@ -47,6 +48,7 @@ type Server struct {
 	sseHub           *envelopeHub
 	watcher          *mempool.Watcher
 	proofFetcher     *spv.ProofFetcher
+	msgStore         *messaging.Store
 	healthChecks     []HealthCheck // registered subsystem health checks
 }
 
@@ -92,6 +94,7 @@ type ServerConfig struct {
 	SPVProofSource   string
 	Watcher          *mempool.Watcher
 	ProofFetcher     *spv.ProofFetcher
+	MsgStore         *messaging.Store
 }
 
 // NewServer creates a new REST API server.
@@ -144,6 +147,7 @@ func NewServer(cfg ServerConfig) *Server {
 		sseHub:           newEnvelopeHub(),
 		watcher:          cfg.Watcher,
 		proofFetcher:     cfg.ProofFetcher,
+		msgStore:         cfg.MsgStore,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -197,6 +201,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("OPTIONS /data", cors(func(w http.ResponseWriter, r *http.Request) {}))
 	s.mux.HandleFunc("POST /overlay/register", s.requireAuth(s.handleOverlayRegister))
 	s.mux.HandleFunc("POST /overlay/deregister", s.requireAuth(s.handleOverlayDeregister))
+
+	// BRC-33 messaging endpoints (point-to-point)
+	s.mux.HandleFunc("POST /sendMessage", s.requireAuth(s.handleSendMessage))
+	s.mux.HandleFunc("POST /listMessages", s.requireAuth(s.handleListMessages))
+	s.mux.HandleFunc("POST /acknowledgeMessage", s.requireAuth(s.handleAcknowledgeMessage))
 }
 
 // openRead wraps a handler with CORS, rate limiting, token gating, and x402 payment gating.
