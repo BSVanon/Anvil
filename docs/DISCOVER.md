@@ -1,128 +1,136 @@
-# Layer 3 — Discover
+# Discover
 
-Machines find, negotiate, and pay for services automatically. Zero onboarding.
+Machines, agents, and developers find what's on the mesh and how to use it.
 
 ---
 
 ## What it does
 
-Every Anvil node publishes a machine-readable service menu at `/.well-known/x402`. An AI agent, script, or automated system reads this endpoint, understands what's available, what it costs, and how to pay — without any human setup, API keys, or account creation.
+Every Anvil-Mesh node describes itself. Topics have metadata. Publishers
+have identities. Demand is visible. Payment requirements are published.
+A new participant — human, agent, or script — can arrive at any node
+and understand what's available without reading documentation.
 
-This is the machine economy: services that machines can discover and purchase on their own.
+## Discovery endpoints
 
-## The discovery endpoint
+### Browse topics
 
 ```bash
-curl http://any-anvil-node:9333/.well-known/x402
+curl http://any-node:9333/topics
 ```
+
+Returns all topics with envelope counts, last update times, and metadata:
 
 ```json
 {
-  "version": "0.1",
-  "network": "mainnet",
-  "scheme": "bsv-tx-v1",
-  "endpoints": [
-    {"method": "GET", "path": "/status", "price": 0},
-    {"method": "GET", "path": "/data", "price": 10, "note": "price may vary by topic"},
-    {"method": "GET", "path": "/tx/{txid}/beef", "price": 10}
+  "topics": [
+    {"topic": "oracle:rates:bsv", "count": 42, "last_updated": 1712345678, "metadata": {"description": "BSV/USD price feed", "update_interval": "60s"}},
+    {"topic": "anvil:catalog", "count": 3, "last_updated": 1712340000}
   ],
-  "payment_models": ["node_merchant", "passthrough", "split", "token"],
-  "non_custodial": true
+  "count": 2
 }
 ```
 
-A machine reads this and knows:
-- Which endpoints exist
-- What each one costs (in satoshis)
-- What payment methods are accepted
-- That payment is non-custodial (direct to the service provider)
+### Topic detail
+
+```bash
+curl http://any-node:9333/topics/oracle:rates:bsv
+```
+
+Returns everything about a topic: metadata, publisher, price, demand,
+and publisher identity if available.
+
+### Publisher identity
+
+```bash
+curl http://any-node:9333/identity/02abc...def
+```
+
+Returns the publisher's self-declared profile (name, description).
+
+### Payment discovery
+
+```bash
+curl http://any-node:9333/.well-known/x402
+```
+
+Returns all gated endpoints and their prices in satoshis.
+
+### Node discovery
+
+```bash
+curl http://any-node:9333/overlay/lookup?topic=anvil:mainnet
+```
+
+Returns all known nodes with identity, domain, and version.
 
 ## How a machine transacts
 
-### 1. Discover
+### 1. Discover topics
 
 ```
-GET /.well-known/x402 → JSON menu
+GET /topics → list of available data
+GET /topics/{topic} → detail with metadata, price, demand
 ```
 
-### 2. Request
+### 2. Evaluate
+
+The machine reads topic metadata (schema, update interval, price) and
+decides whether to subscribe. Demand count shows how popular the topic is.
+
+### 3. Request data
 
 ```
-GET /data?topic=oracle:rates:bsv → 402 Payment Required
+GET /data?topic=oracle:rates:bsv → 402 Payment Required (if priced)
 ```
 
-The 402 response includes:
-- `X402-Price`: amount in satoshis
-- `X402-Payee`: locking script (who to pay)
-- `X402-Nonce`: unique challenge binding this payment to this request
+### 4. Pay
 
-### 3. Pay
+Build a BSV transaction paying the challenge amount. Standard P2PKH —
+any BSV wallet SDK can build it.
 
-The machine builds a BSV transaction paying the required amount to the specified payee. This is a standard P2PKH transaction — any BSV wallet SDK can build it.
-
-### 4. Prove
+### 5. Prove and consume
 
 ```
 GET /data?topic=oracle:rates:bsv
 X402-Proof: <base64-encoded payment proof>
 ```
 
-The proof contains the transaction, the nonce, and request binding. Anvil verifies it and serves the response.
+### 6. Subscribe for real-time
 
-### 5. Consume
-
-The machine receives the data and can verify the envelope signatures independently.
-
-## Finding nodes
-
-Nodes discover each other via SHIP (Simplified Host Identity Protocol) overlay tokens. Each node registers its identity and capabilities on the BSV blockchain.
-
-Query any node's overlay directory:
-
-```bash
-curl "http://any-node:9333/overlay/lookup?topic=anvil:mainnet"
+```
+GET /data/subscribe?topic=oracle:rates:bsv → SSE stream
 ```
 
-```json
-{
-  "topic": "anvil:mainnet",
-  "count": 2,
-  "peers": [
-    {"identity_pub": "0257a1...", "domain": "node-a.example.com:8333", "topic": "anvil:mainnet"},
-    {"identity_pub": "02d127...", "domain": "node-b.example.com:8334", "topic": "anvil:mainnet"}
-  ]
-}
-```
+### 7. Send messages
 
-Nodes gossip SHIP registrations across the mesh — querying any single node returns the full directory.
+```
+POST /sendMessage
+{"recipient": "02abc...def", "messageBox": "inbox", "body": "hello"}
+```
 
 ## For AI agent developers
 
 If you're building an AI agent that needs to:
 
-- **Read real-time data** — discover topic feeds via `/overlay/lookup`, subscribe via `/data?topic=...`
+- **Find data** — `GET /topics` lists all available topics with metadata
+- **Read real-time data** — `GET /data/subscribe?topic=...` for SSE push
 - **Pay for premium data** — read `/.well-known/x402`, build payment, include proof
 - **Publish data** — sign an envelope and POST to `/data`
+- **Send messages to other agents** — `POST /sendMessage` with recipient pubkey
 - **Verify data authenticity** — check envelope signatures (all fields are signed)
+- **Declare your identity** — publish to `identity:<your-pubkey>`
+- **Describe your topics** — publish to `meta:<your-topic>`
 
-The entire flow is HTTP + JSON. No WebSocket required for consumers. No API keys. No accounts. Just HTTP 402.
+The entire flow is HTTP + JSON. No WebSocket required for consumers.
+No API keys. No accounts.
 
 ## For node operators
 
-Your node automatically participates in the machine economy by running. Every endpoint is discoverable. If you enable pricing, machines can pay you directly.
+Your node automatically participates by running. Every endpoint is
+discoverable. If you enable pricing, machines pay you directly.
 
 To maximize discovery:
-1. Register SHIP tokens on-chain (Anvil does this on startup)
-2. Peer with other nodes (gossip spreads your registration)
-3. Set pricing if you want revenue (`payment_satoshis > 0`)
-
-## Standards
-
-| Standard | What Anvil implements |
-|----------|----------------------|
-| BRC-95 (BEEF) | Transaction proof format |
-| BRC-74 (MerklePath) | Merkle proof encoding |
-| BRC-42 (Key derivation) | Identity + invoice address derivation |
-| BRC-31 (Auth) | Authenticated peer sessions |
-| SHIP/SLAP | Overlay network discovery |
-| HTTP 402 | Payment-required flow |
+1. Peer with other nodes (gossip spreads your registration)
+2. Set pricing if you want revenue (`payment_satoshis > 0`)
+3. Publish topic metadata so consumers know what you serve

@@ -1,6 +1,6 @@
-# Layer 1 — Publish
+# Publish
 
-Publish signed data to the Anvil mesh. Every node receives it.
+Publish signed data to the Anvil-Mesh. Every node receives it.
 
 ---
 
@@ -15,6 +15,7 @@ This is pub/sub over BSV infrastructure — authenticated, signed, and verifiabl
 ```json
 {
   "type": "data",
+  "version": 0,
   "topic": "oracle:rates:bsv",
   "payload": "{\"USD\":14.35,\"source\":\"sendbsv\"}",
   "signature": "3045...",
@@ -28,12 +29,13 @@ This is pub/sub over BSV infrastructure — authenticated, signed, and verifiabl
 | Field | Required | Description |
 |-------|----------|-------------|
 | `type` | Yes | Always `"data"` |
+| `version` | No | Protocol version (0 = current, omit or set 0) |
 | `topic` | Yes | Routing key (hierarchical, e.g. `oracle:rates:bsv`) |
 | `payload` | Yes | Your data (opaque string — Anvil doesn't parse it) |
 | `signature` | Yes | DER hex over the signing digest |
 | `pubkey` | Yes | Compressed pubkey hex of the signer |
 | `ttl` | Yes | Seconds until expiry (`0` with `durable: true` = persistent) |
-| `timestamp` | Yes | Unix epoch seconds |
+| `timestamp` | Yes | Unix epoch seconds (required, backfilled if zero) |
 
 ## Signing
 
@@ -129,4 +131,4 @@ Two ways to authenticate `POST /data`:
 
 Add monetization to your envelopes — the node collects payment on your behalf.
 
-**[Layer 2: Earn →](EARN.md)**
+**[Earn →](EARN.md)**
