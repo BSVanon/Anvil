@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 	"net/http"
 	"strings"
 
@@ -220,6 +221,66 @@ func (s *Server) handlePostData(w http.ResponseWriter, r *http.Request) {
 		"topic":    env.Topic,
 		"durable":  env.Durable,
 		"key":      env.Key(),
+	})
+}
+
+// handleNodePublish signs an envelope with the node's identity key and publishes it.
+// Operator-only (requireAuth). Allows the operator to publish metadata, identity,
+// and catalog envelopes without needing external signing tools.
+func (s *Server) handleNodePublish(w http.ResponseWriter, r *http.Request) {
+	if s.envelopeStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "envelope store not configured")
+		return
+	}
+	if s.signingKey == nil {
+		writeError(w, http.StatusServiceUnavailable, "no signing key configured")
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+
+	env, err := envelope.UnmarshalEnvelope(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid envelope JSON: %v", err))
+		return
+	}
+
+	// Set timestamp if missing
+	if env.Timestamp == 0 {
+		env.Timestamp = time.Now().Unix()
+	}
+
+	// Sign with node identity key
+	env.Sign(s.signingKey)
+
+	if err := s.envelopeStore.Ingest(env); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("rejected: %v", err))
+		return
+	}
+
+	// Catalog dedup
+	if env.Topic == "anvil:catalog" && env.Durable {
+		if n := s.envelopeStore.DeduplicateDurable(env); n > 0 {
+			s.logger.Info("catalog dedup: removed older entries", "pubkey", env.Pubkey[:16], "removed", n)
+		}
+	}
+
+	if s.gossipMgr != nil {
+		s.gossipMgr.BroadcastEnvelope(env)
+	}
+
+	s.sseHub.notify(env)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"accepted":  true,
+		"topic":     env.Topic,
+		"durable":   env.Durable,
+		"key":       env.Key(),
+		"signed_by": env.Pubkey,
 	})
 }
 
