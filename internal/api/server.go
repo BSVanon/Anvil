@@ -13,6 +13,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/content"
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/gossip"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/BSVanon/Anvil/internal/messaging"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/mempool"
@@ -49,6 +50,7 @@ type Server struct {
 	watcher          *mempool.Watcher
 	proofFetcher     *spv.ProofFetcher
 	msgStore         *messaging.Store
+	signingKey       *ec.PrivateKey // node identity key for signing envelopes
 	healthChecks     []HealthCheck // registered subsystem health checks
 }
 
@@ -95,6 +97,7 @@ type ServerConfig struct {
 	Watcher          *mempool.Watcher
 	ProofFetcher     *spv.ProofFetcher
 	MsgStore         *messaging.Store
+	SigningKey       *ec.PrivateKey // node identity key for signing envelopes
 }
 
 // NewServer creates a new REST API server.
@@ -148,6 +151,7 @@ func NewServer(cfg ServerConfig) *Server {
 		watcher:          cfg.Watcher,
 		proofFetcher:     cfg.ProofFetcher,
 		msgStore:         cfg.MsgStore,
+		signingKey:       cfg.SigningKey,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -206,6 +210,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("OPTIONS /data", cors(func(w http.ResponseWriter, r *http.Request) {}))
 	s.mux.HandleFunc("POST /overlay/register", s.requireAuth(s.handleOverlayRegister))
 	s.mux.HandleFunc("POST /overlay/deregister", s.requireAuth(s.handleOverlayDeregister))
+
+	// Node-signed publish (operator only — signs envelopes with node identity key)
+	s.mux.HandleFunc("POST /node/publish", s.requireAuth(s.handleNodePublish))
 
 	// BRC-33 messaging endpoints (point-to-point)
 	s.mux.HandleFunc("POST /sendMessage", s.requireAuth(s.handleSendMessage))
