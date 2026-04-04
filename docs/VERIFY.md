@@ -1,6 +1,7 @@
-# Layer 0 — Verify
+# Verify
 
-Validate any BSV transaction without downloading the blockchain.
+Validate any BSV transaction without downloading the blockchain. Used
+internally for x402 payment verification.
 
 ---
 

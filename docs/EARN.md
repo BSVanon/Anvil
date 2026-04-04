@@ -1,4 +1,4 @@
-# Layer 2 — Earn
+# Earn
 
 Get paid per-request for your data or API. Non-custodial — the node never touches your funds.
 

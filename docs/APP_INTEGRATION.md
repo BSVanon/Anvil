@@ -1,6 +1,6 @@
 # App Integration Guide
 
-How to connect your app to an Anvil node.
+How to connect your app to an Anvil-Mesh node.
 
 If you want the shortest path instead of the full protocol walkthrough, start with [Add Your App To The Mesh](ADD_YOUR_APP.md).
 
@@ -9,11 +9,14 @@ If you want the shortest path instead of the full protocol walkthrough, start wi
 ## The short version
 
 1. Your app **signs an envelope** (JSON with topic, payload, signature)
-2. Your app **POSTs it** to `POST /data` on an Anvil node (with bearer token or x402 payment)
-3. The Anvil mesh **gossips it** to all nodes interested in that topic
-4. Consumers **query it** via `GET /data?topic=...` on any node in the mesh
+2. Your app **POSTs it** to `POST /data` on any Anvil-Mesh node (with bearer token or x402 payment)
+3. The mesh **gossips it** to all nodes interested in that topic
+4. Consumers **query** via `GET /data?topic=...` or **subscribe** via `GET /data/subscribe?topic=...`
+5. Your app can **send messages** to specific identities via `POST /sendMessage`
+6. Your app can **describe its topics** by publishing to `meta:<topic>`
+7. Your app can **declare its identity** by publishing to `identity:<pubkey>`
 
-That's it. Your app is a publisher. Anvil is the distribution layer.
+That's it. Your app is a publisher. Anvil-Mesh is the distribution layer.
 
 ---
 

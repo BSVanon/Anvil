@@ -2,19 +2,18 @@
   <img src="anvil-logo.svg" width="140" alt="Anvil" />
 </p>
 
-<h1 align="center">Anvil</h1>
+<h1 align="center">Anvil-Mesh</h1>
 
-<p align="center">A single-binary BSV overlay node. No blockchain download required.</p>
+<p align="center">A communication mesh for BSV apps. Signed data, real-time delivery, micropayment gating.</p>
 
 ## What it does
 
-- **Verify** — Syncs ~942k block headers in 30 seconds, then verifies any BSV transaction via BEEF/SPV proofs. On-demand proof building for any confirmed tx.
 - **Publish** — Signed data envelopes propagate across the mesh in real time via authenticated gossip
 - **Subscribe** — Real-time push via SSE. Clients receive new envelopes the moment they arrive
-- **Watch** — Monitor BSV addresses in real time from the mempool. SSE notifications on receive and spend.
-- **Relay** — Transactions propagate across the mesh via announce/request/response protocol
-- **Earn** — Non-custodial x402 micropayments per request. Payment signatures verified via script interpreter.
-- **Discover** — Machines find services via `/.well-known/x402`, pay, and consume. Zero onboarding
+- **Message** — Point-to-point messaging between identities. Send to a specific pubkey, not just broadcast
+- **Discover** — Browse topics, metadata, publisher identity, and demand. Machines and humans can understand the mesh
+- **Earn** — Non-custodial x402 micropayments per request. Payment signatures verified via script interpreter
+- **Verify** — Syncs block headers, verifies BSV transactions via BEEF/SPV proofs for payment gating
 
 ## Install
 
@@ -64,14 +63,14 @@ const data = await anvil.query('oracle:rates:bsv');
 
 | Guide | What it covers |
 |-------|---------------|
-| [Verify](docs/VERIFY.md) | SPV verification, header sync, configuration |
 | [Publish](docs/PUBLISH.md) | Data envelopes, signing, topics, mesh gossip |
 | [Earn](docs/EARN.md) | Payment models, x402 flow, monetization |
-| [Discover](docs/DISCOVER.md) | Machine economy, automated discovery, AI agents |
+| [Discover](docs/DISCOVER.md) | Topic discovery, metadata, identity, demand, AI agents |
+| [Verify](docs/VERIFY.md) | SPV verification, header sync, payment validation |
 | [Add Your App](docs/ADD_YOUR_APP.md) | 5-minute path from app to live mesh publisher |
 | [App Integration](docs/APP_INTEGRATION.md) | Step-by-step guide for connecting your app |
 | [Mesh Peering](docs/MESH_PEERING.md) | Bonds, node names, overlay discovery, connection logging |
-| [API Reference](docs/API_REFERENCE.md) | All endpoints, SSE subscription, address watching, auth, response formats |
+| [API Reference](docs/API_REFERENCE.md) | All endpoints, SSE, messaging, discovery, auth |
 | [Payment Policy](docs/NON_CUSTODIAL_PAYMENT_POLICY.md) | Non-custodial design constraints |
 | [Capabilities](docs/ANVIL_CAPABILITIES.md) | Machine-readable reference for AI agents |
 
@@ -81,7 +80,7 @@ const data = await anvil.query('oracle:rates:bsv');
 |---|---|
 | Explorer | https://anvil.sendbsv.com |
 | x402 discovery | https://anvil.sendbsv.com/.well-known/x402 |
-| Protocol spec | https://anvil.sendbsv.com/.well-known/x402-info |
+| Topic discovery | https://anvil.sendbsv.com/topics |
 
 ## Requirements
 
