@@ -121,6 +121,27 @@ export interface CatalogListing {
   contact?: string;
 }
 
+/** Topic info from GET /topics (v2.0). */
+export interface TopicDiscovery {
+  topic: string;
+  count: number;
+  last_updated?: number;
+  metadata?: Record<string, unknown> | null;
+  publisher?: string;
+  price?: number;
+  demand?: number;
+}
+
+/** Point-to-point message (BRC-33 pattern, v2.0). */
+export interface Message {
+  messageId: string;
+  sender: string;
+  recipient: string;
+  messageBox: string;
+  body: string;
+  timestamp: number;
+}
+
 export interface PublishOptions {
   ttl?: number;
   durable?: boolean;
@@ -246,6 +267,64 @@ export class AnvilClient {
   /** List registered lookup services. */
   async overlayServices(): Promise<Record<string, ServiceInfo>> {
     return this.get('/overlay/services') as Promise<Record<string, ServiceInfo>>;
+  }
+
+  // ── Discovery (v2.0) ──
+
+  /** List all topics with metadata and demand. */
+  async getTopics(): Promise<{ topics: TopicDiscovery[]; count: number } | null> {
+    try {
+      return await this.get('/topics') as { topics: TopicDiscovery[]; count: number };
+    } catch { return null; }
+  }
+
+  /** Get detail for a single topic. */
+  async getTopicDetail(topic: string): Promise<{ topic: TopicDiscovery; publisher_identity?: Record<string, unknown> } | null> {
+    try {
+      return await this.get(`/topics/${encodeURIComponent(topic)}`) as { topic: TopicDiscovery; publisher_identity?: Record<string, unknown> };
+    } catch { return null; }
+  }
+
+  /** Get a publisher's identity. */
+  async getIdentity(pubkey: string): Promise<{ pubkey: string; identity: Record<string, unknown> } | null> {
+    try {
+      return await this.get(`/identity/${encodeURIComponent(pubkey)}`) as { pubkey: string; identity: Record<string, unknown> };
+    } catch { return null; }
+  }
+
+  // ── Messaging (BRC-33, v2.0) ──
+
+  /** Send a point-to-point message to a recipient by pubkey. */
+  async sendMessage(recipient: string, messageBox: string, body: string): Promise<{ status: string; messageId: string }> {
+    return this.post('/sendMessage', { recipient, messageBox, body }) as Promise<{ status: string; messageId: string }>;
+  }
+
+  /** List messages in a message box. */
+  async listMessages(messageBox: string, recipient?: string): Promise<{ status: string; messages: Message[] }> {
+    const req: Record<string, string> = { messageBox };
+    if (recipient) req.recipient = recipient;
+    return this.post('/listMessages', req) as Promise<{ status: string; messages: Message[] }>;
+  }
+
+  /** Acknowledge (delete) messages by ID. */
+  async acknowledgeMessages(messageIds: string[], recipient?: string): Promise<{ status: string; acknowledged: number }> {
+    const req: Record<string, unknown> = { messageIds };
+    if (recipient) req.recipient = recipient;
+    return this.post('/acknowledgeMessage', req) as Promise<{ status: string; acknowledged: number }>;
+  }
+
+  // ── Metadata + Identity publishing (v2.0) ──
+
+  /** Publish topic metadata (description, render hints). */
+  async publishMetadata(topic: string, metadata: Record<string, unknown>): Promise<{ accepted: boolean }> {
+    return this.publish(`meta:${topic}`, metadata, { ttl: 0, durable: true });
+  }
+
+  /** Publish your identity (name, description). */
+  async publishIdentity(name: string, description?: string): Promise<{ accepted: boolean }> {
+    const payload: Record<string, string> = { name };
+    if (description) payload.description = description;
+    return this.publish(`identity:${this.pubkeyHex}`, payload, { ttl: 0, durable: true });
   }
 
   // ── Internal ──
