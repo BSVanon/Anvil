@@ -8,7 +8,7 @@
 | `/stats` | GET | No | Extended stats: envelopes, peers, recent connections, demand |
 | `/data` | GET | No | Query envelopes by topic (`?since=TIMESTAMP` for incremental) |
 | `/data/subscribe` | GET | No | SSE stream of new envelopes by topic (real-time push) |
-| `/data` | POST | Bearer, x402, or signed | Publish an envelope |
+| `/data` | POST | Bearer or x402 | Publish a signed envelope |
 | `/data` | DELETE | Bearer | Delete a stored envelope by `topic` + `key` |
 | `/broadcast` | POST | Bearer | Broadcast a raw transaction |
 
@@ -16,7 +16,7 @@
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/topics` | GET | No | List all topics with count, metadata, demand |
+| `/topics` | GET | No | List all topics with count and metadata |
 | `/topics/{topic}` | GET | No | Topic detail: metadata, publisher, price, demand, identity |
 | `/identity/{pubkey}` | GET | No | Publisher identity (from `identity:<pubkey>` envelope) |
 | `/.well-known/x402` | GET | No | Machine-readable payment menu |
@@ -81,6 +81,16 @@ Response: `{"status": "success", "acknowledged": 2}`
 | `/tx/{txid}/beef` | GET | No | BEEF proof for a transaction |
 | `/content/{txid}_{vout}` | GET | No | Raw content from a transaction output |
 
+## Node-Signed Publishing
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/node/publish` | POST | Bearer | Publish an envelope signed by the node's identity key |
+
+Use this to publish metadata (`meta:<topic>`), identity (`identity:<pubkey>`),
+and catalog entries without external signing tools. The node signs with its
+identity key before storing.
+
 ## Overlay Endpoints
 
 | Endpoint | Method | Auth | Description |
@@ -109,6 +119,7 @@ All wallet endpoints require the `Authorization: Bearer <token>` header.
 |----------|--------|------|-------------|
 | `/explorer` | GET | No | Node explorer dashboard |
 | `/mesh/status` | GET | No | Live mesh peers, connections, activity |
+| `/mesh/nodes` | GET | No | All known nodes (overlay + heartbeat + peers merged) |
 | `/app/{name}` | GET | No | Redirect to registered app |
 
 ## Authentication
