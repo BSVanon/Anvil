@@ -13,7 +13,7 @@
 - **Message** — Point-to-point messaging between identities. Send to a specific pubkey, not just broadcast
 - **Discover** — Browse topics, metadata, publisher identity, and demand. Machines and humans can understand the mesh
 - **Earn** — Non-custodial x402 micropayments per request. Payment signatures verified via script interpreter
-- **Verify** — Syncs block headers, verifies BSV transactions via BEEF/SPV proofs for payment gating
+- **Verify** — Syncs block headers, verifies BSV transactions via BEEF proofs for payment gating
 
 ## Install
 
@@ -66,7 +66,7 @@ const data = await anvil.query('oracle:rates:bsv');
 | [Publish](docs/PUBLISH.md) | Data envelopes, signing, topics, mesh gossip |
 | [Earn](docs/EARN.md) | Payment models, x402 flow, monetization |
 | [Discover](docs/DISCOVER.md) | Topic discovery, metadata, identity, demand, AI agents |
-| [Verify](docs/VERIFY.md) | SPV verification, header sync, payment validation |
+| [Verify](docs/VERIFY.md) | Payment verification, header sync, BEEF proofs |
 | [Add Your App](docs/ADD_YOUR_APP.md) | 5-minute path from app to live mesh publisher |
 | [App Integration](docs/APP_INTEGRATION.md) | Step-by-step guide for connecting your app |
 | [Mesh Peering](docs/MESH_PEERING.md) | Bonds, node names, overlay discovery, connection logging |
