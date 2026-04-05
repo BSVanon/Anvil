@@ -104,4 +104,4 @@ sudo anvil doctor
 
 Once your node is running, you can publish signed data to the mesh.
 
-**[Layer 1: Publish →](PUBLISH.md)**
+**[Publish →](PUBLISH.md)**

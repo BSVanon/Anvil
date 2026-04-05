@@ -136,4 +136,4 @@ Anvil is designed to be non-custodial by default. See [Non-Custodial Payment Pol
 
 Let machines discover, negotiate, and pay automatically.
 
-**[Layer 3: Discover →](DISCOVER.md)**
+**[Discover →](DISCOVER.md)**
