@@ -4,7 +4,7 @@
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/status` | GET | No | Node health: version, header tip, sync lag, SPV status, warnings |
+| `/status` | GET | No | Node health: version, header tip, sync lag, warnings |
 | `/stats` | GET | No | Extended stats: envelopes, peers, recent connections, demand |
 | `/data` | GET | No | Query envelopes by topic (`?since=TIMESTAMP` for incremental) |
 | `/data/subscribe` | GET | No | SSE stream of new envelopes by topic (real-time push) |

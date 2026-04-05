@@ -14,7 +14,7 @@ Anvil-Mesh is a communication mesh for BSV apps. Each node exposes a REST API fo
 - Point-to-point messaging between identities (BRC-33)
 - Topic discovery with metadata, demand, and publisher identity
 - Micropayment gating via x402 (HTTP 402 BSV payments)
-- SPV payment verification against a local header chain
+- Payment verification against a local header chain (BEEF proofs)
 - BRC-100 compliant wallet operations
 
 ---
