@@ -18,7 +18,7 @@
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v1.1.1/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v2.0.0/scripts/install.sh | sudo bash
 ```
 
 The guided installer downloads the binary from GitHub Releases, verifies the SHA256 checksum, generates your identity, syncs headers, and shows your funding address. Takes about 3 minutes.

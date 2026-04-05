@@ -296,6 +296,27 @@ func main() {
 			// Without this, funds sent from other wallets are invisible and
 			// nonce minting / x402 silently fails.
 			go nodeWallet.RunAutoScan(context.Background(), 30*time.Minute)
+
+			// Publish SHIP token on-chain (once, background)
+			if identityPrivKey != nil && cfg.Node.PublicURL != "" && overlayDir != nil {
+				go func() {
+					for _, topic := range cfg.Overlay.Topics {
+						txid, err := anviloverlay.PublishSHIPOnChain(
+							context.Background(),
+							nodeWallet.Wallet(),
+							identityPrivKey,
+							cfg.Node.PublicURL,
+							topic,
+							logger,
+						)
+						if err != nil {
+							logger.Warn("SHIP on-chain publish failed (non-fatal)", "topic", topic, "error", err)
+						} else {
+							logger.Info("SHIP on-chain published", "topic", topic, "txid", txid)
+						}
+					}
+				}()
+			}
 		}
 	}
 
