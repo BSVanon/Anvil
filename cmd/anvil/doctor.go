@@ -384,12 +384,17 @@ func runSelfHealingChecks(dataDir string, fix, yes bool) int {
 	}
 
 	// ── Stale header store with prev-hash-mismatch ──
-	// We surface this from the /status response we already fetched above. If
-	// sync_lag_secs > 2h AND last_error contains "prev hash mismatch", the
-	// recovery path is to wipe the headers dir and resync from genesis.
+	// The presence of "prev hash mismatch" in the sync error is sufficient
+	// to flag this regardless of lag severity. The stored chain is
+	// reorg-incompatible with the current BSV tip and will NEVER recover
+	// without a rebuild — every additional minute of lag just makes the
+	// diagnosis more obvious. v2.2.2 gated this on lag > 7200s which was
+	// too conservative for operator-invoked --fix (observed 2026-04-17:
+	// operator ran --fix at ~6260s lag, got no remediation offered,
+	// had to wipe manually). Fixed in v2.2.3.
 	if lag, errMsg, have := checkHeaderSyncHealth(dataDir); have {
-		if lag > 7200 && strings.Contains(strings.ToLower(errMsg), "prev hash mismatch") {
-			fail("header store stuck: lag=%ds with prev-hash-mismatch (reorg-incompatible)", lag)
+		if strings.Contains(strings.ToLower(errMsg), "prev hash mismatch") {
+			fail("header store stuck: lag=%ds with prev-hash-mismatch (reorg-incompatible, won't recover without rebuild)", lag)
 			if fix && confirm(yes, fmt.Sprintf("    Wipe %s/headers/ and let the node resync from genesis (~30s)?", dataDir)) {
 				if err := wipeHeadersDir(dataDir); err != nil {
 					fmt.Printf("      ✗ wipe failed: %v\n", err)
