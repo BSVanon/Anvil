@@ -242,6 +242,19 @@ func cmdUpgrade(args []string) {
 		}
 	}
 
+	// Ensure every anvil-*.service unit file has the ExecStartPre self-heal
+	// hook. Without this, operators who installed on a version prior to
+	// v2.2.0 keep old unit files forever — they get the binary improvements
+	// from each upgrade but never pick up the systemd-level orphan-auto-heal.
+	// Runs AFTER stop so units aren't mid-start when we edit them, and
+	// BEFORE service restart so the new hook takes effect on this boot.
+	if added := ensureExecStartPreHook(); added > 0 {
+		if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+			fmt.Printf("    WARNING: systemctl daemon-reload failed: %v\n", err)
+		}
+		fmt.Printf("    added self-heal ExecStartPre hook to %d unit file(s)\n", added)
+	}
+
 	// Restart services — roll back if all fail to start
 	if len(services) > 0 {
 		step("Restarting services")
@@ -394,6 +407,93 @@ func truncateCmd(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// ensureExecStartPreHook inspects every anvil-*.service unit file in the
+// standard systemd location and, if the unit ExecStarts the anvil binary
+// but has no ExecStartPre=...doctor --fix-locks-only line, inserts one
+// immediately before the ExecStart line. Returns the number of files
+// modified.
+//
+// Idempotent: if the hook is already present, the file is untouched. The
+// modification is conservative (inserts a single line before ExecStart)
+// so operator customizations above or below that section are preserved.
+//
+// Failures on individual files are logged but don't abort the upgrade —
+// the binary replacement and service restart are the primary goals;
+// unit-file augmentation is a belt-on-top-of-suspenders safety feature.
+func ensureExecStartPreHook() int {
+	return ensureExecStartPreHookIn("/etc/systemd/system")
+}
+
+// ensureExecStartPreHookIn is the testable core of ensureExecStartPreHook.
+// Tests pass a tempdir; production calls use /etc/systemd/system.
+func ensureExecStartPreHookIn(systemdDir string) int {
+	const hookLine = "ExecStartPre=/opt/anvil/anvil doctor --fix-locks-only"
+
+	entries, err := os.ReadDir(systemdDir)
+	if err != nil {
+		return 0
+	}
+
+	modified := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "anvil-") || !strings.HasSuffix(name, ".service") {
+			continue
+		}
+		unitPath := filepath.Join(systemdDir, name)
+		raw, err := os.ReadFile(unitPath)
+		if err != nil {
+			continue
+		}
+		content := string(raw)
+		// Only touch files that actually invoke our binary; don't stomp
+		// on any unrelated unit someone happened to name anvil-*.service.
+		if !strings.Contains(content, "/opt/anvil/anvil") {
+			continue
+		}
+		if strings.Contains(content, hookLine) {
+			continue // already hooked
+		}
+
+		// Find the first ExecStart= line (not ExecStartPre=) and insert
+		// the hook immediately before it. Preserves everything else.
+		lines := strings.Split(content, "\n")
+		var out []string
+		inserted := false
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if !inserted && strings.HasPrefix(trimmed, "ExecStart=") {
+				out = append(out, hookLine)
+				inserted = true
+			}
+			out = append(out, line)
+		}
+		if !inserted {
+			continue // no ExecStart= line found; unfamiliar shape, skip
+		}
+
+		newContent := strings.Join(out, "\n")
+		// Write via a staging file + rename for atomicity (same pattern
+		// as the binary install): systemd reads these on daemon-reload
+		// and a partial write would be a bad state.
+		staging := unitPath + ".new"
+		if err := os.WriteFile(staging, []byte(newContent), 0644); err != nil {
+			fmt.Printf("    WARNING: write staging %s: %v\n", staging, err)
+			continue
+		}
+		if err := os.Rename(staging, unitPath); err != nil {
+			fmt.Printf("    WARNING: rename %s → %s: %v\n", staging, unitPath, err)
+			_ = os.Remove(staging)
+			continue
+		}
+		modified++
+	}
+	return modified
 }
 
 // copyFileE copies src to dst with given permissions, returning any error.

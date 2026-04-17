@@ -434,20 +434,46 @@ func run(name string, args ...string) {
 	}
 }
 
+// copyFile copies src to dst atomically. Writes to <dst>.new first, then
+// renames over dst. Safe to call while the existing dst binary is
+// currently executed by one or more processes — Linux's ETXTBSY only
+// applies to writes that truncate-and-open a running binary, not to a
+// rename-over operation. This lets `anvil deploy` replace the binary
+// without having to stop every service first (and without failing on
+// services it doesn't know about, like legacy unit names).
 func copyFile(src, dst string, perm os.FileMode) {
+	if err := atomicCopyFile(src, dst, perm); err != nil {
+		fatal(err.Error())
+	}
+}
+
+func atomicCopyFile(src, dst string, perm os.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
-		fatal("open source binary: " + err.Error())
+		return fmt.Errorf("open source binary: %w", err)
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+
+	staging := dst + ".new"
+	_ = os.Remove(staging) // clean up any prior failed attempt
+	out, err := os.OpenFile(staging, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
-		fatal("create dest binary: " + err.Error())
+		return fmt.Errorf("create staging binary: %w", err)
 	}
-	defer out.Close()
-	if _, err = io.Copy(out, in); err != nil {
-		fatal("copy binary: " + err.Error())
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(staging)
+		return fmt.Errorf("write staging binary: %w", err)
 	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(staging)
+		return fmt.Errorf("close staging binary: %w", err)
+	}
+	if err := os.Rename(staging, dst); err != nil {
+		_ = os.Remove(staging)
+		return fmt.Errorf("atomic rename staging over dst: %w", err)
+	}
+	return nil
 }
 
 func chownRecursive(path, username string) {
