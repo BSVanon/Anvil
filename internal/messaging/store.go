@@ -25,12 +25,17 @@ type Message struct {
 	Timestamp  int64  `json:"timestamp"`  // unix seconds
 }
 
+// OnMessage is called after a message is stored (Send or Deliver).
+// Used by the API layer to push SSE notifications.
+type OnMessage func(msg *Message)
+
 // Store manages point-to-point messages in LevelDB.
 // Messages are keyed by recipient pubkey + auto-incrementing ID.
 type Store struct {
-	db    *leveldb.DB
-	nextID atomic.Int64
-	ttl    time.Duration // auto-expire unacknowledged messages (0 = no expiry)
+	db        *leveldb.DB
+	nextID    atomic.Int64
+	ttl       time.Duration // auto-expire unacknowledged messages (0 = no expiry)
+	onMessage OnMessage     // optional callback for SSE notifications
 }
 
 // NewStore opens or creates a message store.
@@ -48,6 +53,11 @@ func NewStore(path string, ttlSeconds int) (*Store, error) {
 	// Seed next ID from existing messages.
 	s.nextID.Store(s.highWaterMark() + 1)
 	return s, nil
+}
+
+// SetOnMessage sets the callback invoked after each stored message.
+func (s *Store) SetOnMessage(fn OnMessage) {
+	s.onMessage = fn
 }
 
 // Close closes the underlying LevelDB.
@@ -82,6 +92,9 @@ func (s *Store) Send(msg *Message) (string, error) {
 	if err := s.db.Put(key, data, nil); err != nil {
 		return "", fmt.Errorf("store message: %w", err)
 	}
+	if s.onMessage != nil {
+		s.onMessage(msg)
+	}
 	return msg.MessageID, nil
 }
 
@@ -106,6 +119,9 @@ func (s *Store) Deliver(msg *Message) (bool, error) {
 	}
 	if err := s.db.Put(key, data, nil); err != nil {
 		return false, fmt.Errorf("store message: %w", err)
+	}
+	if s.onMessage != nil {
+		s.onMessage(msg)
 	}
 	return true, nil
 }

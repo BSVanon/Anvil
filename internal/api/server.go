@@ -47,6 +47,7 @@ type Server struct {
 	headerSyncStatus func() headers.SyncStats
 	spvProofSource   string
 	sseHub           *envelopeHub
+	msgHub           *messageHub
 	watcher          *mempool.Watcher
 	proofFetcher     *spv.ProofFetcher
 	msgStore         *messaging.Store
@@ -148,6 +149,7 @@ func NewServer(cfg ServerConfig) *Server {
 		headerSyncStatus: cfg.HeaderSyncStatus,
 		spvProofSource:   cfg.SPVProofSource,
 		sseHub:           newEnvelopeHub(),
+		msgHub:           newMessageHub(),
 		watcher:          cfg.Watcher,
 		proofFetcher:     cfg.ProofFetcher,
 		msgStore:         cfg.MsgStore,
@@ -155,6 +157,12 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
+	}
+	// Wire message store notifications to SSE hub.
+	if s.msgStore != nil {
+		s.msgStore.SetOnMessage(func(msg *messaging.Message) {
+			s.msgHub.notify(msg)
+		})
 	}
 	s.routes()
 	return s
@@ -218,6 +226,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sendMessage", s.requireAuth(s.handleSendMessage))
 	s.mux.HandleFunc("POST /listMessages", s.requireAuth(s.handleListMessages))
 	s.mux.HandleFunc("POST /acknowledgeMessage", s.requireAuth(s.handleAcknowledgeMessage))
+	s.mux.HandleFunc("GET /messages/subscribe", s.requireAuthSSE(s.handleMessageSubscribe))
 }
 
 // openRead wraps a handler with CORS, rate limiting, token gating, and x402 payment gating.
@@ -605,6 +614,12 @@ func (s *Server) Handler() http.Handler { return s.mux }
 // Called by the gossip onEnvelope callback for mesh-received envelopes.
 func (s *Server) NotifyEnvelope(env *envelope.Envelope) {
 	s.sseHub.notify(env)
+}
+
+// NotifyMessage pushes a message to SSE subscribers on its recipient+messageBox.
+// Called by the gossip onMessage callback for mesh-forwarded messages.
+func (s *Server) NotifyMessage(msg *messaging.Message) {
+	s.msgHub.notify(msg)
 }
 func (s *Server) Mux() *http.ServeMux   { return s.mux }
 
