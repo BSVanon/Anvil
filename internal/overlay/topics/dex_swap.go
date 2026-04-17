@@ -43,6 +43,19 @@ func NewDEXSwapTopicManager() *DEXSwapTopicManager {
 }
 
 // Admit evaluates a transaction for swap offer metadata outputs.
+//
+// Admission rules (enforced defensively against malformed or adversarial txs):
+//  1. The metadata output must parse as `OP_FALSE OP_RETURN "dex.swap.offer"
+//     <version> <json>` with a valid DEXSwapEntry body.
+//  2. The referenced OfferVout must be adjacent to the metadata output at
+//     `metadataVout - 1` — this enforces the documented Output N / Output N+1
+//     protocol structure. Without it, a publisher could point the metadata
+//     at any vout in the tx to pollute the topic index.
+//  3. The referenced offer output must be spendable (not OP_RETURN or
+//     OP_FALSE OP_RETURN). A non-spendable "offer" could never be taken,
+//     so indexing it as an active offer is misleading to lookup consumers.
+//  4. Only the first valid metadata output in a tx is processed — per-tx
+//     multi-offer is out of scope for v1.
 func (d *DEXSwapTopicManager) Admit(txData []byte, previousUTXOs []overlay.AdmittedOutput) (*overlay.AdmittanceInstructions, error) {
 	tx, err := transaction.NewTransactionFromBytes(txData)
 	if err != nil {
@@ -54,7 +67,7 @@ func (d *DEXSwapTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admit
 	outputMetadata := make(map[int]json.RawMessage)
 
 	// Scan outputs for DEX swap offer metadata
-	for _, out := range tx.Outputs {
+	for metadataVout, out := range tx.Outputs {
 		if out.LockingScript == nil {
 			continue
 		}
@@ -64,9 +77,20 @@ func (d *DEXSwapTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admit
 			continue
 		}
 
-		// The metadata output itself is not the offer — the offer is at entry.OfferVout
 		offerVout := entry.OfferVout
+
+		// Rule 2: enforce documented Output N / Output N+1 adjacency.
+		// The metadata must be the immediate successor of the offer.
+		if offerVout != metadataVout-1 {
+			continue
+		}
+
+		// Rule 3: the referenced offer must exist and be spendable.
 		if offerVout < 0 || offerVout >= len(tx.Outputs) {
+			continue
+		}
+		offerScript := tx.Outputs[offerVout].LockingScript
+		if offerScript == nil || !isSpendableOffer(offerScript.Bytes()) {
 			continue
 		}
 
@@ -81,7 +105,7 @@ func (d *DEXSwapTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admit
 			outputMetadata[offerVout] = meta
 		}
 
-		break // only process first metadata output per tx
+		break // only process first metadata output per tx (rule 4)
 	}
 
 	// Mark previously-admitted offer UTXOs as spent
@@ -99,6 +123,24 @@ func (d *DEXSwapTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admit
 		CoinsRemoved:   coinsRemoved,
 		OutputMetadata: outputMetadata,
 	}, nil
+}
+
+// isSpendableOffer returns true when a script is not an OP_RETURN (or safe
+// OP_FALSE OP_RETURN) output. A non-spendable "offer" could never be taken,
+// so admitting it would mislead lookup consumers.
+func isSpendableOffer(script []byte) bool {
+	if len(script) == 0 {
+		return false
+	}
+	// Bare OP_RETURN (0x6a) at the start marks the output provably unspendable.
+	if script[0] == 0x6a {
+		return false
+	}
+	// OP_FALSE OP_RETURN (0x00 0x6a) is the safe-return pattern — also unspendable.
+	if len(script) >= 2 && script[0] == 0x00 && script[1] == 0x6a {
+		return false
+	}
+	return true
 }
 
 // GetDocumentation returns a description of the DEX swap topic.
