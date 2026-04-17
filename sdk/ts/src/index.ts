@@ -49,6 +49,63 @@ export interface NodeStats extends NodeStatus {
   overlay?: { ship_count: number };
 }
 
+/** One node in the merged federation directory. Evidence flags indicate which
+ *  sources (self, direct peer, heartbeat, overlay SHIP) contributed to this entry. */
+export interface MeshNode {
+  identity: string;
+  name: string;
+  version: string;
+  url: string;
+  height?: number;
+  peers?: number;
+  topics?: string[];
+  last_seen: string;
+  evidence: {
+    self: boolean;
+    direct_peer: boolean;
+    heartbeat: boolean;
+    overlay: boolean;
+    heartbeat_age_secs?: number;
+    connected_secs?: number;
+  };
+}
+
+/** Response shape of GET /mesh/nodes — the authoritative federation directory. */
+export interface MeshNodesResponse {
+  nodes: MeshNode[];
+  count: number;
+}
+
+/** Upstream health reported by a federation node on its heartbeat. See
+ *  ANVIL_NODE_HANDOFF.md for what each value means. Capability-named fields
+ *  so the contract survives ARC → Arcade migration. */
+export interface UpstreamStatus {
+  broadcast: 'healthy' | 'degraded' | 'down';
+  headers_sync_lag_secs?: number;
+}
+
+/** Rich live health snapshot for wallet-side failover decisions.
+ *  Response shape of GET /mesh/status. */
+export interface MeshStatus {
+  node: string;
+  version: string;
+  headers: { height: number; work: string };
+  identity?: string;
+  mesh?: {
+    peers: number;
+    peer_list: unknown[];
+    started_at: string;
+    uptime_secs: number;
+  };
+  activity?: {
+    envelopes_received: number;
+    envelopes_sent: number;
+  };
+  topics?: Array<{ topic: string; count: number; latest_at?: string; age_secs?: number }>;
+  overlay?: { ship_count: number };
+  upstream_status?: UpstreamStatus;
+}
+
 /** BRC-22 TaggedBEEF submission format. */
 export interface TaggedBEEF {
   beef: number[];
@@ -228,6 +285,30 @@ export class AnvilClient {
   /** Get extended node stats. */
   async stats(): Promise<NodeStats> {
     return this.get('/stats') as Promise<NodeStats>;
+  }
+
+  /**
+   * Get the authoritative federation directory (merged from overlay SHIP
+   * registrations, heartbeat envelopes, and direct peer connections).
+   * Consume this for federation-node discovery and fallback selection.
+   *
+   * Maps to `GET /mesh/nodes`. CORS-only, no rate limit, no x402.
+   */
+  async peers(): Promise<MeshNodesResponse> {
+    return this.get('/mesh/nodes') as Promise<MeshNodesResponse>;
+  }
+
+  /**
+   * Get a rich live health snapshot including upstream_status for
+   * wallet-side failover decisions. Prefer this over `status()` for
+   * periodic polling — it's CORS-only, not rate-limited, not x402-gated.
+   *
+   * Recommended poll interval: 30–60 seconds.
+   *
+   * Maps to `GET /mesh/status`.
+   */
+  async health(): Promise<MeshStatus> {
+    return this.get('/mesh/status') as Promise<MeshStatus>;
   }
 
   /** Get the derived auth token (useful for debugging). */
