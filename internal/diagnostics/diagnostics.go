@@ -74,7 +74,20 @@ type VersionMismatch struct {
 // EnumerateAnvilProcesses walks /proc and returns every process whose argv[0]
 // resolves to AnvilBinaryPath. Includes systemd-managed services AND any
 // orphan processes that systemd isn't tracking.
+//
+// Always excludes the current process (os.Getpid()) because `anvil doctor`
+// IS an anvil process; when invoked from systemd's ExecStartPre with the
+// absolute binary path, it would otherwise flag itself as an orphan and
+// SIGKILL itself (v2.2.0 bug, fixed here). Interactive shell invocations
+// were unaffected because PATH-resolved argv[0]="anvil" doesn't match
+// "/opt/anvil/anvil", but the hardening still applies for safety.
 func EnumerateAnvilProcesses() ([]AnvilProcess, error) {
+	return enumerateAnvilProcessesExcluding(os.Getpid())
+}
+
+// enumerateAnvilProcessesExcluding is the testable core. skip is a pid to
+// omit from the result (typically the caller's own pid).
+func enumerateAnvilProcessesExcluding(skip int) ([]AnvilProcess, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, fmt.Errorf("read /proc: %w", err)
@@ -89,6 +102,9 @@ func EnumerateAnvilProcesses() ([]AnvilProcess, error) {
 		if err != nil {
 			continue
 		}
+		if pid == skip {
+			continue
+		}
 
 		cmdBytes, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
 		if err != nil {
@@ -101,6 +117,17 @@ func EnumerateAnvilProcesses() ([]AnvilProcess, error) {
 		// /proc/<pid>/cmdline uses NUL as argv separator.
 		args := strings.Split(strings.TrimRight(string(cmdBytes), "\x00"), "\x00")
 		if len(args) == 0 || args[0] != AnvilBinaryPath {
+			continue
+		}
+
+		// Skip subcommand invocations (e.g. `anvil doctor`, `anvil upgrade`).
+		// These are short-lived CLI subprocesses, not the long-running node.
+		// Only the node binary invoked WITHOUT a subcommand — or with `-config`
+		// as its first flag — represents a running anvil service worth
+		// tracking. Without this filter, running `anvil doctor` from one
+		// shell while another `anvil doctor` runs under ExecStartPre would
+		// see the shell one and try to kill it.
+		if len(args) >= 2 && isSubcommand(args[1]) {
 			continue
 		}
 
@@ -119,6 +146,19 @@ func EnumerateAnvilProcesses() ([]AnvilProcess, error) {
 		})
 	}
 	return procs, nil
+}
+
+// isSubcommand returns true for argv[1] values that indicate a CLI
+// subcommand invocation (as opposed to a running node process). Kept in
+// sync with the switch in main.go's subcommand dispatcher.
+func isSubcommand(arg string) bool {
+	switch arg {
+	case "deploy", "doctor", "token", "info", "upgrade",
+		"version", "--version", "-v",
+		"help", "--help", "-h":
+		return true
+	}
+	return false
 }
 
 // EnumerateAnvilServices returns the systemd state of every anvil-*.service
@@ -227,12 +267,27 @@ func FindLockHolders(dataDir string) ([]LockHolder, error) {
 	return holders, nil
 }
 
-// IsCrashLooping returns true if the service's NRestarts counter has crossed
-// the "definitely a problem" threshold. The default threshold is conservative
-// enough that a healthy node, even after a few days of uptime with the
-// occasional transient failure, won't trip it.
+// IsCrashLooping returns true only when the service is BOTH (a) in a state
+// that indicates systemd is still trying to restart it AND (b) has a
+// high-ish restart counter. An "active running" service with 212,214
+// restarts accumulated over 6 months of uptime is NOT crash-looping —
+// systemd's NRestarts is cumulative until `systemctl reset-failed`, so
+// a threshold alone produces false positives on long-lived stable nodes
+// (observed 2026-04-17 on anvil-one.service).
+//
+// True crash-loops live in ActiveState=activating (auto-restart pending)
+// or ActiveState=failed (gave up). An "active/running" service has a
+// live process answering on its port — whatever the lifetime counter, it
+// is working right now.
 func IsCrashLooping(s ServiceState) bool {
-	return s.NRestarts > 10
+	if s.NRestarts <= 5 {
+		return false
+	}
+	switch s.ActiveState {
+	case "activating", "failed":
+		return true
+	}
+	return false
 }
 
 // KillOrphan sends SIGTERM to an orphan process and waits up to 5 seconds for
