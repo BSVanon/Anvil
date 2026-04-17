@@ -80,8 +80,19 @@ export interface MeshNodesResponse {
  *  ANVIL_NODE_HANDOFF.md for what each value means. Capability-named fields
  *  so the contract survives ARC → Arcade migration. */
 export interface UpstreamStatus {
+  /** Health of this node's broadcast upstream (ARC today, Arcade later). */
   broadcast: 'healthy' | 'degraded' | 'down';
+  /** How far behind the local header tip is from real time, in seconds. */
   headers_sync_lag_secs?: number;
+  /** Host-level operational health of the anvil service process itself
+   *  (v2.2.0+ nodes). Distinguishes "upstream is down" (broadcast) from
+   *  "this node's own systemd unit is crash-looping" (service_health).
+   *  Same user-visible symptom, different remediations.
+   *  - healthy  — systemd reports active with a low restart counter
+   *  - degraded — activating, or small restart count, or sibling issues
+   *  - broken   — crash-looping or orphan anvil process detected on host
+   *  Optional: omitted by v2.1.x and earlier nodes. */
+  service_health?: 'healthy' | 'degraded' | 'broken';
 }
 
 /** Rich live health snapshot for wallet-side failover decisions.
