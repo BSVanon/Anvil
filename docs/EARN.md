@@ -128,6 +128,22 @@ curl http://localhost:9333/.well-known/x402
 
 This is the machine-readable menu that AI agents and automated systems use to discover what a node charges and how to pay.
 
+### Paid broadcast (v2.1.0+)
+
+`POST /broadcast` now accepts x402 payment as an alternative to the
+operator's bearer token. Set a broadcast price in the config to enable
+paid submissions:
+
+```toml
+[api]
+endpoint_prices = { "/broadcast" = 50 }
+```
+
+With a positive price, machine consumers submit BEEF via x402
+challenge/response. With price=0, `/broadcast` stays auth-token-only.
+Zero-priced endpoints on payment-gated nodes do NOT pass through to
+free access — the credential requirement remains intact.
+
 ## Non-custodial guarantee
 
 Anvil is designed to be non-custodial by default. See [Non-Custodial Payment Policy](NON_CUSTODIAL_PAYMENT_POLICY.md) for the full policy, including what's prohibited and how to avoid accidentally becoming a money transmitter.

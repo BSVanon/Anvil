@@ -9,16 +9,17 @@
 ## What it does
 
 - **Publish** — Signed data envelopes propagate across the mesh in real time via authenticated gossip
-- **Subscribe** — Real-time push via SSE. Clients receive new envelopes the moment they arrive
+- **Subscribe** — Real-time push via SSE, for envelopes and BRC-33 messages alike
 - **Message** — Point-to-point messaging between identities. Send to a specific pubkey, not just broadcast
-- **Discover** — Browse topics, metadata, publisher identity, and demand. Machines and humans can understand the mesh
+- **Discover** — Browse topics, metadata, publisher identity, demand, and federation health. Machines and humans can understand the mesh
 - **Earn** — Non-custodial x402 micropayments per request. Payment signatures verified via script interpreter
 - **Verify** — Syncs block headers, verifies BSV transactions via BEEF proofs for payment gating
+- **Broadcast** — Submit BEEF transactions with validation + ARC forwarding; bearer token OR x402 payment accepted
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v2.0.0/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v2.1.0/scripts/install.sh | sudo bash
 ```
 
 The guided installer downloads the binary from GitHub Releases, verifies the SHA256 checksum, generates your identity, syncs headers, and shows your funding address. Takes about 3 minutes.
@@ -55,6 +56,10 @@ import { AnvilClient } from 'anvil-mesh';
 const anvil = new AnvilClient({ wif: 'your-WIF', nodeUrl: 'http://your-node:9333' });
 await anvil.publish('oracle:rates:bsv', { USD: 14.35 });
 const data = await anvil.query('oracle:rates:bsv');
+
+// v0.4.0: federation discovery + health for multi-node failover
+const { nodes } = await anvil.peers();
+const health  = await anvil.health();
 ```
 
 [SDK documentation](sdk/ts/README.md)

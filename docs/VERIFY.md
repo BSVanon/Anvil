@@ -61,17 +61,39 @@ curl -X POST http://localhost:9333/broadcast \
   --data-binary @transaction.beef
 ```
 
+Add `?arc=true` to forward to miners after validation. The response
+includes a derived `status` field (`propagated`, `queued`, `rejected`,
+or `validated-only`) alongside the full ARC state for telemetry —
+wallets use `status` for failover decisions without reading the
+individual bits. See [API_REFERENCE.md](API_REFERENCE.md#broadcast-response-shape-v210) for the
+derivation table.
+
+`/broadcast` accepts a bearer token OR x402 payment (when the operator
+has set a broadcast price). Zero-priced broadcast endpoints stay
+auth-required.
+
 Query a previously seen transaction's proof:
 
 ```bash
 curl http://localhost:9333/tx/855fb8cd.../beef
 ```
 
+The response includes a `source` field: `"cached"` (served from the
+local ProofStore), `"arc"`, or `"woc"` (fetched on demand from the
+named upstream). Multi-source consumers should prefer `"cached"`
+results from Anvil and fall back to a direct upstream when Anvil
+returns a passthrough — otherwise they inherit the same single-upstream
+failure mode they were trying to escape.
+
 ## Check node health
 
 ```bash
 curl http://localhost:9333/status
-# → {"node":"anvil","version":"0.1.0","headers":{"height":940965}}
+# → basic: {"node":"anvil","version":"2.1.0","headers":{"height":940965}}
+
+curl http://localhost:9333/mesh/status
+# → rich: adds upstream_status.broadcast (healthy|degraded|down) and
+#         headers_sync_lag_secs. Recommended for wallet failover polling.
 ```
 
 ## Production deploy

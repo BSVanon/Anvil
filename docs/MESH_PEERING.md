@@ -81,6 +81,47 @@ The overlay lookup API shows all known peers:
 curl http://localhost:9333/overlay/lookup?topic=anvil:mainnet
 ```
 
+### Federation directory + heartbeat health (v2.1.0+)
+
+For consumers that need a merged federation view, `GET /mesh/nodes`
+combines SHIP registrations, live heartbeat envelopes, and direct peer
+adjacency, with evidence flags per node.
+
+Each node also publishes an `upstream_status` field on its `mesh:heartbeat`
+envelope (and surfaces the same on `GET /mesh/status`):
+
+```json
+{
+  "upstream_status": {
+    "broadcast": "healthy" | "degraded" | "down",
+    "headers_sync_lag_secs": 12
+  }
+}
+```
+
+Field names are capability-named (not implementation-named) so the
+contract survives the future ARC → Arcade migration. Wallets use this
+for federation-node failover decisions.
+
+## Operator-declared custom capabilities (v2.1.0+)
+
+Advertise services this node provides (AVOS oracle relays, custom data
+feeds, etc.) via the config — they surface in `/.well-known/anvil`:
+
+```toml
+[[capabilities.custom]]
+type = "avos-offer-oracle"
+description = "MNEE ⇄ BSV oracle-attested swap"
+oracle_pubkey = "02abc..."
+mailbox = "avos.offer@node-identity"
+access = "POST /sendMessage (messageBox: avos.offer)"
+payment = "free"
+```
+
+Schema-less: fields pass through to the manifest as-is. Agents use this
+to discover node-specific services without requiring a new well-known
+file per service.
+
 ## TOML example (full mesh config)
 
 ```toml
