@@ -212,6 +212,12 @@ func main() {
 			topics.NewUHRPLookupService(overlayEngine),
 			[]string{topics.UHRPTopicName})
 
+		// DEX swap offer topic manager + lookup service
+		overlayEngine.RegisterTopic(topics.DEXSwapTopicName, topics.NewDEXSwapTopicManager())
+		overlayEngine.RegisterLookup(topics.DEXSwapLookupServiceName,
+			topics.NewDEXSwapLookupService(overlayEngine),
+			[]string{topics.DEXSwapTopicName})
+
 		if cfg.Identity.WIF != "" { // local SHIP bootstrap
 			identityKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
 			if err != nil {
