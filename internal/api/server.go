@@ -52,7 +52,8 @@ type Server struct {
 	proofFetcher     *spv.ProofFetcher
 	msgStore         *messaging.Store
 	signingKey       *ec.PrivateKey // node identity key for signing envelopes
-	healthChecks     []HealthCheck // registered subsystem health checks
+	healthChecks     []HealthCheck  // registered subsystem health checks
+	customCaps       []map[string]interface{}
 }
 
 // HealthCheck is a named subsystem health probe. Returns a warning string
@@ -99,6 +100,11 @@ type ServerConfig struct {
 	ProofFetcher     *spv.ProofFetcher
 	MsgStore         *messaging.Store
 	SigningKey       *ec.PrivateKey // node identity key for signing envelopes
+
+	// CustomCapabilities are operator-declared capability entries merged into
+	// the /.well-known/anvil manifest. Lets an operator advertise AVOS oracle
+	// availability, custom data relays, etc., without Anvil code changes.
+	CustomCapabilities []map[string]interface{}
 }
 
 // NewServer creates a new REST API server.
@@ -154,6 +160,7 @@ func NewServer(cfg ServerConfig) *Server {
 		proofFetcher:     cfg.ProofFetcher,
 		msgStore:         cfg.MsgStore,
 		signingKey:       cfg.SigningKey,
+		customCaps:       cfg.CustomCapabilities,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -517,6 +524,13 @@ func (s *Server) handleAnvilManifest(w http.ResponseWriter, r *http.Request) {
 		"access":      "GET /headers/tip",
 		"payment":     "free",
 	})
+
+	// Operator-declared custom capabilities (e.g. AVOS oracle relay).
+	// Pass-through with no schema enforcement so operators can advertise
+	// capabilities Anvil itself has no native awareness of.
+	for _, cap := range s.customCaps {
+		capabilities = append(capabilities, cap)
+	}
 
 	// Mesh info
 	meshInfo := map[string]interface{}{
