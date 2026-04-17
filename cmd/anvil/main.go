@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -461,12 +462,40 @@ func main() {
 			feedCtx, feedCancel := context.WithCancel(context.Background())
 			defer feedCancel()
 
-			go pub.RunHeartbeat(feedCtx, 60*time.Second,
-				headerStore.Tip,
-				gossipMgr.PeerCount,
-				envStore.Topics,
-				gossipMgr.DemandMap,
-			)
+			// Compute header sync lag (tip time → now) on each heartbeat tick
+			// so consumers can see whether our local headers are current.
+			headerLagFn := func() int {
+				tip := headerStore.Tip()
+				raw, err := headerStore.HeaderAtHeight(tip)
+				if err != nil {
+					return 0
+				}
+				var hdr wire.BlockHeader
+				if err := hdr.Deserialize(bytes.NewReader(raw)); err != nil {
+					return 0
+				}
+				lag := int(time.Since(hdr.Timestamp).Seconds())
+				if lag < 0 {
+					return 0
+				}
+				return lag
+			}
+
+			upstreamFn := func() *feeds.UpstreamStatus {
+				status := &feeds.UpstreamStatus{
+					Broadcast:          broadcaster.UpstreamStatus(),
+					HeadersSyncLagSecs: headerLagFn(),
+				}
+				return status
+			}
+
+			go pub.RunHeartbeat(feedCtx, 60*time.Second, feeds.HeartbeatSources{
+				HeightFn:   headerStore.Tip,
+				PeersFn:    gossipMgr.PeerCount,
+				TopicsFn:   envStore.Topics,
+				DemandFn:   gossipMgr.DemandMap,
+				UpstreamFn: upstreamFn,
+			})
 
 			// Block tip feed removed — experimental, no consumers.
 			// Header sync continues internally for x402 payment verification.

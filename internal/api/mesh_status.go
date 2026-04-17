@@ -1,11 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/version"
+	"github.com/libsv/go-p2p/wire"
 )
 
 // topicCache caches the expensive envelope store aggregation for /mesh/status.
@@ -108,5 +110,51 @@ func (s *Server) handleMeshStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Live upstream health snapshot. Wallets poll /mesh/status at ~30–60s
+	// intervals to drive failover decisions; the heartbeat topic carries the
+	// same data for consumers that subscribe to the mesh, but the direct
+	// endpoint exposure lets a wallet query a single node without joining
+	// the gossip substrate. See ANVIL_NODE_HANDOFF.md for the contract.
+	if upstream := s.currentUpstreamStatus(); upstream != nil {
+		result["upstream_status"] = upstream
+	}
+
 	writeJSON(w, http.StatusOK, result)
+}
+
+// currentUpstreamStatus computes the live broadcast-upstream health snapshot
+// for both the heartbeat feed and the /mesh/status endpoint. Returns nil if
+// the broadcaster isn't wired (nothing meaningful to report).
+func (s *Server) currentUpstreamStatus() map[string]interface{} {
+	if s.broadcaster == nil {
+		return nil
+	}
+	out := map[string]interface{}{
+		"broadcast": s.broadcaster.UpstreamStatus(),
+	}
+	if s.headerStore != nil {
+		if lag := s.headersSyncLagSecs(); lag > 0 {
+			out["headers_sync_lag_secs"] = lag
+		}
+	}
+	return out
+}
+
+// headersSyncLagSecs returns how far behind the local header tip is from real
+// time. Zero if the tip is unreadable or already at head.
+func (s *Server) headersSyncLagSecs() int {
+	tip := s.headerStore.Tip()
+	raw, err := s.headerStore.HeaderAtHeight(tip)
+	if err != nil {
+		return 0
+	}
+	var hdr wire.BlockHeader
+	if err := hdr.Deserialize(bytes.NewReader(raw)); err != nil {
+		return 0
+	}
+	lag := int(time.Since(hdr.Timestamp).Seconds())
+	if lag < 0 {
+		return 0
+	}
+	return lag
 }

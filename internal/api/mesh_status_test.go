@@ -46,6 +46,43 @@ func TestMeshStatusEndpoint(t *testing.T) {
 	if cors := w.Header().Get("Access-Control-Allow-Origin"); cors != "*" {
 		t.Errorf("expected CORS *, got %q", cors)
 	}
+
+	// upstream_status must be present when a broadcaster is wired.
+	// This is the contract the SDK's client.health() promises.
+	us, ok := result["upstream_status"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing or malformed 'upstream_status' field: %v", result["upstream_status"])
+	}
+	if _, ok := us["broadcast"]; !ok {
+		t.Errorf("upstream_status missing 'broadcast' subfield: %v", us)
+	}
+}
+
+// TestMeshStatusUpstreamStatusBroadcastValue verifies /mesh/status reports the
+// same broadcast-health value as the underlying broadcaster. Wallets poll this
+// endpoint for failover decisions, so the contract must match.
+func TestMeshStatusUpstreamStatusBroadcastValue(t *testing.T) {
+	srv := testServer(t)
+
+	req := httptest.NewRequest("GET", "/mesh/status", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	var result map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &result)
+	us, ok := result["upstream_status"].(map[string]interface{})
+	if !ok {
+		t.Fatal("upstream_status missing")
+	}
+
+	// testServer uses NewBroadcaster with nil ARC → UpstreamStatus returns
+	// "down" (can't forward to miners). Verify the endpoint reports the same
+	// thing the broadcaster does.
+	expected := srv.broadcaster.UpstreamStatus()
+	if us["broadcast"] != expected {
+		t.Errorf("upstream_status.broadcast = %q, broadcaster reports %q — contract drift",
+			us["broadcast"], expected)
+	}
 }
 
 func TestMeshStatusWithEnvelopes(t *testing.T) {
