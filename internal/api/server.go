@@ -537,9 +537,7 @@ func (s *Server) handleAnvilManifest(w http.ResponseWriter, r *http.Request) {
 	// Operator-declared custom capabilities (e.g. AVOS oracle relay).
 	// Pass-through with no schema enforcement so operators can advertise
 	// capabilities Anvil itself has no native awareness of.
-	for _, cap := range s.customCaps {
-		capabilities = append(capabilities, cap)
-	}
+	capabilities = append(capabilities, s.customCaps...)
 
 	// Mesh info
 	meshInfo := map[string]interface{}{
