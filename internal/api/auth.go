@@ -45,6 +45,46 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// requireAuthSSE is like requireAuth but also accepts ?token= query parameter.
+// SSE endpoints need this because EventSource cannot set custom HTTP headers.
+// Scoped only to SSE routes — write endpoints must NOT use this.
+func (s *Server) requireAuthSSE(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Anvil-Auth, Authorization")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		if s.authToken == "" {
+			writeError(w, http.StatusForbidden, "no auth token configured")
+			return
+		}
+
+		// Check headers first (same as requireAuth)
+		token := r.Header.Get("X-Anvil-Auth")
+		if token == "" {
+			auth := r.Header.Get("Authorization")
+			if len(auth) > 7 && auth[:7] == "Bearer " {
+				token = auth[7:]
+			}
+		}
+		// SSE fallback: accept ?token= query param (EventSource can't set headers)
+		if token == "" {
+			token = r.URL.Query().Get("token")
+		}
+
+		if token != s.authToken {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		next(w, r)
+	}
+}
+
 // RateLimiter implements a token-bucket rate limiter keyed by client IP.
 // Zero-value is not usable — use NewRateLimiter.
 type RateLimiter struct {

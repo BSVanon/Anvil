@@ -313,6 +313,45 @@ export class AnvilClient {
     return this.post('/acknowledgeMessage', req) as Promise<{ status: string; acknowledged: number }>;
   }
 
+  /**
+   * Subscribe to new messages via SSE. Returns an object with a close() method.
+   * Each message is pushed in real time as it arrives in the recipient's inbox.
+   *
+   * @param messageBox - The message box to subscribe to (e.g. "dex_swap_accept")
+   * @param onMessage - Callback invoked for each new message
+   * @param recipient - Optional recipient pubkey (defaults to node identity)
+   * @returns Object with close() to terminate the SSE connection
+   */
+  subscribeMessages(
+    messageBox: string,
+    onMessage: (msg: Message) => void,
+    recipient?: string
+  ): { close: () => void } {
+    const params = new URLSearchParams({ messageBox, token: this.authToken });
+    if (recipient) params.set('recipient', recipient);
+    const url = `${this.nodeUrl}/messages/subscribe?${params.toString()}`;
+
+    const eventSource = new EventSource(url);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const msg: Message = JSON.parse(event.data);
+        onMessage(msg);
+      } catch {
+        // skip malformed events
+      }
+    };
+
+    eventSource.onerror = () => {
+      // EventSource auto-reconnects; no action needed.
+      // If the connection is permanently dead, call close().
+    };
+
+    return {
+      close: () => eventSource.close()
+    };
+  }
+
   // ── Metadata + Identity publishing (v2.0) ──
 
   /** Publish topic metadata (description, render hints). */
