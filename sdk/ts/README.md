@@ -1,6 +1,6 @@
 # anvil-mesh
 
-Thin TypeScript client for the [Anvil](https://github.com/BSVanon/Anvil) mesh network.
+Thin TypeScript client for the [Anvil](https://github.com/BSVanon/Anvil) mesh network. Requires Anvil node v2.1.0+ for the federation-discovery, health, and real-time messaging helpers introduced in SDK v0.4.0.
 
 ## Install
 
