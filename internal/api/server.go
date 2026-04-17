@@ -210,7 +210,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /mempool/watch/history", s.openRead(s.handleWatchHistory))
 	s.mux.HandleFunc("GET /mempool/watch/subscribe", s.openRead(s.handleWatchSubscribe))
 
-	s.mux.HandleFunc("POST /broadcast", s.requireAuth(s.handleBroadcast))
+	// /broadcast accepts auth token OR x402 payment. Pre-wired for the wallet's
+	// future x402 client (E.2 migration in ANVIL_NODE_HANDOFF.md) — consumers
+	// with auth tokens keep working unchanged.
+	s.mux.HandleFunc("POST /broadcast", s.authOrPayBinary(s.handleBroadcast))
 	// POST /data accepts bearer auth OR x402 payment (if payment gate exists).
 	// This lets third-party publishers submit envelopes by paying instead of
 	// needing the operator's auth token.
@@ -605,6 +608,59 @@ func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
 
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		writeError(w, http.StatusUnauthorized, "unauthorized — provide auth token, x402 payment, or signed envelope")
+	}
+}
+
+// authOrPayBinary is authOrPay for endpoints whose request body is binary
+// (e.g. /broadcast accepts raw BEEF). Differences from authOrPay:
+//  1. No signed-envelope fallback — an envelope parse would corrupt the body
+//     via io.LimitReader truncation for large BEEF inputs.
+//  2. When neither auth nor payment is configured on the node, returns 403
+//     ("endpoint disabled") rather than 401 — consistent with the prior
+//     requireAuth behavior and more accurate (server-side config issue, not
+//     a caller credential issue).
+func (s *Server) authOrPayBinary(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CORS preflight
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// 1. Bearer token
+		token := r.Header.Get("X-Anvil-Auth")
+		if token == "" {
+			if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
+				token = auth[7:]
+			}
+		}
+		if token != "" && s.authToken != "" && token == s.authToken {
+			r.Header.Set("X-Anvil-Authed", "true")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			next(w, r)
+			return
+		}
+
+		// 2. x402 payment
+		if s.paymentGate != nil {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			s.paymentGate.Middleware(next)(w, r)
+			return
+		}
+
+		// 3. Endpoint disabled — neither auth nor payment configured on this node
+		if s.authToken == "" {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			writeError(w, http.StatusForbidden, "no auth token configured")
+			return
+		}
+
+		// 4. Auth token configured but caller didn't supply valid one
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		writeError(w, http.StatusUnauthorized, "unauthorized — provide auth token or x402 payment")
 	}
 }
 
