@@ -21,10 +21,20 @@
     "@types/node": "^25.5.0",
     "typescript": "^5.0.0"
   },
-  "keywords": ["bsv", "bitcoin", "anvil", "mesh", "x402", "micropayments", "http-402", "overlay", "gossip"],
+  "keywords": [
+    "bsv",
+    "bitcoin",
+    "anvil",
+    "mesh",
+    "x402",
+    "micropayments",
+    "http-402",
+    "overlay",
+    "gossip"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/BSVanon/Anvil",
+    "url": "git+https://github.com/BSVanon/Anvil.git",
     "directory": "sdk/ts"
   },
   "license": "SEE LICENSE IN LICENSE.txt"
