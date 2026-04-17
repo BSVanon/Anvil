@@ -288,7 +288,7 @@ func (s *Server) handleX402Discovery(w http.ResponseWriter, r *http.Request) {
 		{
 			"method":      "GET",
 			"path":        "/stats",
-			"price":       priceFor("/status"),
+			"price":       priceFor("/stats"),
 			"description": "Extended node stats: envelope counts, active topics, mesh peers, overlay registrations",
 		},
 		{
@@ -321,6 +321,13 @@ func (s *Server) handleX402Discovery(w http.ResponseWriter, r *http.Request) {
 			"path":        "/mesh/status",
 			"price":       0,
 			"description": "Live mesh status: connected peers, active topics, data flow counters, uptime",
+		},
+		{
+			"method":      "POST",
+			"path":        "/broadcast",
+			"price":       priceFor("/broadcast"),
+			"description": "Submit a BEEF-validated transaction for ARC forwarding. Requires auth token OR x402 payment (authOrPay).",
+			"note":        "POST; request body is binary BEEF. Returns derived status: propagated | queued | rejected | validated-only.",
 		},
 		{
 			"method":      "GET",
@@ -406,10 +413,11 @@ func (s *Server) handleX402Info(w http.ResponseWriter, r *http.Request) {
 
 	endpoints := []map[string]interface{}{
 		{"method": "GET", "path": "/status", "price": priceFor("/status"), "description": "Node health and header height"},
-		{"method": "GET", "path": "/stats", "price": priceFor("/status"), "description": "Extended stats: envelopes, peers, topics"},
+		{"method": "GET", "path": "/stats", "price": priceFor("/stats"), "description": "Extended stats: envelopes, peers, topics"},
 		{"method": "GET", "path": "/data", "price": priceFor("/data"), "description": "Query signed data envelopes by topic"},
 		{"method": "GET", "path": "/tx/{txid}/beef", "price": priceFor("/tx/{txid}/beef"), "description": "SPV proof in BEEF format"},
 		{"method": "GET", "path": "/overlay/lookup", "price": priceFor("/overlay/lookup"), "description": "Discover mesh peers"},
+		{"method": "POST", "path": "/broadcast", "price": priceFor("/broadcast"), "description": "Submit a BEEF tx for ARC forwarding (auth token OR x402)"},
 	}
 
 	result := map[string]interface{}{
