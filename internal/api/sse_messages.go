@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -101,8 +102,17 @@ func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusOK)
 
 	// If reconnecting with Last-Event-ID, warn about potential gap.
+	// Sanitize the echoed value: we only need to know an ID was supplied,
+	// not its exact value. Echoing arbitrary header content into the SSE
+	// stream unmodified would allow a malicious header to inject a fake
+	// data: frame by embedding CR/LF. We emit the int if the header parses
+	// as one, otherwise just note a reconnect without echoing the value.
 	if lastID := r.Header.Get("Last-Event-ID"); lastID != "" {
-		fmt.Fprintf(w, ": reconnected after id %s — use POST /listMessages to backfill\n\n", lastID)
+		if n, err := strconv.ParseInt(lastID, 10, 64); err == nil {
+			fmt.Fprintf(w, ": reconnected after id %d — use POST /listMessages to backfill\n\n", n)
+		} else {
+			fmt.Fprint(w, ": reconnected — use POST /listMessages to backfill\n\n")
+		}
 		flusher.Flush()
 	}
 
