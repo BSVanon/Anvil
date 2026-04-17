@@ -237,6 +237,112 @@ func TestGetBEEFFetcherEnabledCacheMiss(t *testing.T) {
 	}
 }
 
+// TestGetBEEFSourceField verifies the source field lets consumers distinguish
+// overlay-cached BEEF from passthrough. Wallet multi-source BEEF chains need
+// this to know whether Anvil handled the tx natively or is relaying an
+// external indexer (in which case the wallet should prefer a direct upstream).
+func TestGetBEEFSourceFieldCacheHit(t *testing.T) {
+	srv := testServer(t)
+
+	// Store a BEEF (same setup as TestGetBEEFCacheHit)
+	tx := transaction.NewTransaction()
+	tx.AddOutput(&transaction.TransactionOutput{
+		Satoshis:      1000,
+		LockingScript: mustDecodeScript(t, "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac"),
+	})
+	isTrue := true
+	path := [][]*transaction.PathElement{{
+		{Offset: 0, Hash: tx.TxID(), Txid: &isTrue},
+		{Offset: 1, Hash: tx.TxID()},
+	}}
+	tx.MerklePath = transaction.NewMerklePath(900002, path)
+	beef, _ := transaction.NewBeefFromTransaction(tx)
+	beefBytes, _ := beef.AtomicBytes(tx.TxID())
+	txid, _ := srv.proofStore.StoreBEEF(beefBytes)
+
+	req := httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["source"] != "cached" {
+		t.Fatalf("expected source=cached for ProofStore hit, got %v", resp["source"])
+	}
+}
+
+func TestGetBEEFSourceFieldUpstreamFetch(t *testing.T) {
+	rawHex, txid, tscJSON, blockHeight := buildTestBeefTx(t)
+
+	mockWoC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/hex"):
+			w.Write([]byte(rawHex))
+		case strings.HasSuffix(r.URL.Path, "/proof/tsc"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(tscJSON))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"blockheight":%d}`, blockHeight)
+		}
+	}))
+	defer mockWoC.Close()
+
+	fetcher := spv.NewProofFetcher(nil, slog.Default())
+	fetcher.SetBaseURL(mockWoC.URL)
+	srv := testServerWithFetcher(t, fetcher)
+
+	req := httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	// Fetcher has no ARC client configured, so merkle proof must come from WoC
+	if resp["source"] != "woc" {
+		t.Fatalf("expected source=woc for WoC-supplied proof, got %v", resp["source"])
+	}
+}
+
+func TestGetBEEFSourceHeaderOnBinaryResponse(t *testing.T) {
+	srv := testServer(t)
+
+	tx := transaction.NewTransaction()
+	tx.AddOutput(&transaction.TransactionOutput{
+		Satoshis:      3000,
+		LockingScript: mustDecodeScript(t, "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac"),
+	})
+	isTrue := true
+	path := [][]*transaction.PathElement{{
+		{Offset: 0, Hash: tx.TxID(), Txid: &isTrue},
+		{Offset: 1, Hash: tx.TxID()},
+	}}
+	tx.MerklePath = transaction.NewMerklePath(900003, path)
+	beef, _ := transaction.NewBeefFromTransaction(tx)
+	beefBytes, _ := beef.AtomicBytes(tx.TxID())
+	txid, _ := srv.proofStore.StoreBEEF(beefBytes)
+
+	req := httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil)
+	req.Header.Set("Accept", "application/octet-stream")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("X-BEEF-Source"); got != "cached" {
+		t.Fatalf("expected X-BEEF-Source=cached header on binary response, got %q", got)
+	}
+}
+
 func TestGetBEEFFetcherUnconfirmed404(t *testing.T) {
 	rawHex, txid, _, _ := buildTestBeefTx(t)
 

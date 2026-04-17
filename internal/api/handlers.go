@@ -31,10 +31,13 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Cache hit — serve from proof store
+	source := spv.BEEFSourceCached
 	beefBytes, err := s.proofStore.GetBEEF(txid)
 	if err != nil && s.proofFetcher != nil {
-		// 2. Cache miss — fetch on demand
-		fetched, fetchErr := s.proofFetcher.FetchBEEF(txid)
+		// 2. Cache miss — fetch on demand; fetcher returns which upstream
+		// supplied the proof so the caller can distinguish overlay-cached
+		// data from passthrough from an external indexer.
+		fetched, fetchedSource, fetchErr := s.proofFetcher.FetchBEEF(txid)
 		if fetchErr != nil {
 			s.logger.Debug("BEEF fetch failed", "txid", txid, "error", fetchErr)
 			writeError(w, http.StatusNotFound, "no BEEF available: "+fetchErr.Error())
@@ -63,15 +66,18 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 		}
 
 		beefBytes = fetched
+		source = fetchedSource
 	} else if err != nil {
 		// No fetcher configured — plain cache miss
 		writeError(w, http.StatusNotFound, "no BEEF envelope found for this txid")
 		return
 	}
 
-	// Serve as binary if requested
+	// Serve as binary if requested — source is surfaced via header since the
+	// body is pure BEEF bytes with no room for metadata.
 	if strings.Contains(r.Header.Get("Accept"), "application/octet-stream") {
 		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-BEEF-Source", source)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(beefBytes) // error is client-side disconnect, nothing to do
 		return
@@ -86,8 +92,9 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{
-		"txid": txid,
-		"beef": hex.EncodeToString(beefBytes),
+		"txid":   txid,
+		"beef":   hex.EncodeToString(beefBytes),
+		"source": source,
 	}
 	if confidence != "" {
 		resp["confidence"] = confidence
