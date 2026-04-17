@@ -38,6 +38,55 @@ const status = await anvil.status();
 const stats = await anvil.stats();
 ```
 
+### Federation discovery + health (wallet failover)
+
+For consumers that need to choose between federation nodes or poll health:
+
+```typescript
+// List all federation nodes (merged from SHIP registrations, heartbeats,
+// and direct peer connections). Each entry carries evidence flags so the
+// caller can decide which nodes to trust.
+const { nodes, count } = await anvil.peers();
+// nodes[0].evidence = { self, direct_peer, heartbeat, overlay, ... }
+
+// Rich live health snapshot — prefer this over `status()` for polling.
+// CORS-only, no rate limit, no x402. Recommended interval: 30–60s.
+const health = await anvil.health();
+// health.upstream_status = { broadcast: 'healthy' | 'degraded' | 'down',
+//                            headers_sync_lag_secs: N }
+```
+
+Failover pattern:
+
+```typescript
+// Poll primary node; on degraded/down, fail over to secondary.
+setInterval(async () => {
+  const h = await primary.health();
+  if (h.upstream_status?.broadcast !== 'healthy') {
+    console.warn('primary degraded, switching to secondary');
+    activeClient = secondary;
+  }
+}, 45_000);
+```
+
+### Messaging (BRC-33, real-time push)
+
+```typescript
+// Subscribe to new messages via SSE (replaces polling /listMessages):
+const sub = anvil.subscribeMessages('avos.offer', (msg) => {
+  console.log('new message:', msg.body);
+});
+// later: sub.close()
+```
+
+### Broadcast (transaction submission)
+
+```typescript
+// /broadcast now accepts auth token OR x402 payment (authOrPay).
+// Consumers with an auth token work unchanged; machine consumers pay via x402.
+// Returns derived `status` field: "propagated" | "queued" | "rejected" | "validated-only".
+```
+
 ### Overlay (BRC-22/24)
 
 ```typescript
@@ -65,6 +114,10 @@ const answer = await anvil.overlayLookup('ls_uhrp', { content_hash: 'sha256-hex.
 - **Monetization** — signed in digest so payment terms can't be altered
 - **gossip:false** — local-only envelopes, signed in digest
 - **Overlay engine** — BRC-22 submission (TaggedBEEF/STEAK), BRC-24 lookup queries
+- **Federation discovery** — `peers()` merges SHIP directory + heartbeat + gossip adjacency
+- **Health / failover** — `health()` returns `upstream_status` for wallet failover decisions
+- **Real-time messaging** — `subscribeMessages()` SSE push for BRC-33 mailboxes
+- **Topic catalog** — `getTopics()`, `getTopicDetail()` for AI-agent and DEX discovery
 
 ## Links
 
