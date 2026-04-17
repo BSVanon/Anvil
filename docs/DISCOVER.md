@@ -64,6 +64,38 @@ curl http://any-node:9333/overlay/lookup?topic=anvil:mainnet
 
 Returns all known nodes with identity, domain, and version.
 
+### Federation directory (v2.1.0+)
+
+```bash
+curl http://any-node:9333/mesh/nodes
+```
+
+Authoritative merged view of federation nodes from three sources: overlay
+SHIP registrations (identity ↔ URL), signed heartbeat envelopes (live
+liveness), and direct gossip adjacency (WebSocket peers). Each entry
+carries `evidence` flags so consumers can decide which nodes to trust.
+
+### Node health + upstream status (v2.1.0+)
+
+```bash
+curl http://any-node:9333/mesh/status
+```
+
+Live snapshot including `upstream_status.broadcast` (healthy|degraded|
+down) and `headers_sync_lag_secs`. Wallets poll this every 30–60s for
+federation-node failover decisions. CORS-only, no rate limit, no x402.
+
+### Operator-declared capabilities (v2.1.0+)
+
+```bash
+curl http://any-node:9333/.well-known/anvil
+```
+
+Returns the node manifest including any operator-declared custom
+capabilities (AVOS oracles, custom data relays, etc.). The shape is
+schema-less — agents parse whatever fields the operator chose to
+publish.
+
 ## How a machine transacts
 
 ### 1. Discover topics

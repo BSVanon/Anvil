@@ -121,9 +121,118 @@ All wallet endpoints require the `Authorization: Bearer <token>` header.
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/explorer` | GET | No | Node explorer dashboard |
-| `/mesh/status` | GET | No | Live mesh peers, connections, activity |
-| `/mesh/nodes` | GET | No | All known nodes (overlay + heartbeat + peers merged) |
 | `/app/{name}` | GET | No | Redirect to registered app |
+
+## Broadcast response shape (v2.1.0+)
+
+`POST /broadcast` returns a structured response. Wallets should read the
+derived `status` field for failover decisions; power consumers can read
+the individual ARC state bits for telemetry.
+
+```json
+{
+  "txid": "abc123...",
+  "status": "propagated" | "queued" | "rejected" | "validated-only",
+  "confidence": "spv_verified" | "partially_verified" | "unconfirmed" | "invalid",
+  "stored": true,
+  "mempool": true,
+  "arc": { "submitted": true, "tx_status": "SEEN_ON_NETWORK" },
+  "message": "..."
+}
+```
+
+Status derivation:
+
+| Condition | status |
+|---|---|
+| `confidence == "invalid"` | `"rejected"` |
+| `arc.submitted && tx_status ∈ {REJECTED, DOUBLE_SPEND_ATTEMPTED}` | `"rejected"` |
+| `arc.submitted && tx_status ∈ {SEEN_ON_NETWORK, MINED}` | `"propagated"` |
+| `arc.submitted && intermediate ARC state` (RECEIVED, STORED, ANNOUNCED, etc.) | `"queued"` |
+| No ARC attempt OR ARC HTTP failure (`submitted=false`) | `"validated-only"` |
+
+Query `?arc=true` to forward to miners after BEEF validation. ARC
+transport failures set `arc.submitted = false` and surface the error in
+`arc.error`; consumers should retry via another upstream (status will be
+`"validated-only"`, not `"queued"`).
+
+## BEEF response shape (v2.1.0+)
+
+`GET /tx/{txid}/beef` returns a `source` field indicating where the
+proof came from:
+
+```json
+{
+  "txid": "abc123...",
+  "beef": "hex-encoded-beef",
+  "source": "cached" | "arc" | "woc",
+  "confidence": "spv_verified"
+}
+```
+
+Binary responses (on `Accept: application/octet-stream`) surface the
+same value via the `X-BEEF-Source` header. Wallets doing multi-source
+BEEF chains should prefer `"cached"` from Anvil and fall back to a
+direct upstream for `"arc"`/`"woc"` (passthrough).
+
+## Mesh status response shape (v2.1.0+)
+
+`GET /mesh/status` is the recommended wallet failover-decision endpoint
+(CORS-only, no rate limit, no x402). Poll every 30–60 seconds.
+
+```json
+{
+  "node": "anvil-prime",
+  "version": "2.1.0",
+  "headers": { "height": 944988, "work": "0x..." },
+  "identity": "02...",
+  "mesh": { "peers": 2, "peer_list": [...], "started_at": "...", "uptime_secs": 3600 },
+  "activity": { "envelopes_received": 100, "envelopes_sent": 42 },
+  "topics": [{ "topic": "oracle:rates", "count": 100, "age_secs": 30 }],
+  "overlay": { "ship_count": 7 },
+  "upstream_status": {
+    "broadcast": "healthy" | "degraded" | "down",
+    "headers_sync_lag_secs": 12
+  }
+}
+```
+
+Heartbeat envelopes published on the `mesh:heartbeat` topic carry the
+same `upstream_status` so federation consumers can observe node health
+without direct-polling every node.
+
+## Operator custom capabilities (v2.1.0+)
+
+Node operators can declare capabilities in the node config TOML. These
+surface in `/.well-known/anvil` under `capabilities[]`:
+
+```toml
+[[capabilities.custom]]
+type = "avos-offer-oracle"
+description = "MNEE ⇄ BSV oracle-attested swap"
+oracle_pubkey = "02abc..."
+mailbox = "avos.offer@node-identity"
+access = "POST /sendMessage (messageBox: avos.offer)"
+payment = "free"
+```
+
+Schema-less: any fields declared in the TOML pass through to the
+manifest. Use this to advertise node-specific services (AVOS relays,
+proprietary data feeds, etc.) without Anvil code changes.
+
+### GET /messages/subscribe (v2.1.0+)
+
+SSE push for new BRC-33 messages. EventSource cannot set custom headers,
+so the auth token is passed via `?token=` query param:
+
+```js
+const url = `http://localhost:9333/messages/subscribe?messageBox=avos.offer&token=${token}`;
+const source = new EventSource(url);
+source.onmessage = (e) => console.log(JSON.parse(e.data));
+```
+
+Each message arrives as a `data:` event with a monotonic `id:` field.
+On reconnect, use `Last-Event-ID` + `POST /listMessages` to backfill.
 
 ## Authentication
 

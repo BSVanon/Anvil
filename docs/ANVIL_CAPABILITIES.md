@@ -2,7 +2,7 @@
 
 **Purpose:** This document describes what an Anvil-Mesh node can do, when to use it, and how to interact with it. It is written for AI models, agents, and automated systems that need to decide whether and how to use an Anvil-Mesh node.
 
-**Last updated:** 2026-04-03
+**Last updated:** 2026-04-17 (v2.1.0)
 
 ---
 
@@ -28,10 +28,14 @@ Anvil-Mesh is a communication mesh for BSV apps. Each node exposes a REST API fo
 | Subscribe to real-time data | `GET /data/subscribe?topic=...` | Free or x402-gated |
 | Send a message to an identity | `POST /sendMessage` | Bearer token |
 | Retrieve messages | `POST /listMessages` | Bearer token |
+| Real-time new-message push | `GET /messages/subscribe` (SSE) | Bearer token (via `?token=`) |
+| Submit a BEEF tx for broadcast | `POST /broadcast` | Bearer token or x402 |
 | Discover available topics | `GET /topics` | Free |
 | Get topic detail + metadata | `GET /topics/{topic}` | Free |
 | Look up publisher identity | `GET /identity/{pubkey}` | Free |
 | Find nodes serving a topic | `GET /overlay/lookup?topic=...` | Free |
+| Enumerate federation nodes | `GET /mesh/nodes` | Free |
+| Get rich node health + upstream status | `GET /mesh/status` | Free |
 | Check payment requirements | `GET /.well-known/x402` | Free |
 | Get a BEEF proof | `GET /tx/{txid}/beef` | Free or x402-gated |
 | Check node health | `GET /status` | Free |
@@ -80,8 +84,9 @@ Data flows through **signed envelopes** on **topics**.
 ### Topic conventions
 - `meta:<topic>` — metadata for a topic (schema, description, frequency)
 - `identity:<pubkey>` — publisher profile (name, description)
-- `mesh:heartbeat` — node liveness + demand map
+- `mesh:heartbeat` — node liveness + demand map + upstream_status (broadcast health, headers sync lag) for federation failover decisions
 - `anvil:catalog` — app directory (one entry per publisher, latest wins)
+- `tm_dex_swap` — DEX swap offer index (BRC-22 topic; per-node opt-in)
 
 ---
 
@@ -117,6 +122,33 @@ Price discovery: `GET /.well-known/x402` returns all gated endpoints and prices.
 
 ---
 
+## Federation directory + failover (v2.1.0+)
+
+Consumers that depend on multiple federation nodes use `GET /mesh/nodes`
+for enumeration and `GET /mesh/status` for per-node health. `/mesh/status`
+carries `upstream_status` (broadcast=healthy|degraded|down, headers sync
+lag) so wallets can fail over without probing each upstream independently.
+The same snapshot is published on the `mesh:heartbeat` topic for
+gossip-substrate consumers.
+
+## Custom operator capabilities (v2.1.0+)
+
+Operators declare node-specific capabilities in their TOML config:
+
+```toml
+[[capabilities.custom]]
+type = "avos-offer-oracle"
+description = "MNEE ⇄ BSV oracle-attested swap"
+oracle_pubkey = "02abc..."
+mailbox = "avos.offer@node-identity"
+access = "POST /sendMessage (messageBox: avos.offer)"
+payment = "free"
+```
+
+These surface in `/.well-known/anvil` under `capabilities[]`. Agents use
+this to discover node-specific services (AVOS relays, oracles, etc.)
+without needing a separate well-known file per service.
+
 ## What Anvil-Mesh does NOT do
 
 - Does not mine transactions (use Teranode/Arcade)
@@ -124,3 +156,5 @@ Price discovery: `GET /.well-known/x402` returns all gated endpoints and prices.
 - Does not execute scripts for general computation
 - Does not provide a mempool view (Teranode eliminated the mempool)
 - Is not a wallet (though it verifies payments and hosts operator wallet)
+- Does not index UTXOs by address (wallets multi-source this themselves)
+- Does not index BSV-20/BSV-21 token metadata (app-layer concern)
