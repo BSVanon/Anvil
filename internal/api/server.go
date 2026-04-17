@@ -20,6 +20,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
+	"github.com/BSVanon/Anvil/internal/version"
 )
 
 // Server is the Anvil REST API server.
@@ -372,7 +373,7 @@ func (s *Server) handleX402Discovery(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	result := map[string]interface{}{
 		"node":    s.nodeName,
-		"version": "0.1.0",
+		"version": version.Version,
 	}
 
 	if s.identityPub != "" {
@@ -555,7 +556,7 @@ func (s *Server) handleAnvilManifest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"name":         s.nodeName,
 		"protocol":     "anvil-mesh",
-		"version":      "0.1.0",
+		"version":      version.Version,
 		"network":      "bsv-mainnet",
 		"capabilities": capabilities,
 		"payment": map[string]interface{}{
