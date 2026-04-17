@@ -601,6 +601,7 @@ func main() {
 			}
 			return hash.String()
 		},
+		CustomCapabilities: cfg.Capabilities.Custom,
 	})
 
 	if nodeWallet != nil {

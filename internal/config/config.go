@@ -11,18 +11,36 @@ import (
 )
 
 type Config struct {
-	Node      NodeConfig      `toml:"node"`
-	Identity  IdentityConfig  `toml:"identity"`
-	Peers     PeersConfig     `toml:"peers"`
-	Mesh      MeshConfig      `toml:"mesh"`
-	Foundry   MeshConfig      `toml:"foundry"` // deprecated alias — use [mesh]
-	BSV       BSVConfig       `toml:"bsv"`
-	ARC       ARCConfig       `toml:"arc"`
-	JungleBus JungleBusConfig `toml:"junglebus"`
-	Overlay   OverlayConfig   `toml:"overlay"`
-	Envelopes EnvelopeConfig  `toml:"envelopes"`
-	Mempool   MempoolConfig   `toml:"mempool"`
-	API       APIConfig       `toml:"api"`
+	Node         NodeConfig         `toml:"node"`
+	Identity     IdentityConfig     `toml:"identity"`
+	Peers        PeersConfig        `toml:"peers"`
+	Mesh         MeshConfig         `toml:"mesh"`
+	Foundry      MeshConfig         `toml:"foundry"` // deprecated alias — use [mesh]
+	BSV          BSVConfig          `toml:"bsv"`
+	ARC          ARCConfig          `toml:"arc"`
+	JungleBus    JungleBusConfig    `toml:"junglebus"`
+	Overlay      OverlayConfig      `toml:"overlay"`
+	Envelopes    EnvelopeConfig     `toml:"envelopes"`
+	Mempool      MempoolConfig      `toml:"mempool"`
+	API          APIConfig          `toml:"api"`
+	Capabilities CapabilitiesConfig `toml:"capabilities"`
+}
+
+// CapabilitiesConfig lets operators declare capabilities beyond the built-in
+// ones (data feeds, SPV, headers). Custom entries are surfaced in
+// /.well-known/anvil so machine consumers (agents, DEX discovery) can find
+// services a node provides — e.g. an AVOS oracle relay, an oracle feed, etc.
+//
+// See ANVIL_NODE_HANDOFF.md for the AVOS case: an operator running an AVOS
+// oracle declares a capability entry so the Anvil manifest advertises it,
+// avoiding a separate .well-known/avos endpoint.
+type CapabilitiesConfig struct {
+	// Custom is a freeform list of capability entries. Each entry is a
+	// map[string]interface{} so operators can include any fields relevant
+	// to the capability type without requiring schema changes in Anvil.
+	// Recommended fields per capability: "type", "description", "access",
+	// "payment". Additional fields pass through as-is.
+	Custom []map[string]interface{} `toml:"custom"`
 }
 
 // MeshConfig defines Anvil mesh peering via go-sdk auth.Peer + WebSocket.
