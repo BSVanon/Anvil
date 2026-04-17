@@ -56,28 +56,56 @@ func (p *Publisher) publish(topic, payload string, ttl int) {
 	}
 }
 
+// UpstreamStatus is the health snapshot a federation node publishes in its
+// heartbeat so wallet/DEX consumers can make failover decisions without
+// polling every node individually. Fields are capability-named (not
+// implementation-named) so the contract survives the future ARC → Arcade
+// migration.
+type UpstreamStatus struct {
+	// Broadcast is the health of this node's broadcast upstream.
+	// Values: "healthy" | "degraded" | "down".
+	Broadcast string `json:"broadcast"`
+	// HeadersSyncLagSecs is how far behind the local header tip is from
+	// real time. Wallets doing their own BEEF validation may or may not
+	// care; surfacing it lets them diagnose stale-proof situations on the
+	// Anvil node. Omitted when zero/unknown.
+	HeadersSyncLagSecs int `json:"headers_sync_lag_secs,omitempty"`
+}
+
 // HeartbeatPayload is the JSON payload for mesh:heartbeat envelopes.
 type HeartbeatPayload struct {
-	Node      string         `json:"node"`
-	Version   string         `json:"version"`
-	Height    uint32         `json:"height"`
-	Peers     int            `json:"peers"`
-	Topics    []string       `json:"topics"`
-	Demand    map[string]int `json:"demand,omitempty"` // topic → subscriber/query count
-	Timestamp int64          `json:"ts"`
+	Node           string          `json:"node"`
+	Version        string          `json:"version"`
+	Height         uint32          `json:"height"`
+	Peers          int             `json:"peers"`
+	Topics         []string        `json:"topics"`
+	Demand         map[string]int  `json:"demand,omitempty"` // topic → subscriber/query count
+	UpstreamStatus *UpstreamStatus `json:"upstream_status,omitempty"`
+	Timestamp      int64           `json:"ts"`
+}
+
+// HeartbeatSources bundles the data-source callbacks RunHeartbeat needs.
+// Grouped into a struct instead of growing the positional argument list each
+// time a new field is added to the payload.
+type HeartbeatSources struct {
+	HeightFn   func() uint32
+	PeersFn    func() int
+	TopicsFn   func() map[string]int
+	DemandFn   func() map[string]int // optional
+	UpstreamFn func() *UpstreamStatus // optional
 }
 
 // RunHeartbeat publishes a mesh:heartbeat envelope every interval.
 // The heartbeat announces this node's presence and basic stats so
 // newly connected nodes immediately see live data flowing.
-func (p *Publisher) RunHeartbeat(ctx context.Context, interval time.Duration, heightFn func() uint32, peerCountFn func() int, topicsFn func() map[string]int, demandFn func() map[string]int) {
+func (p *Publisher) RunHeartbeat(ctx context.Context, interval time.Duration, sources HeartbeatSources) {
 	ttl := int(interval.Seconds()) * 5
 	if ttl < 300 {
 		ttl = 300
 	}
 
 	// Publish immediately on start, then on interval
-	p.publishHeartbeat(ttl, heightFn, peerCountFn, topicsFn, demandFn)
+	p.publishHeartbeat(ttl, sources)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -86,31 +114,37 @@ func (p *Publisher) RunHeartbeat(ctx context.Context, interval time.Duration, he
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.publishHeartbeat(ttl, heightFn, peerCountFn, topicsFn, demandFn)
+			p.publishHeartbeat(ttl, sources)
 		}
 	}
 }
 
-func (p *Publisher) publishHeartbeat(ttl int, heightFn func() uint32, peerCountFn func() int, topicsFn func() map[string]int, demandFn func() map[string]int) {
-	topicMap := topicsFn()
+func (p *Publisher) publishHeartbeat(ttl int, sources HeartbeatSources) {
+	topicMap := sources.TopicsFn()
 	topicNames := make([]string, 0, len(topicMap))
 	for t := range topicMap {
 		topicNames = append(topicNames, t)
 	}
 
 	var demand map[string]int
-	if demandFn != nil {
-		demand = demandFn()
+	if sources.DemandFn != nil {
+		demand = sources.DemandFn()
+	}
+
+	var upstream *UpstreamStatus
+	if sources.UpstreamFn != nil {
+		upstream = sources.UpstreamFn()
 	}
 
 	hb := HeartbeatPayload{
-		Node:      p.nodeName,
-		Version:   p.version,
-		Height:    heightFn(),
-		Peers:     peerCountFn(),
-		Topics:    topicNames,
-		Demand:    demand,
-		Timestamp: time.Now().Unix(),
+		Node:           p.nodeName,
+		Version:        p.version,
+		Height:         sources.HeightFn(),
+		Peers:          sources.PeersFn(),
+		Topics:         topicNames,
+		Demand:         demand,
+		UpstreamStatus: upstream,
+		Timestamp:      time.Now().Unix(),
 	}
 	data, _ := json.Marshal(hb)
 	p.publish("mesh:heartbeat", string(data), ttl)
