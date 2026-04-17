@@ -10,7 +10,10 @@
 | `/data/subscribe` | GET | No | SSE stream of new envelopes by topic (real-time push) |
 | `/data` | POST | Bearer or x402 | Publish a signed envelope |
 | `/data` | DELETE | Bearer | Delete a stored envelope by `topic` + `key` |
-| `/broadcast` | POST | Bearer | Broadcast a raw transaction |
+| `/broadcast` | POST | Bearer or x402 | Submit BEEF for validation; forwards to ARC if `?arc=true`. Returns derived `status` field. x402 accepted only when node sets a positive broadcast price. |
+| `/messages/subscribe` | GET | Bearer (via `?token=`) | SSE stream of new BRC-33 messages in real time |
+| `/mesh/status` | GET | No | Rich live health snapshot; carries `upstream_status` for wallet failover decisions |
+| `/mesh/nodes` | GET | No | Authoritative federation directory (merged from SHIP + heartbeat + gossip adjacency) |
 
 ## Discovery Endpoints
 
