@@ -9,10 +9,17 @@ data/
 
 # Internal docs (local only, never committed)
 docs/internal/
+docs/logs*
+DIAGNOSTIC_*.md
 
 # IDE
 .vscode/
 .idea/
+*.code-workspace
+
+# Local agent configs
+.codex/
+.mcp.json
 
 # OS
 .DS_Store
