@@ -104,9 +104,20 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 
 // --- Broadcast ---
 
+// Consumer-friendly derived status values for POST /broadcast responses.
+// Wallets and DEX consumers use this single field for failover decisions
+// without having to read the individual ARC state bits.
+const (
+	BroadcastStatusPropagated    = "propagated"     // reached miners (SEEN_ON_NETWORK or MINED)
+	BroadcastStatusQueued        = "queued"         // ARC has it, pre-SEEN state — will propagate
+	BroadcastStatusValidatedOnly = "validated-only" // BEEF valid, no miner submission performed
+	BroadcastStatusRejected      = "rejected"       // BEEF invalid OR ARC rejected
+)
+
 // BroadcastResponse is the structured response from POST /broadcast.
 type BroadcastResponse struct {
 	TxID       string     `json:"txid"`
+	Status     string     `json:"status"` // derived summary: see BroadcastStatus* constants
 	Confidence string     `json:"confidence"`
 	Stored     bool       `json:"stored"`
 	Mempool    bool       `json:"mempool"`
@@ -119,6 +130,29 @@ type ARCStatus struct {
 	Submitted bool   `json:"submitted"`
 	TxStatus  string `json:"tx_status,omitempty"`
 	Error     string `json:"error,omitempty"`
+}
+
+// deriveBroadcastStatus maps the full response state to the consumer-facing
+// status summary. See ANVIL_NODE_HANDOFF.md for the derivation table.
+func deriveBroadcastStatus(confidence string, arc *ARCStatus) string {
+	if confidence == spv.ConfidenceInvalid {
+		return BroadcastStatusRejected
+	}
+	if arc != nil && arc.Submitted {
+		switch arc.TxStatus {
+		case "REJECTED", "DOUBLE_SPEND_ATTEMPTED":
+			return BroadcastStatusRejected
+		case "SEEN_ON_NETWORK", "MINED":
+			return BroadcastStatusPropagated
+		default:
+			// Any other ARC state (RECEIVED, STORED, ANNOUNCED_TO_NETWORK,
+			// ACCEPTED_BY_NETWORK, SENT_TO_NETWORK, etc.) means ARC has the
+			// tx and will propagate — wallet should treat as queued, not
+			// as a failure.
+			return BroadcastStatusQueued
+		}
+	}
+	return BroadcastStatusValidatedOnly
 }
 
 func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +171,7 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	if result.Confidence == spv.ConfidenceInvalid {
 		writeJSON(w, http.StatusUnprocessableEntity, BroadcastResponse{
 			TxID:       result.TxID,
+			Status:     deriveBroadcastStatus(result.Confidence, nil),
 			Confidence: result.Confidence,
 			Message:    result.Message,
 		})
@@ -169,7 +204,16 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 			if raw, ok := s.broadcaster.Mempool().Get(result.TxID); ok {
 				arcResult, err := s.broadcaster.BroadcastToARC(raw)
 				if err != nil {
+					// Configuration error (e.g. ARC not wired). Submitted stays false.
 					arcStatus.Error = err.Error()
+				} else if arcResult.Status == "error" {
+					// Transport failure — BroadcastToARC swallows the HTTP error into
+					// a result with Status="error". We don't know whether the tx
+					// reached ARC, so "Submitted=false" is the honest answer and
+					// deriveBroadcastStatus will land on "validated-only" (wallet
+					// should retry via a different upstream).
+					arcStatus.Submitted = false
+					arcStatus.Error = arcResult.Message
 				} else {
 					arcStatus.Submitted = true
 					arcStatus.TxStatus = arcResult.Status
@@ -181,6 +225,7 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	resp.Status = deriveBroadcastStatus(resp.Confidence, resp.ARC)
 	writeJSON(w, http.StatusOK, resp)
 }
 
