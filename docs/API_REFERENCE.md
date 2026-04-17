@@ -245,6 +245,17 @@ sudo anvil doctor --fix-locks-only  # kill orphan anvil processes, then exit 0
 `ExecStartPre` — runs on every service start so a node can recover from
 orphan-lock contention without operator intervention.
 
+## Operator upgrade ergonomics (v2.2.2+)
+
+- **`anvil upgrade` auto-adds the ExecStartPre hook** to existing unit
+  files. Operators who installed on a version prior to v2.2.0 pick up
+  the self-heal mechanism the next time they upgrade — no manual
+  systemd surgery required.
+- **`anvil deploy` replaces the binary atomically** (`.new` staging
+  file + `rename` over the live path). Safe to re-run while services
+  are up; no `text file busy` errors even when legacy units with
+  different names still hold the old binary.
+
 ## Operator custom capabilities (v2.1.0+)
 
 Node operators can declare capabilities in the node config TOML. These
