@@ -39,49 +39,60 @@ func (f *ProofFetcher) SetBaseURL(base string) {
 	f.wocBaseURL = base
 }
 
+// BEEF source constants — identifies which upstream supplied a fetched proof.
+// "cached" is set by the caller when the ProofStore was hit directly; the fetcher
+// itself never returns "cached" because it only runs on cache miss.
+const (
+	BEEFSourceCached = "cached"
+	BEEFSourceARC    = "arc"
+	BEEFSourceWoC    = "woc"
+)
+
 // FetchBEEF fetches a raw transaction and its merkle proof from external
-// sources, builds Atomic BEEF, and returns the binary. Returns an error if the
+// sources, builds Atomic BEEF, and returns the binary plus the source
+// ("arc" or "woc") that supplied the merkle proof. Returns an error if the
 // transaction is not found or has no confirmed proof yet.
-func (f *ProofFetcher) FetchBEEF(txid string) ([]byte, error) {
+func (f *ProofFetcher) FetchBEEF(txid string) ([]byte, string, error) {
 	// 1. Fetch raw transaction hex from WhatsOnChain
 	rawHex, err := f.fetchRawTx(txid)
 	if err != nil {
-		return nil, fmt.Errorf("fetch raw tx: %w", err)
+		return nil, "", fmt.Errorf("fetch raw tx: %w", err)
 	}
 
 	// 2. Parse to get the Transaction object
 	rawBytes, err := hex.DecodeString(rawHex)
 	if err != nil {
-		return nil, fmt.Errorf("decode raw tx hex: %w", err)
+		return nil, "", fmt.Errorf("decode raw tx hex: %w", err)
 	}
 	tx, err := transaction.NewTransactionFromBytes(rawBytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse raw tx: %w", err)
+		return nil, "", fmt.Errorf("parse raw tx: %w", err)
 	}
 
 	// 3. Get block height from ARC or WoC to know where to look for proof
 	blockHeight, err := f.fetchBlockHeight(txid)
 	if err != nil {
-		return nil, fmt.Errorf("tx not confirmed or height unknown: %w", err)
+		return nil, "", fmt.Errorf("tx not confirmed or height unknown: %w", err)
 	}
 	if blockHeight == 0 {
-		return nil, fmt.Errorf("tx %s is unconfirmed — no merkle proof available", txid)
+		return nil, "", fmt.Errorf("tx %s is unconfirmed — no merkle proof available", txid)
 	}
 
-	// 4. Fetch merkle proof (ARC first, WoC fallback)
-	merkleHex, err := f.fetchMerkleProof(txid, blockHeight)
+	// 4. Fetch merkle proof (ARC first, WoC fallback). The source tracks which
+	// upstream actually supplied the proof so callers can report it to consumers.
+	merkleHex, source, err := f.fetchMerkleProof(txid, blockHeight)
 	if err != nil {
-		return nil, fmt.Errorf("fetch merkle proof: %w", err)
+		return nil, "", fmt.Errorf("fetch merkle proof: %w", err)
 	}
 
 	// 5. Build Atomic BEEF
 	beefBytes, err := buildBEEF(tx, merkleHex)
 	if err != nil {
-		return nil, fmt.Errorf("build BEEF: %w", err)
+		return nil, "", fmt.Errorf("build BEEF: %w", err)
 	}
 
-	f.logger.Info("fetched BEEF on demand", "txid", txid, "block", blockHeight, "size", len(beefBytes))
-	return beefBytes, nil
+	f.logger.Info("fetched BEEF on demand", "txid", txid, "block", blockHeight, "size", len(beefBytes), "source", source)
+	return beefBytes, source, nil
 }
 
 // fetchRawTx fetches the raw transaction hex from WhatsOnChain.
@@ -147,14 +158,19 @@ func (f *ProofFetcher) fetchBlockHeight(txid string) (uint32, error) {
 
 // fetchMerkleProof gets a merkle proof for a confirmed tx.
 // Tries ARC first (BRC-74 hex), falls back to WhatsOnChain TSC format.
-func (f *ProofFetcher) fetchMerkleProof(txid string, blockHeight uint32) (string, error) {
+// Returns (merkle_hex, source, err) — source is "arc" or "woc".
+func (f *ProofFetcher) fetchMerkleProof(txid string, blockHeight uint32) (string, string, error) {
 	if f.arcClient != nil {
 		arcResp, err := f.arcClient.QueryStatus(txid)
 		if err == nil && arcResp.MerklePath != "" {
-			return arcResp.MerklePath, nil
+			return arcResp.MerklePath, BEEFSourceARC, nil
 		}
 	}
-	return f.fetchMerkleProofFromWoC(txid, blockHeight)
+	mp, err := f.fetchMerkleProofFromWoC(txid, blockHeight)
+	if err != nil {
+		return "", "", err
+	}
+	return mp, BEEFSourceWoC, nil
 }
 
 // tscProof is a single TSC merkle proof entry from WhatsOnChain.
