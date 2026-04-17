@@ -1,6 +1,10 @@
 package api
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,5 +125,108 @@ func TestMessageHubNextIDIsMonotonic(t *testing.T) {
 	third := hub.nextID()
 	if !(first < second && second < third) {
 		t.Errorf("event IDs must be monotonically increasing; got %d, %d, %d", first, second, third)
+	}
+}
+
+// testServerWithMsgStore returns a server with a real on-disk message store
+// attached, so the SSE subscribe handler (which short-circuits to 503 when
+// msgStore is nil) can actually exercise its reconnect-comment path.
+func testServerWithMsgStore(t *testing.T) *Server {
+	t.Helper()
+	srv := testServer(t)
+	dir := t.TempDir()
+	ms, err := messaging.NewStore(dir, 86400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ms.Close() })
+	srv.msgStore = ms
+	return srv
+}
+
+// runSubscribeForReconnectLine launches the SSE subscribe handler against a
+// real httptest server, sends a request with the given Last-Event-ID header,
+// reads only the initial flushed reconnect comment, then closes the
+// connection. Returns the body bytes read before close.
+//
+// Using a real http server (not httptest.NewRecorder) so the Flusher and
+// request context actually behave the way the handler expects.
+func runSubscribeForReconnectLine(t *testing.T, srv *Server, lastID string) string {
+	t.Helper()
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	url := ts.URL + "/messages/subscribe?messageBox=testbox&token=" + srv.authToken
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lastID != "" {
+		req.Header.Set("Last-Event-ID", lastID)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read until the first "\n\n" (end of the initial reconnect comment) or
+	// until the context times out. Context cancel closes the body.
+	buf := make([]byte, 4096)
+	var accumulated []byte
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			accumulated = append(accumulated, buf[:n]...)
+			if strings.Contains(string(accumulated), "\n\n") {
+				return string(accumulated)
+			}
+		}
+		if err != nil {
+			return string(accumulated)
+		}
+	}
+}
+
+// TestSSEReconnectEchoesParsedIntLastEventID — the sanitization path for a
+// valid numeric Last-Event-ID: we echo the parsed int to help operators
+// correlate reconnect gaps in logs.
+func TestSSEReconnectEchoesParsedIntLastEventID(t *testing.T) {
+	srv := testServerWithMsgStore(t)
+	got := runSubscribeForReconnectLine(t, srv, "42")
+	if !strings.Contains(got, ": reconnected after id 42") {
+		t.Errorf("expected parsed int in reconnect comment, got:\n%s", got)
+	}
+}
+
+// TestSSEReconnectSanitizesMalformedLastEventID — the regression test for the
+// 2026-04-17 BUG_HUNTS G705 finding. A malformed Last-Event-ID header (with
+// embedded newlines that would inject a fake SSE data: frame, or arbitrary
+// non-numeric content) must NOT be echoed verbatim into the stream. The
+// handler emits a generic reconnect notice and drops the value.
+func TestSSEReconnectSanitizesMalformedLastEventID(t *testing.T) {
+	srv := testServerWithMsgStore(t)
+
+	// Non-numeric value — must be dropped, not echoed.
+	got := runSubscribeForReconnectLine(t, srv, "not-a-number-surprise")
+	if strings.Contains(got, "not-a-number-surprise") {
+		t.Errorf("malformed Last-Event-ID MUST NOT appear in response; got:\n%s", got)
+	}
+	if !strings.Contains(got, ": reconnected — use POST /listMessages to backfill") {
+		t.Errorf("expected generic reconnect notice for malformed header; got:\n%s", got)
+	}
+}
+
+// TestSSEReconnectSkipsCommentWhenNoLastEventID verifies that without a
+// Last-Event-ID header, no reconnect comment is emitted at all.
+func TestSSEReconnectSkipsCommentWhenNoLastEventID(t *testing.T) {
+	srv := testServerWithMsgStore(t)
+	got := runSubscribeForReconnectLine(t, srv, "")
+	if strings.Contains(got, "reconnected") {
+		t.Errorf("fresh connection (no Last-Event-ID) should not emit reconnect comment; got:\n%s", got)
 	}
 }
