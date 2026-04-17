@@ -629,7 +629,13 @@ func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
 // (e.g. /broadcast accepts raw BEEF). Differences from authOrPay:
 //  1. No signed-envelope fallback — an envelope parse would corrupt the body
 //     via io.LimitReader truncation for large BEEF inputs.
-//  2. When neither auth nor payment is configured on the node, returns 403
+//  2. x402 delegation requires a positive price for the endpoint. A zero-
+//     priced endpoint on a payment-gate-configured node would otherwise
+//     pass through unauthenticated via resolvePayees' "no payees = free"
+//     fall-through (payment_resolve.go). For binary write endpoints like
+//     /broadcast this would be a high-severity auth bypass — callers could
+//     relay arbitrary transactions without credentials.
+//  3. When neither auth nor payment is configured on the node, returns 403
 //     ("endpoint disabled") rather than 401 — consistent with the prior
 //     requireAuth behavior and more accurate (server-side config issue, not
 //     a caller credential issue).
@@ -658,14 +664,18 @@ func (s *Server) authOrPayBinary(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 2. x402 payment
-		if s.paymentGate != nil {
+		// 2. x402 payment — ONLY if this endpoint has a positive price.
+		// If the operator hasn't set a broadcast price, x402 isn't a valid
+		// alternative credential and we must fall through to the
+		// auth-required branch below (rather than delegate to the payment
+		// gate, which would pass through free for a zero-priced endpoint).
+		if s.paymentGate != nil && s.paymentGate.priceForPath(r.URL.Path) > 0 {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			s.paymentGate.Middleware(next)(w, r)
 			return
 		}
 
-		// 3. Endpoint disabled — neither auth nor payment configured on this node
+		// 3. Endpoint disabled — neither auth nor effective payment configured
 		if s.authToken == "" {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			writeError(w, http.StatusForbidden, "no auth token configured")

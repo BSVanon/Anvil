@@ -113,6 +113,46 @@ func buildValidBEEF(t *testing.T) []byte {
 	return out
 }
 
+// TestBroadcastRejectsBypassWhenPaymentGateZeroPriced is the regression test
+// for the high-severity auth bypass Codex caught in the Path C audit.
+//
+// Production setup that triggered the bug: node has identity.WIF + wallet
+// (nonce provider configured for app passthrough/split payments) but
+// payment_satoshis=0 for its own endpoints. Before the fix, /broadcast would
+// delegate to paymentGate.Middleware → resolvePayees returned no payees for
+// a zero-priced path → middleware treated empty payees as free pass-through
+// → anyone could relay transactions without auth.
+//
+// Fix: authOrPayBinary now only delegates to paymentGate when the endpoint
+// has a positive price. Zero-priced endpoints fall through to the
+// auth-required branch.
+func TestBroadcastRejectsBypassWhenPaymentGateZeroPriced(t *testing.T) {
+	// testServerWithPaymentGate creates a gate with non-zero price. We need
+	// a zero-priced gate to trigger the original bug scenario, so we build
+	// the server manually.
+	srv := testServer(t)
+	srv.paymentGate = NewPaymentGate(PaymentGateConfig{
+		PriceSats:      0, // node is free — reproduces production config
+		PayeeScriptHex: testPayeeScript(t),
+		NonceProvider:  &DevNonceProvider{},
+	})
+	srv.mux = http.NewServeMux()
+	srv.routes()
+
+	// Unauthenticated request, no x402 headers. Must be rejected.
+	req := httptest.NewRequest("POST", "/broadcast", strings.NewReader("whatever"))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("HIGH SEVERITY: /broadcast accepted unauthenticated request on zero-priced gate — auth bypass")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated /broadcast on zero-priced gate, got %d: %s",
+			w.Code, w.Body.String())
+	}
+}
+
 // TestBroadcastARCTransportFailureReportsValidatedOnly is the regression test
 // for the bug Codex caught: when ARC returns a non-2xx (transport failure),
 // BroadcastToARC swallows the error into a result with Status="error" and nil
