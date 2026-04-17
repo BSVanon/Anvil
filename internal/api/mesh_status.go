@@ -137,6 +137,11 @@ func (s *Server) currentUpstreamStatus() map[string]interface{} {
 			out["headers_sync_lag_secs"] = lag
 		}
 	}
+	if s.serviceHealthFn != nil {
+		if sh := s.serviceHealthFn(); sh != "" {
+			out["service_health"] = sh
+		}
+	}
 	return out
 }
 

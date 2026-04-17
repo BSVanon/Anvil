@@ -46,6 +46,7 @@ type Server struct {
 	publicURL        string // HTTPS public URL — used for /app/ redirects so wallet connections work
 	meshTopicCache   *topicCache
 	headerSyncStatus func() headers.SyncStats
+	serviceHealthFn  func() string
 	spvProofSource   string
 	sseHub           *envelopeHub
 	msgHub           *messageHub
@@ -96,6 +97,12 @@ type ServerConfig struct {
 	ExplorerOrigin   string // fallback content_origin for /explorer when catalog is empty
 	PublicURL        string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
 	HeaderSyncStatus func() headers.SyncStats
+	// ServiceHealthFn returns this node's own service-process health as
+	// "healthy" | "degraded" | "broken" | "" (unknown). Wired from main.go
+	// using the diagnostics package. Used to surface service_health on
+	// /mesh/status so wallet consumers can distinguish an upstream failure
+	// from a local service-process meltdown. Returning "" omits the field.
+	ServiceHealthFn  func() string
 	SPVProofSource   string
 	Watcher          *mempool.Watcher
 	ProofFetcher     *spv.ProofFetcher
@@ -154,6 +161,7 @@ func NewServer(cfg ServerConfig) *Server {
 		publicURL:        strings.TrimRight(cfg.PublicURL, "/"),
 		meshTopicCache:   newTopicCache(10 * time.Second),
 		headerSyncStatus: cfg.HeaderSyncStatus,
+		serviceHealthFn:  cfg.ServiceHealthFn,
 		spvProofSource:   cfg.SPVProofSource,
 		sseHub:           newEnvelopeHub(),
 		msgHub:           newMessageHub(),

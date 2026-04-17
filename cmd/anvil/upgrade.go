@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/diagnostics"
 	anvilversion "github.com/BSVanon/Anvil/internal/version"
 )
 
@@ -203,10 +204,22 @@ func cmdUpgrade(args []string) {
 	}
 	ok("Binary installed: " + destBin)
 
-	// Stop services and kill any zombie processes holding ports.
-	// systemctl stop can miss processes started outside systemd (manual runs),
-	// leaving the old binary serving on the port. Without this, the upgrade
-	// silently fails and the old version keeps running.
+	// Stop services and kill any orphan anvil processes.
+	//
+	// systemctl stop only affects processes systemd is tracking. Real-world
+	// failure mode (seen in production 2026-04-17): a prior instance of
+	// anvil-a crashed but its PID remained running outside systemd's view,
+	// holding LevelDB LOCK files. The shared binary got replaced but the
+	// orphan kept serving on the port, so the "upgrade succeeded" only in
+	// the sense that the tool thought it did.
+	//
+	// The fix is two-layered:
+	//   1. Stop every anvil-*.service systemd knows about.
+	//   2. Enumerate ALL anvil processes on the host via diagnostics.FindOrphans
+	//      (any /opt/anvil/anvil PID that isn't a tracked systemd MainPID)
+	//      and kill them. Includes processes systemd forgot, manual starts,
+	//      or prior crashed-but-not-reaped children.
+	// After that, /var/lib/anvil*/*/LOCK are all free for the new binary.
 	for _, svc := range services {
 		_ = exec.Command("systemctl", "stop", svc).Run()
 	}
@@ -216,6 +229,17 @@ func cmdUpgrade(args []string) {
 			killZombieOnPort(apiPort(strings.TrimPrefix(svc, "anvil-")))
 		}
 		ok("Services stopped")
+	}
+
+	// Orphan sweep AFTER systemd stops so we don't kill the MainPIDs systemd
+	// just asked to exit gracefully.
+	if orphans, err := diagnostics.FindOrphans(); err == nil && len(orphans) > 0 {
+		for _, o := range orphans {
+			fmt.Printf("    killing orphan anvil PID %d (%s)\n", o.PID, truncateCmd(o.CmdLine, 70))
+			if err := diagnostics.KillOrphan(o); err != nil {
+				fmt.Printf("    WARNING: failed to kill orphan PID %d: %v\n", o.PID, err)
+			}
+		}
 	}
 
 	// Restart services — roll back if all fail to start
@@ -332,16 +356,44 @@ func binaryName() string {
 	}
 }
 
-// runningAnvilServices returns systemd service names that are currently active.
+// runningAnvilServices returns systemd service names whose units exist on
+// this host AND are in a state we should try to restart after upgrade.
+// "activating" is included because a crash-looping service (our production
+// scenario) is technically activating, not active, and we still want to
+// restart it on the new binary — the orphan kill we do first should let it
+// come up cleanly.
 func runningAnvilServices() []string {
+	states, err := diagnostics.EnumerateAnvilServices()
+	if err != nil {
+		// Fall back to the historical hardcoded list if enumeration fails
+		// (e.g. systemctl not installed in a test env). Preserves the prior
+		// behavior exactly.
+		var running []string
+		for _, svc := range []string{"anvil-a", "anvil-b"} {
+			out, err := exec.Command("systemctl", "is-active", svc).Output()
+			if err == nil && strings.TrimSpace(string(out)) == "active" {
+				running = append(running, svc)
+			}
+		}
+		return running
+	}
 	var running []string
-	for _, svc := range []string{"anvil-a", "anvil-b"} {
-		out, err := exec.Command("systemctl", "is-active", svc).Output()
-		if err == nil && strings.TrimSpace(string(out)) == "active" {
-			running = append(running, svc)
+	for _, s := range states {
+		if s.ActiveState == "active" || s.ActiveState == "activating" {
+			running = append(running, s.Name)
 		}
 	}
 	return running
+}
+
+// truncateCmd returns s truncated to n characters with a trailing ellipsis
+// if it was shortened. Kept here (not shared with doctor.go) to avoid
+// introducing a shared file just for a single helper.
+func truncateCmd(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // copyFileE copies src to dst with given permissions, returning any error.
