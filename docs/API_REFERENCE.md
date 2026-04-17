@@ -192,14 +192,58 @@ direct upstream for `"arc"`/`"woc"` (passthrough).
   "overlay": { "ship_count": 7 },
   "upstream_status": {
     "broadcast": "healthy" | "degraded" | "down",
-    "headers_sync_lag_secs": 12
+    "headers_sync_lag_secs": 12,
+    "service_health": "healthy" | "degraded" | "broken"
   }
 }
 ```
 
+`broadcast` reflects the ARC (or Arcade, post-migration) upstream health;
+`service_health` is the *host-level* health of the anvil service itself
+(v2.2.0+). Values:
+
+- `healthy` — systemd reports active with a low restart counter
+- `degraded` — activating, or a small number of restarts, or sibling unit has issues
+- `broken` — crash-looping service OR an orphan anvil process is detected
+  on the host (holds LOCK files, prevents clean starts)
+
+Wallet consumers can distinguish a transient ARC outage from a local
+service meltdown — both bad, different remediations. The node also
+auto-heals the `broken/orphan` case on the next service restart via a
+systemd `ExecStartPre=anvil doctor --fix-locks-only` hook installed by
+`anvil deploy` since v2.2.0.
+
 Heartbeat envelopes published on the `mesh:heartbeat` topic carry the
 same `upstream_status` so federation consumers can observe node health
 without direct-polling every node.
+
+## Operator self-healing (v2.2.0+)
+
+```
+sudo anvil doctor             # diagnostic report
+sudo anvil doctor --fix       # report + prompt to fix each finding
+sudo anvil doctor --fix --yes # report + fix without prompts (scripted)
+sudo anvil doctor --fix-locks-only  # kill orphan anvil processes, then exit 0
+```
+
+`doctor --fix` detects and remediates:
+
+- **Orphan anvil processes** — a prior instance still holding LevelDB LOCK
+  files, invisible to systemd. Caused the 12-day silent crash-loop before
+  v2.2.0. Fix: SIGTERM then SIGKILL the orphan.
+- **Crash-looping systemd units** — `NRestarts > 10`. Fix: `reset-failed`
+  then `restart` (usually clears after the orphan kill above).
+- **Stale header stores** — `sync_lag_secs > 7200` AND `prev hash mismatch`
+  error on the header sync path. Means the stored chain is reorg-incompatible
+  with current BSV tip. Fix: wipe `<data_dir>/headers/*` (safe — only
+  headers, preserves wallet/envelopes/overlay) and let the node resync.
+- **Version skew** — running process version ≠ binary on disk. Happens
+  when a shared-binary upgrade restarts only some services. Fix:
+  `systemctl restart` the mismatched services.
+
+`doctor --fix-locks-only` is the safe subset wired into systemd's
+`ExecStartPre` — runs on every service start so a node can recover from
+orphan-lock contention without operator intervention.
 
 ## Operator custom capabilities (v2.1.0+)
 

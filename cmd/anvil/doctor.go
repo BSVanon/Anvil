@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,19 +13,48 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/config"
+	"github.com/BSVanon/Anvil/internal/diagnostics"
 	anvilversion "github.com/BSVanon/Anvil/internal/version"
 )
 
-// cmdDoctor handles `anvil doctor` — validates config, dirs, connectivity, and mesh health.
-// Exits 0 if healthy, 1 if any check fails.
+// cmdDoctor handles `anvil doctor` — validates config, dirs, connectivity,
+// and mesh health. Without flags it's diagnostic-only (exits 0 if healthy,
+// 1 if any check fails).
+//
+// With --fix it additionally offers to remediate:
+//   - orphan anvil processes (e.g. manual starts that systemd isn't tracking)
+//   - crash-looping systemd units (stopped stuck)
+//   - stale header stores with prev-hash-mismatch errors
+//   - running-process version ≠ binary-on-disk version
+//
+// With --yes remediations run without per-action prompts (for unattended use).
+//
+// With --fix-locks-only, only the orphan-kill remediation runs, all other
+// checks are skipped, and the command exits 0 regardless of other issues.
+// Designed to be called from a systemd ExecStartPre hook so a service whose
+// prior instance left an orphan lock holder can start cleanly without
+// operator intervention.
 func cmdDoctor(args []string) {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	fix := fs.Bool("fix", false, "execute remediations for detected issues")
+	yes := fs.Bool("yes", false, "skip confirmation prompts (use with --fix)")
+	locksOnly := fs.Bool("fix-locks-only", false, "only resolve orphan-lock contention; skip other checks; implies --fix --yes")
 	_ = fs.Parse(args)
+
+	if *locksOnly {
+		*fix = true
+		*yes = true
+		runFixLocksOnly()
+		return
+	}
 
 	loadEnvFile(*configPath)
 
 	fmt.Println("=== Anvil Doctor ===")
+	if *fix {
+		fmt.Println("  mode: diagnose + fix")
+	}
 	issues := 0
 
 	// ── 1. Config ──
@@ -279,6 +309,10 @@ func cmdDoctor(args []string) {
 		}
 	}
 
+	// ── 8. Self-healing checks (orphans, crash loops, version skew) ──
+	section("Self-Healing Checks")
+	issues += runSelfHealingChecks(cfg.Node.DataDir, *fix, *yes)
+
 	// ── Summary ──
 	fmt.Println()
 	if issues == 0 {
@@ -288,6 +322,206 @@ func cmdDoctor(args []string) {
 		fmt.Printf("=== %d issue(s) found ===\n", issues)
 		os.Exit(1)
 	}
+}
+
+// runSelfHealingChecks runs the four checks that cover every failure mode
+// we've seen in production post-mortems: orphan processes, crash-looping
+// systemd units, stale header stores, and version skew between the
+// on-disk binary and a running process. Returns the number of unresolved
+// issues (zero if fix applied everything, or if --fix wasn't set and
+// nothing was found).
+func runSelfHealingChecks(dataDir string, fix, yes bool) int {
+	unresolved := 0
+
+	// ── Orphan anvil processes ──
+	orphans, err := diagnostics.FindOrphans()
+	if err != nil {
+		warn("orphan scan failed: %v", err)
+	} else if len(orphans) == 0 {
+		pass("no orphan anvil processes")
+	} else {
+		for _, o := range orphans {
+			fail("orphan anvil process PID=%d cmdline=%q", o.PID, truncStr(o.CmdLine, 80))
+			if fix && confirm(yes, fmt.Sprintf("    Kill PID %d?", o.PID)) {
+				if err := diagnostics.KillOrphan(o); err != nil {
+					fmt.Printf("      ✗ kill failed: %v\n", err)
+					unresolved++
+				} else {
+					fmt.Printf("      ✓ killed PID %d\n", o.PID)
+				}
+			} else {
+				unresolved++
+			}
+		}
+	}
+
+	// ── Crash-looping systemd units ──
+	svcs, err := diagnostics.EnumerateAnvilServices()
+	if err != nil {
+		warn("service scan failed: %v", err)
+	} else {
+		for _, s := range svcs {
+			if diagnostics.IsCrashLooping(s) {
+				fail("service %s crash-looping (NRestarts=%d, state=%s/%s)",
+					s.Name, s.NRestarts, s.ActiveState, s.SubState)
+				// Likely root cause is an orphan we may have just killed above;
+				// a systemctl restart after orphan kill will usually clear it.
+				if fix && confirm(yes, fmt.Sprintf("    Restart %s (journalctl -u %s for root cause)?", s.Name, s.Name)) {
+					if err := exec.Command("systemctl", "reset-failed", s.Name+".service").Run(); err != nil {
+						fmt.Printf("      ✗ reset-failed: %v\n", err)
+					}
+					if err := exec.Command("systemctl", "restart", s.Name+".service").Run(); err != nil {
+						fmt.Printf("      ✗ restart failed: %v\n", err)
+						unresolved++
+					} else {
+						fmt.Printf("      ✓ restarted %s\n", s.Name)
+					}
+				} else {
+					unresolved++
+				}
+			}
+		}
+	}
+
+	// ── Stale header store with prev-hash-mismatch ──
+	// We surface this from the /status response we already fetched above. If
+	// sync_lag_secs > 2h AND last_error contains "prev hash mismatch", the
+	// recovery path is to wipe the headers dir and resync from genesis.
+	if lag, errMsg, have := checkHeaderSyncHealth(dataDir); have {
+		if lag > 7200 && strings.Contains(strings.ToLower(errMsg), "prev hash mismatch") {
+			fail("header store stuck: lag=%ds with prev-hash-mismatch (reorg-incompatible)", lag)
+			if fix && confirm(yes, fmt.Sprintf("    Wipe %s/headers/ and let the node resync from genesis (~30s)?", dataDir)) {
+				if err := wipeHeadersDir(dataDir); err != nil {
+					fmt.Printf("      ✗ wipe failed: %v\n", err)
+					unresolved++
+				} else {
+					fmt.Printf("      ✓ wiped %s/headers/ — restart the service to trigger resync\n", dataDir)
+				}
+			} else {
+				unresolved++
+			}
+		}
+	}
+
+	// ── Running-version != binary-on-disk ──
+	onDisk := diagnostics.BinaryVersion(diagnostics.AnvilBinaryPath)
+	running := anvilversion.Version
+	if onDisk != "" && onDisk != running {
+		fail("running version v%s ≠ binary on disk v%s (service needs restart)", running, onDisk)
+		if fix && confirm(yes, "    Restart anvil services to pick up the new binary?") {
+			for _, s := range svcs {
+				if s.ActiveState == "active" || s.ActiveState == "activating" {
+					if err := exec.Command("systemctl", "restart", s.Name+".service").Run(); err != nil {
+						fmt.Printf("      ✗ restart %s: %v\n", s.Name, err)
+						unresolved++
+					} else {
+						fmt.Printf("      ✓ restarted %s\n", s.Name)
+					}
+				}
+			}
+		} else {
+			unresolved++
+		}
+	} else if onDisk != "" {
+		pass("version match: running v%s = binary v%s", running, onDisk)
+	}
+
+	return unresolved
+}
+
+// runFixLocksOnly is the safe subset of self-healing that is called from
+// systemd's ExecStartPre. It only kills orphan anvil processes (so the
+// service unit can actually bind LevelDB locks on its own next start).
+// It MUST NOT block indefinitely, and MUST exit 0 regardless of what it
+// finds — otherwise a transient diagnostic failure would block every start.
+func runFixLocksOnly() {
+	orphans, err := diagnostics.FindOrphans()
+	if err != nil {
+		fmt.Printf("anvil doctor --fix-locks-only: orphan scan failed: %v\n", err)
+		os.Exit(0)
+	}
+	for _, o := range orphans {
+		fmt.Printf("anvil doctor --fix-locks-only: killing orphan PID %d (%s)\n",
+			o.PID, truncStr(o.CmdLine, 80))
+		if err := diagnostics.KillOrphan(o); err != nil {
+			fmt.Printf("anvil doctor --fix-locks-only: kill PID %d failed: %v\n", o.PID, err)
+		}
+	}
+	os.Exit(0)
+}
+
+// checkHeaderSyncHealth pokes /status to get the lag + last error, returning
+// whether we have enough data to make a decision. Separate from the earlier
+// /status probe because that one runs via httpGet which decodes into a map;
+// we need to pull two specific fields without re-defining the whole shape.
+func checkHeaderSyncHealth(dataDir string) (lagSecs int, lastErr string, have bool) {
+	// Use a short-lived probe to the local API. If the service isn't running
+	// we can't get this info; return have=false to let the caller skip.
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:9333/status")
+	if err != nil {
+		// Try 9334 (Node B) as a fallback
+		resp, err = client.Get("http://127.0.0.1:9334/status")
+		if err != nil {
+			return 0, "", false
+		}
+	}
+	defer resp.Body.Close()
+	var s struct {
+		Headers struct {
+			SyncLagSecs int `json:"sync_lag_secs"`
+			Sync        struct {
+				LastError string `json:"last_error"`
+			} `json:"sync"`
+		} `json:"headers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return 0, "", false
+	}
+	return s.Headers.SyncLagSecs, s.Headers.Sync.LastError, true
+}
+
+// wipeHeadersDir removes every entry under <dataDir>/headers/ without
+// removing the directory itself. The service will repopulate on next start.
+func wipeHeadersDir(dataDir string) error {
+	hd := filepath.Join(dataDir, "headers")
+	entries, err := os.ReadDir(hd)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", hd, err)
+	}
+	for _, e := range entries {
+		p := filepath.Join(hd, e.Name())
+		if err := os.RemoveAll(p); err != nil {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// confirm prompts the operator for a yes/no answer, returning true on "y"
+// or "yes" (case-insensitive). If autoYes is set, returns true immediately
+// without prompting (for unattended / scripted execution).
+func confirm(autoYes bool, prompt string) bool {
+	if autoYes {
+		fmt.Println(prompt, "[auto-yes]")
+		return true
+	}
+	fmt.Print(prompt, " [y/N] ")
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		return false
+	}
+	ans := strings.ToLower(strings.TrimSpace(scanner.Text()))
+	return ans == "y" || ans == "yes"
+}
+
+// truncStr returns s truncated to n characters with a trailing ellipsis if
+// it was shortened. Used to keep long cmdlines readable in terminal output.
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // ── Output helpers ──

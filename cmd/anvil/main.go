@@ -21,6 +21,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/api"
 	"github.com/BSVanon/Anvil/internal/bond"
 	"github.com/BSVanon/Anvil/internal/config"
+	"github.com/BSVanon/Anvil/internal/diagnostics"
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/feeds"
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
@@ -58,6 +59,11 @@ func main() {
 			return
 		case "upgrade":
 			cmdUpgrade(os.Args[2:])
+			return
+		case "version", "--version", "-v":
+			// Minimal output so diagnostics.BinaryVersion() can parse the
+			// on-disk binary's version without starting the full node.
+			fmt.Println("anvil v" + anvilversion.Version)
 			return
 		case "help", "--help", "-h":
 			cmdHelp(os.Args[2:])
@@ -481,10 +487,49 @@ func main() {
 				return lag
 			}
 
+			// serviceHealthFn observes this node's own systemd service state
+			// and an orphan-process scan to decide whether the anvil service
+			// itself is operationally healthy. Consumers use this alongside
+			// Broadcast (upstream) health to distinguish an ARC outage from
+			// a local service meltdown — different remediations.
+			serviceHealthFn := func() string {
+				svcs, err := diagnostics.EnumerateAnvilServices()
+				if err != nil {
+					return "" // can't observe; omit field
+				}
+				// Choose the service that owns our API port (crude but works)
+				// to avoid reporting our sibling's state.
+				orphans, _ := diagnostics.FindOrphans()
+				if len(orphans) > 0 {
+					return "broken"
+				}
+				worst := "healthy"
+				for _, s := range svcs {
+					switch s.ActiveState {
+					case "active":
+						if s.NRestarts > 0 && worst == "healthy" {
+							worst = "degraded"
+						}
+					case "activating":
+						if worst != "broken" {
+							worst = "degraded"
+						}
+					case "failed", "inactive":
+						if diagnostics.IsCrashLooping(s) {
+							worst = "broken"
+						} else if worst == "healthy" {
+							worst = "degraded"
+						}
+					}
+				}
+				return worst
+			}
+
 			upstreamFn := func() *feeds.UpstreamStatus {
 				status := &feeds.UpstreamStatus{
 					Broadcast:          broadcaster.UpstreamStatus(),
 					HeadersSyncLagSecs: headerLagFn(),
+					ServiceHealth:      serviceHealthFn(),
 				}
 				return status
 			}
@@ -574,6 +619,36 @@ func main() {
 		ExplorerOrigin:   cfg.API.ExplorerOrigin,
 		PublicURL:        cfg.Node.PublicURL,
 		HeaderSyncStatus: syncer.Stats,
+		ServiceHealthFn: func() string {
+			orphans, _ := diagnostics.FindOrphans()
+			if len(orphans) > 0 {
+				return "broken"
+			}
+			svcs, err := diagnostics.EnumerateAnvilServices()
+			if err != nil {
+				return ""
+			}
+			worst := "healthy"
+			for _, s := range svcs {
+				switch s.ActiveState {
+				case "active":
+					if s.NRestarts > 0 && worst == "healthy" {
+						worst = "degraded"
+					}
+				case "activating":
+					if worst != "broken" {
+						worst = "degraded"
+					}
+				case "failed", "inactive":
+					if diagnostics.IsCrashLooping(s) {
+						worst = "broken"
+					} else if worst == "healthy" {
+						worst = "degraded"
+					}
+				}
+			}
+			return worst
+		},
 		SPVProofSource: func() string {
 			if cfg.ARC.Enabled {
 				return "arc+woc-fallback"

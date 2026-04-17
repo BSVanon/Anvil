@@ -70,6 +70,16 @@ type UpstreamStatus struct {
 	// care; surfacing it lets them diagnose stale-proof situations on the
 	// Anvil node. Omitted when zero/unknown.
 	HeadersSyncLagSecs int `json:"headers_sync_lag_secs,omitempty"`
+	// ServiceHealth is the host-level operational health of the anvil
+	// service process itself. Allows consumers to distinguish "ARC is
+	// down" from "the node's own systemd unit is crash-looping" — both
+	// bad, but the remediation is different.
+	// Values: "healthy" | "degraded" | "broken".
+	//   healthy  = systemd reports active AND restart counter is low
+	//   degraded = systemd reports activating OR some restarts but < threshold
+	//   broken   = crash-looping (NRestarts > threshold) or orphan detected
+	// Omitted when the node can't observe its own service state.
+	ServiceHealth string `json:"service_health,omitempty"`
 }
 
 // HeartbeatPayload is the JSON payload for mesh:heartbeat envelopes.
