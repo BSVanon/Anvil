@@ -50,7 +50,7 @@ WantedBy=multi-user.target
 	}
 
 	got, _ := os.ReadFile(unit)
-	wantHook := "ExecStartPre=/opt/anvil/anvil doctor --fix-locks-only"
+	wantHook := "ExecStartPre=/opt/anvil/anvil doctor --locks-only"
 	if !strings.Contains(string(got), wantHook) {
 		t.Errorf("ExecStartPre hook missing from updated unit:\n%s", got)
 	}
@@ -62,13 +62,40 @@ WantedBy=multi-user.target
 	}
 }
 
-// TestEnsureExecStartPreHook_IdempotentOnExistingHook verifies a unit
-// that already has the hook is not modified (counter stays 0).
-func TestEnsureExecStartPreHook_IdempotentOnExistingHook(t *testing.T) {
+// TestEnsureExecStartPreHook_RewritesLegacyHook verifies that a unit
+// with the v2.2.x `--fix-locks-only` alias gets rewritten to the
+// canonical `--locks-only` form during upgrade.
+func TestEnsureExecStartPreHook_RewritesLegacyHook(t *testing.T) {
 	dir := t.TempDir()
 	unit := filepath.Join(dir, "anvil-a.service")
 	original := `[Service]
 ExecStartPre=/opt/anvil/anvil doctor --fix-locks-only
+ExecStart=/opt/anvil/anvil -config /etc/anvil/node-a.toml
+`
+	if err := os.WriteFile(unit, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	n := ensureExecStartPreHookIn(dir)
+	if n != 1 {
+		t.Errorf("expected 1 modified file, got %d", n)
+	}
+	got, _ := os.ReadFile(unit)
+	if strings.Contains(string(got), "--fix-locks-only") {
+		t.Errorf("legacy --fix-locks-only still present after rewrite:\n%s", got)
+	}
+	if !strings.Contains(string(got), "ExecStartPre=/opt/anvil/anvil doctor --locks-only") {
+		t.Errorf("canonical --locks-only hook missing after rewrite:\n%s", got)
+	}
+}
+
+// TestEnsureExecStartPreHook_IdempotentOnExistingHook verifies a unit
+// that already has the canonical hook is not modified (counter stays 0).
+func TestEnsureExecStartPreHook_IdempotentOnExistingHook(t *testing.T) {
+	dir := t.TempDir()
+	unit := filepath.Join(dir, "anvil-a.service")
+	original := `[Service]
+ExecStartPre=/opt/anvil/anvil doctor --locks-only
 ExecStart=/opt/anvil/anvil -config /etc/anvil/node-a.toml
 `
 	if err := os.WriteFile(unit, []byte(original), 0644); err != nil {
@@ -105,7 +132,7 @@ ExecStart=/usr/bin/some-other-binary
 		t.Errorf("expected 0 modified (wrong binary), got %d", n)
 	}
 	got, _ := os.ReadFile(unit)
-	if strings.Contains(string(got), "doctor --fix-locks-only") {
+	if strings.Contains(string(got), "doctor --locks-only") {
 		t.Error("hook leaked into unrelated unit file")
 	}
 }

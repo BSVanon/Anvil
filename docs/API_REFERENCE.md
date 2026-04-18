@@ -210,38 +210,46 @@ direct upstream for `"arc"`/`"woc"` (passthrough).
 Wallet consumers can distinguish a transient ARC outage from a local
 service meltdown — both bad, different remediations. The node also
 auto-heals the `broken/orphan` case on the next service restart via a
-systemd `ExecStartPre=anvil doctor --fix-locks-only` hook installed by
-`anvil deploy` since v2.2.0.
+systemd `ExecStartPre=anvil doctor --locks-only` hook installed by
+`anvil deploy` since v2.2.0 (renamed from `--fix-locks-only` in v2.3.0;
+the legacy name is still accepted for backward compatibility).
 
 Heartbeat envelopes published on the `mesh:heartbeat` topic carry the
 same `upstream_status` so federation consumers can observe node health
 without direct-polling every node.
 
-## Operator self-healing (v2.2.0+)
+## Operator self-healing (v2.2.0+; ergonomics overhauled v2.3.0)
 
 ```
-sudo anvil doctor             # diagnostic report
-sudo anvil doctor --fix       # report + prompt to fix each finding
-sudo anvil doctor --fix --yes # report + fix without prompts (scripted)
-sudo anvil doctor --fix-locks-only  # kill orphan anvil processes, then exit 0
+sudo anvil doctor                  # diagnose + prompt to fix each finding (default)
+sudo anvil doctor --yes            # diagnose + fix without prompts (scripted)
+sudo anvil doctor --no-fix         # diagnostic only (historical read-only mode)
+sudo anvil doctor --locks-only     # kill orphan anvil processes, then exit 0
 ```
 
-`doctor --fix` detects and remediates:
+Since v2.3.0, `anvil doctor` is fix-interactive by default: every finding
+shows a `[y/N]` prompt so operators get a guided walk-through without
+having to remember a `--fix` flag. Legacy `--fix` and `--fix-locks-only`
+flags from v2.2.x scripts are still accepted.
+
+`anvil doctor` detects, remediates, and **verifies** the fix landed:
 
 - **Orphan anvil processes** — a prior instance still holding LevelDB LOCK
   files, invisible to systemd. Caused the 12-day silent crash-loop before
-  v2.2.0. Fix: SIGTERM then SIGKILL the orphan.
-- **Crash-looping systemd units** — `NRestarts > 10`. Fix: `reset-failed`
-  then `restart` (usually clears after the orphan kill above).
-- **Stale header stores** — `sync_lag_secs > 7200` AND `prev hash mismatch`
-  error on the header sync path. Means the stored chain is reorg-incompatible
-  with current BSV tip. Fix: wipe `<data_dir>/headers/*` (safe — only
-  headers, preserves wallet/envelopes/overlay) and let the node resync.
+  v2.2.0. Fix: SIGTERM then SIGKILL the orphan; verify no orphan remains.
+- **Crash-looping systemd units** — `NRestarts > 5` AND `ActiveState ∈
+  {activating, failed}`. Fix: `reset-failed` + `restart`; verify unit
+  reaches `active/running` within 5s.
+- **Stale header stores** — any `prev hash mismatch` error on the header
+  sync path. Means the stored chain is reorg-incompatible with current
+  BSV tip. Fix: wipe `<data_dir>/headers/*` (safe — only headers, preserves
+  wallet/envelopes/overlay), restart services, verify lag drops within 45s.
 - **Version skew** — running process version ≠ binary on disk. Happens
   when a shared-binary upgrade restarts only some services. Fix:
-  `systemctl restart` the mismatched services.
+  `systemctl restart` mismatched services; verify each reaches
+  `active/running`.
 
-`doctor --fix-locks-only` is the safe subset wired into systemd's
+`doctor --locks-only` is the safe subset wired into systemd's
 `ExecStartPre` — runs on every service start so a node can recover from
 orphan-lock contention without operator intervention.
 

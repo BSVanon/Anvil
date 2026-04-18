@@ -17,43 +17,74 @@ import (
 	anvilversion "github.com/BSVanon/Anvil/internal/version"
 )
 
-// cmdDoctor handles `anvil doctor` — validates config, dirs, connectivity,
-// and mesh health. Without flags it's diagnostic-only (exits 0 if healthy,
-// 1 if any check fails).
+// cmdDoctor handles `anvil doctor` — diagnoses node health and offers to
+// remediate any findings interactively (default behavior, v2.3.0+).
 //
-// With --fix it additionally offers to remediate:
-//   - orphan anvil processes (e.g. manual starts that systemd isn't tracking)
-//   - crash-looping systemd units (stopped stuck)
-//   - stale header stores with prev-hash-mismatch errors
-//   - running-process version ≠ binary-on-disk version
+// Flags:
 //
-// With --yes remediations run without per-action prompts (for unattended use).
+//	(none)          Diagnose + prompt y/N per finding that has a remediation.
+//	                This is the default because operator ergonomics should
+//	                not require flag knowledge. See 2026-04-17 post-mortem:
+//	                prior "doctor is diagnostic, --fix is remediation"
+//	                split meant operators kept hitting issues and not
+//	                realizing a fix existed a flag away.
 //
-// With --fix-locks-only, only the orphan-kill remediation runs, all other
-// checks are skipped, and the command exits 0 regardless of other issues.
-// Designed to be called from a systemd ExecStartPre hook so a service whose
-// prior instance left an orphan lock holder can start cleanly without
-// operator intervention.
+//	--yes           Apply all remediations without prompts. For scripts and
+//	                the auto-run from `anvil upgrade`. Each remediation
+//	                still runs its post-apply verification — a command that
+//	                returns exit 0 means the condition is actually resolved.
+//
+//	--locks-only    Only run the orphan-kill remediation, exit 0 regardless.
+//	                Narrow + safe for systemd ExecStartPre. Never touches
+//	                destructive remediations (no header wipe, no service
+//	                restart loops).
+//
+//	--no-fix        Diagnostic only. Historical read-only mode for operators
+//	                who explicitly want to see state without any prompts.
+//
+// Legacy aliases (still accepted for backward compatibility with scripts
+// written against v2.2.x releases):
+//
+//	--fix              equivalent to default behavior (fix-interactive)
+//	--fix-locks-only   equivalent to --locks-only
 func cmdDoctor(args []string) {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	fix := fs.Bool("fix", false, "execute remediations for detected issues")
-	yes := fs.Bool("yes", false, "skip confirmation prompts (use with --fix)")
-	locksOnly := fs.Bool("fix-locks-only", false, "only resolve orphan-lock contention; skip other checks; implies --fix --yes")
+	yes := fs.Bool("yes", false, "apply remediations without prompting (for scripts / automation)")
+	locksOnly := fs.Bool("locks-only", false, "only resolve orphan-lock contention; skip other checks; safe for systemd ExecStartPre")
+	noFix := fs.Bool("no-fix", false, "diagnostic-only mode (historical behavior; default is interactive fix)")
+
+	// Legacy aliases — silently accept for backward compat with v2.2.x scripts.
+	fixLegacy := fs.Bool("fix", false, "[alias] default behavior since v2.3.0")
+	fixLocksLegacy := fs.Bool("fix-locks-only", false, "[alias] equivalent to --locks-only since v2.3.0")
+	_ = fixLegacy // no-op; default is now fix-interactive
 	_ = fs.Parse(args)
 
+	// Collapse aliases
+	if *fixLocksLegacy {
+		*locksOnly = true
+	}
+
 	if *locksOnly {
-		*fix = true
-		*yes = true
-		runFixLocksOnly()
+		runLocksOnly()
 		return
 	}
+
+	// Default mode since v2.3.0: fix-interactive. Operator gets y/N per
+	// finding unless they explicitly pass --no-fix OR they pass --yes
+	// (apply all).
+	fix := !*noFix
 
 	loadEnvFile(*configPath)
 
 	fmt.Println("=== Anvil Doctor ===")
-	if *fix {
-		fmt.Println("  mode: diagnose + fix")
+	switch {
+	case *noFix:
+		fmt.Println("  mode: diagnose only")
+	case *yes:
+		fmt.Println("  mode: diagnose + auto-fix (no prompts)")
+	default:
+		fmt.Println("  mode: diagnose + interactive fix (y/N per finding)")
 	}
 	issues := 0
 
@@ -311,7 +342,7 @@ func cmdDoctor(args []string) {
 
 	// ── 8. Self-healing checks (orphans, crash loops, version skew) ──
 	section("Self-Healing Checks")
-	issues += runSelfHealingChecks(cfg.Node.DataDir, *fix, *yes)
+	issues += runSelfHealingChecks(cfg.Node.DataDir, fix, *yes)
 
 	// ── Summary ──
 	fmt.Println()
@@ -366,15 +397,10 @@ func runSelfHealingChecks(dataDir string, fix, yes bool) int {
 					s.Name, s.NRestarts, s.ActiveState, s.SubState)
 				// Likely root cause is an orphan we may have just killed above;
 				// a systemctl restart after orphan kill will usually clear it.
-				if fix && confirm(yes, fmt.Sprintf("    Restart %s (journalctl -u %s for root cause)?", s.Name, s.Name)) {
-					if err := exec.Command("systemctl", "reset-failed", s.Name+".service").Run(); err != nil {
-						fmt.Printf("      ✗ reset-failed: %v\n", err)
-					}
-					if err := exec.Command("systemctl", "restart", s.Name+".service").Run(); err != nil {
-						fmt.Printf("      ✗ restart failed: %v\n", err)
+				if fix && confirm(yes, fmt.Sprintf("    Restart %s (journalctl -u %s for root cause) and verify it stays up?", s.Name, s.Name)) {
+					if err := applyServiceRestartAndVerify(s.Name); err != nil {
+						fmt.Printf("      ✗ %v\n", err)
 						unresolved++
-					} else {
-						fmt.Printf("      ✓ restarted %s\n", s.Name)
 					}
 				} else {
 					unresolved++
@@ -385,22 +411,24 @@ func runSelfHealingChecks(dataDir string, fix, yes bool) int {
 
 	// ── Stale header store with prev-hash-mismatch ──
 	// The presence of "prev hash mismatch" in the sync error is sufficient
-	// to flag this regardless of lag severity. The stored chain is
+	// to flag this regardless of lag severity — the stored chain is
 	// reorg-incompatible with the current BSV tip and will NEVER recover
-	// without a rebuild — every additional minute of lag just makes the
-	// diagnosis more obvious. v2.2.2 gated this on lag > 7200s which was
-	// too conservative for operator-invoked --fix (observed 2026-04-17:
-	// operator ran --fix at ~6260s lag, got no remediation offered,
-	// had to wipe manually). Fixed in v2.2.3.
+	// without a rebuild.
+	//
+	// IMPORTANT: the wipe alone does NOT complete the fix. Linux keeps
+	// unlinked-file inodes alive for the running process, so anvil-a keeps
+	// operating on the "ghost" header store until the process exits.
+	// Pre-v2.3.0 the operator was told "restart the service to trigger
+	// resync" but many forgot, leaving a wiped-yet-stuck node (observed
+	// 2026-04-17). v2.3.0 folds the restart AND a post-restart verify
+	// (lag dropped below pre-wipe value) into the remediation itself.
 	if lag, errMsg, have := checkHeaderSyncHealth(dataDir); have {
 		if strings.Contains(strings.ToLower(errMsg), "prev hash mismatch") {
 			fail("header store stuck: lag=%ds with prev-hash-mismatch (reorg-incompatible, won't recover without rebuild)", lag)
-			if fix && confirm(yes, fmt.Sprintf("    Wipe %s/headers/ and let the node resync from genesis (~30s)?", dataDir)) {
-				if err := wipeHeadersDir(dataDir); err != nil {
-					fmt.Printf("      ✗ wipe failed: %v\n", err)
+			if fix && confirm(yes, fmt.Sprintf("    Wipe %s/headers/, restart anvil services, and verify resync starts?", dataDir)) {
+				if err := applyHeaderRebuildAndVerify(dataDir, svcs, lag); err != nil {
+					fmt.Printf("      ✗ %v\n", err)
 					unresolved++
-				} else {
-					fmt.Printf("      ✓ wiped %s/headers/ — restart the service to trigger resync\n", dataDir)
 				}
 			} else {
 				unresolved++
@@ -413,15 +441,14 @@ func runSelfHealingChecks(dataDir string, fix, yes bool) int {
 	running := anvilversion.Version
 	if onDisk != "" && onDisk != running {
 		fail("running version v%s ≠ binary on disk v%s (service needs restart)", running, onDisk)
-		if fix && confirm(yes, "    Restart anvil services to pick up the new binary?") {
+		if fix && confirm(yes, "    Restart anvil services and verify they come up on the new binary?") {
 			for _, s := range svcs {
-				if s.ActiveState == "active" || s.ActiveState == "activating" {
-					if err := exec.Command("systemctl", "restart", s.Name+".service").Run(); err != nil {
-						fmt.Printf("      ✗ restart %s: %v\n", s.Name, err)
-						unresolved++
-					} else {
-						fmt.Printf("      ✓ restarted %s\n", s.Name)
-					}
+				if s.ActiveState != "active" && s.ActiveState != "activating" {
+					continue
+				}
+				if err := applyServiceRestartAndVerify(s.Name); err != nil {
+					fmt.Printf("      ✗ %s: %v\n", s.Name, err)
+					unresolved++
 				}
 			}
 		} else {
@@ -434,22 +461,116 @@ func runSelfHealingChecks(dataDir string, fix, yes bool) int {
 	return unresolved
 }
 
-// runFixLocksOnly is the safe subset of self-healing that is called from
+// applyServiceRestartAndVerify performs the systemd reset-failed + restart
+// cycle and confirms the service actually comes back up and stays up for
+// ~5 seconds (long enough that a crash loop would re-trigger a failure).
+// Returns nil only if the service is ActiveState=active when the function
+// returns. Matches the header-rebuild pattern: detect → apply → verify.
+func applyServiceRestartAndVerify(svcName string) error {
+	_ = exec.Command("systemctl", "reset-failed", svcName+".service").Run()
+	if err := exec.Command("systemctl", "restart", svcName+".service").Run(); err != nil {
+		return fmt.Errorf("restart %s: %w", svcName, err)
+	}
+	fmt.Printf("      ✓ restart issued to %s\n", svcName)
+
+	// A crash-loop service would go active → failed → activating within a
+	// few seconds. Give systemd 5s to settle, then check the state.
+	time.Sleep(5 * time.Second)
+
+	svcs, err := diagnostics.EnumerateAnvilServices()
+	if err != nil {
+		return fmt.Errorf("re-enumerate services for verify: %w", err)
+	}
+	for _, s := range svcs {
+		if s.Name != svcName {
+			continue
+		}
+		if s.ActiveState == "active" && s.SubState == "running" {
+			fmt.Printf("      ✓ %s verified active/running post-restart\n", svcName)
+			return nil
+		}
+		return fmt.Errorf("%s is %s/%s after restart (not active/running) — check journalctl -u %s",
+			svcName, s.ActiveState, s.SubState, svcName)
+	}
+	return fmt.Errorf("%s not found in systemd after restart", svcName)
+}
+
+// applyHeaderRebuildAndVerify executes the header-rebuild remediation
+// end-to-end: wipe headers dir, restart any active anvil services, wait
+// for re-sync to kick in, and verify the post-restart lag is STRICTLY
+// LESS than the pre-wipe lag. Returns nil only if the full chain succeeded.
+//
+// This is the "apply + verify" pattern added in v2.3.0 to prevent
+// half-done remediations from slipping through. Prior versions only did
+// the wipe and told the operator to restart; many forgot, leaving a
+// wiped-but-still-stuck node.
+func applyHeaderRebuildAndVerify(dataDir string, svcs []diagnostics.ServiceState, preLagSecs int) error {
+	// Step 1: wipe on-disk header store
+	if err := wipeHeadersDir(dataDir); err != nil {
+		return fmt.Errorf("wipe %s/headers/: %w", dataDir, err)
+	}
+	fmt.Printf("      ✓ wiped %s/headers/\n", dataDir)
+
+	// Step 2: restart anvil services so they drop the unlinked-inode handles
+	// and start reading from the fresh (empty) header store.
+	restartedAny := false
+	for _, s := range svcs {
+		if s.ActiveState == "active" || s.ActiveState == "activating" {
+			if err := exec.Command("systemctl", "restart", s.Name+".service").Run(); err != nil {
+				return fmt.Errorf("restart %s: %w", s.Name, err)
+			}
+			fmt.Printf("      ✓ restarted %s\n", s.Name)
+			restartedAny = true
+		}
+	}
+	if !restartedAny {
+		// No services were active (unusual). Record the wipe as done but
+		// note the operator will need to start at least one service themselves.
+		fmt.Println("      ⚠ no active anvil services to restart — start one manually to trigger resync")
+		return nil
+	}
+
+	// Step 3: verify post-restart lag is decreasing. Poll /status a few
+	// times over ~30 seconds. A successful resync should show lag
+	// dropping quickly (Anvil catches up at thousands of headers/second
+	// on a modern VPS, so even a multi-day gap closes in under a minute).
+	fmt.Println("      ⏳ waiting for resync (up to 45s)...")
+	deadline := time.Now().Add(45 * time.Second)
+	bestLag := preLagSecs
+	for time.Now().Before(deadline) {
+		time.Sleep(5 * time.Second)
+		lag, _, have := checkHeaderSyncHealth(dataDir)
+		if !have {
+			continue // API probably still warming up
+		}
+		if lag < bestLag {
+			bestLag = lag
+		}
+		if lag < preLagSecs/2 && lag > 0 {
+			// lag dropped meaningfully — resync is working
+			fmt.Printf("      ✓ resync confirmed: lag dropped %ds → %ds\n", preLagSecs, lag)
+			return nil
+		}
+	}
+	return fmt.Errorf("post-wipe lag did not decrease meaningfully (pre=%ds, best-seen=%ds) — investigate manually", preLagSecs, bestLag)
+}
+
+// runLocksOnly is the safe subset of self-healing that is called from
 // systemd's ExecStartPre. It only kills orphan anvil processes (so the
 // service unit can actually bind LevelDB locks on its own next start).
 // It MUST NOT block indefinitely, and MUST exit 0 regardless of what it
 // finds — otherwise a transient diagnostic failure would block every start.
-func runFixLocksOnly() {
+func runLocksOnly() {
 	orphans, err := diagnostics.FindOrphans()
 	if err != nil {
-		fmt.Printf("anvil doctor --fix-locks-only: orphan scan failed: %v\n", err)
+		fmt.Printf("anvil doctor --locks-only: orphan scan failed: %v\n", err)
 		os.Exit(0)
 	}
 	for _, o := range orphans {
-		fmt.Printf("anvil doctor --fix-locks-only: killing orphan PID %d (%s)\n",
+		fmt.Printf("anvil doctor --locks-only: killing orphan PID %d (%s)\n",
 			o.PID, truncStr(o.CmdLine, 80))
 		if err := diagnostics.KillOrphan(o); err != nil {
-			fmt.Printf("anvil doctor --fix-locks-only: kill PID %d failed: %v\n", o.PID, err)
+			fmt.Printf("anvil doctor --locks-only: kill PID %d failed: %v\n", o.PID, err)
 		}
 	}
 	os.Exit(0)
