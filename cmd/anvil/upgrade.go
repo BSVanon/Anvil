@@ -305,11 +305,28 @@ func cmdUpgrade(args []string) {
 		}
 	}
 
+	// Auto-run doctor --yes so any lingering post-upgrade issues (stale
+	// headers after a reorg, a unit stuck in activating, version skew
+	// between services) get detected and fixed without the operator
+	// having to remember. FOOLPROOF self-heal: every upgrade ends with
+	// a diagnose+fix+verify pass. v2.3.0+.
+	step("Running post-upgrade self-heal (anvil doctor --yes)")
+	doctorCmd := exec.Command(destBin, "doctor", "--yes")
+	doctorCmd.Stdout = os.Stdout
+	doctorCmd.Stderr = os.Stderr
+	if err := doctorCmd.Run(); err != nil {
+		// Doctor returns non-zero when it finds unresolved issues; that
+		// isn't an upgrade failure in itself — the new binary IS installed.
+		// Surface the warning and let the operator act on the output.
+		fmt.Printf("    WARNING: post-upgrade doctor reported unresolved issues: %v\n", err)
+		allVerified = false
+	}
+
 	fmt.Println()
 	if allVerified {
 		fmt.Printf("  Upgrade complete: %s → %s\n", current, latest)
 	} else {
-		fmt.Printf("  Upgrade partial: binary is %s but some services need manual restart\n", latest)
+		fmt.Printf("  Upgrade partial: binary is %s but some issues need manual follow-up (see doctor output above)\n", latest)
 	}
 	fmt.Println()
 }
@@ -411,13 +428,18 @@ func truncateCmd(s string, n int) string {
 
 // ensureExecStartPreHook inspects every anvil-*.service unit file in the
 // standard systemd location and, if the unit ExecStarts the anvil binary
-// but has no ExecStartPre=...doctor --fix-locks-only line, inserts one
+// but has no ExecStartPre=...doctor --locks-only line, inserts one
 // immediately before the ExecStart line. Returns the number of files
 // modified.
 //
-// Idempotent: if the hook is already present, the file is untouched. The
-// modification is conservative (inserts a single line before ExecStart)
-// so operator customizations above or below that section are preserved.
+// Units written by older versions with the legacy `--fix-locks-only`
+// alias are silently rewritten to the canonical `--locks-only` form so
+// the unit file matches what a fresh deploy would produce.
+//
+// Idempotent: if the canonical hook is already present, the file is
+// untouched. The modification is conservative (inserts or rewrites a
+// single line) so operator customizations above or below that section
+// are preserved.
 //
 // Failures on individual files are logged but don't abort the upgrade —
 // the binary replacement and service restart are the primary goals;
@@ -429,7 +451,8 @@ func ensureExecStartPreHook() int {
 // ensureExecStartPreHookIn is the testable core of ensureExecStartPreHook.
 // Tests pass a tempdir; production calls use /etc/systemd/system.
 func ensureExecStartPreHookIn(systemdDir string) int {
-	const hookLine = "ExecStartPre=/opt/anvil/anvil doctor --fix-locks-only"
+	const hookLine = "ExecStartPre=/opt/anvil/anvil doctor --locks-only"
+	const legacyHookLine = "ExecStartPre=/opt/anvil/anvil doctor --fix-locks-only"
 
 	entries, err := os.ReadDir(systemdDir)
 	if err != nil {
@@ -457,21 +480,33 @@ func ensureExecStartPreHookIn(systemdDir string) int {
 			continue
 		}
 		if strings.Contains(content, hookLine) {
-			continue // already hooked
+			continue // already hooked with canonical flag
 		}
 
-		// Find the first ExecStart= line (not ExecStartPre=) and insert
-		// the hook immediately before it. Preserves everything else.
 		lines := strings.Split(content, "\n")
 		var out []string
 		inserted := false
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if !inserted && strings.HasPrefix(trimmed, "ExecStart=") {
-				out = append(out, hookLine)
-				inserted = true
+		// If a legacy --fix-locks-only hook is present, rewrite in place
+		// to the canonical form. Otherwise insert a fresh hook line
+		// immediately before the first ExecStart= line.
+		if strings.Contains(content, legacyHookLine) {
+			for _, line := range lines {
+				if strings.TrimSpace(line) == legacyHookLine {
+					out = append(out, hookLine)
+					inserted = true
+					continue
+				}
+				out = append(out, line)
 			}
-			out = append(out, line)
+		} else {
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if !inserted && strings.HasPrefix(trimmed, "ExecStart=") {
+					out = append(out, hookLine)
+					inserted = true
+				}
+				out = append(out, line)
+			}
 		}
 		if !inserted {
 			continue // no ExecStart= line found; unfamiliar shape, skip

@@ -239,9 +239,9 @@ Group=anvil
 WorkingDirectory={{.InstallDir}}
 # Pre-start self-heal: kill any orphan anvil processes that would hold
 # LevelDB LOCK files and prevent this service instance from starting.
-# Failure here must NOT block startup — runFixLocksOnly exits 0 even if
+# Failure here must NOT block startup — runLocksOnly exits 0 even if
 # the scan errors, so ExecStartPre never triggers a crash loop itself.
-ExecStartPre={{.InstallDir}}/anvil doctor --fix-locks-only
+ExecStartPre={{.InstallDir}}/anvil doctor --locks-only
 ExecStart={{.InstallDir}}/anvil -config {{.ConfigDir}}/node-{{.Node}}.toml
 EnvironmentFile={{.ConfigDir}}/node-{{.Node}}.env
 Restart=on-failure
