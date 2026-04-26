@@ -225,6 +225,13 @@ func main() {
 			topics.NewDEXSwapLookupService(overlayEngine),
 			[]string{topics.DEXSwapTopicName})
 
+		// OrdLock listing topic manager + lookup service.
+		// See docs/internal/ORDLOCK_TOPIC_REQUEST.md for protocol details.
+		overlayEngine.RegisterTopic(topics.OrdLockTopicName, topics.NewOrdLockTopicManager())
+		overlayEngine.RegisterLookup(topics.OrdLockLookupServiceName,
+			topics.NewOrdLockLookupService(overlayEngine),
+			[]string{topics.OrdLockTopicName})
+
 		if cfg.Identity.WIF != "" { // local SHIP bootstrap
 			identityKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
 			if err != nil {
