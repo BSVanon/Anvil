@@ -232,6 +232,15 @@ func main() {
 			topics.NewOrdLockLookupService(overlayEngine),
 			[]string{topics.OrdLockTopicName})
 
+		// OrdLockBuy free-agent buy-vault topic manager + lookup service.
+		// Companion to the SELL listings topic — admits BSV-locked buy
+		// vaults (Rúnar-compiled OrdLockBuy covenant) so sellers can
+		// discover open buy orders without paste-paste outpoint sharing.
+		overlayEngine.RegisterTopic(topics.OrdLockBuyTopicName, topics.NewOrdLockBuyTopicManager())
+		overlayEngine.RegisterLookup(topics.OrdLockBuyLookupServiceName,
+			topics.NewOrdLockBuyLookupService(overlayEngine),
+			[]string{topics.OrdLockBuyTopicName})
+
 		if cfg.Identity.WIF != "" { // local SHIP bootstrap
 			identityKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
 			if err != nil {
