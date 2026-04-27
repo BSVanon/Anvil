@@ -12,6 +12,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/overlay"
 	base58 "github.com/bsv-blockchain/go-sdk/compat/base58"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
+	bsvCrypto "github.com/bsv-blockchain/go-sdk/primitives/hash"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -372,24 +373,37 @@ func TestOrdLockBuyLookup_FilterByTickCaseInsensitive(t *testing.T) {
 // address and matches it against entries' cancelPkhHex.
 func TestOrdLockBuyLookup_FilterByCancelAddress(t *testing.T) {
 	engine := newTestBuyEngine(t)
-	cancelPkh1 := canonicalCancelPkh
+
+	// Vault 1 — canonical buyer (BSVanon's pubkey from the live mainnet
+	// vault test fixture).
 	out0a := buildBSV20ExpectedOutput0Hex(t, "FILT", "100", canonicalBuyerOrdPkh)
 	admitBuyVaultToEngine(t, engine,
-		buildOrdLockBuyScriptForTest(t, out0a, 1000, cancelPkh1, canonicalBuyerPubKey), 1500)
+		buildOrdLockBuyScriptForTest(t, out0a, 1000, canonicalCancelPkh, canonicalBuyerPubKey), 1500)
 
-	// A second vault with a DIFFERENT cancelPkh — must use a buyerPubKey
-	// whose hash160 actually equals that pkh, otherwise parseOrdLockBuyScript
-	// at admit time would still accept (it doesn't enforce that invariant)
-	// but the contract would refuse cancel. For this test we just need
-	// distinct admittable scripts; the cancelPkh field on the entry is
-	// what the lookup filters against.
-	otherCancelPkh := "ee" + strings.Repeat("00", 19)
-	otherBuyerPubKey := "02" + strings.Repeat("11", 32)
+	// Vault 2 — second VALID buyer pair. Use Bob's mainnet pubkey from
+	// LIVE_TEST_KEYS.md and derive its hash160 dynamically so the
+	// hash160(buyerPubKey) == cancelPkh invariant holds. Without this,
+	// the parser would reject vault 2 at admit time (Codex review
+	// 0d628245 enforcement) and the filter would coincidentally still
+	// pass with 1 hit — but it'd be passing for the wrong reason.
+	const bobBuyerPubKey = "02c70c6ae311f8ad6f3dff21d38487e250ab3591333ecce7a5ca749d1d71024625"
+	bobPubKeyBytes, _ := hex.DecodeString(bobBuyerPubKey)
+	bobCancelPkh := hex.EncodeToString(bsvCrypto.Hash160(bobPubKeyBytes))
 	out0b := buildBSV20ExpectedOutput0Hex(t, "OTHR", "200", canonicalBuyerOrdPkh)
 	admitBuyVaultToEngine(t, engine,
-		buildOrdLockBuyScriptForTest(t, out0b, 2000, otherCancelPkh, otherBuyerPubKey), 2500)
+		buildOrdLockBuyScriptForTest(t, out0b, 2000, bobCancelPkh, bobBuyerPubKey), 2500)
 
-	pkh1Bytes, _ := hex.DecodeString(cancelPkh1)
+	// Sanity: both vaults admitted.
+	all, _ := engine.Lookup(overlay.LookupQuestion{
+		Service: OrdLockBuyLookupServiceName,
+		Query:   json.RawMessage(`{"list":"all"}`),
+	})
+	if len(all.Outputs) != 2 {
+		t.Fatalf("setup: expected 2 admitted vaults, got %d", len(all.Outputs))
+	}
+
+	// Filter: query for vault 1's cancelAddress only.
+	pkh1Bytes, _ := hex.DecodeString(canonicalCancelPkh)
 	addr, _ := script.NewAddressFromPublicKeyHash(pkh1Bytes, true)
 	q := fmt.Sprintf(`{"cancelAddress":"%s"}`, addr.AddressString)
 	answer, err := engine.Lookup(overlay.LookupQuestion{
@@ -406,6 +420,49 @@ func TestOrdLockBuyLookup_FilterByCancelAddress(t *testing.T) {
 	_ = json.Unmarshal(answer.Outputs[0].Metadata, &entry)
 	if entry.Tick != "FILT" {
 		t.Errorf("got tick=%q, want FILT", entry.Tick)
+	}
+}
+
+// TestParseOrdLockBuyScript_RejectsKeyMismatch enforces the canonical-vault
+// invariant Codex review 0d6282450e930dda flagged: a vault whose cancelPkh
+// is NOT the hash160 of buyerPubKey is unspendable on the cancel branch
+// (sig validates against buyerPubKey, but the refund output forces P2PKH
+// to cancelPkh — funds permanently lost). The parser MUST refuse to admit
+// such vaults so the overlay doesn't index broken state.
+//
+// Mirrors the TS-side check in Anvil-Swap/src/ordlock/runar/buy-covenant.ts
+// §228 (Codex review 5976f981, 2026-04-26) which rejects mismatch at
+// vault-creation time.
+func TestParseOrdLockBuyScript_RejectsKeyMismatch(t *testing.T) {
+	out0 := buildBSV21ExpectedOutput0Hex(t, samplePumpkinTokenId, "50", canonicalBuyerOrdPkh)
+	// Deliberate mismatch: real-format buyerPubKey, but cancelPkh that is
+	// NOT its hash160.
+	mismatchedCancelPkh := "ff" + strings.Repeat("ee", 19)
+	scriptHex := buildOrdLockBuyScriptForTest(t, out0, 1000, mismatchedCancelPkh, canonicalBuyerPubKey)
+	script, err := hex.DecodeString(scriptHex)
+	if err != nil {
+		t.Fatalf("decode test script: %v", err)
+	}
+	if entry := parseOrdLockBuyScript(script); entry != nil {
+		t.Errorf("parser admitted a vault with hash160(buyerPubKey) != cancelPkh — entry=%+v", entry)
+	}
+}
+
+// TestOrdLockBuyTopicManager_KeyMismatchVaultRejectedByEngine confirms the
+// engine path also rejects the mismatch (no admission, lookup returns 0).
+func TestOrdLockBuyTopicManager_KeyMismatchVaultRejectedByEngine(t *testing.T) {
+	engine := newTestBuyEngine(t)
+	out0 := buildBSV21ExpectedOutput0Hex(t, samplePumpkinTokenId, "50", canonicalBuyerOrdPkh)
+	mismatchedCancelPkh := "ff" + strings.Repeat("ee", 19)
+	mismatched := buildOrdLockBuyScriptForTest(t, out0, 1000, mismatchedCancelPkh, canonicalBuyerPubKey)
+	admitBuyVaultToEngine(t, engine, mismatched, 1500)
+
+	answer, _ := engine.Lookup(overlay.LookupQuestion{
+		Service: OrdLockBuyLookupServiceName,
+		Query:   json.RawMessage(`{"list":"all"}`),
+	})
+	if len(answer.Outputs) != 0 {
+		t.Errorf("engine admitted key-mismatched vault — expected 0 lookup hits, got %d", len(answer.Outputs))
 	}
 }
 
