@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/overlay"
+	crypto "github.com/bsv-blockchain/go-sdk/primitives/hash"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
@@ -293,6 +294,24 @@ func parseOrdLockBuyScript(script []byte) *OrdLockBuyEntry {
 	}
 	expectedOutput0Bytes, ok := captured[paramExpectedOutput0Bytes]
 	if !ok || expectedOutput0Bytes == "" {
+		return nil
+	}
+
+	// Canonical-vault invariant: hash160(buyerPubKey) MUST equal cancelPkh.
+	// The TS builder (Anvil-Swap/src/ordlock/runar/buy-covenant.ts §228)
+	// rejects mismatches at vault-creation time per Codex review 5976f981
+	// (2026-04-26): the cancel branch validates a sig against buyerPubKey
+	// AND forces the refund output to P2PKH(cancelPkh), so divergence
+	// means a vault Bob can sign cancel for but whose refund lands at an
+	// address he doesn't control — funds permanently locked. Mirroring
+	// the rejection here at admit time prevents the overlay from
+	// indexing broken vaults that no one can ever unlock.
+	pubKeyBytes, err := hex.DecodeString(buyerPubKey)
+	if err != nil {
+		return nil
+	}
+	computedPkh := crypto.Hash160(pubKeyBytes)
+	if hex.EncodeToString(computedPkh) != strings.ToLower(cancelPkh) {
 		return nil
 	}
 
