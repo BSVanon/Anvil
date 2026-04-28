@@ -260,7 +260,11 @@ func (s *Store) RangeHeaders(from, count uint32) ([][]byte, uint32, error) {
 	}
 
 	out := make([][]byte, 0, count)
-	for h := from; h < from+count; h++ {
+	// Iterate by offset so the loop counter cannot overflow uint32 even when
+	// from+count would wrap. The uint64 bound check above already guarantees
+	// from+i fits in uint32 for every i in [0, count).
+	for i := uint32(0); i < count; i++ {
+		h := from + i
 		raw, err := s.db.Get(heightToKey(prefixHeader, h), nil)
 		if err != nil {
 			return nil, tip, fmt.Errorf("header at %d: %w", h, err)

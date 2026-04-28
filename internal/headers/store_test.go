@@ -271,6 +271,55 @@ func TestRangeHeadersIncludesGenesis(t *testing.T) {
 	}
 }
 
+// TestRangeHeadersUint32Boundary verifies that a request whose end height
+// equals max uint32 returns the right number of headers without the inner
+// loop wrapping. Uses white-box state injection because building a real
+// 4-billion-height chain is impractical.
+func TestRangeHeadersUint32Boundary(t *testing.T) {
+	s := tmpStore(t)
+
+	const maxU32 = ^uint32(0) // 4294967295
+	const from = maxU32 - 2   // 4294967293
+	const count uint32 = 3    // covers 4294967293, 4294967294, 4294967295
+
+	// Plant 3 synthetic 80-byte headers at the boundary heights and lift
+	// the in-memory tip to maxU32. We bypass AddHeaders intentionally —
+	// this is a unit test for loop-counter behavior, not chain validity.
+	for h := from; ; h++ {
+		raw := bytes.Repeat([]byte{byte(h & 0xff)}, 80)
+		if err := s.db.Put(heightToKey(prefixHeader, h), raw, nil); err != nil {
+			t.Fatal(err)
+		}
+		if h == maxU32 {
+			break
+		}
+	}
+	s.mu.Lock()
+	s.tip = maxU32
+	s.mu.Unlock()
+
+	out, tip, err := s.RangeHeaders(from, count)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tip != maxU32 {
+		t.Fatalf("expected tip %d, got %d", maxU32, tip)
+	}
+	if uint32(len(out)) != count {
+		t.Fatalf("expected %d headers, got %d (loop counter likely overflowed)", count, len(out))
+	}
+	for i, raw := range out {
+		if len(raw) != 80 {
+			t.Fatalf("header %d: expected 80 bytes, got %d", i, len(raw))
+		}
+	}
+
+	// And confirm that asking for one past the tip still errors cleanly.
+	if _, _, err := s.RangeHeaders(maxU32, 2); !errors.Is(err, ErrRangeExceedsTip) {
+		t.Fatalf("expected ErrRangeExceedsTip for from=maxU32 count=2, got %v", err)
+	}
+}
+
 func TestReopenStore(t *testing.T) {
 	dir, err := os.MkdirTemp("", "anvil-headers-reopen-*")
 	if err != nil {
