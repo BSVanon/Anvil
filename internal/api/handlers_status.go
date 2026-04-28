@@ -2,13 +2,22 @@ package api
 
 import (
 	"bytes"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/version"
 	"github.com/libsv/go-p2p/wire"
 )
+
+// MaxHeadersRange is the maximum number of headers returnable from
+// /headers/range in a single request (50 × 80 B = 4 KB body cap).
+const MaxHeadersRange = 50
 
 // --- Status & Headers ---
 
@@ -119,6 +128,72 @@ func (s *Server) handleHeadersTip(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"height": tip,
 		"hash":   hash.String(),
+	})
+}
+
+// handleHeadersRange returns N consecutive raw 80-byte block headers as JSON
+// (default) or concatenated bytes (Accept: application/octet-stream). Used by
+// SPV-proof builders that need raw headers to verify a Merkle path on-chain.
+func (s *Server) handleHeadersRange(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	fromStr := q.Get("from")
+	countStr := q.Get("count")
+	if fromStr == "" || countStr == "" {
+		writeError(w, http.StatusBadRequest, "from and count are required")
+		return
+	}
+	from, err := strconv.ParseUint(fromStr, 10, 32)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "from must be a non-negative integer")
+		return
+	}
+	count, err := strconv.ParseUint(countStr, 10, 32)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "count must be a positive integer")
+		return
+	}
+	if count < 1 {
+		writeError(w, http.StatusBadRequest, "count must be >= 1")
+		return
+	}
+	if count > MaxHeadersRange {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("count must be <= %d", MaxHeadersRange))
+		return
+	}
+
+	hdrs, tip, err := s.headerStore.RangeHeaders(uint32(from), uint32(count))
+	if errors.Is(err, headers.ErrRangeExceedsTip) {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":     "range exceeds local tip",
+			"tipHeight": tip,
+			"from":      from,
+			"count":     count,
+		})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "header read failed: "+err.Error())
+		return
+	}
+
+	if strings.Contains(r.Header.Get("Accept"), "application/octet-stream") {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, h := range hdrs {
+			_, _ = w.Write(h)
+		}
+		return
+	}
+
+	hexHeaders := make([]string, len(hdrs))
+	for i, h := range hdrs {
+		hexHeaders[i] = hex.EncodeToString(h)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"from":      from,
+		"count":     count,
+		"tipHeight": tip,
+		"headers":   hexHeaders,
 	})
 }
 

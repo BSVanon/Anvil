@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,8 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
+	p2pchainhash "github.com/libsv/go-p2p/chaincfg/chainhash"
+	"github.com/libsv/go-p2p/wire"
 )
 
 func testServer(t *testing.T) *Server {
@@ -171,6 +174,147 @@ func TestHeadersTipEndpoint(t *testing.T) {
 	}
 	if resp["hash"] == nil || resp["hash"] == "" {
 		t.Fatal("expected non-empty hash")
+	}
+}
+
+// addServerTestChain appends n synthetic headers (heights 1..n) onto the
+// server's header store, returning the new tip height.
+func addServerTestChain(t *testing.T, srv *Server, n int) uint32 {
+	t.Helper()
+	prevHash, _ := srv.headerStore.HashAtHeight(0)
+	merkle, err := p2pchainhash.NewHashFromStr("abcdef0000000000000000000000000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdrs := make([]*wire.BlockHeader, 0, n)
+	for i := 0; i < n; i++ {
+		hdr := wire.NewBlockHeader(1, prevHash, merkle, 0x1d00ffff, uint32(i))
+		hdrs = append(hdrs, hdr)
+		h := hdr.BlockHash()
+		prevHash = &h
+	}
+	if err := srv.headerStore.AddHeaders(1, hdrs); err != nil {
+		t.Fatal(err)
+	}
+	return uint32(n)
+}
+
+func TestHeadersRangeJSON(t *testing.T) {
+	srv := testServer(t)
+	addServerTestChain(t, srv, 10)
+
+	req := httptest.NewRequest("GET", "/headers/range?from=2&count=3", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["from"].(float64) != 2 || resp["count"].(float64) != 3 || resp["tipHeight"].(float64) != 10 {
+		t.Fatalf("bad response shape: %+v", resp)
+	}
+	hdrs := resp["headers"].([]interface{})
+	if len(hdrs) != 3 {
+		t.Fatalf("expected 3 headers, got %d", len(hdrs))
+	}
+	for i, h := range hdrs {
+		raw, err := hex.DecodeString(h.(string))
+		if err != nil {
+			t.Fatalf("header %d: hex decode: %v", i, err)
+		}
+		if len(raw) != 80 {
+			t.Fatalf("header %d: expected 80 bytes, got %d", i, len(raw))
+		}
+	}
+}
+
+func TestHeadersRangeBinary(t *testing.T) {
+	srv := testServer(t)
+	addServerTestChain(t, srv, 10)
+
+	req := httptest.NewRequest("GET", "/headers/range?from=1&count=3", nil)
+	req.Header.Set("Accept", "application/octet-stream")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Fatalf("expected octet-stream, got %s", ct)
+	}
+	body := w.Body.Bytes()
+	if len(body) != 240 {
+		t.Fatalf("expected 240 bytes, got %d", len(body))
+	}
+	// Verify chain link inside the binary blob.
+	var h1, h2 wire.BlockHeader
+	if err := h1.Deserialize(bytes.NewReader(body[0:80])); err != nil {
+		t.Fatal(err)
+	}
+	if err := h2.Deserialize(bytes.NewReader(body[80:160])); err != nil {
+		t.Fatal(err)
+	}
+	expectedPrev := h1.BlockHash()
+	if h2.PrevBlock != expectedPrev {
+		t.Fatal("chain link broken in binary range")
+	}
+}
+
+func TestHeadersRangeExceedsTip(t *testing.T) {
+	srv := testServer(t)
+	addServerTestChain(t, srv, 5)
+
+	req := httptest.NewRequest("GET", "/headers/range?from=4&count=10", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["tipHeight"].(float64) != 5 {
+		t.Fatalf("expected tipHeight 5 in error body, got %v", resp["tipHeight"])
+	}
+}
+
+func TestHeadersRangeBadParams(t *testing.T) {
+	srv := testServer(t)
+	cases := []string{
+		"/headers/range",                   // missing both
+		"/headers/range?from=0",            // missing count
+		"/headers/range?count=3",           // missing from
+		"/headers/range?from=abc&count=3",  // non-integer from
+		"/headers/range?from=0&count=abc",  // non-integer count
+		"/headers/range?from=0&count=0",    // count < 1
+		"/headers/range?from=0&count=51",   // count > MAX
+		"/headers/range?from=-1&count=3",   // negative from
+	}
+	for _, path := range cases {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", path, w.Code)
+		}
+	}
+}
+
+func TestHeadersRangeMaxBoundary(t *testing.T) {
+	srv := testServer(t)
+	addServerTestChain(t, srv, 60)
+
+	req := httptest.NewRequest("GET", "/headers/range?from=1&count=50", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("count=50 (boundary) should succeed, got %d", w.Code)
 	}
 }
 

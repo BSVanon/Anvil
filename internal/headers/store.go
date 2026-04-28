@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
@@ -15,6 +16,11 @@ import (
 	"github.com/BSVanon/Anvil/internal/store"
 	"github.com/syndtr/goleveldb/leveldb"
 )
+
+// ErrRangeExceedsTip is returned by RangeHeaders when the requested range
+// extends past the chain tip observed under the read lock. The tip value
+// returned alongside this error is authoritative for the snapshot.
+var ErrRangeExceedsTip = errors.New("headers: range exceeds tip")
 
 // Key prefixes for LevelDB.
 var (
@@ -234,6 +240,37 @@ func (s *Store) HeaderAtHeight(height uint32) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.db.Get(heightToKey(prefixHeader, height), nil)
+}
+
+// RangeHeaders returns N consecutive raw 80-byte headers starting at `from`,
+// along with the chain tip observed at the start of the read. The full range
+// is read under a single RLock so a concurrent Rollback cannot interleave
+// headers from different chain states into the response.
+func (s *Store) RangeHeaders(from, count uint32) ([][]byte, uint32, error) {
+	if count == 0 {
+		return nil, 0, fmt.Errorf("count must be >= 1")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tip := s.tip
+	last := uint64(from) + uint64(count) - 1
+	if last > uint64(tip) {
+		return nil, tip, ErrRangeExceedsTip
+	}
+
+	out := make([][]byte, 0, count)
+	for h := from; h < from+count; h++ {
+		raw, err := s.db.Get(heightToKey(prefixHeader, h), nil)
+		if err != nil {
+			return nil, tip, fmt.Errorf("header at %d: %w", h, err)
+		}
+		if len(raw) != 80 {
+			return nil, tip, fmt.Errorf("header at %d: expected 80 bytes, got %d", h, len(raw))
+		}
+		out = append(out, raw)
+	}
+	return out, tip, nil
 }
 
 // HashAtHeight returns the block hash at the given height.
