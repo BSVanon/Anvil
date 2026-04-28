@@ -81,7 +81,9 @@ Response: `{"status": "success", "acknowledged": 2}`
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/tx/{txid}/beef` | GET | No | BEEF proof for a transaction |
+| `/tx/{txid}/beef` | GET | No | BEEF proof for a transaction. `Accept: application/octet-stream` returns raw bytes. |
+| `/headers/tip` | GET | No | Current BSV header-chain tip: `{height, hash}` |
+| `/headers/range` | GET | No | N consecutive raw 80-byte block headers. Query: `from`, `count` (1..50). JSON default; `Accept: application/octet-stream` returns `count × 80` raw bytes. Used by SPV proof-builders. |
 | `/content/{txid}_{vout}` | GET | No | Raw content from a transaction output |
 
 ## Node-Signed Publishing
