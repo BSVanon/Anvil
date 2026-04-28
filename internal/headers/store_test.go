@@ -3,6 +3,7 @@ package headers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -166,6 +167,107 @@ func TestChainOfHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("header at %d: %v", i, err)
 		}
+	}
+}
+
+// --- RangeHeaders ---
+
+// addTestChain appends n synthetic headers starting at height 1 and returns them.
+func addTestChain(t *testing.T, s *Store, n int) []*wire.BlockHeader {
+	t.Helper()
+	prevHash, _ := s.HashAtHeight(0)
+	hdrs := make([]*wire.BlockHeader, 0, n)
+	for i := 0; i < n; i++ {
+		merkle := mustTestHash("abcdef0000000000000000000000000000000000000000000000000000000000")
+		hdr := wire.NewBlockHeader(1, prevHash, merkle, 0x1d00ffff, uint32(i))
+		hdr.Timestamp = time.Unix(1231006506+int64(i)*600, 0)
+		hdrs = append(hdrs, hdr)
+		h := hdr.BlockHash()
+		prevHash = &h
+	}
+	if err := s.AddHeaders(1, hdrs); err != nil {
+		t.Fatal(err)
+	}
+	return hdrs
+}
+
+func TestRangeHeadersHappyPath(t *testing.T) {
+	s := tmpStore(t)
+	addTestChain(t, s, 10)
+
+	out, tip, err := s.RangeHeaders(2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tip != 10 {
+		t.Fatalf("expected tip 10, got %d", tip)
+	}
+	if len(out) != 3 {
+		t.Fatalf("expected 3 headers, got %d", len(out))
+	}
+	for i, h := range out {
+		if len(h) != 80 {
+			t.Fatalf("header %d: expected 80 bytes, got %d", i, len(h))
+		}
+	}
+}
+
+func TestRangeHeadersChainLink(t *testing.T) {
+	s := tmpStore(t)
+	addTestChain(t, s, 5)
+
+	out, _, err := s.RangeHeaders(1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(out); i++ {
+		var prev, cur wire.BlockHeader
+		if err := prev.Deserialize(bytes.NewReader(out[i-1])); err != nil {
+			t.Fatal(err)
+		}
+		if err := cur.Deserialize(bytes.NewReader(out[i])); err != nil {
+			t.Fatal(err)
+		}
+		expectedPrev := prev.BlockHash()
+		if cur.PrevBlock != expectedPrev {
+			t.Fatalf("link broken between header %d and %d", i-1, i)
+		}
+	}
+}
+
+func TestRangeHeadersExceedsTip(t *testing.T) {
+	s := tmpStore(t)
+	addTestChain(t, s, 5)
+
+	_, tip, err := s.RangeHeaders(4, 10)
+	if err == nil {
+		t.Fatal("expected error for range past tip")
+	}
+	if !errors.Is(err, ErrRangeExceedsTip) {
+		t.Fatalf("expected ErrRangeExceedsTip, got %v", err)
+	}
+	if tip != 5 {
+		t.Fatalf("expected returned tip 5, got %d", tip)
+	}
+}
+
+func TestRangeHeadersZeroCount(t *testing.T) {
+	s := tmpStore(t)
+	if _, _, err := s.RangeHeaders(0, 0); err == nil {
+		t.Fatal("expected error for count=0")
+	}
+}
+
+func TestRangeHeadersIncludesGenesis(t *testing.T) {
+	s := tmpStore(t)
+	addTestChain(t, s, 3)
+
+	out, _, err := s.RangeHeaders(0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || len(out[0]) != 80 {
+		t.Fatalf("genesis read shape wrong: %d entries, first len=%d", len(out), len(out[0]))
 	}
 }
 
