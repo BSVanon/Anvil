@@ -65,7 +65,142 @@ if ! command -v sha256sum &>/dev/null; then
 fi
 
 # ══════════════════════════════════════════════════════════════
-# SCREEN 1: Welcome
+# Upgrade-mode detection
+#
+# If a config file already exists, this is an upgrade rather than a
+# fresh install. We MUST NOT run the deploy step (it would regenerate
+# the operator's identity WIF, destroying access to their funded
+# wallet). Instead we run a streamlined download → verify → swap →
+# restart → doctor flow.
+#
+# Why this branch lives here: third-party operators on v2.2.x or
+# earlier hit a chicken-and-egg with `sudo anvil upgrade` — their
+# old upgrade.go binary predates the v2.3.0+ auto-doctor step, so
+# upgrading from those versions to v3 leaves the SQLite/PrivateTmp +
+# systemd-hook gaps unresolved. This install.sh branch invokes the
+# NEW v3 binary's `anvil doctor --yes` post-swap, which contains the
+# auto-migrate + PrivateTmp + ExecStartPre self-heal logic. So a
+# single one-liner works for any starting version:
+#
+#   curl -fsSL https://anvil.sendbsv.com/install | sudo bash
+#
+# ══════════════════════════════════════════════════════════════
+
+if [ -f "$CONFIG_FILE" ]; then
+  echo ""
+  echo -e "  ${BOLD}━━━ Anvil Upgrade ━━━${NC}"
+  echo ""
+  echo -e "  Detected existing installation at ${DIM}${CONFIG_FILE}${NC}"
+  echo -e "  Running upgrade flow (preserves identity, config, data)."
+  echo ""
+
+  # ── Detect existing services ──
+  RUNNING_SERVICES=()
+  for svc in anvil-a anvil-b; do
+    if systemctl is-active "$svc" >/dev/null 2>&1; then
+      RUNNING_SERVICES+=("$svc")
+    fi
+  done
+
+  CURRENT_VERSION=""
+  if [ -x "${INSTALL_DIR}/anvil" ]; then
+    CURRENT_VERSION=$("${INSTALL_DIR}/anvil" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
+  fi
+
+  TARGET_VERSION="$ANVIL_VERSION"
+  echo -e "  ${DIM}current:  ${CURRENT_VERSION:-unknown}${NC}"
+  echo -e "  ${DIM}target:   ${TARGET_VERSION}${NC}"
+  echo -e "  ${DIM}services: ${RUNNING_SERVICES[*]:-none running}${NC}"
+  echo ""
+
+  # ── Download binary + checksums.txt ──
+  UPGRADE_TMP=$(mktemp /tmp/anvil-upgrade.XXXXXX)
+  UPGRADE_CHK=$(mktemp /tmp/anvil-upgrade-checksums.XXXXXX)
+  trap "rm -f $UPGRADE_TMP $UPGRADE_CHK" EXIT
+
+  if [ "$TARGET_VERSION" = "latest" ]; then
+    UPGRADE_BASE="https://github.com/${ANVIL_REPO}/releases/latest/download"
+  else
+    UPGRADE_BASE="https://github.com/${ANVIL_REPO}/releases/download/${TARGET_VERSION}"
+  fi
+
+  echo -e "  ${DIM}[1/5] Downloading ${BINARY}...${NC}"
+  if command -v curl &>/dev/null; then
+    curl -fsSL "${UPGRADE_BASE}/${BINARY}" -o "$UPGRADE_TMP"
+    curl -fsSL "${UPGRADE_BASE}/checksums.txt" -o "$UPGRADE_CHK"
+  elif command -v wget &>/dev/null; then
+    wget -q "${UPGRADE_BASE}/${BINARY}" -O "$UPGRADE_TMP"
+    wget -q "${UPGRADE_BASE}/checksums.txt" -O "$UPGRADE_CHK"
+  else
+    echo -e "  ${RED}Error: curl or wget required${NC}"
+    exit 1
+  fi
+
+  # ── SHA256 verify ──
+  EXPECTED_HASH=$(grep "${BINARY}" "$UPGRADE_CHK" | awk '{print $1}')
+  if [ -z "$EXPECTED_HASH" ]; then
+    echo -e "  ${RED}Error: no checksum for ${BINARY} in release${NC}"
+    exit 1
+  fi
+  ACTUAL_HASH=$(sha256sum "$UPGRADE_TMP" | awk '{print $1}')
+  if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+    echo -e "  ${RED}Error: SHA256 mismatch — binary may be tampered with${NC}"
+    echo -e "  ${RED}  expected: ${EXPECTED_HASH}${NC}"
+    echo -e "  ${RED}  got:      ${ACTUAL_HASH}${NC}"
+    exit 1
+  fi
+  chmod 755 "$UPGRADE_TMP"
+  echo -e "  ${GREEN}✓${NC} SHA256 verified (${DIM}${ACTUAL_HASH:0:16}...${NC})"
+
+  # ── Stop services ──
+  echo -e "  ${DIM}[2/5] Stopping services...${NC}"
+  for svc in "${RUNNING_SERVICES[@]}"; do
+    systemctl stop "$svc" 2>/dev/null || true
+  done
+  sleep 1
+
+  # ── Backup + atomic swap ──
+  echo -e "  ${DIM}[3/5] Installing binary (atomic swap)...${NC}"
+  if [ -x "${INSTALL_DIR}/anvil" ]; then
+    cp "${INSTALL_DIR}/anvil" "${INSTALL_DIR}/anvil.prev" 2>/dev/null || true
+  fi
+  cp "$UPGRADE_TMP" "${INSTALL_DIR}/anvil.new"
+  chmod 755 "${INSTALL_DIR}/anvil.new"
+  mv "${INSTALL_DIR}/anvil.new" "${INSTALL_DIR}/anvil"
+  # Refresh /usr/local/bin/anvil symlink
+  ln -sf "${INSTALL_DIR}/anvil" /usr/local/bin/anvil
+  NEW_VERSION=$("${INSTALL_DIR}/anvil" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")
+  echo -e "  ${GREEN}✓${NC} Installed ${NEW_VERSION}"
+
+  # ── Restart services ──
+  echo -e "  ${DIM}[4/5] Restarting services...${NC}"
+  for svc in "${RUNNING_SERVICES[@]}"; do
+    systemctl start "$svc" 2>/dev/null || true
+  done
+  sleep 5
+
+  # ── Run NEW binary's doctor for full self-heal ──
+  # This is the load-bearing step for any v2.2.x or earlier operator:
+  # the v3+ doctor auto-creates the PrivateTmp drop-in for SQLite,
+  # wipes-and-rebuilds stale headers, and verifies the service comes
+  # back up clean. Without this step, third-party operators on old
+  # versions end up half-upgraded.
+  echo -e "  ${DIM}[5/5] Running post-upgrade self-heal (anvil doctor --yes)...${NC}"
+  echo ""
+  "${INSTALL_DIR}/anvil" doctor --yes || {
+    echo ""
+    echo -e "  ${YELLOW}WARNING: doctor reported unresolved issues — see output above${NC}"
+    echo -e "  ${DIM}Binary upgrade succeeded; manual follow-up may be needed.${NC}"
+  }
+
+  echo ""
+  echo -e "  ${GREEN}${BOLD}Upgrade complete: ${CURRENT_VERSION:-unknown} → ${NEW_VERSION}${NC}"
+  echo ""
+  exit 0
+fi
+
+# ══════════════════════════════════════════════════════════════
+# SCREEN 1: Welcome (fresh install path)
 # ══════════════════════════════════════════════════════════════
 
 clear
