@@ -188,6 +188,29 @@ func cmdDoctor(args []string) {
 	section("Local API")
 	apiURL := fmt.Sprintf("http://127.0.0.1%s", normalizePort(cfg.Node.APIListen))
 	statusResp := httpGet(apiURL + "/status")
+	// v3.0.4: retry the initial probe with backoff if the daemon may
+	// still be booting. `anvil upgrade` runs doctor immediately after
+	// services restart, but the daemon can take 10-30 seconds to bind
+	// the HTTP listener on busy nodes (large wallet load, header init,
+	// ExecStartPre doctor pass). Without this retry, doctor false-flags
+	// API as down even though the daemon comes up cleanly seconds later,
+	// causing "Upgrade partial" reports for upgrades that actually
+	// succeeded.
+	//
+	// Fast path: if the first probe succeeds, no retry. Slow path: poll
+	// every 3s for up to 30s, then accept the original "not responding"
+	// diagnosis if the daemon is genuinely down.
+	if statusResp == nil {
+		fmt.Println("  ⏳ API not yet responding — retrying for up to 30s (daemon may still be booting)...")
+		retryDeadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(retryDeadline) {
+			time.Sleep(3 * time.Second)
+			if r := httpGet(apiURL + "/status"); r != nil {
+				statusResp = r
+				break
+			}
+		}
+	}
 	if statusResp != nil {
 		pass("API responding at %s", apiURL)
 		if h, ok := statusResp["headers"].(map[string]interface{}); ok {
@@ -632,24 +655,47 @@ func applyHeaderRebuildAndVerify(dataDir string, svcs []diagnostics.ServiceState
 		return nil
 	}
 
-	// Step 3: verify post-restart lag is decreasing. Poll /status a few
-	// times over ~30 seconds. A successful resync should show lag
-	// dropping quickly (Anvil catches up at thousands of headers/second
-	// on a modern VPS, so even a multi-day gap closes in under a minute).
-	fmt.Println("      ⏳ waiting for resync (up to 45s)...")
-	deadline := time.Now().Add(45 * time.Second)
+	// Step 3a: wait for the restarted daemon to come back up. On busy
+	// nodes (large wallet load, header init) this can take 10-30s after
+	// `systemctl restart`. Pre-v3.0.4 we'd start polling lag immediately
+	// and the entire 45s window would expire while checkHeaderSyncHealth
+	// returned have=false — best-seen lag never updated from preLag and
+	// we'd report "did not decrease meaningfully" even though sync hadn't
+	// even been measured.
+	fmt.Println("      ⏳ waiting for daemon HTTP listener to come back up...")
+	apiUpDeadline := time.Now().Add(60 * time.Second)
+	apiReady := false
+	for time.Now().Before(apiUpDeadline) {
+		time.Sleep(3 * time.Second)
+		if _, _, have := checkHeaderSyncHealth(dataDir); have {
+			apiReady = true
+			break
+		}
+	}
+	if !apiReady {
+		return fmt.Errorf("post-wipe daemon never bound its HTTP listener — check journalctl -u anvil-a")
+	}
+
+	// Step 3b: now that API is responsive, measure lag decrease.
+	// Anvil catches up at thousands of headers/second on a modern VPS,
+	// so a sync that's actually working will show ANY meaningful drop
+	// within ~90 seconds. Success criterion is "dropped by more than
+	// 60 seconds" rather than "less than half" — half-of-preLag (which
+	// could be 18 days for a multi-week gap) is a much higher bar than
+	// "sync is clearly progressing."
+	fmt.Println("      ⏳ waiting for header resync to progress (up to 90s)...")
+	deadline := time.Now().Add(90 * time.Second)
 	bestLag := preLagSecs
 	for time.Now().Before(deadline) {
-		time.Sleep(5 * time.Second)
+		time.Sleep(3 * time.Second)
 		lag, _, have := checkHeaderSyncHealth(dataDir)
 		if !have {
-			continue // API probably still warming up
+			continue
 		}
 		if lag < bestLag {
 			bestLag = lag
 		}
-		if lag < preLagSecs/2 && lag > 0 {
-			// lag dropped meaningfully — resync is working
+		if lag > 0 && lag < preLagSecs-60 {
 			fmt.Printf("      ✓ resync confirmed: lag dropped %ds → %ds\n", preLagSecs, lag)
 			return nil
 		}
