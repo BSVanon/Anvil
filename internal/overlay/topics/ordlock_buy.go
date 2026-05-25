@@ -168,12 +168,12 @@ func (m *OrdLockBuyTopicManager) Admit(txData []byte, previousUTXOs []overlay.Ad
 		if out.LockingScript == nil {
 			continue
 		}
-		entry := parseOrdLockBuyScript(out.LockingScript.Bytes())
+		entry := ParseOrdLockBuyScript(out.LockingScript.Bytes())
 		if entry == nil {
 			continue
 		}
 		entry.Outpoint = fmt.Sprintf("%s_%d", txid, vout)
-		entry.VaultSats = int64(out.Satoshis)
+		entry.VaultSats = int64(out.Satoshis) // #nosec G115 -- Satoshis fits in int64 by Bitcoin consensus (max 21M * 1e8 = 2.1e15 << 9.2e18 = MaxInt64); the tx-level bsv-sdk parser would reject any output exceeding consensus bounds before reaching this code.
 		entry.AdmittedAt = now
 
 		meta, err := json.Marshal(entry)
@@ -217,11 +217,11 @@ func (m *OrdLockBuyTopicManager) GetMetadata() map[string]interface{} {
 // Compile-time conformance check.
 var _ overlay.TopicManager = (*OrdLockBuyTopicManager)(nil)
 
-// parseOrdLockBuyScript walks the input script in lockstep with the artifact
+// ParseOrdLockBuyScript walks the input script in lockstep with the artifact
 // template. Returns a partially-populated OrdLockBuyEntry (Outpoint,
 // VaultSats, AdmittedAt are filled by Admit) when the script matches the
 // canonical OrdLockBuy layout. Returns nil for any other script.
-func parseOrdLockBuyScript(script []byte) *OrdLockBuyEntry {
+func ParseOrdLockBuyScript(script []byte) *OrdLockBuyEntry {
 	scriptHex := hex.EncodeToString(script)
 
 	// Cheap rejects first.

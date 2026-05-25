@@ -117,7 +117,7 @@ func (m *OrdLockTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admit
 		if out.Satoshis != 1 {
 			continue
 		}
-		entry := parseOrdLockScript(out.LockingScript.Bytes())
+		entry := ParseOrdLockScript(out.LockingScript.Bytes())
 		if entry == nil {
 			continue
 		}
@@ -165,10 +165,10 @@ func (m *OrdLockTopicManager) GetMetadata() map[string]interface{} {
 // Compile-time conformance check.
 var _ overlay.TopicManager = (*OrdLockTopicManager)(nil)
 
-// parseOrdLockScript returns a partially-populated OrdLockEntry (Outpoint and
+// ParseOrdLockScript returns a partially-populated OrdLockEntry (Outpoint and
 // AdmittedAt are filled by Admit) when the script matches the canonical
 // inscription-first OrdLock layout. Returns nil for any other script — fail-closed.
-func parseOrdLockScript(script []byte) *OrdLockEntry {
+func ParseOrdLockScript(script []byte) *OrdLockEntry {
 	// Cheapest reject first: must end with the covenant suffix.
 	if len(script) < len(envelopeStart)+len(olockPrefixBytes)+len(olockSuffixBytes)+22 /* min cancelPkh+payOutput pushes */ {
 		return nil

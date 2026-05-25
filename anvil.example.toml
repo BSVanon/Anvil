@@ -32,17 +32,39 @@ url = "https://arc.gorillapool.io"
 # taal_enabled = false
 # taal_url = "https://arc.taal.com"
 
-# JungleBus — GorillaPool (free, enabled by default for SHIP/SLAP discovery)
+# JungleBus — backwards-compatibility section only.
+#
+# Prior Anvil versions (<= v2.3.x) used JungleBus to subscribe to
+# on-chain SHIP/SLAP admin tokens for federation discovery. v3.0.0
+# retired that path in favor of canonical BRC-88 SHIP/SLAP via go-sdk's
+# LookupResolver and the [overlay] ship_trackers / slap_trackers list
+# below. The [junglebus] section is still accepted by the TOML parser
+# so existing operator configs don't break, but every field below is a
+# runtime no-op. Safe to delete this whole block when you next edit the
+# config.
 [junglebus]
-enabled = true
+enabled = false
 url = "junglebus.gorillapool.io"
-# subscriptions = [
-#   { id = "sub_abc123", name = "ship-tokens", from_block = 800000 },
-# ]
 
+# Overlay federation — canonical BRC-88 SHIP/SLAP.
+#
+# enable_gasp_sync = true (default) means this node will:
+#   * publish SHIP+SLAP advertisements on-chain for every hosted topic
+#     via the canonical Advertiser + admin-token PushDrop
+#   * discover federation peers via the configured SLAP trackers
+#   * run periodic GASP sync to pull peer state
+#
+# ship_trackers / slap_trackers default to go-sdk's DEFAULT_SLAP_TRACKERS
+# (Project Babbage's overlay-us-1.bsvb.tech, overlay-eu-1.bsvb.tech,
+# overlay-ap-1.bsvb.tech, users.bapp.dev) when left blank. Override here
+# to point at your own federation, a staging cluster, or a regional
+# subset.
 [overlay]
 enabled = true
 topics = ["anvil:mainnet"]
+enable_gasp_sync = true
+# ship_trackers = ["https://overlay-us-1.bsvb.tech"]
+# slap_trackers = ["https://overlay-us-1.bsvb.tech"]
 
 [envelopes]
 max_ephemeral_ttl = 3600

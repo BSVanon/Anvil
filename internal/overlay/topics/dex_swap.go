@@ -72,7 +72,7 @@ func (d *DEXSwapTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admit
 			continue
 		}
 
-		entry := parseDEXSwapMetadata(out.LockingScript.Bytes())
+		entry := ParseDEXSwapMetadata(out.LockingScript.Bytes())
 		if entry == nil {
 			continue
 		}
@@ -158,9 +158,9 @@ func (d *DEXSwapTopicManager) GetMetadata() map[string]interface{} {
 	}
 }
 
-// parseDEXSwapMetadata checks if a script is a DEX swap offer metadata output.
+// ParseDEXSwapMetadata checks if a script is a DEX swap offer metadata output.
 // Expected format: OP_FALSE OP_RETURN "dex.swap.offer" <version_byte> <json_terms>
-func parseDEXSwapMetadata(script []byte) *DEXSwapEntry {
+func ParseDEXSwapMetadata(script []byte) *DEXSwapEntry {
 	if len(script) < 6 {
 		return nil
 	}

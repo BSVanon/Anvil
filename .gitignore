@@ -19,6 +19,7 @@ DIAGNOSTIC_*.md
 
 # Local agent configs
 .codex/
+.codex-tmp/
 .mcp.json
 
 # OS

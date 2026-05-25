@@ -19,7 +19,7 @@ func TestParseOrdLockBuyScript_LiveVault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	entry := parseOrdLockBuyScript(script)
+	entry := ParseOrdLockBuyScript(script)
 	if entry == nil {
 		t.Fatal("parser returned nil for known-good live vault script")
 	}
@@ -51,7 +51,7 @@ func TestParseOrdLockBuyScript_LiveVault(t *testing.T) {
 }
 
 func TestParseOrdLockBuyScript_RejectsTooShort(t *testing.T) {
-	if entry := parseOrdLockBuyScript([]byte{0x76, 0x00, 0x9c}); entry != nil {
+	if entry := ParseOrdLockBuyScript([]byte{0x76, 0x00, 0x9c}); entry != nil {
 		t.Error("parser accepted 3-byte script")
 	}
 }
@@ -59,7 +59,7 @@ func TestParseOrdLockBuyScript_RejectsTooShort(t *testing.T) {
 func TestParseOrdLockBuyScript_RejectsBadPrefix(t *testing.T) {
 	script, _ := hex.DecodeString(liveVaultScriptHex)
 	script[0] = 0xff // corrupt first byte of prefix
-	if entry := parseOrdLockBuyScript(script); entry != nil {
+	if entry := ParseOrdLockBuyScript(script); entry != nil {
 		t.Error("parser accepted script with corrupted prefix")
 	}
 }
@@ -67,7 +67,7 @@ func TestParseOrdLockBuyScript_RejectsBadPrefix(t *testing.T) {
 func TestParseOrdLockBuyScript_RejectsBadSuffix(t *testing.T) {
 	script, _ := hex.DecodeString(liveVaultScriptHex)
 	script[len(script)-1] = 0xff // corrupt last byte of suffix
-	if entry := parseOrdLockBuyScript(script); entry != nil {
+	if entry := ParseOrdLockBuyScript(script); entry != nil {
 		t.Error("parser accepted script with corrupted suffix")
 	}
 }
@@ -77,7 +77,7 @@ func TestParseOrdLockBuyScript_RejectsBadP2PKHConstant(t *testing.T) {
 	// The first p2pkhVarintPrefix push begins at byte 46+10 = 56 (after the 8-byte priceSatsLE push).
 	// Push opcode 0x04 at byte 56; payload at byte 57 = first byte of "1976a914". Corrupt it.
 	script[57] = 0xff
-	if entry := parseOrdLockBuyScript(script); entry != nil {
+	if entry := ParseOrdLockBuyScript(script); entry != nil {
 		t.Error("parser accepted script with corrupted p2pkhVarintPrefix constant")
 	}
 }
@@ -89,7 +89,7 @@ func TestParseOrdLockBuyScript_RejectsPureSellListing(t *testing.T) {
 	// Trivial test: take any script that doesn't start with the OrdLockBuy
 	// prefix bytes and confirm we reject.
 	bogus := append([]byte{0x00, 0x63, 0x03, 0x6f, 0x72, 0x64, 0x51}, make([]byte, 800)...)
-	if entry := parseOrdLockBuyScript(bogus); entry != nil {
+	if entry := ParseOrdLockBuyScript(bogus); entry != nil {
 		t.Error("parser accepted a non-OrdLockBuy script")
 	}
 }
