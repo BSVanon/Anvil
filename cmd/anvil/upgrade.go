@@ -341,22 +341,25 @@ func cmdUpgrade(args []string) {
 
 	// Verify each service is running the new version — catches zombie processes,
 	// failed starts, and port conflicts that systemctl doesn't report.
+	//
+	// v3.0.3+ uses retry-with-backoff instead of a single-shot 2-second
+	// sleep. On busy nodes (large wallet DB, header init, ExecStartPre
+	// doctor check), the daemon can take 30s+ to bind its HTTP listener
+	// after `systemctl start`. Pre-v3.0.3 single-shot would frequently
+	// produce "Upgrade partial" false-positives — operators panic, the
+	// service was actually fine, just slow to boot. The retry polls
+	// every 3s for up to 45s, fails fast on wrong-version (vs. waiting
+	// for a daemon that already reported the wrong number).
 	step("Verifying upgrade")
-	time.Sleep(2 * time.Second)
 	allVerified := true
 	for _, svc := range services {
 		port := apiPort(strings.TrimPrefix(svc, "anvil-"))
-		runningVersion := fetchRunningVersion(port)
 		latestClean := strings.TrimPrefix(latest, "v")
-		if runningVersion == latestClean {
-			ok(fmt.Sprintf("%s on :%s running v%s", svc, port, runningVersion))
-		} else if runningVersion != "" {
-			fmt.Printf("  ✗ %s on :%s still running v%s (expected %s)\n", svc, port, runningVersion, latestClean)
-			fmt.Printf("    Try: sudo systemctl restart %s\n", svc)
+		if err := verifyServiceOnVersion(svc, port, latestClean, 45*time.Second, fetchRunningVersion); err != nil {
+			fmt.Printf("  ✗ %v\n", err)
 			allVerified = false
 		} else {
-			fmt.Printf("  ✗ %s on :%s not responding\n", svc, port)
-			allVerified = false
+			ok(fmt.Sprintf("%s on :%s running v%s", svc, port, latestClean))
 		}
 	}
 
@@ -756,6 +759,43 @@ func killZombieOnPort(port string) {
 		_ = exec.Command("kill", "-9", pid).Run()
 	}
 	time.Sleep(500 * time.Millisecond)
+}
+
+// verifyServiceOnVersion polls a service's /status endpoint until it
+// reports the expected version, or returns an error after timeout.
+//
+// Three outcomes per poll:
+//   - Reports expected: success, return nil immediately.
+//   - Reports a different version: daemon is responding on the wrong
+//     binary (stuck zombie, partial restart). Fail-fast with operator
+//     remediation hint.
+//   - Doesn't respond yet: still booting (HTTP listener not bound),
+//     keep polling until timeout.
+//
+// Anvil daemons can take 30s+ to bind their HTTP listener on busy
+// nodes (large wallet DB load, header init, ExecStartPre doctor
+// pass). The pre-v3.0.3 implementation slept 2s once and gave up,
+// producing false-positive "Upgrade partial" reports.
+//
+// get is a function so tests can substitute a deterministic stub.
+func verifyServiceOnVersion(svc, port, expected string, timeout time.Duration, get func(string) string) error {
+	deadline := time.Now().Add(timeout)
+	const pollInterval = 3 * time.Second
+	for {
+		running := get(port)
+		if running == expected {
+			return nil
+		}
+		if running != "" {
+			return fmt.Errorf("%s on :%s running v%s, expected v%s (try: sudo systemctl restart %s)",
+				svc, port, running, expected, svc)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s on :%s not responding after %v (check: sudo journalctl -u %s)",
+				svc, port, timeout, svc)
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // fetchRunningVersion queries a node's /status endpoint and returns the version string.

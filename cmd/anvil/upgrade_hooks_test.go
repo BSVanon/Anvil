@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // withSystemdDir overrides the unit-file scan location for the duration
@@ -284,6 +285,68 @@ func TestServiceRunAsUser_DefaultsToAnvil(t *testing.T) {
 	got := serviceRunAsUser(dir, []string{"anvil-ghost"})
 	if got != "anvil" {
 		t.Errorf("expected default anvil, got %q", got)
+	}
+}
+
+// TestVerifyServiceOnVersion_SucceedsImmediatelyOnMatch verifies the
+// fast-path: daemon already reports the expected version on first
+// poll, function returns nil without sleeping.
+func TestVerifyServiceOnVersion_SucceedsImmediatelyOnMatch(t *testing.T) {
+	calls := 0
+	get := func(port string) string {
+		calls++
+		return "3.0.3"
+	}
+	err := verifyServiceOnVersion("anvil-a", "9333", "3.0.3", 5*time.Second, get)
+	if err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 call, got %d", calls)
+	}
+}
+
+// TestVerifyServiceOnVersion_FailsFastOnWrongVersion verifies the
+// fail-fast contract: if the daemon responds but reports a stale
+// version (zombie process, partial restart), don't waste the full
+// timeout — return the operator remediation hint immediately.
+func TestVerifyServiceOnVersion_FailsFastOnWrongVersion(t *testing.T) {
+	calls := 0
+	get := func(port string) string {
+		calls++
+		return "2.3.2"
+	}
+	err := verifyServiceOnVersion("anvil-a", "9333", "3.0.3", 5*time.Second, get)
+	if err == nil {
+		t.Fatal("expected error on version mismatch")
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 call (fail-fast), got %d", calls)
+	}
+	if !strings.Contains(err.Error(), "v2.3.2") || !strings.Contains(err.Error(), "v3.0.3") {
+		t.Errorf("error should mention both versions, got: %v", err)
+	}
+}
+
+// TestVerifyServiceOnVersion_TimesOutWhenNeverResponds verifies the
+// timeout contract: if /status never responds, return an error after
+// the deadline with a journalctl hint. Uses a 100ms timeout so the
+// test stays fast.
+func TestVerifyServiceOnVersion_TimesOutWhenNeverResponds(t *testing.T) {
+	get := func(port string) string {
+		return "" // never responding
+	}
+	start := time.Now()
+	err := verifyServiceOnVersion("anvil-a", "9333", "3.0.3", 100*time.Millisecond, get)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "not responding") {
+		t.Errorf("error should mention 'not responding', got: %v", err)
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("returned too early: %v", elapsed)
 	}
 }
 
