@@ -227,9 +227,16 @@ func (a *Advertiser) RevokeAdvertisements(ads []*oa.Advertisement) (overlay.Tagg
 		if res == nil || len(res.Tx) == 0 {
 			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: revoke action %d returned no transaction", i)
 		}
-		tx, err := transaction.NewTransactionFromBytes(res.Tx)
+		// wallet returns res.Tx as a BEEF envelope (V1/V2/AtomicBEEF) —
+		// not raw tx bytes. Same v3.0.0 bug as encodeBEEF; fixed in v3.0.1
+		// by routing through ParseBeef which returns the constituent
+		// transaction directly.
+		_, tx, _, err := transaction.ParseBeef(res.Tx)
 		if err != nil {
 			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: parse revoke tx %d: %w", i, err)
+		}
+		if tx == nil {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: revoke action %d returned BEEF with no subject tx", i)
 		}
 		revokeTxs = append(revokeTxs, tx)
 		if ad.Protocol == overlay.ProtocolSHIP {
@@ -459,16 +466,28 @@ func txidFromBEEF(beefBytes []byte) (*chainhash.Hash, error) {
 	return txid, nil
 }
 
-// encodeBEEF wraps raw tx bytes in a BEEF v1 envelope, matching the
-// canonical pattern used by CreateAdvertisements + RevokeAdvertisements.
-func encodeBEEF(txBytes []byte) ([]byte, error) {
-	tx, err := transaction.NewTransactionFromBytes(txBytes)
+// encodeBEEF normalizes the wallet's CreateActionResult.Tx into a
+// standard BEEF wire format the engine.Submit pipeline can ingest.
+//
+// wallet-toolbox returns res.Tx in BEEF format (V1, V2, or AtomicBEEF
+// depending on the toolbox version and the surrounding CreateAction
+// args). canonical ParseBeef handles all three uniformly — same entry
+// point the gasp pipeline uses for inbound BEEFs — so by routing the
+// wallet's output through it we re-emit a single canonical V1 wire
+// format the engine accepts regardless of what shape the wallet
+// produced.
+//
+// v3.0.0 originally called NewTransactionFromBytes on res.Tx, which
+// works for raw tx bytes but mis-parses a BEEF header (read the BEEF
+// magic as a tx version + input count, then decoded a downstream
+// script-length varint as ~941 KB). v3.0.1 fixes this.
+func encodeBEEF(walletTx []byte) ([]byte, error) {
+	beef, _, _, err := transaction.ParseBeef(walletTx)
 	if err != nil {
-		return nil, fmt.Errorf("parse tx: %w", err)
+		return nil, fmt.Errorf("parse wallet BEEF: %w", err)
 	}
-	beef, err := transaction.NewBeefFromTransaction(tx)
-	if err != nil {
-		return nil, fmt.Errorf("build BEEF: %w", err)
+	if beef == nil {
+		return nil, errors.New("wallet returned empty BEEF")
 	}
 	return beef.Bytes()
 }
