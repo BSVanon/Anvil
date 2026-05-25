@@ -62,7 +62,7 @@ func (u *UHRPTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admitted
 			continue
 		}
 
-		entry := parseUHRPOutput(out.LockingScript.Bytes())
+		entry := ParseUHRPOutput(out.LockingScript.Bytes())
 		if entry != nil {
 			outputsToAdmit = append(outputsToAdmit, i)
 			// Serialize UHRP entry as metadata for storage
@@ -104,9 +104,9 @@ func (u *UHRPTopicManager) GetMetadata() map[string]interface{} {
 	}
 }
 
-// parseUHRPOutput checks if a script is a UHRP advertisement.
+// ParseUHRPOutput checks if a script is a UHRP advertisement.
 // Expected format: OP_FALSE OP_RETURN <"UHRP"> <sha256_hash> [<url>] [<content_type>]
-func parseUHRPOutput(script []byte) *UHRPEntry {
+func ParseUHRPOutput(script []byte) *UHRPEntry {
 	if len(script) < 6 {
 		return nil
 	}

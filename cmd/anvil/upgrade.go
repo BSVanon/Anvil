@@ -255,6 +255,61 @@ func cmdUpgrade(args []string) {
 		fmt.Printf("    added self-heal ExecStartPre hook to %d unit file(s)\n", added)
 	}
 
+	// One-time data migration for the v2 → v3 transition. v3.0.0 is the
+	// first release whose engine reads from `ovl3:` LevelDB keys instead
+	// of `ovl:`. The migration walks every legacy entry and writes the
+	// canonical v3 record + lookup indexes. Without this step, a v3
+	// binary boots cleanly but serves no overlay records until BEEF
+	// arrives. The subcommand is idempotent so re-runs are safe.
+	//
+	// We run it AFTER the binary is installed (so we exec the v3 binary)
+	// and AFTER services are stopped (so nothing is writing to the
+	// LevelDB), but BEFORE services restart (so the new engine never
+	// sees the legacy-only state). Each anvil-*.service has its own
+	// config file → its own data dir → its own migrate pass.
+	if needsV3Migrate(current, latestClean) {
+		step("Migrating overlay storage (v2 → v3)")
+		serviceConfigs := extractServiceConfigs("/etc/systemd/system", services)
+		if len(serviceConfigs) == 0 {
+			fmt.Println("    no per-service config paths found in systemd unit files")
+			fmt.Println("    Run manually:  sudo anvil overlay-migrate -config <path>")
+		} else {
+			var migrateFails []string
+			migrateUser := serviceRunAsUser("/etc/systemd/system", services)
+			for _, svc := range services {
+				cfgPath, ok := serviceConfigs[svc]
+				if !ok {
+					continue
+				}
+				fmt.Printf("    %s → %s (as user %s)\n", svc, cfgPath, migrateUser)
+				// Drop privileges to the service's User= so the new LevelDB
+				// files land with the same ownership as the existing data
+				// (production: anvil:anvil). Without this, root-owned SST
+				// files appear in /var/lib/anvil/overlay/*; harmless at
+				// runtime since the dir is anvil-owned, but bad hygiene.
+				cmd := exec.Command("sudo", "-u", migrateUser, destBin, "overlay-migrate", "-config", cfgPath)
+				out, runErr := cmd.CombinedOutput()
+				fmt.Print(string(out))
+				if runErr != nil {
+					migrateFails = append(migrateFails, svc)
+				}
+			}
+			if len(migrateFails) > 0 {
+				fmt.Printf("    overlay-migrate failed for: %s\n", strings.Join(migrateFails, ", "))
+				if backedUp {
+					if rbErr := os.Rename(backupBin, destBin); rbErr == nil {
+						for _, svc := range services {
+							_ = exec.Command("systemctl", "start", svc).Run()
+						}
+						fatal("overlay-migrate failed — rolled back to previous binary; investigate UnparseableLegacy/UnparseableKey output above")
+					}
+				}
+				fatal("overlay-migrate failed — could not roll back binary; manual intervention required")
+			}
+			ok(fmt.Sprintf("Overlay migrated for %d node(s)", len(serviceConfigs)))
+		}
+	}
+
 	// Restart services — roll back if all fail to start
 	if len(services) > 0 {
 		step("Restarting services")
@@ -529,6 +584,92 @@ func ensureExecStartPreHookIn(systemdDir string) int {
 		modified++
 	}
 	return modified
+}
+
+// needsV3Migrate returns true when the upgrade is crossing the v2 → v3
+// boundary (current major < 3 AND new major >= 3). v3.0.0 is the first
+// release where the canonical engine uses the `ovl3:` LevelDB key family;
+// without a one-pass `anvil overlay-migrate` against each node's data,
+// the v3 daemon boots clean but serves no admitted records until BEEF
+// arrives. Fresh installs (current="") have nothing to migrate from and
+// return false.
+func needsV3Migrate(currentVer, newVer string) bool {
+	if strings.TrimSpace(currentVer) == "" {
+		return false
+	}
+	cur := parseVersion(currentVer)
+	nxt := parseVersion(newVer)
+	if cur == [3]int{0, 0, 0} {
+		return false
+	}
+	return cur[0] < 3 && nxt[0] >= 3
+}
+
+// extractServiceConfigs returns the `-config <path>` argument from each
+// service's unit-file ExecStart= line. Used by the upgrade migration hook
+// so we run `overlay-migrate` against the exact config systemd uses for
+// each node — never glob /etc/anvil/*.toml, which can drift from reality
+// when operators have custom paths or non-default config names.
+//
+// systemdDir is the directory containing the unit files (production:
+// /etc/systemd/system). services is the list of service basenames
+// without the .service suffix.
+//
+// Units without an ExecStart= line, without /opt/anvil/anvil in the
+// ExecStart= command, or without a -config flag are silently skipped.
+func extractServiceConfigs(systemdDir string, services []string) map[string]string {
+	result := map[string]string{}
+	for _, svc := range services {
+		unitPath := filepath.Join(systemdDir, svc+".service")
+		raw, err := os.ReadFile(unitPath)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "ExecStart=") {
+				continue
+			}
+			cmd := strings.TrimPrefix(trimmed, "ExecStart=")
+			if !strings.Contains(cmd, "/opt/anvil/anvil") {
+				continue
+			}
+			fields := strings.Fields(cmd)
+			for i, f := range fields {
+				if f == "-config" && i+1 < len(fields) {
+					result[svc] = fields[i+1]
+					break
+				}
+			}
+			break
+		}
+	}
+	return result
+}
+
+// serviceRunAsUser inspects each service's unit file for User= and returns
+// the first non-root value found. Falls back to "anvil" — the canonical
+// runtime user that `anvil deploy` creates and that every production unit
+// uses. Used by the upgrade-time overlay-migrate hook to keep new LevelDB
+// files owned by the same user the daemon runs as.
+func serviceRunAsUser(systemdDir string, services []string) string {
+	for _, svc := range services {
+		raw, err := os.ReadFile(filepath.Join(systemdDir, svc+".service"))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "User=") {
+				continue
+			}
+			user := strings.TrimSpace(strings.TrimPrefix(trimmed, "User="))
+			if user != "" && user != "root" {
+				return user
+			}
+		}
+	}
+	return "anvil"
 }
 
 // copyFileE copies src to dst with given permissions, returning any error.

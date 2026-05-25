@@ -8,20 +8,31 @@ import (
 	"github.com/BSVanon/Anvil/pkg/brc"
 )
 
-// Discoverer queries the overlay directory for mesh peers and processes
-// incoming SHIP/SLAP token scripts from on-chain sources (JungleBus, etc.).
+// Discoverer queries the Anvil-Mesh peer directory and processes
+// inbound SHIP token scripts received via the /overlay/register HTTP
+// endpoint. Anvil-Mesh internal peer-coordination layer, NOT canonical
+// BRC-88 federation — canonical SHIP/SLAP discovery is handled
+// upstream by the v3 engine's LookupResolver via DEFAULT_SLAP_TRACKERS.
+//
+// As of v3.0.0 (W-10.5), the only caller of ProcessSHIPScript is
+// internal/api/handlers.go's handleOverlayRegister, which forwards
+// SHIP scripts other anvil-mesh nodes submit to us via the bespoke
+// /overlay/register API. Pre-v3, this was also invoked by a JungleBus
+// subscription loop; that path is retired.
 type Discoverer struct {
 	dir    *Directory
 	logger *slog.Logger
 }
 
-// NewDiscoverer creates a new overlay discoverer.
+// NewDiscoverer creates a new Anvil-Mesh peer discoverer.
 func NewDiscoverer(dir *Directory, logger *slog.Logger) *Discoverer {
 	return &Discoverer{dir: dir, logger: logger}
 }
 
-// ProcessSHIPScript parses and validates a SHIP token script found on-chain,
-// then adds it to the directory. Called by JungleBus subscriber or manual scan.
+// ProcessSHIPScript parses and validates a SHIP token script another
+// anvil-mesh node has submitted via /overlay/register, then adds it
+// to the local peer directory so anvil-a learns anvil-b exists (and
+// vice versa).
 func (d *Discoverer) ProcessSHIPScript(script []byte, txid string, outputIndex int) error {
 	token, err := brc.ValidateSHIPToken(script)
 	if err != nil {

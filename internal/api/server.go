@@ -266,12 +266,30 @@ func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
 	return cors(h)
 }
 
-// cors adds permissive CORS headers to open read endpoints.
+// cors adds permissive CORS headers to open read endpoints. The
+// Access-Control-Allow-Headers list MUST cover every custom header any
+// canonical or legacy overlay route receives, otherwise browser
+// preflight rejects the real request before it reaches the handler.
+// Per the canonical OpenAPI spec at
+// ts-stack/specs/overlay/overlay-http.yaml the canonical custom
+// headers are:
+//
+//   - x-topics (legacy + canonical /submit; "X-Topics" preserved for
+//     backward compat with existing apps)
+//   - x-includes-off-chain-values (canonical /submit, vector
+//     overlay.submit.8 prefixed-body opt-in)
+//   - x-aggregation (canonical /lookup, vector overlay.lookup.3
+//     binary-aggregated response opt-in)
+//
+// Codex review 2968609c62a2eb51 flagged the original list missing the
+// last two — apps migrating to canonical /submit + /lookup with those
+// opt-ins would have failed CORS preflight even though the routes
+// themselves were CORS-wrapped.
 func cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics, x-includes-off-chain-values, x-aggregation, X-BSV-Topic")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

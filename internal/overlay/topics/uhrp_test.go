@@ -16,9 +16,9 @@ func TestBuildAndParseUHRPScript(t *testing.T) {
 	}
 
 	// Parse it back
-	entry := parseUHRPOutput(script)
+	entry := ParseUHRPOutput(script)
 	if entry == nil {
-		t.Fatal("parseUHRPOutput returned nil")
+		t.Fatal("ParseUHRPOutput returned nil")
 	}
 	if entry.ContentHash != contentHash {
 		t.Fatalf("hash mismatch: got %s, want %s", entry.ContentHash, contentHash)
@@ -38,9 +38,9 @@ func TestBuildUHRPScriptMinimal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entry := parseUHRPOutput(script)
+	entry := ParseUHRPOutput(script)
 	if entry == nil {
-		t.Fatal("parseUHRPOutput returned nil for minimal script")
+		t.Fatal("ParseUHRPOutput returned nil for minimal script")
 	}
 	if entry.ContentHash != contentHash {
 		t.Fatalf("hash mismatch: %s vs %s", entry.ContentHash, contentHash)
@@ -57,7 +57,7 @@ func TestParseUHRPOutputRejectsNonUHRP(t *testing.T) {
 	script = append(script, 0x20) // 32 bytes
 	script = append(script, make([]byte, 32)...)
 
-	entry := parseUHRPOutput(script)
+	entry := ParseUHRPOutput(script)
 	if entry != nil {
 		t.Fatal("should reject non-UHRP protocol")
 	}
@@ -70,7 +70,7 @@ func TestParseUHRPOutputRejectsShortHash(t *testing.T) {
 	script = append(script, 0x10) // 16 bytes
 	script = append(script, make([]byte, 16)...)
 
-	entry := parseUHRPOutput(script)
+	entry := ParseUHRPOutput(script)
 	if entry != nil {
 		t.Fatal("should reject short hash")
 	}
@@ -104,9 +104,9 @@ func TestBuildUHRPScriptLongURL(t *testing.T) {
 		t.Fatalf("BuildUHRPScript with long URL: %v", err)
 	}
 
-	entry := parseUHRPOutput(script)
+	entry := ParseUHRPOutput(script)
 	if entry == nil {
-		t.Fatal("parseUHRPOutput returned nil for long-URL script")
+		t.Fatal("ParseUHRPOutput returned nil for long-URL script")
 	}
 	if entry.ContentHash != contentHash {
 		t.Fatalf("hash mismatch: got %s, want %s", entry.ContentHash, contentHash)
@@ -130,9 +130,9 @@ func TestBuildUHRPScriptVeryLongURL(t *testing.T) {
 		t.Fatalf("BuildUHRPScript with very long URL: %v", err)
 	}
 
-	entry := parseUHRPOutput(script)
+	entry := ParseUHRPOutput(script)
 	if entry == nil {
-		t.Fatal("parseUHRPOutput returned nil for very-long-URL script")
+		t.Fatal("ParseUHRPOutput returned nil for very-long-URL script")
 	}
 	if entry.ContentHash != contentHash {
 		t.Fatalf("hash mismatch: got %s, want %s", entry.ContentHash, contentHash)
@@ -161,9 +161,9 @@ func TestBuildUHRPScriptLongContentType(t *testing.T) {
 		t.Fatalf("BuildUHRPScript with long content type: %v", err)
 	}
 
-	entry := parseUHRPOutput(script)
+	entry := ParseUHRPOutput(script)
 	if entry == nil {
-		t.Fatal("parseUHRPOutput returned nil for long content-type script")
+		t.Fatal("ParseUHRPOutput returned nil for long content-type script")
 	}
 	if entry.ContentType != longCT {
 		t.Fatalf("content type mismatch: got len=%d, want len=%d", len(entry.ContentType), len(longCT))

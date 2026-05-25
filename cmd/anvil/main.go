@@ -29,12 +29,21 @@ import (
 	mempoolpkg "github.com/BSVanon/Anvil/internal/mempool"
 	anvilmsg "github.com/BSVanon/Anvil/internal/messaging"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
-	"github.com/BSVanon/Anvil/internal/overlay/topics"
+	"github.com/BSVanon/Anvil/internal/overlay/federation"
+	"github.com/BSVanon/Anvil/internal/overlay/legacyshim"
+	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
+	"github.com/BSVanon/Anvil/internal/overlay/v3engine"
 	"github.com/BSVanon/Anvil/internal/p2p"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	anvilversion "github.com/BSVanon/Anvil/internal/version"
 	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
+	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
+	goSdkOverlay "github.com/bsv-blockchain/go-sdk/overlay"
+
+	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/util"
+	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
@@ -59,6 +68,9 @@ func main() {
 			return
 		case "upgrade":
 			cmdUpgrade(os.Args[2:])
+			return
+		case "overlay-migrate":
+			cmdOverlayMigrate(os.Args[2:])
 			return
 		case "version", "--version", "-v":
 			// Minimal output so diagnostics.BinaryVersion() can parse the
@@ -87,8 +99,8 @@ func main() {
 	log.Printf("  api:        %s", cfg.Node.APIListen)
 	log.Printf("  bsv nodes:  %v", cfg.BSV.Nodes)
 	log.Printf("  arc:        enabled=%v", cfg.ARC.Enabled)
-	log.Printf("  junglebus:  enabled=%v", cfg.JungleBus.Enabled)
-	log.Printf("  overlay:    enabled=%v topics=%v", cfg.Overlay.Enabled, cfg.Overlay.Topics)
+	log.Printf("  overlay:    enabled=%v topics=%v gasp_sync=%v",
+		cfg.Overlay.Enabled, cfg.Overlay.Topics, cfg.Overlay.EnableGASPSync)
 	if cfg.API.AuthToken != "" {
 		log.Printf("  auth:       configured (run 'anvil token' to display)")
 	}
@@ -200,8 +212,26 @@ func main() {
 	mpool := setupMempool(cfg, logger)
 	defer mpool.Close()
 
+	// Anvil's overlay subsystem. The legacy in-process engine (legacy
+	// internal/overlay.Engine) was removed in W-7 (2026-05-16); the
+	// canonical v3 engine + legacy compat shim wired below replace it.
+	// overlayDir survives because it owns the LevelDB shared with the
+	// v3 engine + federation storage AND the Anvil-Mesh internal peer
+	// directory (Bootstrap, ForEachSHIP, AddSHIPPeerFromGossip, etc.) —
+	// these are NOT BRC-88 federation, they are Anvil's internal mesh
+	// peer discovery for anvil-a/anvil-b coordination, per the Codex
+	// 14a2d703 scope carve-out (reference_anvil_teranode_boundary.md).
+	// W-10.5 retired the BRC-88-equivalent paths (on-chain SHIP publish,
+	// JungleBus SHIP/SLAP discovery) because those duplicate what
+	// canonical federation now does; Anvil-Mesh internal discovery
+	// stays.
 	var overlayDir *anviloverlay.Directory
-	var overlayEngine *anviloverlay.Engine
+	var v3Eng *engine.Engine
+	var v3Handlers *v3engine.Handlers
+	var legacyShim *legacyshim.Shim
+	var shipStore *federation.SHIPStorage
+	var slapStore *federation.SLAPStorage
+	var anvilStore *anvilstorage.Storage
 	if cfg.Overlay.Enabled {
 		ovDir := filepath.Join(cfg.Node.DataDir, "overlay")
 		var err error
@@ -212,34 +242,59 @@ func main() {
 		defer overlayDir.Close()
 		log.Printf("overlay directory opened (topics=%v)", cfg.Overlay.Topics)
 
-		overlayEngine = anviloverlay.NewEngine(overlayDir.DB(), logger)
+		// W-8.3: legacy-key boot warning. v2.x.x stored admitted outputs
+		// under the `ovl:` LevelDB key family; the v3 canonical engine
+		// uses `ovl3:` instead. Detect operators who have upgraded the
+		// binary but haven't run the one-time `anvil overlay-migrate`
+		// step, and emit a loud warning rather than letting their
+		// existing data sit invisible to the v3 engine. Warn-don't-abort
+		// because: (a) fresh installs have neither family populated and
+		// must boot cleanly; (b) operators may explicitly want to start
+		// fresh and ignore legacy data. The warning gives them a clear
+		// next step instead of silent breakage.
+		warnLegacyOverlayKeys(overlayDir.DB(), logger)
 
-		overlayEngine.RegisterTopic(topics.UHRPTopicName, topics.NewUHRPTopicManager())
-		overlayEngine.RegisterLookup(topics.UHRPLookupServiceName,
-			topics.NewUHRPLookupService(overlayEngine),
-			[]string{topics.UHRPTopicName})
-
-		// DEX swap offer topic manager + lookup service
-		overlayEngine.RegisterTopic(topics.DEXSwapTopicName, topics.NewDEXSwapTopicManager())
-		overlayEngine.RegisterLookup(topics.DEXSwapLookupServiceName,
-			topics.NewDEXSwapLookupService(overlayEngine),
-			[]string{topics.DEXSwapTopicName})
-
-		// OrdLock listing topic manager + lookup service.
-		// See docs/internal/ORDLOCK_TOPIC_REQUEST.md for protocol details.
-		overlayEngine.RegisterTopic(topics.OrdLockTopicName, topics.NewOrdLockTopicManager())
-		overlayEngine.RegisterLookup(topics.OrdLockLookupServiceName,
-			topics.NewOrdLockLookupService(overlayEngine),
-			[]string{topics.OrdLockTopicName})
-
-		// OrdLockBuy free-agent buy-vault topic manager + lookup service.
-		// Companion to the SELL listings topic — admits BSV-locked buy
-		// vaults (Rúnar-compiled OrdLockBuy covenant) so sellers can
-		// discover open buy orders without paste-paste outpoint sharing.
-		overlayEngine.RegisterTopic(topics.OrdLockBuyTopicName, topics.NewOrdLockBuyTopicManager())
-		overlayEngine.RegisterLookup(topics.OrdLockBuyLookupServiceName,
-			topics.NewOrdLockBuyLookupService(overlayEngine),
-			[]string{topics.OrdLockBuyTopicName})
+		// W-5 phase B-c: wire the v3 canonical engine + legacy compat
+		// shim against the same LevelDB. headerStore is reused as the
+		// chaintracker.ChainTracker (headers.Store satisfies the
+		// interface directly).
+		//
+		// W-10.3: federation surface (Advertiser, LookupResolver, GASP
+		// SyncConfiguration, SHIP/SLAP trackers, Broadcaster) is wired
+		// AFTER nodeWallet construction below — it needs the wallet
+		// for admin-token PushDrop signing. The engine boots without
+		// the federation fields populated and is upgraded in place
+		// once nodeWallet is ready. Until then, outbound advertising
+		// is dormant but inbound GASP routes are served normally.
+		anvilStore = anvilstorage.New(overlayDir.DB())
+		shipStore = federation.NewSHIPStorage(overlayDir.DB())
+		slapStore = federation.NewSLAPStorage(overlayDir.DB())
+		v3Eng, err = v3engine.New(&v3engine.Config{
+			Storage:      anvilStore,
+			HeadersStore: headerStore,
+			LookupDB:     overlayDir.DB(),
+			HostingURL:   cfg.Node.PublicURL,
+			SHIPStorage:  shipStore,
+			SLAPStorage:  slapStore,
+			// Wrap Anvil's broadcaster in the canonical SDK adapter so
+			// the v3 engine's Submit pipeline propagates SHIP/SLAP
+			// advertisement transactions through to ARC. Without this,
+			// the engine admits ads locally but they never reach the
+			// chain; canonical federation peers would never see our
+			// advertisements via SLAP discovery.
+			Broadcaster: txrelay.NewSDKBroadcaster(broadcaster),
+		})
+		if err != nil {
+			log.Fatalf("v3 canonical engine: %v", err)
+		}
+		v3Handlers = v3engine.NewHandlers(v3Eng)
+		legacyShim = &legacyshim.Shim{
+			Engine:        v3Eng,
+			Parsers:       legacyshim.DefaultParsers(),
+			ServiceTopics: legacyshim.DefaultServiceTopics(),
+		}
+		log.Printf("v3 canonical engine wired (%d topics, %d lookup services)",
+			len(v3Eng.ListTopicManagers()), len(v3Eng.ListLookupServiceProviders()))
 
 		if cfg.Identity.WIF != "" { // local SHIP bootstrap
 			identityKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
@@ -271,28 +326,16 @@ func main() {
 			}
 		}()
 
-		if cfg.JungleBus.Enabled { // live SHIP/SLAP discovery via JungleBus
-			discoverer := anviloverlay.NewDiscoverer(overlayDir, logger)
-			for _, sub := range cfg.JungleBus.Subscriptions {
-				jbSub, err := anviloverlay.NewJungleBusSubscriber(
-					cfg.JungleBus.URL,
-					sub.ID,
-					uint64(sub.FromBlock),
-					discoverer,
-					logger,
-				)
-				if err != nil {
-					log.Printf("junglebus subscription %q failed: %v", sub.Name, err)
-					continue
-				}
-				go func(name string) {
-					if err := jbSub.Start(context.Background()); err != nil {
-						logger.Error("junglebus subscription stopped", "name", name, "error", err)
-					}
-				}(sub.Name)
-				log.Printf("junglebus: subscribed %q from block %d", sub.Name, sub.FromBlock)
-			}
-		}
+		// W-10.5: JungleBus subscription block retired. The bespoke
+		// path used JungleBus to discover other anvil-mesh nodes' SHIP
+		// admin tokens on-chain; canonical BRC-88 SLAP discovery via
+		// go-sdk's LookupResolver (with DEFAULT_SLAP_TRACKERS or
+		// operator-configured SHIP/SLAP trackers) now does the same
+		// thing using the canonical primitive. cfg.JungleBus is still
+		// loaded for backwards compat but no longer wired to SHIP/SLAP
+		// — operators with a JungleBus.Enabled=true config see no
+		// side effect from the leftover setting; a future config
+		// audit can decide whether to deprecate the section entirely.
 	}
 
 	var identityPubHex string
@@ -326,26 +369,53 @@ func main() {
 			// nonce minting / x402 silently fails.
 			go nodeWallet.RunAutoScan(context.Background(), 30*time.Minute)
 
-			// Publish SHIP token on-chain (once, background)
-			if identityPrivKey != nil && cfg.Node.PublicURL != "" && overlayDir != nil {
-				go func() {
-					for _, topic := range cfg.Overlay.Topics {
-						txid, err := anviloverlay.PublishSHIPOnChain(
-							context.Background(),
-							nodeWallet.Wallet(),
-							identityPrivKey,
-							cfg.Node.PublicURL,
-							topic,
-							logger,
-						)
-						if err != nil {
-							logger.Warn("SHIP on-chain publish failed (non-fatal)", "topic", topic, "error", err)
-						} else {
-							logger.Info("SHIP on-chain published", "topic", topic, "txid", txid)
-						}
-					}
-				}()
+			// W-10.3: canonical BRC-88 federation. Now that the wallet
+			// exists, upgrade the v3 engine in place with the canonical
+			// Advertiser + LookupResolver + GASP SyncConfiguration.
+			// Federation participation is opt-out via
+			// cfg.Overlay.EnableGASPSync = false.
+			if v3Eng != nil && cfg.Overlay.EnableGASPSync && cfg.Node.PublicURL != "" {
+				slapTrackers := cfg.Overlay.SLAPTrackers
+				if len(slapTrackers) == 0 {
+					// Fall back to go-sdk's canonical defaults
+					// (overlay-us-1.bsvb.tech, overlay-eu-1.bsvb.tech,
+					// overlay-ap-1.bsvb.tech, users.bapp.dev). Operators
+					// can override via anvil.toml [overlay] slap_trackers.
+					slapTrackers = append(slapTrackers, lookup.DEFAULT_SLAP_TRACKERS...)
+				}
+				shipTrackers := cfg.Overlay.SHIPTrackers
+				if len(shipTrackers) == 0 {
+					shipTrackers = append(shipTrackers, lookup.DEFAULT_SLAP_TRACKERS...)
+				}
+				adv := federation.NewAdvertiser(nodeWallet.Wallet(), cfg.Node.PublicURL, shipStore, slapStore, anvilStore)
+				resolver := engine.NewLookupResolverWithNetwork(overlayNetworkFromBSV(cfg))
+				resolver.SetSLAPTrackers(slapTrackers)
+				v3Eng.Advertiser = adv
+				v3Eng.LookupResolver = resolver
+				v3Eng.SHIPTrackers = shipTrackers
+				v3Eng.SLAPTrackers = slapTrackers
+				v3Eng.SyncConfiguration = buildSyncConfiguration(v3Eng)
+				log.Printf("v3 federation wired: %d topics syncable via canonical SHIP/SLAP (trackers=%d)",
+					len(v3Eng.SyncConfiguration), len(slapTrackers))
+
+				// Periodic federation work. SyncAdvertisements
+				// reconciles our on-chain ad set with the topics we
+				// currently host; StartGASPSync pulls peer state for
+				// each subscribed topic. Both gated on
+				// EnableGASPSync, both safe to run periodically.
+				go runSyncAdvertisements(context.Background(), v3Eng, logger)
+				go runGASPSync(context.Background(), v3Eng, logger)
+			} else if v3Eng != nil && !cfg.Overlay.EnableGASPSync {
+				log.Printf("v3 federation disabled (cfg.Overlay.EnableGASPSync = false); GASP routes still serve inbound requests")
 			}
+
+			// W-10.5: Bespoke on-chain SHIP publish retired. The
+			// canonical federation Advertiser wired above publishes
+			// SHIP+SLAP advertisements for every active topic via
+			// admin-token PushDrop on the next SyncAdvertisements pass.
+			// Identical effect (an on-chain admin token announcing the
+			// node's hosted topics + lookup services) using the
+			// canonical primitive instead of the bespoke path.
 		}
 	}
 
@@ -713,10 +783,23 @@ func main() {
 		}()
 	}
 
-	if overlayEngine != nil {
-		overlayEngine.RegisterHTTPHandlers(srv.Mux(), srv.CorsWrap)
-		log.Printf("overlay engine: %d topics, %d lookup services",
-			len(overlayEngine.ListTopics()), len(overlayEngine.ListLookupServices()))
+	// W-5/W-7: canonical v3 engine + legacy /overlay/* compat shim
+	// own all overlay-protocol HTTP routes. Mesh routes
+	// (/overlay/lookup, /overlay/register, /overlay/deregister) stay
+	// registered by internal/api/server.go and are unaffected — per
+	// Codex review 14a2d703 scope carve-out.
+	//
+	// CorsWrap is REQUIRED for both registrations so browser callers
+	// (Foundry, Anvil-Swap UI, future TS SDK consumers) get the
+	// canonical Access-Control-* headers — including the canonical
+	// x-includes-off-chain-values + x-aggregation custom headers
+	// (Codex reviews d671fa17fe5cc746, fe9707876f5618ca,
+	// 2968609c62a2eb51 walked through this surface).
+	if v3Handlers != nil {
+		v3Handlers.Register(srv.Mux(), srv.CorsWrap)
+	}
+	if legacyShim != nil {
+		legacyShim.Register(srv.Mux(), srv.CorsWrap)
 	}
 
 	// Subsystem health checks — surfaced in /status warnings
@@ -784,4 +867,165 @@ func main() {
 	s := <-sig
 	_, _ = fmt.Println()
 	log.Printf("received %v, shutting down", s)
+}
+
+// overlayNetworkFromBSV returns the canonical overlay network identifier
+// used by go-sdk's LookupResolver. Anvil runs on mainnet by default.
+// (No testnet config field exists today; we'll add an override when
+// testnet operators surface, but the BRC-100 ecosystem is mainnet-only
+// in production so this hardcoded default is the right starting point.)
+func overlayNetworkFromBSV(_ *config.Config) goSdkOverlay.Network {
+	return goSdkOverlay.NetworkMainnet
+}
+
+// buildSyncConfiguration constructs the per-topic GASP policy map
+// passed to the v3 engine. Every topic the engine currently hosts gets
+// SyncConfigurationSHIP so the engine discovers peers via SLAP at sync
+// time. tm_ship / tm_slap themselves use SyncConfigurationPeers seeded
+// with the bootstrap SHIPTrackers / SLAPTrackers — the engine merges
+// those into the peer set at NewEngine time but we set them again here
+// so the post-construction upgrade path lands the same shape.
+//
+// ListTopicManagers returns map[topicName]*MetaData; we iterate over
+// the keys to enumerate registered topic names.
+func buildSyncConfiguration(eng *engine.Engine) map[string]engine.SyncConfiguration {
+	out := map[string]engine.SyncConfiguration{}
+	for name := range eng.ListTopicManagers() {
+		switch name {
+		case "tm_ship":
+			out[name] = engine.SyncConfiguration{Type: engine.SyncConfigurationPeers, Peers: eng.SHIPTrackers}
+		case "tm_slap":
+			out[name] = engine.SyncConfiguration{Type: engine.SyncConfigurationPeers, Peers: eng.SLAPTrackers}
+		default:
+			out[name] = engine.SyncConfiguration{Type: engine.SyncConfigurationSHIP}
+		}
+	}
+	return out
+}
+
+// runSyncAdvertisements ticks engine.SyncAdvertisements every 30
+// minutes. The canonical reconciliation loop creates missing SHIP/SLAP
+// outputs for topics we host and revokes ones we no longer host. Runs
+// once on boot then on a long cadence — advertisement state changes
+// infrequently (operator topic config edits), so a tight loop would
+// just churn the wallet.
+func runSyncAdvertisements(ctx context.Context, eng *engine.Engine, logger *slog.Logger) {
+	if err := eng.SyncAdvertisements(ctx); err != nil {
+		logger.Error("initial SyncAdvertisements failed", "error", err)
+	}
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := eng.SyncAdvertisements(ctx); err != nil {
+				logger.Error("SyncAdvertisements failed", "error", err)
+			}
+		}
+	}
+}
+
+// runGASPSync ticks engine.StartGASPSync every 5 minutes. The
+// canonical sync pulls peer state for each subscribed topic; new admits
+// propagate into our local index. 5 min is the upstream default from
+// overlay-express; tighter cadence increases network load without much
+// freshness benefit because admissions are not high-rate.
+func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger) {
+	if err := eng.StartGASPSync(ctx); err != nil {
+		logger.Error("initial StartGASPSync failed", "error", err)
+	}
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := eng.StartGASPSync(ctx); err != nil {
+				logger.Error("StartGASPSync failed", "error", err)
+			}
+		}
+	}
+}
+
+// warnLegacyOverlayKeys probes the overlay LevelDB for entries under
+// the v2.x.x `ovl:` key family. If any legacy keys exist but no
+// corresponding `ovl3:` records exist, the operator has upgraded the
+// Anvil binary without running `anvil overlay-migrate`. Emit a loud
+// stderr warning with the exact command the operator needs to run.
+//
+// The function is warn-don't-abort: fresh installs have neither
+// family populated and must boot cleanly; operators may legitimately
+// choose to ignore legacy data and start fresh; and a transient DB
+// scan error must not stop the daemon.
+//
+// Count-based comparison instead of existence-based, per Codex review
+// 925149d6281f6b4b: "any ovl3: key exists" is too permissive — a
+// partially-completed migration (interrupted mid-run, or one that
+// exited with UnparseableLegacy > 0) would silently clear the warning
+// even though many ovl: records still have no ovl3: counterpart. We
+// instead count both families and only suppress the banner when the
+// v3 record count is >= the legacy count, which is the actual
+// "migration complete" condition (legacy keys are never removed, so a
+// successful migrate leaves both counts equal; a partial migrate
+// leaves v3 < legacy).
+func warnLegacyOverlayKeys(db *leveldb.DB, logger *slog.Logger) {
+	legacyCount := countKeysWithPrefix(db, "ovl:")
+	if legacyCount == 0 {
+		return
+	}
+	v3Count := countKeysWithPrefix(db, "ovl3:")
+	if v3Count >= legacyCount {
+		// All legacy records have a v3 counterpart (or more — v3 can
+		// also include records admitted natively post-migration). The
+		// migration is functionally complete; no banner needed.
+		return
+	}
+	// Partial or missing migration: v3Count < legacyCount, including
+	// the v3Count == 0 fresh-upgrade case.
+
+	const banner = `
+================================================================================
+  ANVIL v3 LEGACY DATA DETECTED — MIGRATION REQUIRED
+
+  This LevelDB contains v2.x.x overlay records (ovl: prefix) but no v3
+  canonical records (ovl3: prefix). The v3 engine cannot see legacy
+  data until you run the one-time backfill migration.
+
+  STOP THE DAEMON, then run:
+
+      anvil overlay-migrate
+
+  Once migrated, restart anvil. This warning will not appear again.
+
+  Read more: docs/operator/overlay-migration.md
+================================================================================
+`
+	if logger != nil {
+		logger.Warn("legacy overlay data needs migration — run 'anvil overlay-migrate'")
+	}
+	// Use the bare print so operators see the banner even when slog
+	// output is JSON-formatted.
+	fmt.Fprint(os.Stderr, banner)
+}
+
+// countKeysWithPrefix returns the number of LevelDB keys starting with
+// the given prefix. Used by the legacy-key boot scan to detect partial
+// migrations (legacy count > v3 count means some records still need
+// the migrate step). Returns 0 on nil db. Cheap enough at boot since
+// admission counts are typically O(low thousands) per overlay node;
+// the scan is single-pass with no decode.
+func countKeysWithPrefix(db *leveldb.DB, prefix string) int {
+	if db == nil {
+		return 0
+	}
+	iter := db.NewIterator(util.BytesPrefix([]byte(prefix)), nil)
+	defer iter.Release()
+	count := 0
+	for iter.Next() {
+		count++
+	}
+	return count
 }

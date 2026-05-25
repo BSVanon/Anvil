@@ -97,6 +97,26 @@ type JungleBusConfig struct {
 type OverlayConfig struct {
 	Enabled bool     `toml:"enabled"`
 	Topics  []string `toml:"topics"`
+
+	// EnableGASPSync controls participation in canonical BRC-88
+	// SHIP/SLAP federation. When true (default), the v3 engine
+	// advertises this node's hosted topics on-chain via the canonical
+	// Advertiser, discovers federation peers via SHIP/SLAP trackers,
+	// and runs periodic GASP sync against discovered peers. Operators
+	// who want pure single-node operation set this to false. Disabling
+	// only suppresses *outbound* federation; inbound GASP routes
+	// (/requestSyncResponse, /requestForeignGASPNode) remain served
+	// because they expose state we already index locally.
+	EnableGASPSync bool `toml:"enable_gasp_sync"`
+
+	// SHIPTrackers / SLAPTrackers are bootstrap URLs for canonical
+	// BRC-88 service discovery. Empty values fall back to go-sdk's
+	// DEFAULT_SLAP_TRACKERS (overlay/lookup.DEFAULT_SLAP_TRACKERS),
+	// which lists Project Babbage's public infrastructure. Operators
+	// can override to point at their own federation, an internal
+	// staging tracker, or a regional preference.
+	SHIPTrackers []string `toml:"ship_trackers"`
+	SLAPTrackers []string `toml:"slap_trackers"`
 }
 
 // MempoolConfig controls P2P mempool transaction monitoring.
@@ -167,13 +187,27 @@ func Load(path string) (*Config, error) {
 			URL:     "https://arc.gorillapool.io",
 			TAALURL: "https://arc.taal.com",
 		},
+		// JungleBus is backwards-compatibility-only as of v3.0.0
+		// (W-10.5). The bespoke SHIP/SLAP discovery + on-chain publish
+		// paths it powered have been retired in favor of canonical
+		// BRC-88 SHIP/SLAP via go-sdk's LookupResolver — see
+		// docs/internal/W10_FEDERATION_PLAN.md. The TOML parser still
+		// accepts this section so legacy anvil.toml files don't break,
+		// but every field below is a runtime no-op. Default is
+		// disabled to avoid suggesting the old path is still active.
 		JungleBus: JungleBusConfig{
-			Enabled: true,
+			Enabled: false,
 			URL:     "junglebus.gorillapool.io",
 		},
 		Overlay: OverlayConfig{
-			Enabled: true,
-			Topics:  []string{"anvil:mainnet"},
+			Enabled:        true,
+			Topics:         []string{"anvil:mainnet"},
+			EnableGASPSync: true,
+			// SHIPTrackers + SLAPTrackers left blank by default; W-10.3
+			// wiring in cmd/anvil/main.go falls back to go-sdk's
+			// overlay/lookup.DEFAULT_SLAP_TRACKERS (Project Babbage's
+			// public BSVA US/EU/AP + users.bapp.dev hosts) when the
+			// operator hasn't supplied explicit URLs.
 		},
 		Mempool: MempoolConfig{
 			Enabled:    false,

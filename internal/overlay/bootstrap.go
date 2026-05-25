@@ -9,10 +9,21 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
-// Bootstrap registers the node's own SHIP tokens in the local directory
-// for each configured topic. This is a local dev/operator convenience —
-// not canonical overlay discovery. Real discovery comes from JungleBus
-// or overlay lookup.
+// Bootstrap registers the node's own SHIP tokens in the local
+// Anvil-Mesh peer directory for each configured topic. This populates
+// the local directory entries that the /overlay/lookup HTTP API and
+// gossip-mesh handlers query so other anvil-mesh nodes (anvil-a ↔
+// anvil-b) can discover us via the bespoke peer-coordination layer.
+//
+// Anvil-Mesh internal discovery vs canonical BRC-88: these are TWO
+// different systems. Bootstrap belongs to Anvil-Mesh — the bespoke
+// internal coordination layer Anvil uses to find its own mesh peers,
+// share topic state via gossip, and slash misbehaving identities.
+// Canonical BRC-88 federation (the federation.Advertiser path) is for
+// the wider BSV ecosystem — BRC-100 wallets and external overlay
+// nodes finding Anvil via SHIP/SLAP trackers. Per the Codex 14a2d703
+// scope carve-out (reference_anvil_teranode_boundary.md), the
+// Anvil-Mesh layer stays forever.
 func Bootstrap(
 	dir *Directory,
 	identityKey *ec.PrivateKey,

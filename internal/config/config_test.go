@@ -226,12 +226,20 @@ func TestEnvVarOverrides(t *testing.T) {
 	if cfg.ARC.TAALAPIKey != "taal-key-123" {
 		t.Fatalf("expected TAAL key from env, got %s", cfg.ARC.TAALAPIKey)
 	}
-	// JungleBus should be enabled by default
-	if !cfg.JungleBus.Enabled {
-		t.Fatal("JungleBus should be enabled by default")
+	// JungleBus is backwards-compat-only as of v3.0.0 (W-10.5). The
+	// section is still accepted by the parser but the default is
+	// disabled — canonical BRC-88 SHIP/SLAP via go-sdk's LookupResolver
+	// is the federation discovery path now.
+	if cfg.JungleBus.Enabled {
+		t.Fatal("JungleBus should default to disabled post-W-10.5 (canonical BRC-88 federation is the discovery path)")
 	}
 	if cfg.JungleBus.URL != "junglebus.gorillapool.io" {
-		t.Fatalf("expected default JungleBus URL, got %s", cfg.JungleBus.URL)
+		t.Fatalf("expected default JungleBus URL preserved for legacy operator configs, got %s", cfg.JungleBus.URL)
+	}
+
+	// Canonical BRC-88 federation should be enabled by default.
+	if !cfg.Overlay.EnableGASPSync {
+		t.Fatal("cfg.Overlay.EnableGASPSync should default to true (canonical federation is the v3.0.0 default)")
 	}
 }
 
