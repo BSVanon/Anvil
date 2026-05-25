@@ -242,17 +242,26 @@ func main() {
 		defer overlayDir.Close()
 		log.Printf("overlay directory opened (topics=%v)", cfg.Overlay.Topics)
 
-		// W-8.3: legacy-key boot warning. v2.x.x stored admitted outputs
-		// under the `ovl:` LevelDB key family; the v3 canonical engine
-		// uses `ovl3:` instead. Detect operators who have upgraded the
-		// binary but haven't run the one-time `anvil overlay-migrate`
-		// step, and emit a loud warning rather than letting their
-		// existing data sit invisible to the v3 engine. Warn-don't-abort
-		// because: (a) fresh installs have neither family populated and
-		// must boot cleanly; (b) operators may explicitly want to start
-		// fresh and ignore legacy data. The warning gives them a clear
-		// next step instead of silent breakage.
-		warnLegacyOverlayKeys(overlayDir.DB(), logger)
+		// v3.0.2: auto-migrate legacy v2 overlay data in-process on
+		// first boot from a v2.x.x install. v2.x.x stored admitted
+		// outputs under the `ovl:` LevelDB key family; the v3 canonical
+		// engine uses `ovl3:` instead. If we detect legacy keys with
+		// no matching v3 records, we run the same migration as the
+		// standalone `anvil overlay-migrate` subcommand BEFORE the v3
+		// engine wires up — the daemon serves traffic post-migration,
+		// not pre-migration.
+		//
+		// This breaks the v2→v3 upgrade chicken-and-egg: v2's upgrade.go
+		// can't run the migrate hook (it predates v3), but the v3
+		// daemon running afterwards CAN detect the state and self-heal.
+		// Zero manual operator steps required for the v2→v3 transition.
+		//
+		// Fresh installs have neither family populated and boot
+		// cleanly (early-return on legacyCount == 0). Already-migrated
+		// nodes are skipped via the count-based comparison.
+		if err := autoMigrateLegacyOverlayKeys(overlayDir.DB(), logger); err != nil {
+			log.Fatalf("auto-migrate legacy overlay data: %v", err)
+		}
 
 		// W-5 phase B-c: wire the v3 canonical engine + legacy compat
 		// shim against the same LevelDB. headerStore is reused as the
@@ -948,6 +957,63 @@ func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger) {
 			}
 		}
 	}
+}
+
+// autoMigrateLegacyOverlayKeys is the v3.0.2+ replacement for the
+// warn-only boot scan that shipped in v3.0.0-3.0.1. If the overlay
+// LevelDB contains v2.x.x `ovl:` records with no matching v3 `ovl3:`
+// records, this runs the same migration logic as the standalone
+// `anvil overlay-migrate` subcommand — but in-process, BEFORE the v3
+// engine wires up, so a fresh v2→v3 upgrade just works for any
+// operator running `sudo anvil upgrade`.
+//
+// Returns nil on success (including no-op cases: fresh install or
+// already-migrated). Returns a non-nil error only on hard migration
+// failure (corrupt legacy values, unparseable keys, or DB I/O) so
+// main can fail-fast instead of booting a half-migrated daemon.
+//
+// Idempotent: re-runs are safe; the migrator skips records whose v3
+// counterpart already exists.
+func autoMigrateLegacyOverlayKeys(db *leveldb.DB, logger *slog.Logger) error {
+	legacyCount := countKeysWithPrefix(db, "ovl:")
+	if legacyCount == 0 {
+		return nil
+	}
+	v3Count := countKeysWithPrefix(db, "ovl3:")
+	if v3Count >= legacyCount {
+		return nil
+	}
+
+	if logger != nil {
+		logger.Info("v3 detected legacy v2 overlay data — running one-shot migration",
+			"legacy_keys", legacyCount,
+			"v3_keys_present", v3Count)
+	}
+
+	opts := anvilstorage.MigrateOptions{
+		LookupBackfiller: makeLookupBackfiller(db, false),
+	}
+	if logger != nil {
+		opts.Logger = func(format string, a ...any) {
+			logger.Info("auto-migrate", "line", fmt.Sprintf(format, a...))
+		}
+	}
+	stats, err := anvilstorage.Migrate(context.Background(), db, opts)
+	if err != nil {
+		return fmt.Errorf("storage.Migrate: %w", err)
+	}
+	if stats.UnparseableLegacy > 0 || stats.UnparseableKey > 0 {
+		return fmt.Errorf("migration found unparseable data: UnparseableLegacy=%d UnparseableKey=%d — run `anvil overlay-migrate -v` to inspect",
+			stats.UnparseableLegacy, stats.UnparseableKey)
+	}
+	if logger != nil {
+		logger.Info("v3 auto-migration complete",
+			"migrated", stats.Migrated,
+			"already_migrated", stats.AlreadyMigrated,
+			"lookup_backfilled", stats.LookupBackfilled,
+			"lookup_backfill_errors", stats.LookupBackfillErrors)
+	}
+	return nil
 }
 
 // warnLegacyOverlayKeys probes the overlay LevelDB for entries under

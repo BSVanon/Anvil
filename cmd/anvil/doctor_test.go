@@ -8,6 +8,52 @@ import (
 	"testing"
 )
 
+// TestParsePrivateTmpStatus_FlagsStrictWithoutPrivateTmp verifies the
+// detector flags units running ProtectSystem=strict with PrivateTmp=no.
+// That combination breaks wallet-toolbox's SQLite because /tmp is
+// read-only for the daemon (discovered v3.0.0 → fixed v3.0.2).
+func TestParsePrivateTmpStatus_FlagsStrictWithoutPrivateTmp(t *testing.T) {
+	got := parsePrivateTmpStatus(`ProtectSystem=strict
+PrivateTmp=no
+`)
+	if !got {
+		t.Error("expected true (strict + PrivateTmp=no), got false")
+	}
+}
+
+// TestParsePrivateTmpStatus_SkipsWhenPrivateTmpYes verifies that an
+// operator who has already applied a PrivateTmp=true override is
+// correctly reported as not-needing remediation.
+func TestParsePrivateTmpStatus_SkipsWhenPrivateTmpYes(t *testing.T) {
+	got := parsePrivateTmpStatus(`ProtectSystem=strict
+PrivateTmp=yes
+`)
+	if got {
+		t.Error("expected false (override already applied), got true")
+	}
+}
+
+// TestParsePrivateTmpStatus_SkipsWhenProtectSystemRelaxed verifies that
+// a unit running without strict sandboxing isn't flagged. The /tmp
+// read-only condition only happens with ProtectSystem=strict.
+func TestParsePrivateTmpStatus_SkipsWhenProtectSystemRelaxed(t *testing.T) {
+	got := parsePrivateTmpStatus(`ProtectSystem=full
+PrivateTmp=no
+`)
+	if got {
+		t.Error("expected false (ProtectSystem=full means /tmp writable), got true")
+	}
+}
+
+// TestParsePrivateTmpStatus_HandlesEmptyOutput pins the fail-safe
+// behavior: empty input (systemctl missing, unit doesn't exist) must
+// return false so we never false-positive remediate.
+func TestParsePrivateTmpStatus_HandlesEmptyOutput(t *testing.T) {
+	if parsePrivateTmpStatus("") {
+		t.Error("expected false on empty input, got true")
+	}
+}
+
 // TestWipeHeadersDir_RemovesLevelDBFiles verifies the header-rebuild
 // remediation wipes everything under <dataDir>/headers/ without touching
 // sibling dirs. This is the safety contract operators rely on when
