@@ -257,6 +257,12 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths={{.DataDir}}
 NoNewPrivileges=true
+# Private /tmp: wallet-toolbox's SQLite needs a writable temp dir for
+# sort/temp-table ops on larger wallet DBs. Without this, ProtectSystem=strict
+# makes /tmp read-only and SQLite returns "disk I/O error: permission denied"
+# during CreateAction calls. Discovered in v3.0.0 production (anvil-a 443MB
+# wallet); fix shipped in v3.0.1.
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

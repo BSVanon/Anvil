@@ -370,6 +370,52 @@ func validFakeBEEF(t *testing.T) []byte {
 	return body
 }
 
+// TestEncodeBEEF_AcceptsWalletBEEF guards the v3.0.0 → v3.0.1 fix.
+// wallet.CreateAction returns res.Tx in BEEF format (V1/V2/AtomicBEEF),
+// not raw tx bytes. The original v3.0.0 implementation called
+// NewTransactionFromBytes on this, which mis-decoded a BEEF magic
+// header as a tx version+input count and a downstream length varint
+// as ~941 KB ("script(941643): got 6695 bytes: unexpected EOF" in
+// production logs on Anvil Prime, 2026-05-25). This test feeds a
+// real BEEF in and asserts encodeBEEF re-emits a parseable BEEF.
+func TestEncodeBEEF_AcceptsWalletBEEF(t *testing.T) {
+	walletBEEF := validFakeBEEF(t)
+
+	out, err := encodeBEEF(walletBEEF)
+	if err != nil {
+		t.Fatalf("encodeBEEF on wallet BEEF: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("encodeBEEF returned empty bytes")
+	}
+	// The re-emitted BEEF must round-trip through canonical ParseBeef so
+	// the engine.Submit pipeline accepts it.
+	parsed, _, txid, err := transaction.ParseBeef(out)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if parsed == nil {
+		t.Fatal("re-parse returned nil Beef")
+	}
+	if txid == nil {
+		t.Fatal("re-parse returned nil txid")
+	}
+}
+
+// TestEncodeBEEF_RejectsRawTxBytes documents the inverse: feeding raw
+// tx bytes (not BEEF) is now an error rather than silent corruption.
+// Anchors the assumption that wallet-toolbox always returns BEEF.
+func TestEncodeBEEF_RejectsRawTxBytes(t *testing.T) {
+	tx := transaction.NewTransaction()
+	tx.AddOutput(&transaction.TransactionOutput{
+		Satoshis:      0,
+		LockingScript: script.NewFromBytes([]byte{0x51}),
+	})
+	if _, err := encodeBEEF(tx.Bytes()); err == nil {
+		t.Fatal("expected error feeding raw tx bytes (not BEEF) to encodeBEEF")
+	}
+}
+
 // TestAdvertiser_RevokeAdvertisements_RejectsInvalidInputs mirrors
 // CreateAdvertisements guards plus the missing-BEEF path.
 func TestAdvertiser_RevokeAdvertisements_RejectsInvalidInputs(t *testing.T) {
