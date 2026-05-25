@@ -365,7 +365,7 @@ func cmdDoctor(args []string) {
 
 	// ── 8. Self-healing checks (orphans, crash loops, version skew) ──
 	section("Self-Healing Checks")
-	issues += runSelfHealingChecks(cfg.Node.DataDir, fix, *yes)
+	issues += runSelfHealingChecks(cfg.Node.DataDir, apiURL, fix, *yes)
 
 	// ── Summary ──
 	fmt.Println()
@@ -384,7 +384,7 @@ func cmdDoctor(args []string) {
 // on-disk binary and a running process. Returns the number of unresolved
 // issues (zero if fix applied everything, or if --fix wasn't set and
 // nothing was found).
-func runSelfHealingChecks(dataDir string, fix, yes bool) int {
+func runSelfHealingChecks(dataDir, apiURL string, fix, yes bool) int {
 	unresolved := 0
 
 	// ── Orphan anvil processes ──
@@ -445,11 +445,11 @@ func runSelfHealingChecks(dataDir string, fix, yes bool) int {
 	// resync" but many forgot, leaving a wiped-yet-stuck node (observed
 	// 2026-04-17). v2.3.0 folds the restart AND a post-restart verify
 	// (lag dropped below pre-wipe value) into the remediation itself.
-	if lag, errMsg, have := checkHeaderSyncHealth(dataDir); have {
+	if lag, errMsg, have := checkHeaderSyncHealth(apiURL); have {
 		if strings.Contains(strings.ToLower(errMsg), "prev hash mismatch") {
 			fail("header store stuck: lag=%ds with prev-hash-mismatch (reorg-incompatible, won't recover without rebuild)", lag)
 			if fix && confirm(yes, fmt.Sprintf("    Wipe %s/headers/, restart anvil services, and verify resync starts?", dataDir)) {
-				if err := applyHeaderRebuildAndVerify(dataDir, svcs, lag); err != nil {
+				if err := applyHeaderRebuildAndVerify(dataDir, apiURL, svcs, lag); err != nil {
 					fmt.Printf("      ✗ %v\n", err)
 					unresolved++
 				}
@@ -629,7 +629,7 @@ func applyServiceRestartAndVerify(svcName string) error {
 // half-done remediations from slipping through. Prior versions only did
 // the wipe and told the operator to restart; many forgot, leaving a
 // wiped-but-still-stuck node.
-func applyHeaderRebuildAndVerify(dataDir string, svcs []diagnostics.ServiceState, preLagSecs int) error {
+func applyHeaderRebuildAndVerify(dataDir, apiURL string, svcs []diagnostics.ServiceState, preLagSecs int) error {
 	// Step 1: wipe on-disk header store
 	if err := wipeHeadersDir(dataDir); err != nil {
 		return fmt.Errorf("wipe %s/headers/: %w", dataDir, err)
@@ -667,7 +667,7 @@ func applyHeaderRebuildAndVerify(dataDir string, svcs []diagnostics.ServiceState
 	apiReady := false
 	for time.Now().Before(apiUpDeadline) {
 		time.Sleep(3 * time.Second)
-		if _, _, have := checkHeaderSyncHealth(dataDir); have {
+		if _, _, have := checkHeaderSyncHealth(apiURL); have {
 			apiReady = true
 			break
 		}
@@ -688,7 +688,7 @@ func applyHeaderRebuildAndVerify(dataDir string, svcs []diagnostics.ServiceState
 	bestLag := preLagSecs
 	for time.Now().Before(deadline) {
 		time.Sleep(3 * time.Second)
-		lag, _, have := checkHeaderSyncHealth(dataDir)
+		lag, _, have := checkHeaderSyncHealth(apiURL)
 		if !have {
 			continue
 		}
@@ -728,17 +728,20 @@ func runLocksOnly() {
 // whether we have enough data to make a decision. Separate from the earlier
 // /status probe because that one runs via httpGet which decodes into a map;
 // we need to pull two specific fields without re-defining the whole shape.
-func checkHeaderSyncHealth(dataDir string) (lagSecs int, lastErr string, have bool) {
+//
+// v3.0.5+ takes apiURL (the config-specified `http://127.0.0.1:<APIListen>`)
+// instead of hardcoding :9333/:9334. Pre-v3.0.5 the function always queried
+// :9333 first regardless of the -config flag the operator passed, which made
+// `sudo anvil doctor -config /etc/anvil/node-b.toml` falsely report node-b as
+// healthy when in fact node-b had its own prev-hash-mismatch — doctor was
+// reading node-a's status, not node-b's. Threading apiURL through fixes that.
+func checkHeaderSyncHealth(apiURL string) (lagSecs int, lastErr string, have bool) {
 	// Use a short-lived probe to the local API. If the service isn't running
 	// we can't get this info; return have=false to let the caller skip.
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:9333/status")
+	resp, err := client.Get(apiURL + "/status")
 	if err != nil {
-		// Try 9334 (Node B) as a fallback
-		resp, err = client.Get("http://127.0.0.1:9334/status")
-		if err != nil {
-			return 0, "", false
-		}
+		return 0, "", false
 	}
 	defer resp.Body.Close()
 	var s struct {
