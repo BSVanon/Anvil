@@ -117,6 +117,25 @@ type OverlayConfig struct {
 	// staging tracker, or a regional preference.
 	SHIPTrackers []string `toml:"ship_trackers"`
 	SLAPTrackers []string `toml:"slap_trackers"`
+
+	// GASPSyncIntervalSecs is how often we pull canonical federation
+	// state from discovered peers (every N seconds). v3.0.0-v3.0.6
+	// hardcoded this at 300s (5 min), inherited from overlay-express
+	// defaults. In production that translates to ~3 Mbps sustained RX
+	// on small VPSes because the canonical engine re-requests
+	// advertisements with since=0 each cycle (no cursor persistence
+	// yet — see v3.0.8 candidate work). v3.0.7 bumps the default to
+	// 1800 (30 min) to match SyncAdvertisements + cut bandwidth ~6x.
+	// Operators who want faster discovery can dial back down; aim for
+	// 60s as a floor or you'll hit upstream tracker rate limits.
+	// 0 or unset → default 1800.
+	GASPSyncIntervalSecs int `toml:"gasp_sync_interval_secs"`
+
+	// AdvertiseIntervalSecs is how often the canonical Advertiser
+	// reconciles our own SHIP/SLAP outputs against the hosted topic
+	// set. Historically hardcoded at 1800s; the field exists for
+	// symmetry with GASPSyncIntervalSecs. 0 or unset → default 1800.
+	AdvertiseIntervalSecs int `toml:"advertise_interval_secs"`
 }
 
 // MempoolConfig controls P2P mempool transaction monitoring.
@@ -202,7 +221,9 @@ func Load(path string) (*Config, error) {
 		Overlay: OverlayConfig{
 			Enabled:        true,
 			Topics:         []string{"anvil:mainnet"},
-			EnableGASPSync: true,
+			EnableGASPSync:        true,
+			GASPSyncIntervalSecs:  1800, // v3.0.7 default — was hardcoded 300s pre-v3.0.7
+			AdvertiseIntervalSecs: 1800, // matches SyncAdvertisements historic cadence
 			// SHIPTrackers + SLAPTrackers left blank by default; W-10.3
 			// wiring in cmd/anvil/main.go falls back to go-sdk's
 			// overlay/lookup.DEFAULT_SLAP_TRACKERS (Project Babbage's

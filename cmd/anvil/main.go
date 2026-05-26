@@ -412,8 +412,8 @@ func main() {
 				// currently host; StartGASPSync pulls peer state for
 				// each subscribed topic. Both gated on
 				// EnableGASPSync, both safe to run periodically.
-				go runSyncAdvertisements(context.Background(), v3Eng, logger)
-				go runGASPSync(context.Background(), v3Eng, logger)
+				go runSyncAdvertisements(context.Background(), v3Eng, logger, cfg.Overlay.AdvertiseIntervalSecs)
+				go runGASPSync(context.Background(), v3Eng, logger, cfg.Overlay.GASPSyncIntervalSecs)
 			} else if v3Eng != nil && !cfg.Overlay.EnableGASPSync {
 				log.Printf("v3 federation disabled (cfg.Overlay.EnableGASPSync = false); GASP routes still serve inbound requests")
 			}
@@ -912,17 +912,23 @@ func buildSyncConfiguration(eng *engine.Engine) map[string]engine.SyncConfigurat
 	return out
 }
 
-// runSyncAdvertisements ticks engine.SyncAdvertisements every 30
-// minutes. The canonical reconciliation loop creates missing SHIP/SLAP
-// outputs for topics we host and revokes ones we no longer host. Runs
-// once on boot then on a long cadence — advertisement state changes
-// infrequently (operator topic config edits), so a tight loop would
-// just churn the wallet.
-func runSyncAdvertisements(ctx context.Context, eng *engine.Engine, logger *slog.Logger) {
+// runSyncAdvertisements ticks engine.SyncAdvertisements at the
+// configured cadence. The canonical reconciliation loop creates
+// missing SHIP/SLAP outputs for topics we host and revokes ones we no
+// longer host. Runs once on boot then on a long cadence —
+// advertisement state changes infrequently (operator topic config
+// edits), so a tight loop would just churn the wallet. Default 1800s
+// (30 min) preserved from v3.0.0; configurable via
+// cfg.Overlay.AdvertiseIntervalSecs.
+func runSyncAdvertisements(ctx context.Context, eng *engine.Engine, logger *slog.Logger, intervalSecs int) {
+	if intervalSecs <= 0 {
+		intervalSecs = 1800
+	}
 	if err := eng.SyncAdvertisements(ctx); err != nil {
 		logger.Error("initial SyncAdvertisements failed", "error", err)
 	}
-	ticker := time.NewTicker(30 * time.Minute)
+	logger.Info("SyncAdvertisements loop started", "interval_secs", intervalSecs)
+	ticker := time.NewTicker(time.Duration(intervalSecs) * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -936,16 +942,26 @@ func runSyncAdvertisements(ctx context.Context, eng *engine.Engine, logger *slog
 	}
 }
 
-// runGASPSync ticks engine.StartGASPSync every 5 minutes. The
-// canonical sync pulls peer state for each subscribed topic; new admits
-// propagate into our local index. 5 min is the upstream default from
-// overlay-express; tighter cadence increases network load without much
-// freshness benefit because admissions are not high-rate.
-func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger) {
+// runGASPSync ticks engine.StartGASPSync at the configured cadence.
+// The canonical sync pulls peer state for each subscribed topic; new
+// admits propagate into our local index. v3.0.0-v3.0.6 hardcoded 5 min
+// (upstream overlay-express default) which translated to ~3 Mbps
+// sustained RX on small VPSes because the canonical engine re-pulls
+// advertisements with since=0 each cycle (no cursor persistence yet —
+// v3.0.8 candidate work). v3.0.7 makes this configurable + bumps
+// default to 1800s (30 min) — cuts bandwidth ~6x without meaningfully
+// degrading freshness, since topic admissions aren't high-rate. 0 or
+// unset → default 1800. Operators wanting tighter discovery can dial
+// down; aim for 60s as a practical floor.
+func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger, intervalSecs int) {
+	if intervalSecs <= 0 {
+		intervalSecs = 1800
+	}
 	if err := eng.StartGASPSync(ctx); err != nil {
 		logger.Error("initial StartGASPSync failed", "error", err)
 	}
-	ticker := time.NewTicker(5 * time.Minute)
+	logger.Info("GASPSync loop started", "interval_secs", intervalSecs)
+	ticker := time.NewTicker(time.Duration(intervalSecs) * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
