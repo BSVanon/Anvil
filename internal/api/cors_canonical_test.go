@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -115,6 +116,61 @@ func TestCors_AllowsGASPPreflight(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("GASP preflight returned status %d, want 204", resp.StatusCode)
+	}
+}
+
+// TestStorageQuoteStub_HandlesCorsAndCanonicalErrorShape pins the
+// v3.0.6 fix that registers POST /quote with the cors middleware so
+// browser preflight from wallet.sendbsv.com succeeds, AND verifies
+// the response body is the canonical-shaped error that
+// @bsv/sdk's StorageUploader.getQuote() interprets as "host
+// unavailable" (StorageUploader.ts:152 — `if (data.status === 'error'
+// || typeof data.quote !== 'number') return null`).
+//
+// Without this stub the wallet's v14 storage-sync push spammed the
+// console with "Resiliency threshold of 1 could not be met: only 0
+// of 1 providers responded with quotes" — observed in production QA
+// 2026-05-26.
+func TestStorageQuoteStub_HandlesCorsAndCanonicalErrorShape(t *testing.T) {
+	srv := &Server{}
+	wrapped := cors(srv.handleStorageQuoteStub)
+	httpsrv := httptest.NewServer(wrapped)
+	t.Cleanup(httpsrv.Close)
+
+	// 1. OPTIONS preflight from wallet.sendbsv.com — must return CORS headers
+	req, _ := http.NewRequest(http.MethodOptions, httpsrv.URL+"/quote", nil)
+	req.Header.Set("Origin", "https://wallet.sendbsv.com")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("OPTIONS /quote preflight: %v", err)
+	}
+	if resp.Header.Get("Access-Control-Allow-Origin") == "" {
+		t.Errorf("preflight missing Access-Control-Allow-Origin (got headers: %v)", resp.Header)
+	}
+	_ = resp.Body.Close()
+
+	// 2. POST /quote — must return 200 + canonical error JSON
+	postReq, _ := http.NewRequest(http.MethodPost, httpsrv.URL+"/quote",
+		strings.NewReader(`{"fileSize":1024,"retentionPeriod":86400}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.Header.Set("Origin", "https://wallet.sendbsv.com")
+	postResp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		t.Fatalf("POST /quote: %v", err)
+	}
+	defer postResp.Body.Close()
+	if postResp.StatusCode != http.StatusOK {
+		t.Errorf("POST /quote status: got %d want 200", postResp.StatusCode)
+	}
+	if postResp.Header.Get("Access-Control-Allow-Origin") == "" {
+		t.Errorf("POST response missing Access-Control-Allow-Origin")
+	}
+	body, _ := io.ReadAll(postResp.Body)
+	got := string(body)
+	if !strings.Contains(got, `"status":"error"`) {
+		t.Errorf("POST /quote body should contain canonical error status; got: %s", got)
 	}
 }
 

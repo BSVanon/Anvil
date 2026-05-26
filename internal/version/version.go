@@ -2,4 +2,4 @@
 // Centralized so handlers, gossip, and bootstrap all agree.
 package version
 
-const Version = "3.0.5"
+const Version = "3.0.6"
