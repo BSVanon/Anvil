@@ -236,6 +236,24 @@ func (s *Server) routes() {
 	// needing the operator's auth token.
 	s.mux.HandleFunc("POST /data", s.authOrPay(s.handlePostData))
 	s.mux.HandleFunc("OPTIONS /data", cors(func(w http.ResponseWriter, r *http.Request) {}))
+
+	// v3.0.6: canonical StorageUploader stub. @bsv/sdk's StorageUploader
+	// (used by SendBSV-Wallet's v14 storage-sync) calls `${host}/quote`
+	// on each configured host to discover storage pricing. Anvil isn't a
+	// canonical storage host yet (no /upload, no retention semantics, no
+	// x402 quote pricing) — but unregistered routes return 404 without
+	// CORS headers, which spams the wallet console with red errors and
+	// leaves StorageUploader's resilience check unable to even reach a
+	// clean "host unavailable" verdict. Returning a CORS-headered
+	// `{status:"error"}` lets StorageUploader.getQuote() return null
+	// cleanly (per StorageUploader.ts:152) and continue with other
+	// hosts.
+	//
+	// Full canonical /quote + /upload implementation tracked separately
+	// (see docs/internal/SENDBSV_INBOUND_DEPOSITS_REQUEST.md Ask 1
+	// follow-up). v3.0.6 ships only the CORS-clean stub.
+	s.mux.HandleFunc("POST /quote", cors(s.handleStorageQuoteStub))
+	s.mux.HandleFunc("OPTIONS /quote", cors(func(w http.ResponseWriter, r *http.Request) {}))
 	s.mux.HandleFunc("POST /overlay/register", s.requireAuth(s.handleOverlayRegister))
 	s.mux.HandleFunc("POST /overlay/deregister", s.requireAuth(s.handleOverlayDeregister))
 
@@ -519,6 +537,29 @@ All payments settle on BSV mainnet. Non-custodial — funds go directly to payee
 No stablecoins. No payment channels. No facilitator servers.
 `
 	_, _ = w.Write([]byte(md))
+}
+
+// handleStorageQuoteStub returns a canonical-shaped error so the
+// @bsv/sdk StorageUploader (used by SendBSV-Wallet v14 storage-sync)
+// treats Anvil as an unavailable storage provider and continues with
+// other configured hosts. We're not lying about being a storage host
+// — we just return what the StorageUploader interprets as "this host
+// doesn't have quotes right now," same shape `{status:"error"}` it
+// expects per StorageUploader.ts:152.
+//
+// CORS headers are added by the `cors` wrapper at the route
+// registration so cross-origin callers (wallet.sendbsv.com) get a
+// clean preflight + response instead of the 404-without-headers
+// failure that hit production 2026-05-26.
+//
+// Full canonical /quote + /upload implementation (real x402 pricing,
+// retention semantics, BRC storage-host protocol) is a separate
+// roadmap item — see docs/internal/SENDBSV_INBOUND_DEPOSITS_REQUEST.md
+// follow-up.
+func (s *Server) handleStorageQuoteStub(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK) // canonical shape uses 200 + error in body, not HTTP 4xx
+	_, _ = w.Write([]byte(`{"status":"error","message":"anvil-mesh does not implement canonical StorageUploader /quote yet; use POST /data for envelope upload or configure an actual storage host"}`))
 }
 
 // handleAnvilManifest serves /.well-known/anvil — a machine-readable manifest
