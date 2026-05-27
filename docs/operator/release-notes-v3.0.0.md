@@ -69,11 +69,11 @@ Supported queries on `ls_identity`:
 - `{identityKey: <hex>}` — resolve cert by subject's compressed pubkey (full support)
 - `{certifierKey: <hex>}` — Anvil extension: scope queries to a trusted certifier (full support)
 - `{outpoint: "<txid>.<vout>"}` — republish / health check (full support)
-- `{attributes: {handle, domain}}` — paymail handle resolution; **deferred to v3.1.0 (W-11)**
+- `{attributes: {handle, domain}}` — paymail handle resolution; **deferred (W-11)** — still unscheduled (v3.1.0 shipped tm_kvstore, not this path)
 
 The `attributes` query path returns an explicit Freeform answer with `{deferred:true, use:"identityKey"}` so wallets can immediately fall back to the two-step paymail protocol (`.well-known/bsvalias` HTTP gateway → identityKey → `ls_identity` by identityKey). The two-step works fully in v3.0.0; only the overlay-native one-step path is deferred.
 
-See `docs/internal/SENDBSV_USERS_TOPIC_REQUEST.md` § "Identity attributes deferral (W-11)" for the rationale and the two resolution options for v3.1.0.
+See `docs/internal/SENDBSV_USERS_TOPIC_REQUEST.md` § "Identity attributes deferral (W-11)" for the rationale and the resolution options.
 
 ### LevelDB sub-prefix layout
 
