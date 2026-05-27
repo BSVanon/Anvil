@@ -75,3 +75,14 @@ func IdentityCanonical() engine.TopicManager {
 		Version:     canonicalVersion,
 	})
 }
+
+// KVStoreCanonical returns the canonical engine.TopicManager for the
+// BRC-35 key-value store publication topic (tm_kvstore). Same
+// transitional placement note as UMPCanonical applies.
+func KVStoreCanonical() engine.TopicManager {
+	return NewAdapter(KVStoreTopicName, NewKVStoreTopicManager(), &overlay.MetaData{
+		Name:        KVStoreTopicName,
+		Description: "BRC-35 canonical key-value record publication",
+		Version:     canonicalVersion,
+	})
+}

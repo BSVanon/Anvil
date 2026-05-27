@@ -92,7 +92,7 @@ Both phases use the SAME v3.0.0 binary. Phase A confirms federation. Phase B con
      -d '{"service":"ls_ship","query":{"domain":"https://anvil-staging.your-domain.example"}}'
    ```
 
-   Result should be a `output-list` with one or more entries (the SHIP advertisements our node published, one per active topic — UHRP, DEX-swap, OrdLock, OrdLock-buy, tm_users, tm_identity, tm_ship, tm_slap = 8 entries).
+   Result should be a `output-list` with one or more entries (the SHIP advertisements our node published, one per active topic — UHRP, DEX-swap, OrdLock, OrdLock-buy, tm_users, tm_identity, tm_kvstore, tm_ship, tm_slap = 9 entries as of v3.1.0; pre-v3.1.0 builds publish 8).
 
    If empty: wait another 30 minutes (one more SyncAdvertisements cycle) and retry. If still empty after an hour, check the SyncAdvertisements log lines for ARC submit failures.
 
@@ -227,7 +227,7 @@ For each node:
 - [ ] Both anvil-a and anvil-b boot clean on v3.0.0
 - [ ] Migration count matches dry-run (`Migrated` = legacy-key count, no unparseable entries)
 - [ ] Each node sees the other via canonical SLAP discovery within 60 minutes of the second node coming up
-- [ ] No regression in `/listTopicManagers` count (should be 8 topic managers)
+- [ ] No regression in `/listTopicManagers` count (should be 9 topic managers as of v3.1.0: 7 Anvil topics + tm_ship + tm_slap)
 - [ ] Existing apps using `/overlay/*` legacy routes still work (Anvil-Swap + SendBSV-Foundry haven't migrated yet; the Lens 2 = 2c shim handles them)
 - [ ] 24-hour stability — no panics, no continual error logs, no memory leak signs
 

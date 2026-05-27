@@ -145,6 +145,12 @@ func New(cfg *Config) (*engine.Engine, error) {
 		// topics/identity.go headers for port provenance.
 		topics.UMPTopicName:      topics.UMPCanonical(),
 		topics.IdentityTopicName: topics.IdentityCanonical(),
+		// v3.1.0: canonical BRC-35 KVStore — Go port of the canonical
+		// ts-stack KVStoreTopicManager. Hosted in Anvil as the same
+		// transitional placement as UMP/Identity. SendBSV-Wallet
+		// publishes encrypted cross-device settings under this topic.
+		// See topics/kvstore.go header for port provenance.
+		topics.KVStoreTopicName: topics.KVStoreCanonical(),
 	}
 
 	lookupServices := map[string]engine.LookupService{
@@ -154,6 +160,7 @@ func New(cfg *Config) (*engine.Engine, error) {
 		topics.OrdLockBuyLookupServiceName: lookups.NewOrdLockBuyLookupService(cfg.LookupDB),
 		topics.UMPLookupServiceName:        lookups.NewUMPLookupService(cfg.LookupDB),
 		topics.IdentityLookupServiceName:   lookups.NewIdentityLookupService(cfg.LookupDB),
+		topics.KVStoreLookupServiceName:    lookups.NewKVStoreLookupService(cfg.LookupDB),
 	}
 
 	// Canonical BRC-88 SHIP/SLAP topic managers + lookup services from

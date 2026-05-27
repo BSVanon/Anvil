@@ -155,7 +155,7 @@ sudo journalctl -u anvil -f
 You should see:
 
 - `overlay directory opened (topics=[anvil:mainnet])`
-- `v3 canonical engine wired (8 topics, 8 lookup services)` — UHRP, DEX-swap, OrdLock, OrdLock-buy, tm_ship, tm_slap, tm_users, tm_identity.
+- `v3 canonical engine wired (9 topics, 9 lookup services)` — UHRP, DEX-swap, OrdLock, OrdLock-buy, tm_ship, tm_slap, tm_users, tm_identity, tm_kvstore (tm_kvstore/ls_kvstore added in v3.1.0; pre-v3.1.0 builds report 8/8).
 - `v3 federation wired: N topics syncable via canonical SHIP/SLAP (trackers=4)` — confirms canonical BRC-88 federation is up
 - NO `ANVIL v3 LEGACY DATA DETECTED` banner — if you see this, the migration didn't run or didn't complete
 
@@ -207,7 +207,7 @@ Three Anvil-consuming apps need their own one-time updates when their host Anvil
 |---|---|---|
 | Anvil-Swap | 1-2 days | DEX swap broker, uses the canonical `/lookup` route with the new `output-list` BEEF wire format. |
 | SendBSV-Foundry | 2-4 hours | Coin tracking, uses `/overlay/lookup` legacy shim (unchanged through v3.0.0 under Lens 2 = 2c — no app changes required). |
-| SendBSV-Wallet | 1 day | Paymail handle resolution; v3.0.0 supports `identityKey` queries fully. Wallet uses two-step paymail (`.well-known/bsvalias` HTTP gateway → identityKey → `ls_identity`). Overlay-native `{attributes}` query is deferred to v3.1.0 (W-11). |
+| SendBSV-Wallet | 1 day | Paymail handle resolution; v3.0.0 supports `identityKey` queries fully. Wallet uses two-step paymail (`.well-known/bsvalias` HTTP gateway → identityKey → `ls_identity`). Overlay-native `{attributes}` query remains deferred (W-11) — not delivered in v3.1.0 (which shipped tm_kvstore instead); still unscheduled. |
 
 The apps' migration trackers live at `docs/internal/APP_MIGRATION_TODO.md` (internal — not shipped in the v3 binary).
 
