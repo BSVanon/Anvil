@@ -302,6 +302,73 @@ func (s *SLAPStorage) scanSLAP(pred func(*types.SLAPRecord) bool) ([]*types.SLAP
 	return matched, nil
 }
 
+// PrunePlan is the outcome of a duplicate-advertisement prune: how many
+// records were kept (one per topic/service) and how many redundant
+// duplicates were (or would be) deleted.
+type PrunePlan struct {
+	Kept    int
+	Deleted int
+}
+
+// PruneDuplicatesByDomain removes redundant SHIP records for domain,
+// keeping the single most-recent record per topic. With apply=false it
+// only reports what would be deleted (dry run). Used by `anvil prune-ads`
+// to clean up duplicate self-advertisements accumulated by a re-mint loop;
+// the kept record is enough for canonical discovery + the advertiser's
+// dedup, and keeping one (rather than deleting all + re-advertising) avoids
+// a needless re-mint on next boot.
+func (s *SHIPStorage) PruneDuplicatesByDomain(_ context.Context, domain string, apply bool) (PrunePlan, error) {
+	recs, err := s.scanSHIP(func(r *types.SHIPRecord) bool { return r.Domain == domain })
+	if err != nil {
+		return PrunePlan{}, err
+	}
+	byTopic := make(map[string][]*types.SHIPRecord, len(recs))
+	for _, r := range recs {
+		byTopic[r.Topic] = append(byTopic[r.Topic], r)
+	}
+	var plan PrunePlan
+	for _, group := range byTopic {
+		sort.SliceStable(group, func(i, j int) bool { return group[i].CreatedAt.After(group[j].CreatedAt) })
+		plan.Kept++
+		for _, r := range group[1:] {
+			if apply {
+				if err := s.db.Delete(shipKey(r.Txid, r.OutputIndex), nil); err != nil {
+					return plan, fmt.Errorf("federation: prune SHIP %s:%d: %w", r.Txid, r.OutputIndex, err)
+				}
+			}
+			plan.Deleted++
+		}
+	}
+	return plan, nil
+}
+
+// PruneDuplicatesByDomain mirrors the SHIP method for SLAP, grouping by
+// Service instead of Topic.
+func (s *SLAPStorage) PruneDuplicatesByDomain(_ context.Context, domain string, apply bool) (PrunePlan, error) {
+	recs, err := s.scanSLAP(func(r *types.SLAPRecord) bool { return r.Domain == domain })
+	if err != nil {
+		return PrunePlan{}, err
+	}
+	byService := make(map[string][]*types.SLAPRecord, len(recs))
+	for _, r := range recs {
+		byService[r.Service] = append(byService[r.Service], r)
+	}
+	var plan PrunePlan
+	for _, group := range byService {
+		sort.SliceStable(group, func(i, j int) bool { return group[i].CreatedAt.After(group[j].CreatedAt) })
+		plan.Kept++
+		for _, r := range group[1:] {
+			if apply {
+				if err := s.db.Delete(slapKey(r.Txid, r.OutputIndex), nil); err != nil {
+					return plan, fmt.Errorf("federation: prune SLAP %s:%d: %w", r.Txid, r.OutputIndex, err)
+				}
+			}
+			plan.Deleted++
+		}
+	}
+	return plan, nil
+}
+
 // Helpers — shared between SHIP + SLAP storage.
 
 // contains is a small string-slice membership helper. Inlined here
