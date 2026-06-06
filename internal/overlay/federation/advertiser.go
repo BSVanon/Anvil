@@ -560,28 +560,37 @@ func txidFromBEEF(beefBytes []byte) (*chainhash.Hash, error) {
 	return txid, nil
 }
 
-// encodeBEEF normalizes the wallet's CreateActionResult.Tx into a
-// standard BEEF wire format the engine.Submit pipeline can ingest.
+// encodeBEEF normalizes the wallet's CreateActionResult.Tx into ATOMIC
+// BEEF wire format keyed to the advertisement transaction.
 //
 // wallet-toolbox returns res.Tx in BEEF format (V1, V2, or AtomicBEEF
 // depending on the toolbox version and the surrounding CreateAction
-// args). canonical ParseBeef handles all three uniformly — same entry
-// point the gasp pipeline uses for inbound BEEFs — so by routing the
-// wallet's output through it we re-emit a single canonical V1 wire
-// format the engine accepts regardless of what shape the wallet
-// produced.
+// args). canonical ParseBeef handles all three uniformly, and we re-emit
+// AtomicBEEF for the subject tx.
+//
+// Why ATOMIC specifically: engine.Submit passes TaggedBEEF.Beef verbatim
+// to lookup services as payload.AtomicBEEF (go-overlay-services
+// engine.go:664), and the canonical SHIP/SLAP lookup parses it with
+// transaction.NewBeefFromAtomicBytes — which only accepts atomic format.
+// Emitting standard BEEF here made admission succeed but the
+// post-admission StoreSHIPRecord notification fail ("failed to parse
+// atomic BEEF: use NewBeefFromBytes ..."), so ads were admitted on-topic
+// but never indexed into ls_ship/ls_slap (and FindAllAdvertisements,
+// which reads that index, kept returning empty → re-mint). Guarded by
+// TestAdvertiser_CreateAdvertisements_ProducesAdmittableTokens, which
+// asserts the output parses as AtomicBEEF.
 //
 // v3.0.0 originally called NewTransactionFromBytes on res.Tx, which
 // works for raw tx bytes but mis-parses a BEEF header (read the BEEF
 // magic as a tx version + input count, then decoded a downstream
 // script-length varint as ~941 KB). v3.0.1 fixes this.
 func encodeBEEF(walletTx []byte) ([]byte, error) {
-	beef, _, _, err := transaction.ParseBeef(walletTx)
+	beef, _, txid, err := transaction.ParseBeef(walletTx)
 	if err != nil {
 		return nil, fmt.Errorf("parse wallet BEEF: %w", err)
 	}
-	if beef == nil {
+	if beef == nil || txid == nil {
 		return nil, errors.New("wallet returned empty BEEF")
 	}
-	return beef.Bytes()
+	return beef.AtomicBytes(txid)
 }

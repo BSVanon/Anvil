@@ -269,6 +269,15 @@ func TestAdvertiser_CreateAdvertisements_ProducesAdmittableTokens(t *testing.T) 
 	}
 	txid := tx.TxID()
 
+	// The TaggedBEEF.Beef is handed to lookup services verbatim as
+	// payload.AtomicBEEF; the canonical SHIP/SLAP lookup parses it with
+	// NewBeefFromAtomicBytes to run StoreSHIPRecord. If it's not atomic
+	// format, ads admit on-topic but never get indexed (the v3.1.1->3.1.2
+	// regression). Assert it parses exactly the way the engine will use it.
+	if _, _, err := transaction.NewBeefFromAtomicBytes(tagged.Beef); err != nil {
+		t.Fatalf("TaggedBEEF.Beef is not AtomicBEEF (lookup StoreRecord notify would fail): %v", err)
+	}
+
 	// Drive the FULL canonical admittance path (not just sub-gates): the
 	// SHIP/SLAP topic managers' IdentifyAdmissibleOutputs enforces protocol
 	// match, 5-field decode, advertisable URI, topic-name validity + prefix,
