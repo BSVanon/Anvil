@@ -12,6 +12,7 @@ import (
 	admintoken "github.com/bsv-blockchain/go-sdk/overlay/admin-token"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/pushdrop"
 	"github.com/bsv-blockchain/go-sdk/wallet"
 
 	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
@@ -81,7 +82,31 @@ func (a *Advertiser) CreateAdvertisements(adsData []*oa.AdvertisementData) (over
 	}
 	ctx := context.Background()
 
-	pd := admintoken.NewOverlayAdminToken(a.Wallet)
+	// Identity key for token field[1]. The canonical admission validator
+	// (go-overlay-discovery-services IsTokenSignatureCorrectlyLinked) parses
+	// this field as the identity and re-derives the expected locking key from
+	// it, so it MUST be the same wallet identity pd.Lock derives the locking
+	// key from below.
+	idRes, err := a.Wallet.GetPublicKey(ctx, wallet.GetPublicKeyArgs{IdentityKey: true}, "")
+	if err != nil {
+		return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: identity key: %w", err)
+	}
+	if idRes == nil || idRes.PublicKey == nil {
+		return overlay.TaggedBEEF{}, errors.New("federation: advertiser: wallet returned no identity key")
+	}
+	identityKeyBytes := idRes.PublicKey.Compressed()
+
+	// Build SHIP/SLAP tokens with the CANONICAL WalletAdvertiser PushDrop
+	// recipe (go-overlay-discovery-services advertiser.CreateAdvertisements):
+	// Counterparty=Anyone + forSelf=true. This is NOT the same as go-sdk's
+	// admin-token.Lock, which signs with Counterparty=Self + forSelf=false —
+	// a recipe the canonical admittance path REJECTS ("Invalid token
+	// signature linkage"), so those ads were never admitted, never stored,
+	// and re-minted every cycle (the SHIP/SLAP duplicate flood). The admission
+	// validator verifies via the anyone-wallet with Counterparty=Other(identity),
+	// which only reciprocates the Anyone/forSelf=true derivation. See
+	// admission_repro_test.go for the proof.
+	pd := pushdrop.PushDrop{Wallet: a.Wallet}
 	outputs := make([]wallet.CreateActionOutput, 0, len(adsData))
 	topicSet := map[string]struct{}{}
 	for i, ad := range adsData {
@@ -91,7 +116,28 @@ func (a *Advertiser) CreateAdvertisements(adsData []*oa.AdvertisementData) (over
 		if ad.Protocol != overlay.ProtocolSHIP && ad.Protocol != overlay.ProtocolSLAP {
 			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: unsupported protocol %q at index %d", ad.Protocol, i)
 		}
-		lock, err := pd.Lock(ctx, ad.Protocol, a.HostingURL, ad.TopicOrServiceName)
+		protocolID := wallet.Protocol{
+			SecurityLevel: wallet.SecurityLevelEveryAppAndCounterparty,
+			Protocol:      string(ad.Protocol.ID()),
+		}
+		if protocolID.Protocol == "" {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: invalid overlay protocol id %q at index %d", ad.Protocol, i)
+		}
+		lock, err := pd.Lock(
+			ctx,
+			[][]byte{
+				[]byte(ad.Protocol),
+				identityKeyBytes,
+				[]byte(a.HostingURL),
+				[]byte(ad.TopicOrServiceName),
+			},
+			protocolID,
+			"1",
+			wallet.Counterparty{Type: wallet.CounterpartyTypeAnyone},
+			true, // forSelf
+			true, // includeSignature
+			pushdrop.LockBefore,
+		)
 		if err != nil {
 			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: lock %s/%s: %w", ad.Protocol, ad.TopicOrServiceName, err)
 		}
@@ -201,6 +247,7 @@ func (a *Advertiser) RevokeAdvertisements(ads []*oa.Advertisement) (overlay.Tagg
 
 	revokeTxs := make([]*transaction.Transaction, 0, len(ads))
 	topicSet := map[string]struct{}{}
+	pd := pushdrop.PushDrop{Wallet: a.Wallet}
 	for i, ad := range ads {
 		if ad == nil {
 			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: nil ad at index %d", i)
@@ -212,31 +259,85 @@ func (a *Advertiser) RevokeAdvertisements(ads []*oa.Advertisement) (overlay.Tagg
 		if err != nil {
 			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: ad %d txid: %w", i, err)
 		}
+		protocolID := wallet.Protocol{
+			SecurityLevel: wallet.SecurityLevelEveryAppAndCounterparty,
+			Protocol:      string(ad.Protocol.ID()),
+		}
+		if protocolID.Protocol == "" {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: invalid overlay protocol id %q at index %d", ad.Protocol, i)
+		}
+		// The unlocker MUST match the CreateAdvertisements lock recipe
+		// (Counterparty=Anyone / forSelf key) or it cannot spend the
+		// advertisement output. Guarded by
+		// TestRevoke_AnyoneUnlockRecipe_SatisfiesAnyoneLock.
+		unlocker := pd.Unlock(
+			ctx, protocolID, "1",
+			wallet.Counterparty{Type: wallet.CounterpartyTypeAnyone},
+			wallet.SignOutputsAll, false,
+		)
+
+		// Phase 1: the wallet builds + funds the spend but cannot itself sign
+		// the foreign PushDrop input, so it returns a SignableTransaction.
 		res, err := a.Wallet.CreateAction(ctx, wallet.CreateActionArgs{
 			Description: fmt.Sprintf("revoke %s advertisement %s", ad.Protocol, ad.TopicOrService),
 			Inputs: []wallet.CreateActionInput{{
 				Outpoint:              transaction.Outpoint{Txid: *txid, Index: ad.OutputIndex},
 				InputDescription:      fmt.Sprintf("revoke %s advertisement %s", ad.Protocol, ad.TopicOrService),
-				UnlockingScriptLength: revocationUnlockerLen,
+				UnlockingScriptLength: unlocker.EstimateLength(),
 			}},
 			InputBEEF: ad.Beef, // single ad's BEEF — always a valid envelope
 		}, "")
 		if err != nil {
 			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: create revoke action for ad %d (%s/%s): %w", i, ad.Protocol, ad.TopicOrService, err)
 		}
-		if res == nil || len(res.Tx) == 0 {
-			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: revoke action %d returned no transaction", i)
+		if res == nil || res.SignableTransaction == nil || len(res.SignableTransaction.Tx) == 0 {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: revoke action %d returned no signable transaction", i)
 		}
-		// wallet returns res.Tx as a BEEF envelope (V1/V2/AtomicBEEF) —
-		// not raw tx bytes. Same v3.0.0 bug as encodeBEEF; fixed in v3.0.1
-		// by routing through ParseBeef which returns the constituent
-		// transaction directly.
-		_, tx, _, err := transaction.ParseBeef(res.Tx)
+
+		// Phase 2: find our PushDrop input in the funded tx, sign it with the
+		// matching unlocker, and return that unlocking script via SignAction
+		// (the wallet signs its own funding inputs).
+		_, signableTx, _, err := transaction.ParseBeef(res.SignableTransaction.Tx)
 		if err != nil {
-			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: parse revoke tx %d: %w", i, err)
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: parse signable revoke tx %d: %w", i, err)
+		}
+		if signableTx == nil {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: signable revoke tx %d has no subject tx", i)
+		}
+		adIdx := -1
+		for idx, in := range signableTx.Inputs {
+			if in.SourceTXID != nil && in.SourceTXID.IsEqual(txid) && in.SourceTxOutIndex == ad.OutputIndex {
+				adIdx = idx
+				break
+			}
+		}
+		if adIdx < 0 {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: revoke tx %d missing advertisement input %s:%d", i, txid, ad.OutputIndex)
+		}
+		unlockingScript, err := unlocker.Sign(signableTx, adIdx)
+		if err != nil {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: sign revoke input %d: %w", i, err)
+		}
+		signRes, err := a.Wallet.SignAction(ctx, wallet.SignActionArgs{
+			Reference: res.SignableTransaction.Reference,
+			Spends: map[uint32]wallet.SignActionSpend{
+				uint32(adIdx): {UnlockingScript: unlockingScript.Bytes()}, //#nosec G115 -- adIdx is a real input index, never negative here.
+			},
+		}, "")
+		if err != nil {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: sign revoke action %d: %w", i, err)
+		}
+		if signRes == nil || len(signRes.Tx) == 0 {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: revoke action %d returned no signed transaction", i)
+		}
+		// wallet returns Tx as a BEEF envelope (V1/V2/AtomicBEEF); ParseBeef
+		// returns the constituent transaction directly.
+		_, tx, _, err := transaction.ParseBeef(signRes.Tx)
+		if err != nil {
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: parse signed revoke tx %d: %w", i, err)
 		}
 		if tx == nil {
-			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: revoke action %d returned BEEF with no subject tx", i)
+			return overlay.TaggedBEEF{}, fmt.Errorf("federation: advertiser: signed revoke tx %d has no subject tx", i)
 		}
 		revokeTxs = append(revokeTxs, tx)
 		if ad.Protocol == overlay.ProtocolSHIP {
@@ -294,13 +395,6 @@ func (a *Advertiser) ParseAdvertisement(outputScript *script.Script) (*oa.Advert
 }
 
 // --- helpers ---------------------------------------------------------
-
-// revocationUnlockerLen reserves space for the worst-case PushDrop
-// unlocker signature (DER ECDSA + sighash flag + push opcode). The
-// wallet's signAction path overrides this with the actual signed
-// unlocker; the reservation just ensures fee calculation has enough
-// slack so the tx isn't underfunded.
-const revocationUnlockerLen = 73
 
 // hydrateAdvertisements turns a list of canonical UTXOReferences into
 // canonical Advertisement entries by fetching each output's BEEF + script
