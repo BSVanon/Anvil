@@ -72,6 +72,9 @@ func main() {
 		case "overlay-migrate":
 			cmdOverlayMigrate(os.Args[2:])
 			return
+		case "prune-ads":
+			cmdPruneAds(os.Args[2:])
+			return
 		case "version", "--version", "-v":
 			// Minimal output so diagnostics.BinaryVersion() can parse the
 			// on-disk binary's version without starting the full node.
