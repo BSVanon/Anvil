@@ -312,3 +312,41 @@ func containsUint32(haystack []uint32, needle uint32) bool {
 	}
 	return false
 }
+
+// TestAdvertiser_FindAllAdvertisements_RecordSurvivesHydrationMiss is the
+// v3.1.3 flood regression: when a SHIP/SLAP record is indexed but its BEEF
+// can't be hydrated from anvilstorage, FindAllAdvertisements must STILL
+// return the ad (Domain + TopicOrService from the record) so the engine's
+// dedup recognises the topic as advertised. Before this fix, the ad was
+// dropped, the engine saw nothing advertised, and re-minted a fresh
+// (now-admitted+indexed) duplicate set every cycle. AnvilStorage is nil
+// here to make hydration impossible — the strongest form of the failure.
+func TestAdvertiser_FindAllAdvertisements_RecordSurvivesHydrationMiss(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	const (
+		dom  = "https://anvil-a.test"
+		txid = "deadbeef00000000000000000000000000000000000000000000000000000000"
+	)
+	shipStore := NewSHIPStorage(db)
+	if err := shipStore.StoreSHIPRecord(ctx, txid, 3, "02abcd", dom, "tm_uhrp"); err != nil {
+		t.Fatalf("seed SHIP record: %v", err)
+	}
+	a := &Advertiser{
+		HostingURL:   dom,
+		SHIPStore:    shipStore,
+		SLAPStore:    NewSLAPStorage(db),
+		AnvilStorage: nil, // hydration impossible
+	}
+
+	got, err := a.FindAllAdvertisements(overlay.ProtocolSHIP)
+	if err != nil {
+		t.Fatalf("FindAllAdvertisements: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected the indexed ad to survive the hydration miss, got %d ads (re-mint regression)", len(got))
+	}
+	if got[0].TopicOrService != "tm_uhrp" || got[0].Domain != dom || got[0].Protocol != overlay.ProtocolSHIP {
+		t.Fatalf("ad fields wrong for dedup match: %+v", got[0])
+	}
+}
