@@ -397,20 +397,14 @@ func (a *Advertiser) ParseAdvertisement(outputScript *script.Script) (*oa.Advert
 // --- helpers ---------------------------------------------------------
 
 // hydrateAdvertisements turns a list of canonical UTXOReferences into
-// canonical Advertisement entries by fetching each output's BEEF + script
-// from anvilstorage and parsing the SHIP/SLAP PushDrop. Skips entries
-// that fail to hydrate so the engine sees only valid advertisements.
-//
-// The fallback path (record present in local SHIP/SLAP store but BEEF
-// absent in anvilstorage — typical for migration-era records before
-// W-4-B's BEEF-fetch workstream) uses the canonical SHIP/SLAP record
-// itself to source TopicOrService + IdentityKey + Domain. This is
-// critical because engine.SyncAdvertisements (engine.go:914-918) matches
-// "already advertised" by Domain && TopicOrService; without
-// TopicOrService populated, every cycle would treat the record as
-// missing and re-advertise it, producing duplicate SHIP/SLAP outputs
-// on chain. Codex review 18af38d602483289 caught the original
-// implementation returning Domain-only fallbacks.
+// canonical Advertisement entries, sourcing Domain + TopicOrService from
+// each local SHIP/SLAP record (BEEF best-effort). An entry is skipped only
+// when no local record exists for it; a BEEF/anvilstorage hydration miss
+// never drops it, because engine.SyncAdvertisements (engine.go:914-918)
+// matches "already advertised" on Domain && TopicOrService alone — and
+// dropping an already-advertised ad makes the sync pass re-mint it every
+// cycle. Codex reviews 18af38d602483289 (TopicOrService must be populated)
+// and the v3.1.3 flood fix (hydration must not drop indexed ads).
 func (a *Advertiser) hydrateAdvertisements(ctx context.Context, refs []types.UTXOReference, protocol overlay.Protocol, topic string) []*oa.Advertisement {
 	out := make([]*oa.Advertisement, 0, len(refs))
 	for _, ref := range refs {
@@ -463,80 +457,52 @@ func (a *Advertiser) loadCanonicalRecord(ctx context.Context, ref types.UTXORefe
 	return "", "", nil
 }
 
-// hydrateAdvertisement turns a UTXOReference into a full canonical
-// Advertisement by fetching the output's BEEF + locking script from
-// anvilstorage and ParseAdvertisement-ing the script.
+// hydrateAdvertisement builds a canonical Advertisement for one of this
+// node's SHIP/SLAP records.
+//
+// CRITICAL: Domain + TopicOrService come from the canonical SHIP/SLAP
+// RECORD (loadCanonicalRecord), never from BEEF hydration, and the ad is
+// NEVER dropped for an anvilstorage/BEEF failure. engine.SyncAdvertisements
+// (engine.go:914-918) matches "already advertised" only on Domain &&
+// TopicOrService — both of which live in the record. Dropping an ad
+// because its BEEF won't hydrate makes the sync pass treat the topic as
+// unadvertised and re-mint it every cycle, which (once admission passes)
+// admits + indexes a fresh duplicate set each cycle — the SHIP/SLAP
+// duplicate flood. BEEF is attached best-effort below, for the revoke path
+// only (RevokeAdvertisements guards on nil BEEF).
 func (a *Advertiser) hydrateAdvertisement(ctx context.Context, ref types.UTXOReference, protocol overlay.Protocol, topic string) (*oa.Advertisement, error) {
-	if a.AnvilStorage == nil {
-		return nil, errors.New("federation: advertiser: nil anvil storage")
-	}
-	txidHash, err := chainhash.NewHashFromHex(ref.Txid)
-	if err != nil {
-		return nil, fmt.Errorf("parse txid: %w", err)
-	}
 	if ref.OutputIndex < 0 {
 		return nil, fmt.Errorf("negative output index %d", ref.OutputIndex)
 	}
-	outpoint := &transaction.Outpoint{Txid: *txidHash, Index: uint32(ref.OutputIndex)} //#nosec G115 -- negative guarded above; canonical UTXOReference uses int.
-	out, err := a.AnvilStorage.FindOutput(ctx, outpoint, &topic, nil, true)
+	topicOrService, identityKey, err := a.loadCanonicalRecord(ctx, ref, protocol)
 	if err != nil {
-		return nil, fmt.Errorf("find output: %w", err)
+		return nil, fmt.Errorf("load canonical record: %w", err)
 	}
-	if out == nil {
-		return nil, errors.New("output not found")
+	if topicOrService == "" {
+		// No local SHIP/SLAP record for this outpoint — genuinely unknown;
+		// skip rather than emit a partial that mismatches the engine filter.
+		return nil, errors.New("no local SHIP/SLAP record for outpoint")
 	}
-	if out.Beef == nil {
-		// BEEF-empty (post-W-4-B migration state) — output is in
-		// anvilstorage but its BEEF was never persisted (legacy engine
-		// didn't store BEEF after parsing). Recover the canonical
-		// fields by reading the local SHIP/SLAP record directly, since
-		// engine.SyncAdvertisements (engine.go:914-918) needs Domain
-		// AND TopicOrService to recognise the ad as "already exists".
-		// Without TopicOrService, the sync pass would create duplicate
-		// ads on every cycle. Codex review 18af38d602483289 caught the
-		// original implementation returning a TopicOrService-blank
-		// stub.
-		topicOrService, identityKey, recErr := a.loadCanonicalRecord(ctx, ref, protocol)
-		if recErr != nil {
-			return nil, fmt.Errorf("load fallback record: %w", recErr)
+	ad := &oa.Advertisement{
+		Protocol:       protocol,
+		IdentityKey:    identityKey,
+		Domain:         a.HostingURL,
+		TopicOrService: topicOrService,
+		OutputIndex:    uint32(ref.OutputIndex), //#nosec G115 -- negative guarded above; canonical UTXOReference uses int.
+	}
+	// Best-effort BEEF for RevokeAdvertisements. A hydration miss leaves
+	// ad.Beef nil but MUST NOT drop the ad — dedup is already satisfied by
+	// Domain + TopicOrService above.
+	if a.AnvilStorage != nil {
+		if txidHash, herr := chainhash.NewHashFromHex(ref.Txid); herr == nil {
+			outpoint := &transaction.Outpoint{Txid: *txidHash, Index: ad.OutputIndex}
+			if out, ferr := a.AnvilStorage.FindOutput(ctx, outpoint, &topic, nil, true); ferr == nil && out != nil && out.Beef != nil {
+				if beefBytes, berr := out.Beef.Bytes(); berr == nil {
+					ad.Beef = beefBytes
+				}
+			}
 		}
-		if topicOrService == "" {
-			// No local record either — skip rather than emitting a
-			// partial that would mismatch the engine's filter.
-			return nil, errors.New("BEEF empty and no local SHIP/SLAP record")
-		}
-		return &oa.Advertisement{
-			Protocol:       protocol,
-			IdentityKey:    identityKey,
-			Domain:         a.HostingURL,
-			TopicOrService: topicOrService,
-			OutputIndex:    outpoint.Index,
-			// Beef remains nil — RevokeAdvertisements detects this and
-			// surfaces a clear error rather than building an invalid
-			// spend transaction.
-		}, nil
 	}
-	beefBytes, err := out.Beef.Bytes()
-	if err != nil {
-		return nil, fmt.Errorf("serialize output BEEF: %w", err)
-	}
-	tx := out.Beef.FindTransactionByHash(&outpoint.Txid)
-	if tx == nil {
-		return nil, errors.New("output tx not in BEEF")
-	}
-	if int(outpoint.Index) >= len(tx.Outputs) {
-		return nil, errors.New("output index out of range")
-	}
-	lockingScript := tx.Outputs[outpoint.Index].LockingScript
-	ad, err := a.ParseAdvertisement(lockingScript)
-	if err != nil || ad == nil {
-		return nil, fmt.Errorf("parse advertisement: %w", err)
-	}
-	if ad.Protocol != protocol {
-		return nil, fmt.Errorf("protocol mismatch: want %s, got %s", protocol, ad.Protocol)
-	}
-	ad.Beef = beefBytes
-	ad.OutputIndex = outpoint.Index
 	return ad, nil
 }
 
