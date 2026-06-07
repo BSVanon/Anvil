@@ -10,12 +10,17 @@ import (
 )
 
 // handleSendMessage handles POST /sendMessage — send a message to a recipient.
-// The caller provides their own pubkey as `sender`. Auth token gates API access;
-// the sender field identifies who the message is from.
+// The sender is the BRC-31-authenticated caller identity (canonical messagebox
+// model); under the operator-token fallback the sender is the node identity.
 // BRC-33 pattern.
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if s.msgStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "messaging not enabled")
+		return
+	}
+
+	caller, ok := s.resolveMessageCaller(w, r)
+	if !ok {
 		return
 	}
 
@@ -39,11 +44,10 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "recipient must be 66-char compressed pubkey hex")
 		return
 	}
-	// Sender is always the node's identity for API-submitted messages.
-	// The node signs the forwarded message, so sender identity is verifiable.
-	// Apps that need a different sender identity should sign the message
-	// client-side and submit via the mesh gossip layer directly.
-	sender := s.identityPub
+	// Sender is the authenticated caller: their own identity under BRC-31, or
+	// the node identity under the operator-token fallback. Either way the
+	// forwarded message is signed by the node, so the hop is verifiable.
+	sender := caller.identityHex
 
 	msg := &messaging.Message{
 		Sender:     sender,
@@ -70,12 +74,18 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListMessages handles POST /listMessages — retrieve messages for
-// a specific recipient identity. The caller provides their pubkey.
-// Auth token gates API access; the recipient field scopes the query.
+// handleListMessages handles POST /listMessages — retrieve messages for the
+// caller. Under BRC-31 the query is strictly scoped to the authenticated
+// identity (you can only read your own inbox); under the operator-token
+// fallback the recipient may be supplied in the body (defaulting to the node).
 func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	if s.msgStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "messaging not enabled")
+		return
+	}
+
+	caller, ok := s.resolveMessageCaller(w, r)
+	if !ok {
 		return
 	}
 
@@ -97,11 +107,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "messageBox required")
 		return
 	}
-	// Default recipient to node identity if not provided.
-	recipient := req.Recipient
-	if recipient == "" {
-		recipient = s.identityPub
-	}
+	recipient := s.scopedRecipient(caller, req.Recipient)
 
 	msgs, err := s.msgStore.List(recipient, req.MessageBox)
 	if err != nil {
@@ -116,10 +122,17 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAcknowledgeMessage handles POST /acknowledgeMessage — delete messages
-// after receipt. Caller provides their recipient pubkey to scope deletion.
+// after receipt. Under BRC-31 deletion is strictly scoped to the authenticated
+// identity's inbox; under the operator-token fallback the recipient may be
+// supplied in the body (defaulting to the node).
 func (s *Server) handleAcknowledgeMessage(w http.ResponseWriter, r *http.Request) {
 	if s.msgStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "messaging not enabled")
+		return
+	}
+
+	caller, ok := s.resolveMessageCaller(w, r)
+	if !ok {
 		return
 	}
 
@@ -141,11 +154,7 @@ func (s *Server) handleAcknowledgeMessage(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "messageIds required")
 		return
 	}
-	// Default recipient to node identity if not provided.
-	recipient := req.Recipient
-	if recipient == "" {
-		recipient = s.identityPub
-	}
+	recipient := s.scopedRecipient(caller, req.Recipient)
 
 	n, err := s.msgStore.Acknowledge(recipient, req.MessageIDs)
 	if err != nil {

@@ -38,6 +38,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	anvilversion "github.com/BSVanon/Anvil/internal/version"
 	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
+	sdkwallet "github.com/bsv-blockchain/go-sdk/wallet"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	goSdkOverlay "github.com/bsv-blockchain/go-sdk/overlay"
 
@@ -764,6 +765,12 @@ func main() {
 		P2PBlockSource: p2pBlockFetcher,
 		MsgStore:   msgStore,
 		SigningKey: identityPrivKey,
+		Wallet: func() sdkwallet.Interface {
+			if nodeWallet != nil {
+				return nodeWallet.Wallet()
+			}
+			return nil
+		}(),
 		HeaderLookup: func(height int) string {
 			if height < 0 {
 				return ""
@@ -1033,67 +1040,6 @@ func autoMigrateLegacyOverlayKeys(db *leveldb.DB, logger *slog.Logger) error {
 			"lookup_backfill_errors", stats.LookupBackfillErrors)
 	}
 	return nil
-}
-
-// warnLegacyOverlayKeys probes the overlay LevelDB for entries under
-// the v2.x.x `ovl:` key family. If any legacy keys exist but no
-// corresponding `ovl3:` records exist, the operator has upgraded the
-// Anvil binary without running `anvil overlay-migrate`. Emit a loud
-// stderr warning with the exact command the operator needs to run.
-//
-// The function is warn-don't-abort: fresh installs have neither
-// family populated and must boot cleanly; operators may legitimately
-// choose to ignore legacy data and start fresh; and a transient DB
-// scan error must not stop the daemon.
-//
-// Count-based comparison instead of existence-based, per Codex review
-// 925149d6281f6b4b: "any ovl3: key exists" is too permissive — a
-// partially-completed migration (interrupted mid-run, or one that
-// exited with UnparseableLegacy > 0) would silently clear the warning
-// even though many ovl: records still have no ovl3: counterpart. We
-// instead count both families and only suppress the banner when the
-// v3 record count is >= the legacy count, which is the actual
-// "migration complete" condition (legacy keys are never removed, so a
-// successful migrate leaves both counts equal; a partial migrate
-// leaves v3 < legacy).
-func warnLegacyOverlayKeys(db *leveldb.DB, logger *slog.Logger) {
-	legacyCount := countKeysWithPrefix(db, "ovl:")
-	if legacyCount == 0 {
-		return
-	}
-	v3Count := countKeysWithPrefix(db, "ovl3:")
-	if v3Count >= legacyCount {
-		// All legacy records have a v3 counterpart (or more — v3 can
-		// also include records admitted natively post-migration). The
-		// migration is functionally complete; no banner needed.
-		return
-	}
-	// Partial or missing migration: v3Count < legacyCount, including
-	// the v3Count == 0 fresh-upgrade case.
-
-	const banner = `
-================================================================================
-  ANVIL v3 LEGACY DATA DETECTED — MIGRATION REQUIRED
-
-  This LevelDB contains v2.x.x overlay records (ovl: prefix) but no v3
-  canonical records (ovl3: prefix). The v3 engine cannot see legacy
-  data until you run the one-time backfill migration.
-
-  STOP THE DAEMON, then run:
-
-      anvil overlay-migrate
-
-  Once migrated, restart anvil. This warning will not appear again.
-
-  Read more: docs/operator/overlay-migration.md
-================================================================================
-`
-	if logger != nil {
-		logger.Warn("legacy overlay data needs migration — run 'anvil overlay-migrate'")
-	}
-	// Use the bare print so operators see the banner even when slog
-	// output is JSON-formatted.
-	fmt.Fprint(os.Stderr, banner)
 }
 
 // countKeysWithPrefix returns the number of LevelDB keys starting with

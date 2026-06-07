@@ -14,6 +14,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/gossip"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 	"github.com/BSVanon/Anvil/internal/messaging"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/mempool"
@@ -56,6 +57,9 @@ type Server struct {
 	signingKey       *ec.PrivateKey // node identity key for signing envelopes
 	healthChecks     []HealthCheck  // registered subsystem health checks
 	customCaps       []map[string]interface{}
+	nodeWallet       sdk.Interface     // go-sdk wallet for canonical BRC-31 messagebox auth (nil if mesh/wallet disabled)
+	msgSessions      *sessionTokenStore // 2a: per-identity SSE session tokens minted from a BRC-31 handshake
+	messageboxBRC31  bool               // true when messagebox routes are served behind canonical BRC-31 mutual auth
 }
 
 // HealthCheck is a named subsystem health probe. Returns a warning string
@@ -108,6 +112,13 @@ type ServerConfig struct {
 	ProofFetcher     *spv.ProofFetcher
 	MsgStore         *messaging.Store
 	SigningKey       *ec.PrivateKey // node identity key for signing envelopes
+	// Wallet is the node-identity go-sdk wallet. When non-nil, the BRC-33
+	// messagebox routes (/sendMessage, /listMessages, /acknowledgeMessage,
+	// /messages/subscribe) are served behind canonical BRC-31 mutual auth so
+	// each request is authenticated by the sender's own identity key — no
+	// shared operator secret in public clients. Nil (mesh/wallet disabled)
+	// keeps the legacy operator-token gate.
+	Wallet sdk.Interface
 
 	// CustomCapabilities are operator-declared capability entries merged into
 	// the /.well-known/anvil manifest. Lets an operator advertise AVOS oracle
@@ -170,6 +181,7 @@ func NewServer(cfg ServerConfig) *Server {
 		msgStore:         cfg.MsgStore,
 		signingKey:       cfg.SigningKey,
 		customCaps:       cfg.CustomCapabilities,
+		nodeWallet:       cfg.Wallet,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -260,11 +272,15 @@ func (s *Server) routes() {
 	// Node-signed publish (operator only — signs envelopes with node identity key)
 	s.mux.HandleFunc("POST /node/publish", s.requireAuth(s.handleNodePublish))
 
-	// BRC-33 messaging endpoints (point-to-point)
-	s.mux.HandleFunc("POST /sendMessage", s.requireAuth(s.handleSendMessage))
-	s.mux.HandleFunc("POST /listMessages", s.requireAuth(s.handleListMessages))
-	s.mux.HandleFunc("POST /acknowledgeMessage", s.requireAuth(s.handleAcknowledgeMessage))
-	s.mux.HandleFunc("GET /messages/subscribe", s.requireAuthSSE(s.handleMessageSubscribe))
+	// BRC-33 messaging endpoints (point-to-point). When a node wallet is
+	// available, serve them behind canonical BRC-31 mutual auth (per-identity,
+	// no shared secret in public clients); otherwise fall back to the operator
+	// token gate. See brc31_messagebox.go.
+	if s.nodeWallet != nil {
+		s.registerMessageboxBRC31()
+	} else {
+		s.registerMessageboxLegacy()
+	}
 }
 
 // openRead wraps a handler with CORS, rate limiting, token gating, and x402 payment gating.
