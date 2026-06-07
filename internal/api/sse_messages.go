@@ -70,23 +70,35 @@ func (h *messageHub) nextID() int64 {
 	return h.seqID.Add(1)
 }
 
-// handleMessageSubscribe is the SSE endpoint: GET /messages/subscribe?recipient=X&messageBox=Y
-// Requires auth. Pushes new messages as they arrive in real time.
+// handleMessageSubscribe is the SSE endpoint: GET /messages/subscribe?token=T&messageBox=Y
+// The stream is scoped to the caller's identity. Under BRC-31 (2a) the caller
+// first mints a per-identity session token via POST /messages/session and passes
+// it as ?token= (EventSource cannot perform the mutual-auth handshake itself);
+// the operator token is accepted as a broad, node-scoped fallback. Pushes new
+// messages as they arrive in real time.
 func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) {
 	if s.msgStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "messaging not enabled")
 		return
 	}
 
-	recipient := r.URL.Query().Get("recipient")
+	identity, scoped, ok := s.resolveSSECaller(w, r)
+	if !ok {
+		return
+	}
+
 	messageBox := r.URL.Query().Get("messageBox")
 	if messageBox == "" {
 		writeError(w, http.StatusBadRequest, "messageBox query parameter required")
 		return
 	}
-	// Default recipient to node identity if not provided.
-	if recipient == "" {
-		recipient = s.identityPub
+	// Scoped (session-token) callers stream only their own inbox; the operator
+	// fallback may target a query recipient, defaulting to the node identity.
+	recipient := identity
+	if !scoped {
+		if q := r.URL.Query().Get("recipient"); q != "" {
+			recipient = q
+		}
 	}
 
 	flusher, ok := w.(http.Flusher)

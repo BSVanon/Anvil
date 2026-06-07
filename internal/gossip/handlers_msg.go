@@ -12,36 +12,45 @@ import (
 	"github.com/BSVanon/Anvil/internal/messaging"
 )
 
-// MsgForwardPayload carries a signed point-to-point message for cross-node delivery.
+// MsgForwardPayload carries a point-to-point message for cross-node delivery.
+//
+// Sender attestation (canonical BRC-33 model): under canonical MessageBox the
+// SERVER establishes the sender from BRC-31 auth at submission and vouches for
+// it (message-box-server sendMessage.ts: `sender = req.auth.identityKey`); there
+// is no per-message end-to-end signature. Anvil mirrors that across its mesh: the
+// origin node — which authenticated the sender via BRC-31 — sets OriginNode to
+// its own identity and signs the forward with its node key over a digest that
+// binds OriginNode + the attested Sender + content. Receivers verify against
+// OriginNode and trust its sender attestation (the same inter-server trust
+// BRC-34 federation relies on). msg.Sender is therefore the real user identity,
+// not the relay.
+//
+// TRUST ASSUMPTION (important — not end-to-end authenticity): this proves only
+// that *some* mesh peer with a valid OriginNode signature vouched for msg.Sender.
+// Any authenticated mesh peer can attest an arbitrary Sender; a receiving node
+// trusts its federation peers' attestations. This is intentionally weaker than
+// direct BRC-31 user auth (same node) and weaker than BRC-34 overlay-routed
+// host-to-host delivery. Do NOT treat a cross-node forwarded Sender as proof of
+// cross-operator user identity. Same-node delivery (the DEX v1 single-node path)
+// has full BRC-31 user auth; authoritative cross-node sender semantics await
+// BRC-34 overlay-routed forwarding (tracked follow-up).
 type MsgForwardPayload struct {
-	Message   messaging.Message `json:"message"`
-	Signature string            `json:"signature"` // DER hex, sender signs messageID:recipient:messageBox:body:timestamp
+	Message    messaging.Message `json:"message"`
+	Signature  string            `json:"signature"`            // DER hex over messageForwardDigest(msg, originNode)
+	OriginNode string            `json:"originNode,omitempty"` // node that authenticated the sender + signed (empty = legacy pre-v3.2.0)
 }
 
-// signMessage computes a SHA-256 digest over the message fields and signs it.
-func signMessage(msg *messaging.Message, key *ec.PrivateKey) (string, error) {
-	digest := messageDigest(msg)
-	sig, err := key.Sign(digest[:])
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(sig.Serialize()), nil
-}
-
-// verifyMessageSignature checks the sender's signature over message fields.
-func verifyMessageSignature(msg *messaging.Message, sigHex string) bool {
-	if sigHex == "" || msg.Sender == "" {
+// verifyForwardSignature validates a forwarded message. v3.2.0+ payloads carry
+// OriginNode: the signature is the origin node's, verified against the OriginNode
+// key over a digest that binds OriginNode + Sender + content (so an intermediate
+// relay cannot alter the attested sender without invalidating the signature).
+// Legacy payloads (no OriginNode) keep the pre-v3.2.0 contract: the sender signed,
+// verified against msg.Sender.
+func verifyForwardSignature(fwd *MsgForwardPayload) bool {
+	if fwd == nil || fwd.Signature == "" {
 		return false
 	}
-	sigBytes, err := hex.DecodeString(sigHex)
-	if err != nil {
-		return false
-	}
-	pubBytes, err := hex.DecodeString(msg.Sender)
-	if err != nil {
-		return false
-	}
-	pub, err := ec.PublicKeyFromBytes(pubBytes)
+	sigBytes, err := hex.DecodeString(fwd.Signature)
 	if err != nil {
 		return false
 	}
@@ -49,10 +58,36 @@ func verifyMessageSignature(msg *messaging.Message, sigHex string) bool {
 	if err != nil {
 		return false
 	}
+	msg := &fwd.Message
+	if fwd.OriginNode != "" {
+		pub, err := pubKeyFromHex(fwd.OriginNode)
+		if err != nil {
+			return false
+		}
+		digest := messageForwardDigest(msg, fwd.OriginNode)
+		return sig.Verify(digest[:], pub)
+	}
+	// Legacy: sender-signed.
+	if msg.Sender == "" {
+		return false
+	}
+	pub, err := pubKeyFromHex(msg.Sender)
+	if err != nil {
+		return false
+	}
 	digest := messageDigest(msg)
 	return sig.Verify(digest[:], pub)
 }
 
+func pubKeyFromHex(h string) (*ec.PublicKey, error) {
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		return nil, err
+	}
+	return ec.PublicKeyFromBytes(b)
+}
+
+// messageDigest is the legacy (pre-v3.2.0) content digest: sender signs this.
 func messageDigest(msg *messaging.Message) [32]byte {
 	canonical := msg.MessageID + "\n" +
 		msg.Recipient + "\n" +
@@ -62,25 +97,47 @@ func messageDigest(msg *messaging.Message) [32]byte {
 	return sha256.Sum256([]byte(canonical))
 }
 
-// ForwardMessage sends a signed message to peers for cross-node delivery.
+// messageForwardDigest binds the attesting origin node AND the attested sender to
+// the message content, so a relay can neither forge the origin attestation nor
+// swap the claimed sender without breaking the origin node's signature.
+func messageForwardDigest(msg *messaging.Message, originNode string) [32]byte {
+	canonical := originNode + "\n" +
+		msg.Sender + "\n" +
+		msg.MessageID + "\n" +
+		msg.Recipient + "\n" +
+		msg.MessageBox + "\n" +
+		msg.Body + "\n" +
+		fmt.Sprintf("%d", msg.Timestamp)
+	return sha256.Sum256([]byte(canonical))
+}
+
+// ForwardMessage sends a message to peers for cross-node delivery, attesting the
+// BRC-31-authenticated sender with this node's identity (origin-node attestation,
+// per the canonical server-vouches-for-sender model). msg.Sender carries the real
+// user identity; this node signs the forward so peers can verify the attestation.
 func (m *Manager) ForwardMessage(msg *messaging.Message) {
 	if msg == nil {
 		return
 	}
 
-	// Sign the message with this node's identity key.
-	var sigHex string
+	// This node authenticated the sender (BRC-31) and attests it: OriginNode is
+	// our identity, and we sign over (OriginNode + Sender + content).
+	var sigHex, originNode string
 	if m.identityKey != nil {
-		var err error
-		sigHex, err = signMessage(msg, m.identityKey)
+		originNode = hex.EncodeToString(m.identityKey.PubKey().Compressed())
+		digest := messageForwardDigest(msg, originNode)
+		sig, err := m.identityKey.Sign(digest[:])
 		if err != nil {
 			m.logger.Warn("failed to sign message for forwarding", "error", err)
+		} else {
+			sigHex = hex.EncodeToString(sig.Serialize())
 		}
 	}
 
 	payload, err := Encode(MsgForward, MsgForwardPayload{
-		Message:   *msg,
-		Signature: sigHex,
+		Message:    *msg,
+		Signature:  sigHex,
+		OriginNode: originNode,
 	})
 	if err != nil {
 		m.logger.Warn("failed to encode message forward", "error", err)
@@ -147,13 +204,15 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	m.seen[dedup] = struct{}{}
 	m.seenMu.Unlock()
 
-	// Require and verify sender signature. Reject unsigned forwards
-	// to prevent sender identity forgery by authenticated peers.
+	// Require and verify the forward signature. v3.2.0+ forwards are signed by
+	// the origin node attesting the BRC-31 sender (verified against OriginNode);
+	// legacy forwards are sender-signed (verified against msg.Sender). Reject
+	// unsigned/invalid forwards to prevent sender-identity forgery.
 	if fwd.Signature == "" {
 		m.logger.Debug("forwarded message rejected: no signature")
 		return nil
 	}
-	if !verifyMessageSignature(msg, fwd.Signature) {
+	if !verifyForwardSignature(&fwd) {
 		m.logger.Warn("forwarded message signature invalid",
 			"sender", msg.Sender[:16], "recipient", msg.Recipient[:16])
 		return nil
