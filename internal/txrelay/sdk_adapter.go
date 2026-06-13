@@ -114,25 +114,28 @@ func (a *SDKBroadcaster) BroadcastCtx(_ context.Context, tx *transaction.Transac
 		}
 	}
 
-	// ARC propagation is best-effort. Anything from "ARC not configured"
-	// to "ARC returned REJECTED" is logged but does not abort the
-	// engine's Submit — the tx is already in the local mempool and the
-	// admission has been committed once the engine's caller sees the
-	// returned Success.
-	if arcResult, arcErr := a.inner.BroadcastToARC(raw); arcErr != nil {
-		if a.logger != nil {
-			a.logger.Warn("ARC propagation failed (admission unaffected)",
-				"txid", txid,
-				"error", arcErr)
+	// ARC propagation is best-effort AND fire-and-forget. The engine calls
+	// this synchronously inside Submit (before admission is signalled), so a
+	// slow or unreachable ARC must never add latency to — let alone hang —
+	// /overlay/submit. The tx is already in the local mempool; ARC
+	// failures/rejections are logged only and do not affect admission. Running
+	// it in a goroutine keeps the admission response independent of ARC health.
+	go func() {
+		if arcResult, arcErr := a.inner.BroadcastToARC(raw); arcErr != nil {
+			if a.logger != nil {
+				a.logger.Warn("ARC propagation failed (admission unaffected)",
+					"txid", txid,
+					"error", arcErr)
+			}
+		} else if arcResult != nil && !arcResult.Accepted {
+			if a.logger != nil {
+				a.logger.Warn("ARC rejected tx (admission unaffected)",
+					"txid", txid,
+					"status", arcResult.Status,
+					"message", arcResult.Message)
+			}
 		}
-	} else if arcResult != nil && !arcResult.Accepted {
-		if a.logger != nil {
-			a.logger.Warn("ARC rejected tx (admission unaffected)",
-				"txid", txid,
-				"status", arcResult.Status,
-				"message", arcResult.Message)
-		}
-	}
+	}()
 
 	return &transaction.BroadcastSuccess{
 		Txid:    localResult.TxID,

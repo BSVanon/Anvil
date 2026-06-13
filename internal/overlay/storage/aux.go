@@ -12,6 +12,8 @@ import (
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/syndtr/goleveldb/leveldb"
+
+	"github.com/BSVanon/Anvil/internal/overlay/overlayctx"
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
@@ -140,6 +142,13 @@ func (s *Storage) InsertAppliedTransaction(
 	if err := s.db.Put(appliedKey(tx.Topic, tx.Txid), nil, nil); err != nil {
 		return fmt.Errorf("storage: put applied: %w", err)
 	}
+	// InsertAppliedTransaction is the engine's final commit step for this topic:
+	// the admitted outputs are now durably persisted and indexed (discoverable).
+	// Signal the legacy /overlay/submit handler (if it registered a notifier on
+	// the context) that THIS topic is durably committed, so it can ack once every
+	// submitted topic has committed while best-effort cross-node propagation
+	// finishes in the background.
+	overlayctx.NotifyTopicCommitted(ctx, tx.Topic)
 	return nil
 }
 
@@ -157,6 +166,14 @@ func (s *Storage) DoesAppliedTransactionExist(
 	}
 	_, err := s.db.Get(appliedKey(tx.Topic, tx.Txid), nil)
 	if err == nil {
+		// Already applied to this topic in a prior submit — i.e. durably
+		// committed before this request even arrived. The engine treats it as a
+		// duplicate and skips the commit loop for this topic, so it would never
+		// reach InsertAppliedTransaction. Signal the legacy /overlay/submit
+		// handler here so its all-topics-committed accounting still completes for
+		// re-submits (which is exactly what a client retry after a slow response
+		// looks like). No-op when no notifier is registered.
+		overlayctx.NotifyTopicCommitted(ctx, tx.Topic)
 		return true, nil
 	}
 	if errors.Is(err, leveldb.ErrNotFound) {
