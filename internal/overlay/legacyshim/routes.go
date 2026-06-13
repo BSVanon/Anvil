@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	"github.com/bsv-blockchain/go-sdk/transaction"
+
+	"github.com/BSVanon/Anvil/internal/overlay/overlayctx"
 )
 
 // --- legacy wire types (kept structurally identical to the existing
@@ -187,16 +190,171 @@ func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canonicalSteak, err := s.Engine.Submit(r.Context(), overlay.TaggedBEEF{
-		Beef:   beefBytes,
-		Topics: topicList,
-	}, engine.SubmitModeCurrent, nil)
-	if err != nil {
-		writeLegacyError(w, http.StatusInternalServerError, err.Error())
-		return
+	// The engine's Submit performs local admission + per-topic durable commit and
+	// THEN runs best-effort cross-node SHIP/SLAP propagation synchronously. That
+	// propagation cannot be bounded by our context: the go-sdk topic facilitator
+	// ignores the caller context and uses its own ~30s-per-peer background
+	// timeout (overlay/topic/facilitator.go:35). So a slow or dead federation
+	// peer used to hang /overlay/submit until that 30s elapsed and the upstream
+	// surfaced a 500 — even though the order was already committed locally and
+	// discoverable on this node.
+	//
+	// We run Submit on a goroutine whose context is (a) detached from the client
+	// connection — a disconnect can't abort a half-finished commit — and (b)
+	// capped so it can't outlive the upstream peer timeout. The engine commits
+	// topics ONE AT A TIME (commitAdmittedOutputs loops Topics); the storage layer
+	// fires a per-topic notifier (overlayctx) as each topic becomes durable —
+	// freshly via InsertAppliedTransaction, or already-durable (a re-submit) via
+	// DoesAppliedTransactionExist. We ack success only once EVERY submitted topic
+	// has committed, so a 200 always means the WHOLE submit is durable — never a
+	// partial commit where a later topic failed after an earlier one succeeded.
+	// Best-effort cross-node propagation then finishes in the background. If any
+	// topic's commit fails (or the tx is rejected before commit), that topic never
+	// signals, coverage never completes, and the engine's error arrives via `done`
+	// and is surfaced.
+	bgCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), submitBackgroundCap)
+
+	// Distinct topics we must see durably committed before acking. A buffered
+	// channel sized to the submit means the engine goroutine never blocks
+	// signalling, and a non-blocking send keeps it safe even on degenerate
+	// duplicate-topic input (which then simply falls through to `done`).
+	expected := distinctTopicSet(topicList)
+	committedTopics := make(chan string, len(topicList)+1)
+	bgCtx = overlayctx.WithTopicCommitNotifier(bgCtx, func(topic string) {
+		select {
+		case committedTopics <- topic:
+		default:
+		}
+	})
+
+	steakReady := make(chan overlay.Steak, 1)
+	done := make(chan submitOutcome, 1)
+	go func() {
+		defer cancel()
+		steak, err := s.Engine.Submit(bgCtx, overlay.TaggedBEEF{
+			Beef:   beefBytes,
+			Topics: topicList,
+		}, engine.SubmitModeCurrent, func(st *overlay.Steak) {
+			// Fires after admission identifies outputs for all topics, before the
+			// commit loop. The steak map is fully built and stable here; snapshot
+			// it (race-free, pre-commit) so we have admittance instructions to
+			// return once every topic is committed. (The commit loop later appends
+			// CoinsRemoved to entries that spend prior overlay coins; that field is
+			// omitempty and unread by current callers, and the authoritative
+			// `done` steak carries it whenever propagation isn't slow.)
+			if st != nil {
+				select {
+				case steakReady <- cloneSteak(*st):
+				default:
+				}
+			}
+		})
+		done <- submitOutcome{steak: steak, err: err}
+	}()
+
+	respond := func(out submitOutcome) {
+		if out.err != nil {
+			writeLegacyError(w, statusForSubmitError(out.err), out.err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, canonicalToLegacySteak(out.steak))
 	}
 
-	writeJSON(w, http.StatusOK, canonicalToLegacySteak(canonicalSteak))
+	seen := make(map[string]struct{}, len(expected))
+	for {
+		select {
+		case out := <-done:
+			// Engine fully returned: fast-path success (propagation was quick or a
+			// no-op), or an error — rejected before admission, or a commit failure
+			// where some topic never signalled. Authoritative either way.
+			respond(out)
+			return
+		case topic := <-committedTopics:
+			if _, ok := expected[topic]; !ok {
+				continue
+			}
+			seen[topic] = struct{}{}
+			if len(seen) < len(expected) {
+				continue
+			}
+			// Every submitted topic is durably committed. Return without waiting on
+			// best-effort propagation. Prefer the authoritative engine result if
+			// it's already in (carries full CoinsRemoved); otherwise the pre-commit
+			// admittance snapshot, while propagation finishes in the background.
+			select {
+			case out := <-done:
+				respond(out)
+			case steak := <-steakReady:
+				writeJSON(w, http.StatusOK, canonicalToLegacySteak(steak))
+			}
+			return
+		case <-r.Context().Done():
+			// Client gave up; the background submit continues to durable completion.
+			return
+		}
+	}
+}
+
+// submitBackgroundCap bounds the detached submit goroutine so it cannot outlive
+// the upstream per-peer propagation timeout (go-sdk facilitator, ~30s) and leak.
+const submitBackgroundCap = 45 * time.Second
+
+// submitOutcome is the result of a background engine.Submit.
+type submitOutcome struct {
+	steak overlay.Steak
+	err   error
+}
+
+// distinctTopicSet collapses the submitted topic list to the set of distinct
+// names the engine will commit — the coverage target the handler waits for
+// before acking success.
+func distinctTopicSet(topics []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(topics))
+	for _, t := range topics {
+		set[t] = struct{}{}
+	}
+	return set
+}
+
+// cloneSteak deep-copies a steak so the value handed to the HTTP response is a
+// stable snapshot. It is invoked inside onSteakReady (before the engine's
+// commit step mutates the instructions, e.g. appending CoinsRemoved), so the
+// copy is race-free.
+func cloneSteak(s overlay.Steak) overlay.Steak {
+	if s == nil {
+		return nil
+	}
+	out := make(overlay.Steak, len(s))
+	for topic, inst := range s {
+		if inst == nil {
+			out[topic] = nil
+			continue
+		}
+		cp := *inst
+		cp.OutputsToAdmit = append([]uint32(nil), inst.OutputsToAdmit...)
+		cp.CoinsToRetain = append([]uint32(nil), inst.CoinsToRetain...)
+		cp.CoinsRemoved = append([]uint32(nil), inst.CoinsRemoved...)
+		out[topic] = &cp
+	}
+	return out
+}
+
+// statusForSubmitError maps an engine.Submit error to the right HTTP status.
+// Bad client input (unknown topic, malformed tx) is a 4xx — not a node fault —
+// so callers get an actionable signal instead of an opaque 500. (Before this,
+// every Submit error became a 500, which made a simple topic-name mismatch look
+// like a node outage.)
+func statusForSubmitError(err error) int {
+	switch {
+	case errors.Is(err, engine.ErrUnknownTopic):
+		return http.StatusBadRequest // 400: caller submitted to a topic this node doesn't host
+	case errors.Is(err, engine.ErrInvalidBeef), errors.Is(err, engine.ErrInvalidTransaction):
+		return http.StatusUnprocessableEntity // 422: malformed / invalid transaction
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout // 504: admission outlasted the cap (pathological — admission is local)
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 // canonicalToLegacySteak narrows the canonical overlay.Steak (uint32 +

@@ -18,10 +18,25 @@
 package legacyshim
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
+	"github.com/bsv-blockchain/go-sdk/overlay"
+	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 )
+
+// overlayEngine is the subset of *engine.Engine the shim depends on. It is an
+// interface (rather than the concrete *engine.Engine) so the submit path can be
+// tested against a slow/hanging engine — proving /overlay/submit returns within
+// its grace window even when cross-node propagation blocks. The canonical
+// *engine.Engine satisfies this exactly.
+type overlayEngine interface {
+	Submit(ctx context.Context, taggedBEEF overlay.TaggedBEEF, mode engine.SumbitMode, onSteakReady engine.OnSteakReady) (overlay.Steak, error)
+	Lookup(ctx context.Context, question *lookup.LookupQuestion) (*lookup.LookupAnswer, error)
+	ListTopicManagers() map[string]*overlay.MetaData
+	ListLookupServiceProviders() map[string]*overlay.MetaData
+}
 
 // Shim owns the legacy HTTP handlers. It is constructed once at boot
 // and wraps the canonical engine + a per-lookup-service parser table
@@ -30,7 +45,7 @@ import (
 // have to drop Metadata entirely, which would break Anvil-Swap's
 // discovery code (per docs/internal/APP_MIGRATION_TODO.md).
 type Shim struct {
-	Engine *engine.Engine
+	Engine overlayEngine
 
 	// Parsers maps lookup-service name → ScriptParser that recovers the
 	// per-output metadata Anvil legacy callers expect on
