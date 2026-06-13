@@ -95,6 +95,25 @@ func (a *SDKBroadcaster) BroadcastCtx(_ context.Context, tx *transaction.Transac
 	raw := tx.Bytes()
 	txid := tx.TxID().String()
 
+	// ARC needs the transaction in EXTENDED FORMAT (BIP-239 / EF): each input
+	// annotated with its source locking script + satoshis. A bare raw tx makes
+	// ARC try to fetch the parents itself, and when it can't it rejects with
+	// "460 Missing input scripts: ... parent transaction not found" (the failure
+	// the DEX reported). The submitted BEEF carries those parents — the engine's
+	// own SPV verification depends on them — so tx.EF() can build EF here. We
+	// compute it synchronously (before the goroutine) so the goroutine captures
+	// an immutable byte snapshot and never races the engine's continued use of
+	// tx. EF carries a 0x0000EF marker so ARC auto-detects it; if a parent is
+	// genuinely absent we fall back to raw — no worse than before, still
+	// best-effort.
+	arcWire := raw
+	if ef, efErr := tx.EF(); efErr == nil {
+		arcWire = ef
+	} else if a.logger != nil {
+		a.logger.Debug("ARC: extended format unavailable, sending raw tx",
+			"txid", txid, "error", efErr)
+	}
+
 	// Local mempool admission — the canonical success boundary.
 	// BroadcastRaw adds to the local mempool + mesh-announces; only
 	// fails for malformed tx bytes (which a *Transaction by definition
@@ -121,7 +140,7 @@ func (a *SDKBroadcaster) BroadcastCtx(_ context.Context, tx *transaction.Transac
 	// failures/rejections are logged only and do not affect admission. Running
 	// it in a goroutine keeps the admission response independent of ARC health.
 	go func() {
-		if arcResult, arcErr := a.inner.BroadcastToARC(raw); arcErr != nil {
+		if arcResult, arcErr := a.inner.BroadcastToARC(arcWire); arcErr != nil {
 			if a.logger != nil {
 				a.logger.Warn("ARC propagation failed (admission unaffected)",
 					"txid", txid,

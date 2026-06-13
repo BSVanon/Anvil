@@ -31,6 +31,7 @@ import (
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/overlay/federation"
 	"github.com/BSVanon/Anvil/internal/overlay/legacyshim"
+	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
 	"github.com/BSVanon/Anvil/internal/overlay/v3engine"
 	"github.com/BSVanon/Anvil/internal/p2p"
@@ -401,7 +402,11 @@ func main() {
 					shipTrackers = append(shipTrackers, lookup.DEFAULT_SLAP_TRACKERS...)
 				}
 				adv := federation.NewAdvertiser(nodeWallet.Wallet(), cfg.Node.PublicURL, shipStore, slapStore, anvilStore)
-				resolver := engine.NewLookupResolverWithNetwork(overlayNetworkFromBSV(cfg))
+				// peerhygiene.NewResolver mirrors engine.NewLookupResolverWithNetwork
+				// but routes every per-host lookup through a hygiene Facilitator, so
+				// dead SLAP/SHIP peers get skipped/backed-off instead of re-queried on
+				// every GASP sync + lookup resolution (the federation thrash the DEX saw).
+				resolver := peerhygiene.NewResolver(overlayNetworkFromBSV(cfg), logger)
 				resolver.SetSLAPTrackers(slapTrackers)
 				v3Eng.Advertiser = adv
 				v3Eng.LookupResolver = resolver
