@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
@@ -467,16 +468,39 @@ func (s *Storage) hydrate(out *engine.Output, includeBEEF bool) error {
 	out.ConsumedBy = consumers
 	if includeBEEF {
 		if blob, err := s.db.Get(beefKey(&op.Txid), nil); err == nil {
-			beef, perr := transaction.NewBeefFromBytes(blob)
+			beef, perr := safeNewBeefFromBytes(blob)
 			if perr != nil {
-				return fmt.Errorf("storage: parse beef: %w", perr)
+				// A corrupt/unparseable BEEF blob must NOT fail the whole lookup:
+				// one bad offer would 502 every query that scans it (the go-sdk
+				// parser panics on malformed input). Skip BEEF for this output —
+				// the engine drops outputs whose Beef is nil from the results —
+				// and log it so the bad entry can be pruned.
+				slog.Warn("storage: output has unparseable BEEF, skipping from hydration",
+					"txid", op.Txid.String(), "vout", op.Index, "error", perr)
+			} else {
+				out.Beef = beef
 			}
-			out.Beef = beef
 		} else if !errors.Is(err, leveldb.ErrNotFound) {
 			return fmt.Errorf("storage: load beef: %w", err)
 		}
 	}
 	return nil
+}
+
+// safeNewBeefFromBytes wraps go-sdk's NewBeefFromBytes, which can PANIC (not
+// merely return an error) on a malformed or truncated BEEF blob — it trusts an
+// embedded transaction count and indexes out of range (observed in the field:
+// "index out of range [210] with length 1"). A single corrupt stored blob must
+// not crash an entire lookup, so we recover and surface it as an ordinary error
+// the caller can skip.
+func safeNewBeefFromBytes(blob []byte) (beef *transaction.Beef, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			beef = nil
+			err = fmt.Errorf("BEEF parse panicked: %v", r)
+		}
+	}()
+	return transaction.NewBeefFromBytes(blob)
 }
 
 // decodeOutpointBlob splits a concatenated 36-byte-per-outpoint blob.
