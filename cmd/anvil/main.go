@@ -30,6 +30,7 @@ import (
 	anvilmsg "github.com/BSVanon/Anvil/internal/messaging"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/overlay/federation"
+	"github.com/BSVanon/Anvil/internal/overlay/gaspstatus"
 	"github.com/BSVanon/Anvil/internal/overlay/legacyshim"
 	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
@@ -234,6 +235,7 @@ func main() {
 	var v3Eng *engine.Engine
 	var v3Handlers *v3engine.Handlers
 	var legacyShim *legacyshim.Shim
+	var gaspTracker *gaspstatus.Tracker
 	var shipStore *federation.SHIPStorage
 	var slapStore *federation.SLAPStorage
 	var anvilStore *anvilstorage.Storage
@@ -302,10 +304,28 @@ func main() {
 			log.Fatalf("v3 canonical engine: %v", err)
 		}
 		v3Handlers = v3engine.NewHandlers(v3Eng)
+		gaspInterval := cfg.Overlay.GASPSyncIntervalSecs
+		if gaspInterval <= 0 {
+			gaspInterval = 1800
+		}
+		gaspTracker = gaspstatus.New(gaspInterval)
 		legacyShim = &legacyshim.Shim{
 			Engine:        v3Eng,
 			Parsers:       legacyshim.DefaultParsers(),
 			ServiceTopics: legacyshim.DefaultServiceTopics(),
+			// /overlay/query readiness headers: report how current+complete this
+			// node's federation-synced view is, so callers can tell "ready +
+			// genuinely absent" from "not yet synced". gaspTracker is flipped to
+			// enabled + stamped by runGASPSync once the sync loop launches.
+			SyncStatus: func() legacyshim.OverlaySyncStatus {
+				s := gaspTracker.Snapshot()
+				return legacyshim.OverlaySyncStatus{
+					GASPEnabled:      s.Enabled,
+					GASPInitialDone:  s.InitialSyncDone,
+					GASPLastSyncUnix: s.LastSyncUnix,
+					GASPIntervalSecs: s.IntervalSecs,
+				}
+			},
 		}
 		log.Printf("v3 canonical engine wired (%d topics, %d lookup services)",
 			len(v3Eng.ListTopicManagers()), len(v3Eng.ListLookupServiceProviders()))
@@ -422,7 +442,10 @@ func main() {
 				// each subscribed topic. Both gated on
 				// EnableGASPSync, both safe to run periodically.
 				go runSyncAdvertisements(context.Background(), v3Eng, logger, cfg.Overlay.AdvertiseIntervalSecs)
-				go runGASPSync(context.Background(), v3Eng, logger, cfg.Overlay.GASPSyncIntervalSecs)
+				if gaspTracker != nil {
+					gaspTracker.MarkEnabled()
+				}
+				go runGASPSync(context.Background(), v3Eng, logger, cfg.Overlay.GASPSyncIntervalSecs, gaspTracker)
 			} else if v3Eng != nil && !cfg.Overlay.EnableGASPSync {
 				log.Printf("v3 federation disabled (cfg.Overlay.EnableGASPSync = false); GASP routes still serve inbound requests")
 			}
@@ -968,12 +991,14 @@ func runSyncAdvertisements(ctx context.Context, eng *engine.Engine, logger *slog
 // degrading freshness, since topic admissions aren't high-rate. 0 or
 // unset → default 1800. Operators wanting tighter discovery can dial
 // down; aim for 60s as a practical floor.
-func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger, intervalSecs int) {
+func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger, intervalSecs int, tracker *gaspstatus.Tracker) {
 	if intervalSecs <= 0 {
 		intervalSecs = 1800
 	}
 	if err := eng.StartGASPSync(ctx); err != nil {
 		logger.Error("initial StartGASPSync failed", "error", err)
+	} else if tracker != nil {
+		tracker.RecordSuccess()
 	}
 	logger.Info("GASPSync loop started", "interval_secs", intervalSecs)
 	ticker := time.NewTicker(time.Duration(intervalSecs) * time.Second)
@@ -985,6 +1010,8 @@ func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger, i
 		case <-ticker.C:
 			if err := eng.StartGASPSync(ctx); err != nil {
 				logger.Error("StartGASPSync failed", "error", err)
+			} else if tracker != nil {
+				tracker.RecordSuccess()
 			}
 		}
 	}

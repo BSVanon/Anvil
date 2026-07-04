@@ -64,6 +64,28 @@ type Shim struct {
 	// MaxBodyBytes caps request body size on the legacy routes. Zero ⇒
 	// default (64 MiB), matching the canonical Submit limit.
 	MaxBodyBytes int64
+
+	// SyncStatus, when set, makes /overlay/query emit X-Overlay-* readiness
+	// headers describing how current + complete this node's federation-synced
+	// view is. A lookup is local-only, so a 200-empty answer is only trustworthy
+	// as "genuinely absent" once the node has completed at least one federation
+	// sync; these headers let a caller (e.g. a wallet gating a funds decision)
+	// tell "ready + absent" from "not ready yet" atomically with the answer.
+	// Nil ⇒ no headers emitted (unchanged legacy behaviour).
+	SyncStatus func() OverlaySyncStatus
+}
+
+// OverlaySyncStatus is a snapshot of this node's federation-sync state, surfaced
+// as X-Overlay-* response headers on /overlay/query. GASPEnabled reports whether
+// federation sync is wired+running; GASPInitialDone whether at least one sync has
+// completed; GASPLastSyncUnix the last successful sync (0 = never); and
+// GASPIntervalSecs the configured cadence (for a caller's freshness gate, e.g.
+// treat the view as stale when now - GASPLastSyncUnix exceeds 2×GASPIntervalSecs).
+type OverlaySyncStatus struct {
+	GASPEnabled      bool
+	GASPInitialDone  bool
+	GASPLastSyncUnix int64
+	GASPIntervalSecs int
 }
 
 // ScriptParser is the function signature for a single topic's
