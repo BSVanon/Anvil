@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
@@ -391,6 +392,27 @@ func uint32SliceToInt(in []uint32) []int {
 
 // --- POST /overlay/query -------------------------------------------------
 
+// writeSyncHeaders emits the X-Overlay-* readiness headers describing this
+// node's federation-sync state, so a caller can tell a settled "genuinely
+// absent" answer from an incomplete one (cold start / mid-sync / sync
+// disabled). No-op when SyncStatus is unwired. Must be called before the
+// response status line is written. The X-Overlay-* set is added to
+// Access-Control-Expose-Headers by the CORS wrapper so browser callers can
+// read them.
+func (s *Shim) writeSyncHeaders(w http.ResponseWriter) {
+	if s.SyncStatus == nil {
+		return
+	}
+	st := s.SyncStatus()
+	h := w.Header()
+	h.Set("X-Overlay-Gasp-Enabled", strconv.FormatBool(st.GASPEnabled))
+	h.Set("X-Overlay-Gasp-Initial-Sync-Done", strconv.FormatBool(st.GASPInitialDone))
+	h.Set("X-Overlay-Gasp-Interval-Secs", strconv.Itoa(st.GASPIntervalSecs))
+	if st.GASPLastSyncUnix > 0 {
+		h.Set("X-Overlay-Gasp-Last-Sync-Unix", strconv.FormatInt(st.GASPLastSyncUnix, 10))
+	}
+}
+
 // Query translates a legacy lookup body into the canonical
 // lookup.LookupQuestion, calls engine.Lookup, then rebuilds the legacy
 // LookupAnswer shape — including the Metadata field on each output,
@@ -399,6 +421,10 @@ func uint32SliceToInt(in []uint32) []int {
 //
 // Freeform answers (LookupAnswer.Result) pass through verbatim.
 func (s *Shim) Query(w http.ResponseWriter, r *http.Request) {
+	// Emit readiness headers before anything writes the status line, so the
+	// caller's answer and the node's sync-state are bound atomically.
+	s.writeSyncHeaders(w)
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBody()))
 	if err != nil {
 		writeLegacyError(w, http.StatusBadRequest, "failed to read body")
