@@ -207,6 +207,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /mesh/nodes", cors(s.handleMeshNodes))
 	s.mux.HandleFunc("GET /headers/tip", s.openRead(s.handleHeadersTip))
 	s.mux.HandleFunc("GET /headers/range", s.openRead(s.handleHeadersRange))
+	// Chaintracks-compatible SPV header source for the SendBSV wallet's
+	// unmodified canonical ChaintracksServiceClient (see handlers_chaintracks.go).
+	// Root-mounted with the {status,value} envelope so the wallet only repoints
+	// its baseURL. Mounted via openPublic (CORS + rate-limit, NO payment/token
+	// gate) so these public-infrastructure reads stay unauthenticated even on a
+	// node with x402 pricing enabled — the contract requires no 402/token gate.
+	s.mux.HandleFunc("GET /findHeaderHexForHeight", s.openPublic(s.handleFindHeaderHexForHeight))
+	s.mux.HandleFunc("GET /getPresentHeight", s.openPublic(s.handleGetPresentHeight))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
 	s.mux.HandleFunc("GET /data", s.openRead(s.handleQueryData))
 	s.mux.HandleFunc("GET /data/subscribe", s.openRead(s.handleSubscribe))
@@ -297,6 +305,23 @@ func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
 	}
 	// CORS: open read endpoints are public and safe to call from any origin.
 	// Required for browser-based consumers like the Anvil Explorer.
+	return cors(h)
+}
+
+// openPublic mounts a handler as public infrastructure: CORS + rate limiting,
+// but WITHOUT the x402 payment gate or token gate. Use for endpoints that must
+// serve unauthenticated on every node regardless of the operator's monetization
+// config. openRead would otherwise route these through the payment gate, whose
+// priceForPath charges any non-/content//.well-known/ path at the node's
+// priceSats — so on a node with PriceSats>0 an openRead endpoint answers an
+// unauthenticated GET with a 402 challenge. The chaintracks SPV-header source
+// (findHeaderHexForHeight/getPresentHeight) does unauthenticated browser GETs
+// and must never see a 402/token challenge, so it uses this path instead.
+func (s *Server) openPublic(next http.HandlerFunc) http.HandlerFunc {
+	h := next
+	if s.rateLimiter != nil {
+		h = s.rateLimiter.Middleware(h)
+	}
 	return cors(h)
 }
 
