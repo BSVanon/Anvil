@@ -99,10 +99,24 @@ type Envelope struct {
 	Durable   bool   `json:"durable,omitempty"`   // if true + TTL==0: persist forever
 	Timestamp int64  `json:"timestamp"`           // unix timestamp when created (required)
 
-	// Gossip controls whether this envelope is forwarded to mesh peers.
-	// Default (false/absent) = gossip to all peers. Set true to keep local-only.
-	// Local-only envelopes are served via API but never forwarded via mesh gossip.
+	// NoGossip controls whether this envelope is forwarded to mesh peers.
+	// Default (false/absent) = gossip to all peers. Set true to suppress push
+	// forwarding. NOTE: no_gossip is push-suppression ONLY — the envelope is
+	// still served via the read APIs (GET /data, SSE) and the mesh pull. For a
+	// blob the node stores + mirrors but must NOT expose on its read paths to
+	// unauthorized callers, use Private instead.
 	NoGossip bool `json:"no_gossip,omitempty"`
+
+	// Private is push-suppression PLUS read-gating ("write-can't-read at the
+	// transport"): the node stores and can dual-write/mirror the sealed blob,
+	// but never forwards it to peers (neither push nor pull) and serves it via
+	// GET /data and SSE only to authenticated callers (operator bearer / x402 /
+	// app token). Unauthenticated HTTP reads and ALL mesh pulls omit it
+	// entirely — so neither the blob nor its metadata (topic, size, timing,
+	// pubkey) leaks to unauthorized callers. Persistence + dual-write are
+	// unchanged. Implies no_gossip. Covered by the signature (below) so it
+	// cannot be stripped in transit to expose the data.
+	Private bool `json:"private,omitempty"`
 
 	// Monetization declares how consumers pay for this data. Optional.
 	// When present, it is included in the signing digest so the app
@@ -136,6 +150,13 @@ func (e *Envelope) SigningDigest() [32]byte {
 	// envelopes that don't set it (digest is identical to before).
 	if e.NoGossip {
 		canonical += "\nno_gossip"
+	}
+
+	// Private flag is appended when true — backwards compatible (envelopes
+	// without it produce the identical digest). Signing the flag prevents an
+	// intermediary from clearing it to expose a read-gated blob.
+	if e.Private {
+		canonical += "\nprivate"
 	}
 
 	// Version is appended when > 0 — backwards compatible with

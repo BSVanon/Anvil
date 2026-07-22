@@ -336,6 +336,35 @@ func (s *Server) handleNodePublish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// isAuthed reports whether the request carries a valid authorization signal for
+// read-gated content (private envelopes, paid payloads): the internal
+// X-Anvil-Authed marker that ONLY the token/payment middleware sets (client
+// copies are stripped at the trust boundary — see Handler), or the operator
+// bearer token.
+func (s *Server) isAuthed(r *http.Request) bool {
+	return r.Header.Get("X-Anvil-Authed") == "true" ||
+		(s.authToken != "" && r.Header.Get("Authorization") == "Bearer "+s.authToken)
+}
+
+// latestVisibleEnvelope returns the newest envelope on a topic that the caller
+// may see: for unauthenticated callers (isAuthed=false) Private envelopes are
+// skipped, so a private meta:/identity: envelope never leaks through the
+// discovery/identity helper reads; authenticated callers get the newest
+// regardless. Returns nil if none is visible. Used for the small, low-cardinality
+// meta:/identity: topics.
+func (s *Server) latestVisibleEnvelope(topic string, isAuthed bool) *envelope.Envelope {
+	if s.envelopeStore == nil {
+		return nil
+	}
+	envs, _ := s.envelopeStore.QueryByTopic(topic, 0) // newest-first
+	for _, e := range envs {
+		if isAuthed || !e.Private {
+			return e
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 	if s.envelopeStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "envelope store not configured")
@@ -383,22 +412,27 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		envs = filtered
 	}
 
-	// Redact paid payloads for unauthenticated requests.
 	// Authenticated = bearer token, successful x402 payment, or valid app token.
-	// The x402/token middleware sets X-Anvil-Authed header before reaching this handler.
-	isAuthed := r.Header.Get("X-Anvil-Authed") == "true" ||
-		(s.authToken != "" && r.Header.Get("Authorization") == "Bearer "+s.authToken)
+	// Gates paid-payload redaction + private-envelope omission below.
+	isAuthed := s.isAuthed(r)
 
-	// Clone envelopes for response — never mutate the in-memory store
-	responseEnvs := make([]*envelope.Envelope, len(envs))
-	for i, env := range envs {
+	// Clone envelopes for response — never mutate the in-memory store.
+	// Private envelopes are OMITTED entirely for unauthenticated callers (not
+	// just payload-redacted) so neither the sealed blob nor its metadata
+	// (topic/pubkey/timestamp/size) leaks; authenticated callers (operator
+	// bearer / x402 / app token) see them in full.
+	responseEnvs := make([]*envelope.Envelope, 0, len(envs))
+	for _, env := range envs {
+		if env.Private && !isAuthed {
+			continue
+		}
 		if !isAuthed && env.Monetization != nil && env.Monetization.PriceSats > 0 {
 			// Shallow copy + redact payload
 			redacted := *env
 			redacted.Payload = "[paid content — access via HTTP 402]"
-			responseEnvs[i] = &redacted
+			responseEnvs = append(responseEnvs, &redacted)
 		} else {
-			responseEnvs[i] = env
+			responseEnvs = append(responseEnvs, env)
 		}
 	}
 

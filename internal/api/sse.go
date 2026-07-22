@@ -80,9 +80,8 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check auth status for payload redaction (same logic as GET /data)
-	isAuthed := r.Header.Get("X-Anvil-Authed") == "true" ||
-		(s.authToken != "" && r.Header.Get("Authorization") == "Bearer "+s.authToken)
+	// Check auth status for private omission + paid redaction (same as GET /data)
+	isAuthed := s.isAuthed(r)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -113,6 +112,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case env := <-ch:
+			// Private envelopes are never streamed to unauthenticated
+			// subscribers (read-gated, matching GET /data omission).
+			if env.Private && !isAuthed {
+				continue
+			}
 			// Redact paid payloads for unauthenticated subscribers
 			outEnv := env
 			if !isAuthed && env.Monetization != nil && env.Monetization.PriceSats > 0 {
