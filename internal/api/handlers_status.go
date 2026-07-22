@@ -125,10 +125,23 @@ func (s *Server) handleHeadersTip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get tip hash")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"height": tip,
 		"hash":   hash.String(),
-	})
+		// chainwork lets a client compare cumulative PoW across sources in ONE
+		// call (the strongest cross-source / most-work-chain signal) instead of
+		// re-summing headers. Decimal string — it exceeds uint64 at chain scale.
+		"chainwork": s.headerStore.Work().String(),
+	}
+	// time is the tip block's header timestamp (unix seconds) so a client can
+	// gauge this node's freshness/staleness without a second call.
+	if raw, err := s.headerStore.HeaderAtHeight(tip); err == nil {
+		var hdr wire.BlockHeader
+		if err := hdr.Deserialize(bytes.NewReader(raw)); err == nil {
+			resp["time"] = hdr.Timestamp.Unix()
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleHeadersRange returns N consecutive raw 80-byte block headers as JSON
@@ -195,6 +208,72 @@ func (s *Server) handleHeadersRange(w http.ResponseWriter, r *http.Request) {
 		"tipHeight": tip,
 		"headers":   hexHeaders,
 	})
+}
+
+// handleTxStatus reports a transaction's confirmation status: its canonical
+// txStatus and how many confirmations it has, counted against the node's LOCAL
+// PoW-validated header tip. It is a convenience/UX signal so SPV consumers can
+// offload confirmation polling from external explorers onto any Anvil node — for
+// a TRUSTLESS mined proof, use GET /tx/{txid}/beef and verify it. Mounted
+// openPublic (free, never token/payment-gated) so the poll is portable across
+// operators.
+//
+// Response fields (canonical — matching ARC GET /v1/tx and go-sdk ChainTracker):
+//   - txid          the queried txid
+//   - txStatus      ARC status, passed through when ARC-sourced (MINED,
+//                   SEEN_ON_NETWORK, DOUBLE_SPEND_ATTEMPTED, …); synthesized
+//                   MINED/SEEN_ON_NETWORK on the WoC fallback
+//   - confirmations currentHeight − blockHeight + 1 (0 when unmined); >=1 == mined
+//   - blockHeight   present only when mined
+//   - currentHeight the node's local PoW header tip (ChainTracker.CurrentHeight)
+//   - source        "arc" | "woc" — which upstream answered (txStatus fidelity)
+//
+// Responses: 200 (found), 404 (not found), 400 (bad txid), 502 (upstream down).
+// A tx mined in a block the node's headers have not yet reached (blockHeight >
+// currentHeight, under sync lag) yields confirmations 0 with blockHeight >
+// currentHeight, making that state unambiguous.
+func (s *Server) handleTxStatus(w http.ResponseWriter, r *http.Request) {
+	txid := r.PathValue("txid")
+	// Reject a non-hex (or wrong-length) txid LOCALLY so garbage input can never
+	// be proxied to ARC/WoC — 32 bytes == 64 hex chars.
+	if raw, err := hex.DecodeString(txid); err != nil || len(raw) != 32 {
+		writeError(w, http.StatusBadRequest, "txid must be 64 hex characters")
+		return
+	}
+	if s.proofFetcher == nil {
+		writeError(w, http.StatusServiceUnavailable, "tx status unavailable: no proof fetcher configured")
+		return
+	}
+
+	status, err := s.proofFetcher.TxStatus(txid)
+	if err != nil {
+		s.logger.Debug("tx status lookup failed", "txid", txid, "error", err)
+		writeError(w, http.StatusBadGateway, "tx status lookup unavailable")
+		return
+	}
+	if !status.Found {
+		writeError(w, http.StatusNotFound, "transaction not found")
+		return
+	}
+
+	tip := s.headerStore.Tip()
+	resp := map[string]interface{}{
+		"txid":          txid,
+		"txStatus":      status.Status,
+		"currentHeight": tip,
+		"source":        status.Source,
+	}
+	if status.Mined {
+		resp["blockHeight"] = status.BlockHeight
+		confirmations := 0
+		if tip >= status.BlockHeight {
+			confirmations = int(tip - status.BlockHeight + 1)
+		}
+		resp["confirmations"] = confirmations
+	} else {
+		resp["confirmations"] = 0
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) buildHeaderStatus() (map[string]interface{}, []string) {

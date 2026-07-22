@@ -216,6 +216,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /findHeaderHexForHeight", s.openPublic(s.handleFindHeaderHexForHeight))
 	s.mux.HandleFunc("GET /getPresentHeight", s.openPublic(s.handleGetPresentHeight))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
+	// Confirmation-count status: openPublic (free/portable) so SPV consumers can
+	// offload "did my tx confirm?" polling from external explorers onto any node.
+	s.mux.HandleFunc("GET /tx/{txid}/status", s.openPublic(s.handleTxStatus))
 	s.mux.HandleFunc("GET /data", s.openRead(s.handleQueryData))
 	s.mux.HandleFunc("GET /data/subscribe", s.openRead(s.handleSubscribe))
 	s.mux.HandleFunc("DELETE /data", s.requireAuth(s.handleDeleteData))
