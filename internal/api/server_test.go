@@ -175,6 +175,14 @@ func TestHeadersTipEndpoint(t *testing.T) {
 	if resp["hash"] == nil || resp["hash"] == "" {
 		t.Fatal("expected non-empty hash")
 	}
+	// chainwork (cumulative PoW, decimal string) and time (tip header timestamp)
+	// are exposed for cross-source comparison and freshness checks.
+	if cw, ok := resp["chainwork"].(string); !ok || cw == "" {
+		t.Fatalf("expected non-empty chainwork string, got %v", resp["chainwork"])
+	}
+	if resp["time"] == nil || resp["time"].(float64) <= 0 {
+		t.Fatalf("expected positive tip time, got %v", resp["time"])
+	}
 }
 
 // addServerTestChain appends n synthetic headers (heights 1..n) onto the
