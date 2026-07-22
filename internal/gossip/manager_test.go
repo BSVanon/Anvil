@@ -179,6 +179,88 @@ func TestNoGossipEnvelopeNotBroadcast(t *testing.T) {
 	}
 }
 
+// TestPrivateEnvelopeNotBroadcast: a Private envelope is never pushed to peers
+// (same push-suppression as no_gossip; Private additionally gates the read
+// paths, covered by the api + dropPrivate tests).
+func TestPrivateEnvelopeNotBroadcast(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		LocalInterests: []string{""},
+		MaxSeen:        100,
+	})
+
+	env := &envelope.Envelope{
+		Type:      "data",
+		Topic:     "lacriada:household-x",
+		Payload:   "sealed",
+		Pubkey:    "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+		TTL:       0,
+		Durable:   true,
+		Timestamp: 1710000000,
+		Private:   true,
+	}
+
+	m.BroadcastEnvelope(env)
+
+	m.seenMu.Lock()
+	_, wasSeen := m.seen[envelope.HashEnvelope(env.Topic, env.Pubkey, env.Payload, env.Timestamp)]
+	m.seenMu.Unlock()
+
+	if wasSeen {
+		t.Fatal("private envelope should NOT be pushed to peers or marked as seen")
+	}
+}
+
+// TestDropPrivate: the mesh-pull filter removes every Private envelope so a
+// pulling peer never receives the sealed blob or its metadata.
+func TestDropPrivate(t *testing.T) {
+	envs := []*envelope.Envelope{
+		{Topic: "t", Payload: "pub1"},
+		{Topic: "t", Payload: "priv", Private: true},
+		{Topic: "t", Payload: "pub2"},
+		{Topic: "t", Payload: "priv2", Private: true},
+	}
+	kept := dropPrivate(envs)
+	if len(kept) != 2 {
+		t.Fatalf("expected 2 non-private, got %d", len(kept))
+	}
+	for _, e := range kept {
+		if e.Private {
+			t.Fatal("dropPrivate must remove all Private envelopes")
+		}
+	}
+}
+
+// TestVisiblePageFiltersBeforePaginating is the mesh-pull regression (Codex
+// 1b290a5d MEDIUM): with the newest window full of private envelopes, the page
+// must still return the older PUBLIC envelopes with a correct HasMore — the
+// pre-fix code paginated first (limit+1) then filtered, hiding public data
+// behind HasMore=false and permanently under-syncing mixed topics.
+func TestVisiblePageFiltersBeforePaginating(t *testing.T) {
+	// Newest-first: 2 private (newest) then 3 public.
+	all := []*envelope.Envelope{
+		{Topic: "t", Payload: "priv-new", Private: true, Timestamp: 50},
+		{Topic: "t", Payload: "priv-new2", Private: true, Timestamp: 49},
+		{Topic: "t", Payload: "pub1", Timestamp: 30},
+		{Topic: "t", Payload: "pub2", Timestamp: 20},
+		{Topic: "t", Payload: "pub3", Timestamp: 10},
+	}
+	page, hasMore := visiblePage(all, 2, 0)
+	if len(page) != 2 {
+		t.Fatalf("expected 2 public envelopes, got %d", len(page))
+	}
+	for _, e := range page {
+		if e.Private {
+			t.Fatal("visiblePage must never return a private envelope")
+		}
+	}
+	if !hasMore {
+		t.Fatal("HasMore should be true — a 3rd public envelope exists beyond the page")
+	}
+	if page[0].Payload != "pub1" || page[1].Payload != "pub2" {
+		t.Fatalf("expected newest public first (pub1,pub2), got %s,%s", page[0].Payload, page[1].Payload)
+	}
+}
+
 func TestCatchUpTopicsConfig(t *testing.T) {
 	topics := []string{"anvil:catalog", "mesh:heartbeat", "mesh:blocks"}
 	m := NewManager(ManagerConfig{

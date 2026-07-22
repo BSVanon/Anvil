@@ -272,7 +272,7 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 		m.onEnvelope(env)
 	}
 
-	if !env.NoGossip {
+	if !env.NoGossip && !env.Private {
 		m.forwardToInterested(senderPK, env.Topic, raw)
 	}
 
@@ -290,6 +290,43 @@ func (m *Manager) onTopics(senderPK string, raw json.RawMessage) error {
 	m.mu.Unlock()
 	m.logger.Debug("peer interests updated", "peer", truncate(senderPK), "prefixes", tp.Prefixes)
 	return nil
+}
+
+// dropPrivate returns envs with all Private envelopes removed. Private
+// envelopes are read-gated to authenticated HTTP callers only and are never
+// served over the mesh pull, so the sealed blob and its metadata never leave
+// this node to a pulling peer. Filters in place (reuses the backing array).
+func dropPrivate(envs []*envelope.Envelope) []*envelope.Envelope {
+	kept := envs[:0]
+	for _, env := range envs {
+		if !env.Private {
+			kept = append(kept, env)
+		}
+	}
+	return kept
+}
+
+// visiblePage takes a newest-first envelope set, drops Private envelopes (never
+// served over the mesh pull), applies the Since backward-pagination cursor
+// (return envelopes strictly older than Since), then returns one page of at
+// most `limit` plus whether more remain. Filtering happens BEFORE pagination so
+// private envelopes in the newest window can't hide older public ones behind
+// HasMore=false.
+func visiblePage(all []*envelope.Envelope, limit int, since int64) (page []*envelope.Envelope, hasMore bool) {
+	all = dropPrivate(all)
+	if since > 0 {
+		filtered := all[:0]
+		for _, e := range all {
+			if e.Timestamp < since {
+				filtered = append(filtered, e)
+			}
+		}
+		all = filtered
+	}
+	if limit > 0 && len(all) > limit {
+		return all[:limit], true
+	}
+	return all, false
 }
 
 // onDataRequest handles a pull-based catch-up query.
@@ -311,27 +348,14 @@ func (m *Manager) onDataRequest(senderPKHex string, senderPK *ec.PublicKey, raw 
 		limit = 100
 	}
 
-	// Fetch one extra to detect HasMore.
-	allResults, _ := m.store.QueryByTopic(req.Topic, limit+1)
-
-	// Filter by Since timestamp if set. Results are newest-first.
-	// Since acts as an "older than" cursor: return envelopes with
-	// timestamps strictly less than Since, enabling backward pagination.
-	if req.Since > 0 {
-		var filtered []*envelope.Envelope
-		for _, env := range allResults {
-			if env.Timestamp < req.Since {
-				filtered = append(filtered, env)
-			}
-		}
-		allResults = filtered
-	}
-
-	hasMore := len(allResults) > limit
-	results := allResults
-	if hasMore {
-		results = allResults[:limit]
-	}
+	// Fetch the FULL topic set (QueryByTopic already loads all before its own
+	// truncation, so limit=0 is no costlier), then drop private + apply the
+	// Since cursor BEFORE paginating. Filtering before pagination is essential:
+	// a newest window full of private envelopes must not hide older public ones
+	// behind HasMore=false and permanently under-sync a mixed private/public
+	// topic over the mesh pull.
+	all, _ := m.store.QueryByTopic(req.Topic, 0)
+	results, hasMore := visiblePage(all, limit, req.Since)
 
 	resp, err := Encode(MsgDataResponse, DataResponsePayload{
 		Topic:     req.Topic,

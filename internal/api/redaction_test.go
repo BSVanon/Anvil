@@ -99,13 +99,19 @@ func TestPaidPayloadVisibleForAuthenticatedReads(t *testing.T) {
 	}
 }
 
-func TestPaidPayloadVisibleForX402PaidReads(t *testing.T) {
+// TestPaidPayloadSpoofedAnvilAuthedIgnored: a client-supplied X-Anvil-Authed is
+// stripped at the trust boundary (Handler), so it cannot unlock paid content —
+// the payload stays redacted. Genuine access sets the header server-side via
+// the token/payment middleware, or presents the operator bearer token
+// (TestPaidPayloadVisibleForAuthenticatedReads). This closes a pre-existing
+// bypass where anyone could read paid content by spoofing the header.
+func TestPaidPayloadSpoofedAnvilAuthedIgnored(t *testing.T) {
 	srv := testServer(t)
 
 	env := &envelope.Envelope{
 		Type:      "data",
 		Topic:     "test:paid",
-		Payload:   `{"secret":"x402-visible"}`,
+		Payload:   `{"secret":"do-not-leak"}`,
 		Pubkey:    "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
 		Signature: "3045022100abcd",
 		TTL:       60,
@@ -117,7 +123,7 @@ func TestPaidPayloadVisibleForX402PaidReads(t *testing.T) {
 	}
 	srv.envelopeStore.StoreEphemeralDirect(env)
 
-	// Simulate successful x402 payment — middleware sets X-Anvil-Authed
+	// Spoof attempt: client sets X-Anvil-Authed itself — must be stripped.
 	req := httptest.NewRequest("GET", "/data?topic=test:paid&limit=1", nil)
 	req.Header.Set("X-Anvil-Authed", "true")
 	w := httptest.NewRecorder()
@@ -137,51 +143,11 @@ func TestPaidPayloadVisibleForX402PaidReads(t *testing.T) {
 	if len(resp.Envelopes) == 0 {
 		t.Fatal("expected at least 1 envelope")
 	}
-	if !strings.Contains(resp.Envelopes[0].Payload, "x402-visible") {
-		t.Fatalf("x402-paid read should see full payload, got: %s", resp.Envelopes[0].Payload)
+	if strings.Contains(resp.Envelopes[0].Payload, "do-not-leak") {
+		t.Fatal("spoofed X-Anvil-Authed must NOT unlock paid content — payload should stay redacted")
 	}
-}
-
-func TestPaidPayloadVisibleForTokenGatedReads(t *testing.T) {
-	srv := testServer(t)
-
-	env := &envelope.Envelope{
-		Type:      "data",
-		Topic:     "test:paid",
-		Payload:   `{"secret":"token-visible"}`,
-		Pubkey:    "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
-		Signature: "3045022100abcd",
-		TTL:       60,
-		Timestamp: 1700000001,
-		Monetization: &envelope.Monetization{
-			Model:     "token",
-			PriceSats: 25,
-		},
-	}
-	srv.envelopeStore.StoreEphemeralDirect(env)
-
-	// Simulate successful token gate — middleware sets X-Anvil-Authed
-	req := httptest.NewRequest("GET", "/data?topic=test:paid&limit=1", nil)
-	req.Header.Set("X-Anvil-Authed", "true")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp struct {
-		Envelopes []struct {
-			Payload string `json:"payload"`
-		} `json:"envelopes"`
-	}
-	json.NewDecoder(w.Body).Decode(&resp)
-
-	if len(resp.Envelopes) == 0 {
-		t.Fatal("expected at least 1 envelope")
-	}
-	if !strings.Contains(resp.Envelopes[0].Payload, "token-visible") {
-		t.Fatalf("token-gated read should see full payload, got: %s", resp.Envelopes[0].Payload)
+	if !strings.Contains(resp.Envelopes[0].Payload, "paid content") {
+		t.Fatalf("expected redaction placeholder, got: %s", resp.Envelopes[0].Payload)
 	}
 }
 

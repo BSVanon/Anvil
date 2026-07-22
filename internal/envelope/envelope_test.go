@@ -49,6 +49,58 @@ func TestValidateGoodEnvelope(t *testing.T) {
 	}
 }
 
+// TestPrivateFlagSignedAndTamperProof: the Private flag is part of the signing
+// digest, so an intermediary cannot clear it to expose a read-gated blob.
+func TestPrivateFlagSignedAndTamperProof(t *testing.T) {
+	env := &Envelope{
+		Type:      "data",
+		Topic:     "lacriada:household-x",
+		Payload:   "sealed-ciphertext",
+		TTL:       0,
+		Durable:   true,
+		Timestamp: 1710000000,
+		Private:   true,
+	}
+	env.Sign(testKey())
+	if err := env.Validate(); err != nil {
+		t.Fatalf("signed private envelope should validate: %v", err)
+	}
+	// Clearing Private (to try to expose it on the read paths) must break the
+	// signature — the flag is covered by the digest.
+	env.Private = false
+	if err := env.Validate(); err == nil {
+		t.Fatal("clearing Private must invalidate the signature (flag is signed)")
+	}
+}
+
+// TestPrivateFlagRoundTrips: the flag survives Marshal/Unmarshal.
+func TestPrivateFlagRoundTrips(t *testing.T) {
+	env := &Envelope{
+		Type:      "data",
+		Topic:     "lacriada:household-x",
+		Payload:   "sealed-ciphertext",
+		TTL:       0,
+		Durable:   true,
+		Timestamp: 1710000000,
+		Private:   true,
+	}
+	env.Sign(testKey())
+	raw, err := env.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalEnvelope(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Private {
+		t.Fatal("Private flag did not round-trip through Marshal/Unmarshal")
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("round-tripped private envelope should validate: %v", err)
+	}
+}
+
 func TestValidateDurableEnvelope(t *testing.T) {
 	env := validDurableEnvelope(t)
 	if err := env.Validate(); err != nil {

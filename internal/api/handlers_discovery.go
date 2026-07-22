@@ -25,8 +25,19 @@ func (s *Server) handleListTopics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	topicCounts := s.envelopeStore.Topics()
-	latestTimes := s.envelopeStore.LatestByTopic()
+	// Unauthenticated callers get PUBLIC-only summaries — private envelopes
+	// contribute no count/timestamp and wholly-private topics don't appear, so
+	// no private-history metadata leaks even for a topic whose latest envelope
+	// is public. Authenticated callers see the full aggregate.
+	isAuthed := s.isAuthed(r)
+	var topicCounts map[string]int
+	var latestTimes map[string]int64
+	if isAuthed {
+		topicCounts = s.envelopeStore.Topics()
+		latestTimes = s.envelopeStore.LatestByTopic()
+	} else {
+		topicCounts, latestTimes = s.envelopeStore.PublicTopicSummary()
+	}
 
 	var topics []TopicInfo
 	for topic, count := range topicCounts {
@@ -42,8 +53,8 @@ func (s *Server) handleListTopics(w http.ResponseWriter, r *http.Request) {
 			LastUpdated: latestTimes[topic],
 		}
 
-		// Enrich with metadata if available.
-		s.enrichTopicInfo(&info)
+		// Enrich with metadata if available (private meta: hidden from unauthed).
+		s.enrichTopicInfo(&info, isAuthed)
 
 		topics = append(topics, info)
 	}
@@ -67,46 +78,63 @@ func (s *Server) handleGetTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	topicCounts := s.envelopeStore.Topics()
-	count, exists := topicCounts[topic]
-	if !exists {
+	isAuthed := s.isAuthed(r)
+
+	// Gather the topic's envelopes once (newest-first). For unauthenticated
+	// callers, count/last_updated/publisher come from PUBLIC envelopes ONLY, so
+	// private history never leaks via count/timestamp/publisher — and a topic
+	// with no public envelopes is indistinguishable from a nonexistent one
+	// (404). Authenticated callers see the full aggregate.
+	envs, _ := s.envelopeStore.QueryByTopic(topic, 0)
+
+	count := 0
+	var lastUpdated int64
+	latestIdx := -1
+	for i, e := range envs {
+		if !isAuthed && e.Private {
+			continue
+		}
+		count++
+		if e.Timestamp > lastUpdated {
+			lastUpdated = e.Timestamp
+		}
+		if latestIdx == -1 {
+			latestIdx = i // newest-first: first visible envelope is the latest
+		}
+	}
+	if count == 0 {
 		writeError(w, http.StatusNotFound, "topic not found")
 		return
 	}
 
-	latestTimes := s.envelopeStore.LatestByTopic()
-
 	info := TopicInfo{
 		Topic:       topic,
 		Count:       count,
-		LastUpdated: latestTimes[topic],
+		LastUpdated: lastUpdated,
 	}
 
-	// Get most recent envelope to extract publisher.
-	envs, _ := s.envelopeStore.QueryByTopic(topic, 1)
-	if len(envs) > 0 {
-		info.Publisher = envs[0].Pubkey
+	if latestIdx >= 0 {
+		info.Publisher = envs[latestIdx].Pubkey
 
 		// Include price from monetization if present.
-		if envs[0].Monetization != nil {
-			info.Price = envs[0].Monetization.PriceSats
+		if envs[latestIdx].Monetization != nil {
+			info.Price = envs[latestIdx].Monetization.PriceSats
 		}
 	}
 
-	// Enrich with metadata if available.
-	s.enrichTopicInfo(&info)
+	// Enrich with metadata if available (private meta: hidden from unauthed).
+	s.enrichTopicInfo(&info, isAuthed)
 
 	// Include demand from gossip manager.
 	if s.gossipMgr != nil {
 		info.Demand = s.gossipMgr.TopicDemand(topic)
 	}
 
-	// Include publisher identity if available.
+	// Include publisher identity if available (private identity: hidden from unauthed).
 	var identity json.RawMessage
 	if info.Publisher != "" {
-		idEnvs, _ := s.envelopeStore.QueryByTopic("identity:"+info.Publisher, 1)
-		if len(idEnvs) > 0 {
-			raw := json.RawMessage(idEnvs[0].Payload)
+		if idEnv := s.latestVisibleEnvelope("identity:"+info.Publisher, isAuthed); idEnv != nil {
+			raw := json.RawMessage(idEnv.Payload)
 			if json.Valid(raw) {
 				identity = raw
 			}
@@ -124,10 +152,11 @@ func (s *Server) handleGetTopic(w http.ResponseWriter, r *http.Request) {
 }
 
 // enrichTopicInfo fills metadata from the meta:<topic> envelope if it exists.
-func (s *Server) enrichTopicInfo(info *TopicInfo) {
-	metaEnvs, _ := s.envelopeStore.QueryByTopic("meta:"+info.Topic, 1)
-	if len(metaEnvs) > 0 {
-		raw := json.RawMessage(metaEnvs[0].Payload)
+// For unauthenticated callers a private meta: envelope is skipped so it can't
+// leak (the payload is private data on a meta: topic).
+func (s *Server) enrichTopicInfo(info *TopicInfo, isAuthed bool) {
+	if env := s.latestVisibleEnvelope("meta:"+info.Topic, isAuthed); env != nil {
+		raw := json.RawMessage(env.Payload)
 		if json.Valid(raw) {
 			info.Metadata = raw
 		}
@@ -148,13 +177,15 @@ func (s *Server) handleGetIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envs, _ := s.envelopeStore.QueryByTopic("identity:"+pubkey, 1)
-	if len(envs) == 0 {
+	// A private identity: envelope is hidden from unauthenticated callers
+	// (returns the same 404 as no identity).
+	env := s.latestVisibleEnvelope("identity:"+pubkey, s.isAuthed(r))
+	if env == nil {
 		writeError(w, http.StatusNotFound, "no identity published for this pubkey")
 		return
 	}
 
-	raw := json.RawMessage(envs[0].Payload)
+	raw := json.RawMessage(env.Payload)
 	if !json.Valid(raw) {
 		writeError(w, http.StatusInternalServerError, "identity payload is not valid JSON")
 		return

@@ -325,8 +325,9 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 // BroadcastEnvelope sends an envelope to all interested peers.
 // Called by the API layer when a new envelope is submitted via HTTP.
 func (m *Manager) BroadcastEnvelope(env *envelope.Envelope) {
-	// Respect no_gossip flag — local-only envelopes stay on this node
-	if env.NoGossip {
+	// Respect no_gossip / private flags — neither is pushed to peers.
+	// (private additionally blocks the pull + unauthenticated read paths.)
+	if env.NoGossip || env.Private {
 		return
 	}
 

@@ -807,7 +807,20 @@ func (s *Server) authOrPayBinary(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Trust boundary: strip any client-supplied X-Anvil-Authed. This header
+		// is an INTERNAL authorization signal that only the token/payment
+		// middleware may set (on a validated app-token or x402 payment);
+		// handlers read it to authorize read-gated content (private envelopes,
+		// paid payloads). Without this strip a client could send
+		// `X-Anvil-Authed: true` and — on a node with no gate configured — read
+		// content it never authenticated for. Server middleware re-sets it
+		// downstream on genuine success, so legitimate auth is unaffected.
+		r.Header.Del("X-Anvil-Authed")
+		s.mux.ServeHTTP(w, r)
+	})
+}
 
 // NotifyEnvelope pushes an envelope to all SSE subscribers on its topic.
 // Called by the gossip onEnvelope callback for mesh-received envelopes.
