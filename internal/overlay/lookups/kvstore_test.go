@@ -34,11 +34,17 @@ func newKVStoreLookup(t *testing.T) *KVStoreLookupService {
 	return NewKVStoreLookupService(db)
 }
 
-// buildKVAdmitPayload builds an OutputAdmittedByTopic whose atomic BEEF
-// wraps a tx with a single KVStore PushDrop output. The appended
-// signature does not need to verify here — the lookup-side index path
-// (ParseKVStoreOutput) only decodes shape; admission verifies signatures.
+// buildKVAdmitPayload builds an OutputAdmittedByTopic (Atomic BEEF) wrapping a
+// tx with a single KVStore PushDrop output. The appended signature does not
+// need to verify here — the lookup-side index path (ParseKVStoreOutput) only
+// decodes shape; admission verifies signatures.
 func buildKVAdmitPayload(t *testing.T, controllerPub []byte, key, value string, tags []string, tagged bool) *engine.OutputAdmittedByTopic {
+	t.Helper()
+	return kvPayload(t, buildKVTx(t, controllerPub, key, value, tags, tagged), true)
+}
+
+// buildKVTx builds a tx carrying a single KVStore PushDrop output.
+func buildKVTx(t *testing.T, controllerPub []byte, key, value string, tags []string, tagged bool) *transaction.Transaction {
 	t.Helper()
 	protoJSON, err := json.Marshal(&kvLookupProtocol)
 	if err != nil {
@@ -66,19 +72,31 @@ func buildKVAdmitPayload(t *testing.T, controllerPub []byte, key, value string, 
 	sb := s.Bytes()
 	out := script.Script(sb)
 	tx.AddOutput(&transaction.TransactionOutput{LockingScript: &out, Satoshis: 1})
+	return tx
+}
 
+// kvPayload wraps tx as an OutputAdmittedByTopic notify payload. atomic=true
+// emits Atomic BEEF; atomic=false emits V1 BEEF (0x0100BEEF) — the format the
+// overlay engine forwards for real-world submits, which the lookup must accept.
+func kvPayload(t *testing.T, tx *transaction.Transaction, atomic bool) *engine.OutputAdmittedByTopic {
+	t.Helper()
 	beef, err := transaction.NewBeefFromTransaction(tx)
 	if err != nil {
 		t.Fatalf("NewBeefFromTransaction: %v", err)
 	}
-	atomicBytes, err := beef.AtomicBytes(tx.TxID())
+	var blob []byte
+	if atomic {
+		blob, err = beef.AtomicBytes(tx.TxID())
+	} else {
+		blob, err = beef.Bytes()
+	}
 	if err != nil {
-		t.Fatalf("AtomicBytes: %v", err)
+		t.Fatalf("encode beef (atomic=%v): %v", atomic, err)
 	}
 	return &engine.OutputAdmittedByTopic{
 		Topic:       topics.KVStoreTopicName,
 		OutputIndex: 0,
-		AtomicBEEF:  atomicBytes,
+		AtomicBEEF:  blob,
 	}
 }
 
@@ -116,6 +134,59 @@ func TestKVStore_AdmitAndLookupByKey(t *testing.T) {
 	ans := kvLookup(t, s, topics.KVStoreLookupQuery{Key: "fiat-currency"})
 	if ans.Type != lookup.AnswerTypeFormula || len(ans.Formulas) != 1 {
 		t.Fatalf("expected 1 formula, got type=%s n=%d", ans.Type, len(ans.Formulas))
+	}
+}
+
+// TestKVStore_AdmitAcceptsV1BEEF is the regression for the production bug (twice
+// reported): the overlay engine forwards V1 BEEF (0x0100BEEF) in
+// OutputAdmittedByTopic.AtomicBEEF, and the lookup rejected it with
+// "version 4022206465 is not atomic BEEF" — failing lookup indexing on every
+// real-world kvstore submit while the output was already admitted.
+func TestKVStore_AdmitAcceptsV1BEEF(t *testing.T) {
+	ctx := context.Background()
+	s := newKVStoreLookup(t)
+	_, pub := kvPubHex(t)
+	tx := buildKVTx(t, pub, "fiat-currency", "GBP", nil, false)
+	if err := s.OutputAdmittedByTopic(ctx, kvPayload(t, tx, false)); err != nil {
+		t.Fatalf("V1 BEEF admit must succeed (was rejected as not-atomic), got: %v", err)
+	}
+	ans := kvLookup(t, s, topics.KVStoreLookupQuery{Key: "fiat-currency"})
+	if ans.Type != lookup.AnswerTypeFormula || len(ans.Formulas) != 1 {
+		t.Fatalf("expected 1 formula after V1 admit, got type=%s n=%d", ans.Type, len(ans.Formulas))
+	}
+}
+
+// TestLoadFocusTx_AcceptsAtomicAndV1 pins the shared lookup entry-point that all
+// 7 lookups depend on: both Atomic and V1 BEEF must resolve to the same focus tx.
+func TestLoadFocusTx_AcceptsAtomicAndV1(t *testing.T) {
+	_, pub := kvPubHex(t)
+	tx := buildKVTx(t, pub, "k", "v", nil, false)
+	beef, err := transaction.NewBeefFromTransaction(tx)
+	if err != nil {
+		t.Fatalf("NewBeefFromTransaction: %v", err)
+	}
+	atomicBytes, err := beef.AtomicBytes(tx.TxID())
+	if err != nil {
+		t.Fatalf("AtomicBytes: %v", err)
+	}
+	v1Bytes, err := beef.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		blob []byte
+	}{{"atomic", atomicBytes}, {"v1", v1Bytes}} {
+		gotTx, gotTxid, err := loadFocusTx(tc.blob)
+		if err != nil {
+			t.Fatalf("%s: loadFocusTx: %v", tc.name, err)
+		}
+		if gotTxid == nil || gotTxid.String() != tx.TxID().String() {
+			t.Fatalf("%s: focus txid mismatch: got %v want %s", tc.name, gotTxid, tx.TxID().String())
+		}
+		if gotTx == nil || gotTx.TxID().String() != tx.TxID().String() {
+			t.Fatalf("%s: focus tx mismatch", tc.name)
+		}
 	}
 }
 
