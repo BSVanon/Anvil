@@ -144,16 +144,12 @@ func (s *UHRPLookupService) OutputAdmittedByTopic(ctx context.Context, payload *
 	if payload == nil || payload.Topic != topics.UHRPTopicName {
 		return nil
 	}
-	beef, focusTxid, err := transaction.NewBeefFromAtomicBytes(payload.AtomicBEEF)
+	// Version-agnostic parse via the shared helper (accepts Atomic / V1 / V2) —
+	// the engine forwards whatever BEEF the submitter sent. Parsing atomic-only
+	// here (as this path used to) rejected real-world V1 submits.
+	tx, focusTxid, err := loadFocusTx(payload.AtomicBEEF)
 	if err != nil {
-		return fmt.Errorf("uhrp lookup: parse atomic beef: %w", err)
-	}
-	if focusTxid == nil {
-		return errors.New("uhrp lookup: atomic beef yielded nil focus txid")
-	}
-	tx := beef.FindTransactionByHash(focusTxid)
-	if tx == nil {
-		return fmt.Errorf("uhrp lookup: focus tx %s not in beef", focusTxid.String())
+		return fmt.Errorf("uhrp lookup: %w", err)
 	}
 	if int(payload.OutputIndex) >= len(tx.Outputs) {
 		return fmt.Errorf("uhrp lookup: output index %d out of range for tx %s", payload.OutputIndex, focusTxid.String())

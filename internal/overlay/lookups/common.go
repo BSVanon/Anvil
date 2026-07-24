@@ -53,20 +53,21 @@ func decodeItemKeyOutpoint(key []byte, prefix string) (*transaction.Outpoint, bo
 	return &transaction.Outpoint{Txid: *h, Index: uint32(v)}, true
 }
 
-// loadFocusTx pulls the focus transaction out of an atomic-BEEF blob.
-// All Anvil lookups use this entry-point to materialise the admitted
-// output's script + tx-side context.
-func loadFocusTx(atomicBEEF []byte) (*transaction.Transaction, *chainhash.Hash, error) {
-	beef, focusTxid, err := transaction.NewBeefFromAtomicBytes(atomicBEEF)
+// loadFocusTx pulls the focus (admitted/subject) transaction out of a BEEF
+// blob. It is VERSION-AGNOSTIC: the overlay engine populates the notify
+// payload's AtomicBEEF field with whatever BEEF the submitter sent — Atomic
+// (0x01010101), V1 (0x0100BEEF), or V2. Parsing atomic-only rejected real-world
+// V1 submissions with "version 4022206465 is not atomic BEEF", which failed
+// lookup indexing on every V1 kvstore submit. go-sdk's ParseBeef handles all
+// three formats and returns the subject tx + its txid. All Anvil lookups use
+// this entry-point to materialise the admitted output's script + tx context.
+func loadFocusTx(beefBytes []byte) (*transaction.Transaction, *chainhash.Hash, error) {
+	_, tx, focusTxid, err := transaction.ParseBeef(beefBytes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse atomic beef: %w", err)
+		return nil, nil, fmt.Errorf("parse beef: %w", err)
 	}
-	if focusTxid == nil {
-		return nil, nil, errors.New("atomic beef yielded nil focus txid")
-	}
-	tx := beef.FindTransactionByHash(focusTxid)
-	if tx == nil {
-		return nil, nil, fmt.Errorf("focus tx %s not in beef", focusTxid.String())
+	if tx == nil || focusTxid == nil {
+		return nil, nil, errors.New("beef yielded no focus transaction")
 	}
 	return tx, focusTxid, nil
 }
