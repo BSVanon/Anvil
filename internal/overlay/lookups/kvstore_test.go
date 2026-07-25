@@ -156,9 +156,12 @@ func TestKVStore_AdmitAcceptsV1BEEF(t *testing.T) {
 	}
 }
 
-// TestLoadFocusTx_AcceptsAtomicAndV1 pins the shared lookup entry-point that all
-// 7 lookups depend on: both Atomic and V1 BEEF must resolve to the same focus tx.
-func TestLoadFocusTx_AcceptsAtomicAndV1(t *testing.T) {
+// TestLoadFocusTx_AcceptsAllBeefFormats pins the shared lookup entry-point that
+// all 7 lookups depend on: Atomic, V1, AND V2 BEEF must each resolve to the same
+// focus tx. Real submitters send the wire formats — not just the atomic form we
+// used to construct in tests — so all three are exercised here (the standing
+// "test the real wire formats" rule from the v3.2.8 post-mortem).
+func TestLoadFocusTx_AcceptsAllBeefFormats(t *testing.T) {
 	_, pub := kvPubHex(t)
 	tx := buildKVTx(t, pub, "k", "v", nil, false)
 	beef, err := transaction.NewBeefFromTransaction(tx)
@@ -173,10 +176,20 @@ func TestLoadFocusTx_AcceptsAtomicAndV1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Bytes: %v", err)
 	}
+	// V2 (BRC-96): a distinct wire version the engine may forward.
+	bv2 := transaction.NewBeefV2()
+	if _, err := bv2.MergeTransaction(tx); err != nil {
+		t.Fatalf("merge v2: %v", err)
+	}
+	bv2.NewestTxID = tx.TxID()
+	v2Bytes, err := bv2.Bytes()
+	if err != nil {
+		t.Fatalf("v2 Bytes: %v", err)
+	}
 	for _, tc := range []struct {
 		name string
 		blob []byte
-	}{{"atomic", atomicBytes}, {"v1", v1Bytes}} {
+	}{{"atomic", atomicBytes}, {"v1", v1Bytes}, {"v2", v2Bytes}} {
 		gotTx, gotTxid, err := loadFocusTx(tc.blob)
 		if err != nil {
 			t.Fatalf("%s: loadFocusTx: %v", tc.name, err)

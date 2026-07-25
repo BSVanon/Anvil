@@ -31,7 +31,7 @@ func newTestServer(t *testing.T) string {
 func TestSubmitHandler_HappyPath(t *testing.T) {
 	url := newTestServer(t)
 	const hashHex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/x", "image/png")
+	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/x", "image/png", true)
 
 	topicsJSON, _ := json.Marshal(tagged.Topics)
 	req, _ := http.NewRequest(http.MethodPost, url+"/submit", bytes.NewReader(tagged.Beef))
@@ -100,7 +100,7 @@ func TestSubmitHandler_OffChainValuesPrefix(t *testing.T) {
 	url := newTestServer(t)
 
 	const hashHex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
-	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/off", "image/png")
+	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/off", "image/png", true)
 
 	// Prepend a 4-byte off-chain prefix (the vector's "deadbeef") behind
 	// a varint(4) length.
@@ -138,7 +138,7 @@ func TestSubmitHandler_OffChainValuesPrefix(t *testing.T) {
 func TestSubmitHandler_WrongContentTypeRejected(t *testing.T) {
 	url := newTestServer(t)
 	const hashHex = "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
-	tagged := buildUHRPTaggedBEEF(t, hashHex, "", "")
+	tagged := buildUHRPTaggedBEEF(t, hashHex, "", "", true)
 
 	topicsJSON, _ := json.Marshal(tagged.Topics)
 	req, _ := http.NewRequest(http.MethodPost, url+"/submit", bytes.NewReader(tagged.Beef))
@@ -163,7 +163,7 @@ func TestSubmitHandler_WrongContentTypeRejected(t *testing.T) {
 func TestSubmitHandler_OctetStreamWithCharsetAccepted(t *testing.T) {
 	url := newTestServer(t)
 	const hashHex = "2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e"
-	tagged := buildUHRPTaggedBEEF(t, hashHex, "", "")
+	tagged := buildUHRPTaggedBEEF(t, hashHex, "", "", true)
 
 	topicsJSON, _ := json.Marshal(tagged.Topics)
 	req, _ := http.NewRequest(http.MethodPost, url+"/submit", bytes.NewReader(tagged.Beef))
@@ -205,7 +205,7 @@ func TestLookupHandler_HappyPath(t *testing.T) {
 
 	// Submit a UHRP entry first so the lookup has something to find.
 	const hashHex = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/y", "image/jpeg")
+	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/y", "image/jpeg", true)
 	topicsJSON, _ := json.Marshal(tagged.Topics)
 	req, _ := http.NewRequest(http.MethodPost, url+"/submit", bytes.NewReader(tagged.Beef))
 	req.Header.Set("x-topics", string(topicsJSON))
@@ -298,7 +298,7 @@ func TestLookupHandler_NullQueryRejected(t *testing.T) {
 func TestLookupHandler_AggregationBinary(t *testing.T) {
 	url := newTestServer(t)
 	const hashHex = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/agg", "image/png")
+	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/agg", "image/png", true)
 	topicsJSON, _ := json.Marshal(tagged.Topics)
 	req, _ := http.NewRequest(http.MethodPost, url+"/submit", bytes.NewReader(tagged.Beef))
 	req.Header.Set("x-topics", string(topicsJSON))

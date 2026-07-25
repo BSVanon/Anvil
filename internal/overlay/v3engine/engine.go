@@ -10,10 +10,12 @@
 package v3engine
 
 import (
+	"context"
 	"errors"
 
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/overlay/federation"
+	"github.com/BSVanon/Anvil/internal/overlay/health"
 	"github.com/BSVanon/Anvil/internal/overlay/lookups"
 	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
@@ -24,6 +26,23 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/syndtr/goleveldb/leveldb"
 )
+
+// countingLookup decorates a LookupService to record lookup-notify failures in
+// the health registry. Every method delegates to the wrapped service (embedded);
+// only OutputAdmittedByTopic is intercepted — that is the notify path whose
+// failures previously landed only in logs (the V1-BEEF indexing bug).
+type countingLookup struct {
+	engine.LookupService
+	reg *health.Registry
+}
+
+func (c countingLookup) OutputAdmittedByTopic(ctx context.Context, payload *engine.OutputAdmittedByTopic) error {
+	err := c.LookupService.OutputAdmittedByTopic(ctx, payload)
+	if err != nil && payload != nil {
+		c.reg.RecordLookupError(payload.Topic, err)
+	}
+	return err
+}
 
 // Config holds the construction inputs for the canonical Anvil engine.
 //
@@ -190,6 +209,15 @@ func New(cfg *Config) (*engine.Engine, error) {
 	managers[slap.Topic] = slap.NewTopicManager(slapStore, slapLookup)
 	lookupServices[ship.Service] = shipLookup
 	lookupServices[slap.Service] = slapLookup
+
+	// Wrap every lookup service so OutputAdmittedByTopic (lookup-notify) failures
+	// are recorded in the health registry — surfaced via /status + `anvil doctor`
+	// so the node flags its own indexing errors (e.g. the V1-BEEF parse bug an
+	// external dev had to report twice) instead of only logging them. Reassigning
+	// existing map keys during range is safe (no keys added/removed).
+	for name, svc := range lookupServices {
+		lookupServices[name] = countingLookup{LookupService: svc, reg: health.Default}
+	}
 
 	// headers.Store satisfies chaintracker.ChainTracker directly
 	// (IsValidRootForHeight + CurrentHeight at the expected signatures);
