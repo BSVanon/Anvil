@@ -62,10 +62,11 @@ func newTestEngine(t *testing.T) (*engine.Engine, *leveldb.DB) {
 	return eng, lookupDB
 }
 
-// buildUHRPTaggedBEEF assembles a TaggedBEEF carrying a one-output tx
-// whose locking script is a real BRC-26 UHRP advertisement for the
-// given content hash. The atomic-BEEF form is what engine.Submit reads.
-func buildUHRPTaggedBEEF(t *testing.T, contentHashHex, url, contentType string) overlay.TaggedBEEF {
+// buildUHRPTaggedBEEF assembles a TaggedBEEF carrying a one-output tx whose
+// locking script is a real BRC-26 UHRP advertisement for the given content
+// hash. atomic=true emits Atomic BEEF; atomic=false emits V1 BEEF (0x0100BEEF) —
+// the wire form standard SDKs send — and both must submit + index identically.
+func buildUHRPTaggedBEEF(t *testing.T, contentHashHex, url, contentType string, atomic bool) overlay.TaggedBEEF {
 	t.Helper()
 	hashBytes, err := hex.DecodeString(contentHashHex)
 	if err != nil || len(hashBytes) != 32 {
@@ -92,12 +93,17 @@ func buildUHRPTaggedBEEF(t *testing.T, contentHashHex, url, contentType string) 
 	if err != nil {
 		t.Fatalf("NewBeefFromTransaction: %v", err)
 	}
-	atomicBytes, err := beef.AtomicBytes(tx.TxID())
+	var blob []byte
+	if atomic {
+		blob, err = beef.AtomicBytes(tx.TxID())
+	} else {
+		blob, err = beef.Bytes()
+	}
 	if err != nil {
-		t.Fatalf("AtomicBytes: %v", err)
+		t.Fatalf("encode beef (atomic=%v): %v", atomic, err)
 	}
 	return overlay.TaggedBEEF{
-		Beef:   atomicBytes,
+		Beef:   blob,
 		Topics: []string{topics.UHRPTopicName},
 	}
 }
@@ -112,7 +118,7 @@ func TestEngine_SubmitAndLookupUHRP(t *testing.T) {
 	eng, _ := newTestEngine(t)
 
 	const hashHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/a", "image/png")
+	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/a", "image/png", true)
 
 	steak, err := eng.Submit(context.Background(), tagged, engine.SubmitModeHistorical, nil)
 	if err != nil {
@@ -144,6 +150,44 @@ func TestEngine_SubmitAndLookupUHRP(t *testing.T) {
 	}
 	if len(answer.Outputs[0].Beef) == 0 {
 		t.Fatalf("expected BEEF hydrated by engine, got empty")
+	}
+}
+
+// TestEngine_SelfTest_SubmitLookupV1BEEF is the release-gate SELF-TEST: it drives
+// a real V1 BEEF (0x0100BEEF — the wire format standard SDKs send) all the way
+// through engine.Submit → admit → lookup-notify → index → engine.Lookup and
+// asserts the round-trip resolves. This is the exact pipeline that failed
+// silently in the v3.2.8 atomic-only-parse bug; a regression here fails the build
+// before it can reach a node. Complements the runtime error-gate
+// (internal/overlay/health, surfaced via /status + `anvil doctor`), which is the
+// live detector; this is the pre-ship detector.
+func TestEngine_SelfTest_SubmitLookupV1BEEF(t *testing.T) {
+	eng, _ := newTestEngine(t)
+
+	const hashHex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/v1", "image/png", false) // V1 BEEF
+
+	steak, err := eng.Submit(context.Background(), tagged, engine.SubmitModeHistorical, nil)
+	if err != nil {
+		t.Fatalf("submit V1 BEEF: %v", err)
+	}
+	if inst, ok := steak[topics.UHRPTopicName]; !ok || inst == nil || len(inst.OutputsToAdmit) != 1 {
+		t.Fatalf("expected UHRP admit of the V1 submit, got %+v", inst)
+	}
+
+	q, err := json.Marshal(topics.UHRPLookupQuery{ContentHash: hashHex})
+	if err != nil {
+		t.Fatalf("marshal query: %v", err)
+	}
+	answer, err := eng.Lookup(context.Background(), &lookup.LookupQuestion{
+		Service: topics.UHRPLookupServiceName,
+		Query:   q,
+	})
+	if err != nil {
+		t.Fatalf("lookup after V1 submit: %v", err)
+	}
+	if answer.Type != lookup.AnswerTypeOutputList || len(answer.Outputs) != 1 {
+		t.Fatalf("V1 submit did not round-trip to lookup (type=%s n=%d) — the submit→index→lookup pipeline is broken", answer.Type, len(answer.Outputs))
 	}
 }
 

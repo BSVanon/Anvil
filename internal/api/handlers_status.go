@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/headers"
+	"github.com/BSVanon/Anvil/internal/overlay/health"
 	"github.com/BSVanon/Anvil/internal/version"
 	"github.com/libsv/go-p2p/wire"
 )
@@ -49,6 +50,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if msg := hc.Check(); msg != "" {
 			warnings = append(warnings, msg)
 		}
+	}
+	// Overlay lookup-notify error rate — the node flags its own indexing
+	// failures (e.g. the V1-BEEF parse bug) via /status + `anvil doctor`,
+	// instead of them only landing in logs nobody watches until an outsider does.
+	oh := health.Default.Snapshot()
+	resp["overlay_health"] = oh
+	if oh.RecentTotal > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d overlay lookup-notify error(s) in the last hour", oh.RecentTotal))
 	}
 	if len(warnings) > 0 {
 		resp["warnings"] = warnings
@@ -221,8 +230,8 @@ func (s *Server) handleHeadersRange(w http.ResponseWriter, r *http.Request) {
 // Response fields (canonical — matching ARC GET /v1/tx and go-sdk ChainTracker):
 //   - txid          the queried txid
 //   - txStatus      ARC status, passed through when ARC-sourced (MINED,
-//                   SEEN_ON_NETWORK, DOUBLE_SPEND_ATTEMPTED, …); synthesized
-//                   MINED/SEEN_ON_NETWORK on the WoC fallback
+//     SEEN_ON_NETWORK, DOUBLE_SPEND_ATTEMPTED, …); synthesized
+//     MINED/SEEN_ON_NETWORK on the WoC fallback
 //   - confirmations currentHeight − blockHeight + 1 (0 when unmined); >=1 == mined
 //   - blockHeight   present only when mined
 //   - currentHeight the node's local PoW header tip (ChainTracker.CurrentHeight)

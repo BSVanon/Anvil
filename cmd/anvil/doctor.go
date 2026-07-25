@@ -267,6 +267,44 @@ func cmdDoctor(args []string) {
 		}
 	}
 
+	// ── Overlay Health ──
+	// Surfaces the node's own lookup-notify error rate (from /status), so a
+	// broken submit→lookup path — like the V1-BEEF indexing bug an external dev
+	// had to report twice — trips OUR check in seconds instead of landing only
+	// in logs nobody watches.
+	section("Overlay Health")
+	if statusResp != nil {
+		if oh, ok := statusResp["overlay_health"].(map[string]interface{}); ok {
+			recent, _ := oh["lookup_errors_recent_1h"].(float64)
+			total, _ := oh["lookup_errors_total"].(float64)
+			switch {
+			case recent > 0:
+				warn("%.0f lookup-notify error(s) in the last hour (%.0f since start) — a lookup can't index admitted outputs", recent, total)
+				if byTopic, ok := oh["lookup_errors_by_topic"].(map[string]interface{}); ok {
+					for topic, v := range byTopic {
+						th, ok := v.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if r, _ := th["recent_1h"].(float64); r > 0 {
+							le, _ := th["last_error"].(string)
+							warn("  %s: %.0f recent — last: %s", topic, r, le)
+						}
+					}
+				}
+				if recent >= 10 {
+					issues++ // sustained — a real problem, not just a heads-up
+				}
+			case total > 0:
+				pass("no lookup-notify errors in the last hour (%.0f earlier, since start)", total)
+			default:
+				pass("no lookup-notify errors")
+			}
+		} else {
+			pass("overlay health metrics not reported (older node)")
+		}
+	}
+
 	// ── 5. External connectivity ──
 	section("External Connectivity")
 
