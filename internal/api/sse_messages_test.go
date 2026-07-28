@@ -230,3 +230,20 @@ func TestSSEReconnectSkipsCommentWhenNoLastEventID(t *testing.T) {
 		t.Errorf("fresh connection (no Last-Event-ID) should not emit reconnect comment; got:\n%s", got)
 	}
 }
+
+// TestSSEHeartbeat verifies an idle stream emits a ": ping" keepalive comment so
+// a proxy's idle timeout (nginx default ~60s) can't cut a silent messaging
+// stream. Uses a short interval to keep the test fast.
+func TestSSEHeartbeat(t *testing.T) {
+	old := sseHeartbeatInterval
+	sseHeartbeatInterval = 20 * time.Millisecond
+	defer func() { sseHeartbeatInterval = old }()
+
+	srv := testServerWithMsgStore(t)
+	// A fresh connection (no Last-Event-ID) emits no reconnect comment, so the
+	// first frame the client sees on an otherwise-idle stream is the heartbeat.
+	got := runSubscribeForReconnectLine(t, srv, "")
+	if !strings.Contains(got, ": ping") {
+		t.Errorf("expected a ': ping' heartbeat on an idle stream, got:\n%q", got)
+	}
+}
