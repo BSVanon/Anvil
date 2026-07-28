@@ -7,9 +7,18 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/messaging"
 )
+
+// sseHeartbeatInterval is how often an idle messagebox SSE stream emits a
+// ": ping" comment. A messaging stream is silent between messages, and an
+// intermediary proxy (nginx default proxy_read_timeout ~60s) will cut a stream
+// with no traffic — so we keep well under that. Comment lines (leading ':') are
+// ignored by EventSource, so this is invisible to clients. Var, not const, so
+// tests can shorten it.
+var sseHeartbeatInterval = 25 * time.Second
 
 // messageHub fans out new messages to SSE subscribers by recipient+messageBox.
 type messageHub struct {
@@ -111,6 +120,11 @@ func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Tell nginx (and any reverse proxy that honors it) NOT to buffer this
+	// response — SSE frames must flush immediately, not batch. Pairs with the
+	// heartbeat below (which prevents idle-timeout cuts) to make the live channel
+	// robust behind a proxy without requiring an nginx config change.
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
 	// If reconnecting with Last-Event-ID, warn about potential gap.
@@ -134,11 +148,18 @@ func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) 
 	unsub := s.msgHub.subscribe(recipient, messageBox, ch)
 	defer unsub()
 
+	// Heartbeat so the stream never sits idle long enough for a proxy to cut it.
+	ping := time.NewTicker(sseHeartbeatInterval)
+	defer ping.Stop()
+
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ping.C:
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
 		case msg := <-ch:
 			data, err := json.Marshal(msg)
 			if err != nil {
