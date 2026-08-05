@@ -14,7 +14,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/txrelay"
 )
 
-const testWIF = "***REMOVED-KEY***"
+const testWIF = "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S"
 
 // testInfra holds shared infrastructure that outlives a single NodeWallet instance.
 type testInfra struct {

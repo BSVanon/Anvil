@@ -74,7 +74,7 @@ func TestAdvertiser_ParseAdvertisement_RoundtripsCanonicalAdminToken(t *testing.
 	w := newStubWallet(t)
 	pd := admintoken.NewOverlayAdminToken(w)
 	const (
-		domain         = "https://<node-a>.test"
+		domain         = "https://anvil-a.test"
 		topicOrService = "tm_uhrp"
 	)
 	lock, err := pd.Lock(context.Background(), overlay.ProtocolSHIP, domain, topicOrService)
@@ -109,7 +109,7 @@ func TestAdvertiser_ParseAdvertisement_RoundtripsCanonicalAdminToken(t *testing.
 func TestAdvertiser_ParseAdvertisement_SLAPProtocol(t *testing.T) {
 	w := newStubWallet(t)
 	pd := admintoken.NewOverlayAdminToken(w)
-	lock, err := pd.Lock(context.Background(), overlay.ProtocolSLAP, "https://<node-b>.test", "ls_uhrp")
+	lock, err := pd.Lock(context.Background(), overlay.ProtocolSLAP, "https://anvil-b.test", "ls_uhrp")
 	if err != nil {
 		t.Fatalf("admin-token Lock: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestAdvertiser_BEEFEmptyFallback_PreservesTopicOrService(t *testing.T) {
 	shipStore := NewSHIPStorage(db)
 	slapStore := NewSLAPStorage(db)
 	const (
-		hostingURL = "https://<node-a>.test"
+		hostingURL = "https://anvil-a.test"
 		txid       = "deadbeef00000000000000000000000000000000000000000000000000000000"
 		topic      = "tm_uhrp"
 		idkey      = "02abcdef00"
@@ -307,7 +307,7 @@ func TestAdvertiser_BEEFEmptyFallback_PreservesTopicOrService(t *testing.T) {
 // alternative.
 func TestAdvertiser_RevokeAdvertisements_PerTxStrategy(t *testing.T) {
 	w := &recordingWallet{stubWallet: newStubWallet(t)}
-	a := &Advertiser{Wallet: w, HostingURL: "https://<node-a>.test"}
+	a := &Advertiser{Wallet: w, HostingURL: "https://anvil-a.test"}
 
 	// Two fake ads with different topics + non-empty BEEF blobs.
 	ads := []*oa.Advertisement{

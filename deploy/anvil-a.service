@@ -17,7 +17,7 @@ LimitNOFILE=65536
 # Security hardening
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/<node-a>
+ReadWritePaths=/var/lib/anvil-a
 NoNewPrivileges=true
 
 [Install]

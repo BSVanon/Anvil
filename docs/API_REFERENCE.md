@@ -395,6 +395,6 @@ sudo anvil info             # identity, funding address, auth token
 sudo anvil doctor           # validate config, connectivity, mesh health
 sudo anvil token            # print auth token
 curl -s localhost:9333/status   # node status
-sudo journalctl -u <node-a> -f  # live logs
-sudo systemctl restart <node-a>  # restart
+sudo journalctl -u anvil-a -f  # live logs
+sudo systemctl restart anvil-a  # restart
 ```

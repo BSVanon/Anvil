@@ -225,7 +225,7 @@ func main() {
 	// v3 engine + federation storage AND the Anvil-Mesh internal peer
 	// directory (Bootstrap, ForEachSHIP, AddSHIPPeerFromGossip, etc.) —
 	// these are NOT BRC-88 federation, they are Anvil's internal mesh
-	// peer discovery for <node-a>/<node-b> coordination, per the Codex
+	// peer discovery for anvil-a/anvil-b coordination, per the Codex
 	// 14a2d703 scope carve-out (reference_anvil_teranode_boundary.md).
 	// W-10.5 retired the BRC-88-equivalent paths (on-chain SHIP publish,
 	// JungleBus SHIP/SLAP discovery) because those duplicate what

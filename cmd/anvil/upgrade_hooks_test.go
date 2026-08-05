@@ -28,7 +28,7 @@ import (
 // inserted immediately before the first ExecStart= line when missing.
 func TestEnsureExecStartPreHook_AddsMissingHook(t *testing.T) {
 	dir := t.TempDir()
-	unit := filepath.Join(dir, "<node-a>.service")
+	unit := filepath.Join(dir, "anvil-a.service")
 	original := `[Unit]
 Description=Anvil Node A
 
@@ -68,7 +68,7 @@ WantedBy=multi-user.target
 // canonical `--locks-only` form during upgrade.
 func TestEnsureExecStartPreHook_RewritesLegacyHook(t *testing.T) {
 	dir := t.TempDir()
-	unit := filepath.Join(dir, "<node-a>.service")
+	unit := filepath.Join(dir, "anvil-a.service")
 	original := `[Service]
 ExecStartPre=/opt/anvil/anvil doctor --fix-locks-only
 ExecStart=/opt/anvil/anvil -config /etc/anvil/node-a.toml
@@ -94,7 +94,7 @@ ExecStart=/opt/anvil/anvil -config /etc/anvil/node-a.toml
 // that already has the canonical hook is not modified (counter stays 0).
 func TestEnsureExecStartPreHook_IdempotentOnExistingHook(t *testing.T) {
 	dir := t.TempDir()
-	unit := filepath.Join(dir, "<node-a>.service")
+	unit := filepath.Join(dir, "anvil-a.service")
 	original := `[Service]
 ExecStartPre=/opt/anvil/anvil doctor --locks-only
 ExecStart=/opt/anvil/anvil -config /etc/anvil/node-a.toml
@@ -175,27 +175,27 @@ func TestNeedsV3Migrate(t *testing.T) {
 // map keyed by service basename.
 func TestExtractServiceConfigs_HappyPath(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "<node-a>.service"), []byte(`[Service]
+	if err := os.WriteFile(filepath.Join(dir, "anvil-a.service"), []byte(`[Service]
 ExecStartPre=/opt/anvil/anvil doctor --locks-only
 ExecStart=/opt/anvil/anvil -config /etc/anvil/node-a.toml
 `), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "<node-b>.service"), []byte(`[Service]
+	if err := os.WriteFile(filepath.Join(dir, "anvil-b.service"), []byte(`[Service]
 ExecStart=/opt/anvil/anvil -config /etc/anvil/node-b.toml
 `), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	got := extractServiceConfigs(dir, []string{"<node-a>", "<node-b>"})
+	got := extractServiceConfigs(dir, []string{"anvil-a", "anvil-b"})
 	if len(got) != 2 {
 		t.Fatalf("expected 2 configs, got %d: %v", len(got), got)
 	}
-	if got["<node-a>"] != "/etc/anvil/node-a.toml" {
-		t.Errorf("<node-a> config: got %q want /etc/anvil/node-a.toml", got["<node-a>"])
+	if got["anvil-a"] != "/etc/anvil/node-a.toml" {
+		t.Errorf("anvil-a config: got %q want /etc/anvil/node-a.toml", got["anvil-a"])
 	}
-	if got["<node-b>"] != "/etc/anvil/node-b.toml" {
-		t.Errorf("<node-b> config: got %q want /etc/anvil/node-b.toml", got["<node-b>"])
+	if got["anvil-b"] != "/etc/anvil/node-b.toml" {
+		t.Errorf("anvil-b config: got %q want /etc/anvil/node-b.toml", got["anvil-b"])
 	}
 }
 
@@ -220,14 +220,14 @@ ExecStart=/usr/bin/some-other-thing -config /etc/somewhere/else.toml
 // producing an entry pointing at an empty string.
 func TestExtractServiceConfigs_MissingConfigFlag(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "<node-a>.service"), []byte(`[Service]
+	if err := os.WriteFile(filepath.Join(dir, "anvil-a.service"), []byte(`[Service]
 ExecStart=/opt/anvil/anvil
 `), 0644); err != nil {
 		t.Fatal(err)
 	}
-	got := extractServiceConfigs(dir, []string{"<node-a>"})
-	if _, present := got["<node-a>"]; present {
-		t.Errorf("expected <node-a> omitted (no -config flag); got %v", got)
+	got := extractServiceConfigs(dir, []string{"anvil-a"})
+	if _, present := got["anvil-a"]; present {
+		t.Errorf("expected anvil-a omitted (no -config flag); got %v", got)
 	}
 }
 
@@ -246,7 +246,7 @@ func TestExtractServiceConfigs_NonexistentService(t *testing.T) {
 // can drop privileges to match the daemon's runtime user.
 func TestServiceRunAsUser_ParsesUserFromUnit(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "<node-a>.service"), []byte(`[Service]
+	if err := os.WriteFile(filepath.Join(dir, "anvil-a.service"), []byte(`[Service]
 Type=simple
 User=anvil
 Group=anvil
@@ -254,7 +254,7 @@ ExecStart=/opt/anvil/anvil -config /etc/anvil/node-a.toml
 `), 0644); err != nil {
 		t.Fatal(err)
 	}
-	got := serviceRunAsUser(dir, []string{"<node-a>"})
+	got := serviceRunAsUser(dir, []string{"anvil-a"})
 	if got != "anvil" {
 		t.Errorf("expected anvil, got %q", got)
 	}
@@ -297,7 +297,7 @@ func TestVerifyServiceOnVersion_SucceedsImmediatelyOnMatch(t *testing.T) {
 		calls++
 		return "3.0.3"
 	}
-	err := verifyServiceOnVersion("<node-a>", "9333", "3.0.3", 5*time.Second, get)
+	err := verifyServiceOnVersion("anvil-a", "9333", "3.0.3", 5*time.Second, get)
 	if err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
@@ -316,7 +316,7 @@ func TestVerifyServiceOnVersion_FailsFastOnWrongVersion(t *testing.T) {
 		calls++
 		return "2.3.2"
 	}
-	err := verifyServiceOnVersion("<node-a>", "9333", "3.0.3", 5*time.Second, get)
+	err := verifyServiceOnVersion("anvil-a", "9333", "3.0.3", 5*time.Second, get)
 	if err == nil {
 		t.Fatal("expected error on version mismatch")
 	}
@@ -337,7 +337,7 @@ func TestVerifyServiceOnVersion_TimesOutWhenNeverResponds(t *testing.T) {
 		return "" // never responding
 	}
 	start := time.Now()
-	err := verifyServiceOnVersion("<node-a>", "9333", "3.0.3", 100*time.Millisecond, get)
+	err := verifyServiceOnVersion("anvil-a", "9333", "3.0.3", 100*time.Millisecond, get)
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("expected timeout error")

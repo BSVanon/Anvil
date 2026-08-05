@@ -3,7 +3,7 @@
 
 [node]
 name = "anvil-prime"
-data_dir = "/var/lib/<node-a>"
+data_dir = "/var/lib/anvil-a"
 listen = "0.0.0.0:8333"          # mesh peers (wss:// with TLS)
 api_listen = "0.0.0.0:9333"      # REST API
 

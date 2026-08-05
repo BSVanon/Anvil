@@ -96,7 +96,7 @@ if [ -f "$CONFIG_FILE" ]; then
 
   # ── Detect existing services ──
   RUNNING_SERVICES=()
-  for svc in <node-a> <node-b>; do
+  for svc in anvil-a anvil-b; do
     if systemctl is-active "$svc" >/dev/null 2>&1; then
       RUNNING_SERVICES+=("$svc")
     fi
@@ -299,8 +299,8 @@ fi
 chmod 755 "$TMPBIN"
 
 # Stop any running instance before overwriting
-systemctl stop <node-a> 2>/dev/null || true
-systemctl stop <node-b> 2>/dev/null || true
+systemctl stop anvil-a 2>/dev/null || true
+systemctl stop anvil-b 2>/dev/null || true
 sleep 1
 
 mkdir -p "$INSTALL_DIR"
@@ -578,8 +578,8 @@ echo ""
 echo -e "    ${YELLOW}${BOLD}anvil help${NC}                                 ${YELLOW}All commands${NC}"
 echo -e "    ${CYAN}sudo anvil info${NC}                            Node info"
 echo -e "    ${CYAN}sudo anvil doctor${NC}                          Diagnostics"
-echo -e "    ${CYAN}sudo journalctl -u <node-a> -f${NC}              Live logs"
-echo -e "    ${CYAN}sudo systemctl restart <node-a>${NC}             Restart"
+echo -e "    ${CYAN}sudo journalctl -u anvil-a -f${NC}              Live logs"
+echo -e "    ${CYAN}sudo systemctl restart anvil-a${NC}             Restart"
 echo ""
 echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
 echo ""
@@ -589,7 +589,7 @@ echo -e "  ${DIM}Your node was auto-named from its identity key.${NC}"
 echo -e "  ${DIM}To give it a custom name:${NC}"
 echo ""
 echo -e "    ${CYAN}sudo sed -i 's|name = \"anvil-.*\"|name = \"my-node-name\"|' ${CONFIG_FILE}${NC}"
-echo -e "    ${CYAN}sudo systemctl restart <node-a>${NC}"
+echo -e "    ${CYAN}sudo systemctl restart anvil-a${NC}"
 echo ""
 echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
 echo ""

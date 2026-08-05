@@ -28,7 +28,7 @@ import (
 func cmdDeploy(args []string) {
 	fs := flag.NewFlagSet("deploy", flag.ExitOnError)
 	configDir := fs.String("config-dir", "/etc/anvil", "directory for node config files")
-	dataBase := fs.String("data-dir", "/var/lib", "base directory for node data (creates anvil/ and <node-b>/ under this)")
+	dataBase := fs.String("data-dir", "/var/lib", "base directory for node data (creates anvil/ and anvil-b/ under this)")
 	installDir := fs.String("install-dir", "/opt/anvil", "directory for the anvil binary")
 	nodes := fs.String("nodes", "a", "which nodes to deploy: a, b, or ab (both)")
 	seedPeer := fs.String("seed", "", "mesh seed peer URL (e.g. wss://anvil.sendbsv.com:8333)")
@@ -134,7 +134,7 @@ func cmdDeploy(args []string) {
 	}
 
 	fmt.Println("\n=== Deploy complete ===")
-	fmt.Println("Monitor: journalctl -u <node-a> -f")
+	fmt.Println("Monitor: journalctl -u anvil-a -f")
 	fmt.Println("Doctor:  anvil doctor -config /etc/anvil/node-a.toml")
 }
 
@@ -229,7 +229,7 @@ func deployNode(node, configDir, dataDir, installDir, seedPeer, nodeName, public
 var unitTmpl = template.Must(template.New("unit").Parse(`[Unit]
 Description=Anvil {{.DisplayName}}
 After=network-online.target{{if eq .Node "b"}}
-After=<node-a>.service{{end}}
+After=anvil-a.service{{end}}
 Wants=network-online.target
 
 [Service]
@@ -260,7 +260,7 @@ NoNewPrivileges=true
 # Private /tmp: wallet-toolbox's SQLite needs a writable temp dir for
 # sort/temp-table ops on larger wallet DBs. Without this, ProtectSystem=strict
 # makes /tmp read-only and SQLite returns "disk I/O error: permission denied"
-# during CreateAction calls. Discovered in v3.0.0 production (<node-a> 443MB
+# during CreateAction calls. Discovered in v3.0.0 production (anvil-a 443MB
 # wallet); fix shipped in v3.0.1.
 PrivateTmp=true
 
@@ -397,7 +397,7 @@ func nodeDataDir(base, node string) string {
 	if node == "a" {
 		return filepath.Join(base, "anvil")
 	}
-	return filepath.Join(base, "<node-b>")
+	return filepath.Join(base, "anvil-b")
 }
 
 func serviceName(node string) string { return "anvil-" + node }

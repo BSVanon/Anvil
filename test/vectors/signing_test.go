@@ -130,7 +130,7 @@ func TestCrossLanguageVerify(t *testing.T) {
 	// This signature was produced by JS using the CORRECT approach:
 	//   key.sign(Array.from(Buffer.from(preimage, 'utf8')))
 	// which internally does SHA-256 once before ECDSA signing.
-	wif := "***REMOVED-KEY***"
+	wif := "L5XAvuHrAVMkgNJtCaLNitZTkG7L9NtX7AKtrH8CZY1jeJtzAijQ"
 	key, _ := ec.PrivateKeyFromWif(wif)
 
 	env := &envelope.Envelope{

@@ -59,23 +59,23 @@ func TestSHIPStorage_StoreAndFindRecord(t *testing.T) {
 	s := NewSHIPStorage(newTestDB(t))
 
 	// Seed three records across two domains.
-	if err := s.StoreSHIPRecord(ctx, "txA", 0, "key1", "https://<node-a>.test", "tm_uhrp"); err != nil {
+	if err := s.StoreSHIPRecord(ctx, "txA", 0, "key1", "https://anvil-a.test", "tm_uhrp"); err != nil {
 		t.Fatalf("store A: %v", err)
 	}
-	if err := s.StoreSHIPRecord(ctx, "txB", 0, "key2", "https://<node-b>.test", "tm_uhrp"); err != nil {
+	if err := s.StoreSHIPRecord(ctx, "txB", 0, "key2", "https://anvil-b.test", "tm_uhrp"); err != nil {
 		t.Fatalf("store B: %v", err)
 	}
-	if err := s.StoreSHIPRecord(ctx, "txC", 1, "key1", "https://<node-a>.test", "tm_dex_swap"); err != nil {
+	if err := s.StoreSHIPRecord(ctx, "txC", 1, "key1", "https://anvil-a.test", "tm_dex_swap"); err != nil {
 		t.Fatalf("store C: %v", err)
 	}
 
 	// Domain filter.
-	hits, err := s.FindRecord(ctx, types.SHIPQuery{Domain: ptrString("https://<node-a>.test")})
+	hits, err := s.FindRecord(ctx, types.SHIPQuery{Domain: ptrString("https://anvil-a.test")})
 	if err != nil {
 		t.Fatalf("find by domain: %v", err)
 	}
 	if len(hits) != 2 {
-		t.Fatalf("expected 2 hits for <node-a>, got %d", len(hits))
+		t.Fatalf("expected 2 hits for anvil-a, got %d", len(hits))
 	}
 
 	// Topic filter.
@@ -89,7 +89,7 @@ func TestSHIPStorage_StoreAndFindRecord(t *testing.T) {
 
 	// Combined filter.
 	hits, err = s.FindRecord(ctx, types.SHIPQuery{
-		Domain: ptrString("https://<node-a>.test"),
+		Domain: ptrString("https://anvil-a.test"),
 		Topics: []string{"tm_dex_swap"},
 	})
 	if err != nil {
@@ -103,7 +103,7 @@ func TestSHIPStorage_StoreAndFindRecord(t *testing.T) {
 func TestSHIPStorage_DeleteRemovesEntry(t *testing.T) {
 	ctx := context.Background()
 	s := NewSHIPStorage(newTestDB(t))
-	_ = s.StoreSHIPRecord(ctx, "txA", 0, "key1", "https://<node-a>.test", "tm_uhrp")
+	_ = s.StoreSHIPRecord(ctx, "txA", 0, "key1", "https://anvil-a.test", "tm_uhrp")
 
 	all, _ := s.FindAll(ctx, nil, nil, nil)
 	if len(all) != 1 {
@@ -145,10 +145,10 @@ func TestSLAPStorage_StoreFindDelete(t *testing.T) {
 	ctx := context.Background()
 	s := NewSLAPStorage(newTestDB(t))
 
-	if err := s.StoreSLAPRecord(ctx, "txA", 0, "key1", "https://<node-a>.test", "ls_uhrp"); err != nil {
+	if err := s.StoreSLAPRecord(ctx, "txA", 0, "key1", "https://anvil-a.test", "ls_uhrp"); err != nil {
 		t.Fatalf("store A: %v", err)
 	}
-	if err := s.StoreSLAPRecord(ctx, "txB", 0, "key2", "https://<node-b>.test", "ls_uhrp"); err != nil {
+	if err := s.StoreSLAPRecord(ctx, "txB", 0, "key2", "https://anvil-b.test", "ls_uhrp"); err != nil {
 		t.Fatalf("store B: %v", err)
 	}
 
@@ -160,12 +160,12 @@ func TestSLAPStorage_StoreFindDelete(t *testing.T) {
 		t.Fatalf("expected 2 ls_uhrp hits, got %d", len(hits))
 	}
 
-	hits, err = s.FindRecord(ctx, types.SLAPQuery{Domain: ptrString("https://<node-b>.test")})
+	hits, err = s.FindRecord(ctx, types.SLAPQuery{Domain: ptrString("https://anvil-b.test")})
 	if err != nil {
 		t.Fatalf("find by domain: %v", err)
 	}
 	if len(hits) != 1 || hits[0].Txid != "txB" {
-		t.Fatalf("expected single <node-b> hit, got %+v", hits)
+		t.Fatalf("expected single anvil-b hit, got %+v", hits)
 	}
 
 	if err := s.DeleteSLAPRecord(ctx, "txB", 0); err != nil {

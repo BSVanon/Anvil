@@ -31,7 +31,7 @@ func NewDiscoverer(dir *Directory, logger *slog.Logger) *Discoverer {
 
 // ProcessSHIPScript parses and validates a SHIP token script another
 // anvil-mesh node has submitted via /overlay/register, then adds it
-// to the local peer directory so <node-a> learns <node-b> exists (and
+// to the local peer directory so anvil-a learns anvil-b exists (and
 // vice versa).
 func (d *Discoverer) ProcessSHIPScript(script []byte, txid string, outputIndex int) error {
 	token, err := brc.ValidateSHIPToken(script)

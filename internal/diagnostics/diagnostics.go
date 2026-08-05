@@ -47,7 +47,7 @@ type AnvilProcess struct {
 
 // ServiceState captures the systemd view of an anvil-*.service unit.
 type ServiceState struct {
-	Name        string // e.g. "<node-a>"
+	Name        string // e.g. "anvil-a"
 	ActiveState string // "active" | "activating" | "inactive" | "failed" | "unknown"
 	SubState    string // "running" | "auto-restart" | "dead" | etc.
 	NRestarts   int    // systemd's Restart counter
@@ -186,7 +186,7 @@ func EnumerateAnvilServices() ([]ServiceState, error) {
 	// Fall back to the canonical pair if list-units returns nothing (older
 	// systemd versions can be odd with glob matching).
 	if len(names) == 0 {
-		names = []string{"<node-a>", "<node-b>"}
+		names = []string{"anvil-a", "anvil-b"}
 	}
 
 	var states []ServiceState

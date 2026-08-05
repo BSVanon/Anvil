@@ -17,7 +17,7 @@ func TestPruneDuplicatesByDomain(t *testing.T) {
 	ship := NewSHIPStorage(db)
 	slap := NewSLAPStorage(db)
 
-	const ours = "https://<node-a>.test"
+	const ours = "https://anvil-a.test"
 	const peer = "https://peer.test"
 
 	// Our domain: 3 dup tm_uhrp + 2 dup tm_kvstore. Peer: 1 tm_uhrp (must survive).

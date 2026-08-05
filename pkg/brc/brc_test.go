@@ -10,7 +10,7 @@ import (
 
 // Frozen fixtures from relay-federation derivation.test.js
 const (
-	fixtureWIF         = "***REMOVED-KEY***"
+	fixtureWIF         = "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S"
 	fixtureIdentityPub = "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
 	// Canonical fixtures using go-sdk protocol IDs:
 	// SHIP invoice = "2-service host interconnect-1"

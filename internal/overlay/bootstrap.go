@@ -12,8 +12,8 @@ import (
 // Bootstrap registers the node's own SHIP tokens in the local
 // Anvil-Mesh peer directory for each configured topic. This populates
 // the local directory entries that the /overlay/lookup HTTP API and
-// gossip-mesh handlers query so other anvil-mesh nodes (<node-a> ↔
-// <node-b>) can discover us via the bespoke peer-coordination layer.
+// gossip-mesh handlers query so other anvil-mesh nodes (anvil-a ↔
+// anvil-b) can discover us via the bespoke peer-coordination layer.
 //
 // Anvil-Mesh internal discovery vs canonical BRC-88: these are TWO
 // different systems. Bootstrap belongs to Anvil-Mesh — the bespoke

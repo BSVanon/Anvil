@@ -245,7 +245,7 @@ func TestEnvVarOverrides(t *testing.T) {
 
 func TestAuthTokenDerivedFromWIF(t *testing.T) {
 	f, _ := os.CreateTemp("", "anvil-cfg-auth-*.toml")
-	f.WriteString("[identity]\nwif = \"***REMOVED-KEY***\"\n")
+	f.WriteString("[identity]\nwif = \"KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S\"\n")
 	f.Close()
 	defer os.Remove(f.Name())
 

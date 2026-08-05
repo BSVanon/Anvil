@@ -69,6 +69,6 @@ func cmdPruneAds(args []string) {
 	fmt.Printf("  SHIP:   kept %d topic(s), %s %d duplicate record(s)\n", shipPlan.Kept, verb, shipPlan.Deleted)
 	fmt.Printf("  SLAP:   kept %d service(s), %s %d duplicate record(s)\n", slapPlan.Kept, verb, slapPlan.Deleted)
 	if *apply {
-		fmt.Println("  Done. Restart the daemon (e.g. sudo systemctl start <node-a>).")
+		fmt.Println("  Done. Restart the daemon (e.g. sudo systemctl start anvil-a).")
 	}
 }

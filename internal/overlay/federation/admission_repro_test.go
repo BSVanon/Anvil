@@ -26,7 +26,7 @@ func shipAdLock(t *testing.T, pd pushdrop.PushDrop, identity []byte, cp wallet.C
 		Protocol:      string(overlay.ProtocolSHIP.ID()),
 	}
 	lock, err := pd.Lock(context.Background(),
-		[][]byte{[]byte(overlay.ProtocolSHIP), identity, []byte("https://<node-a>.test"), []byte("tm_uhrp")},
+		[][]byte{[]byte(overlay.ProtocolSHIP), identity, []byte("https://anvil-a.test"), []byte("tm_uhrp")},
 		protoID, "1", cp, forSelf, true, pushdrop.LockBefore)
 	if err != nil {
 		t.Fatalf("lock: %v", err)
@@ -140,7 +140,7 @@ func buildShipTokenAndValidate(t *testing.T, counterparty wallet.Counterparty, f
 		[][]byte{
 			[]byte(overlay.ProtocolSHIP),
 			priv.PubKey().Compressed(),
-			[]byte("https://<node-a>.test"),
+			[]byte("https://anvil-a.test"),
 			[]byte("tm_uhrp"),
 		},
 		protoID,
@@ -249,7 +249,7 @@ func TestAdvertiser_CreateAdvertisements_ProducesAdmittableTokens(t *testing.T) 
 	}
 	a := &Advertiser{
 		Wallet:     &e2eAdWallet{pw: pw},
-		HostingURL: "https://<node-a>.test",
+		HostingURL: "https://anvil-a.test",
 	}
 
 	tagged, err := a.CreateAdvertisements([]*oa.AdvertisementData{
@@ -325,7 +325,7 @@ func TestAdvertiser_FindAllAdvertisements_RecordSurvivesHydrationMiss(t *testing
 	ctx := context.Background()
 	db := newTestDB(t)
 	const (
-		dom  = "https://<node-a>.test"
+		dom  = "https://anvil-a.test"
 		txid = "deadbeef00000000000000000000000000000000000000000000000000000000"
 	)
 	shipStore := NewSHIPStorage(db)

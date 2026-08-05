@@ -1,6 +1,6 @@
 [Unit]
 Description=Anvil One (peer node)
-After=network-online.target <node-a>.service
+After=network-online.target anvil-a.service
 Wants=network-online.target
 
 [Service]
@@ -17,7 +17,7 @@ LimitNOFILE=65536
 # Security hardening
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/<node-b>
+ReadWritePaths=/var/lib/anvil-b
 NoNewPrivileges=true
 
 [Install]

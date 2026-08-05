@@ -9,7 +9,7 @@ import (
 )
 
 func testKey() *ec.PrivateKey {
-	key, _ := ec.PrivateKeyFromWif("***REMOVED-KEY***")
+	key, _ := ec.PrivateKeyFromWif("KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S")
 	return key
 }
 

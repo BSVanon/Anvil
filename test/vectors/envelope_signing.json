@@ -3,7 +3,7 @@
   "vectors": [
     {
       "name": "basic_rate_envelope",
-      "wif": "***REMOVED-KEY***",
+      "wif": "L5XAvuHrAVMkgNJtCaLNitZTkG7L9NtX7AKtrH8CZY1jeJtzAijQ",
       "expected_pubkey": "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
       "envelope": {
         "type": "data",
@@ -18,7 +18,7 @@
     },
     {
       "name": "durable_envelope",
-      "wif": "***REMOVED-KEY***",
+      "wif": "L5XAvuHrAVMkgNJtCaLNitZTkG7L9NtX7AKtrH8CZY1jeJtzAijQ",
       "expected_pubkey": "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
       "envelope": {
         "type": "data",
@@ -33,7 +33,7 @@
     },
     {
       "name": "monetized_envelope",
-      "wif": "***REMOVED-KEY***",
+      "wif": "L5XAvuHrAVMkgNJtCaLNitZTkG7L9NtX7AKtrH8CZY1jeJtzAijQ",
       "expected_pubkey": "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
       "envelope": {
         "type": "data",

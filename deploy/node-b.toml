@@ -3,7 +3,7 @@
 
 [node]
 name = "anvil-one"
-data_dir = "/var/lib/<node-b>"
+data_dir = "/var/lib/anvil-b"
 listen = "0.0.0.0:8334"          # different port from Node A
 api_listen = "0.0.0.0:9334"      # different port from Node A
 

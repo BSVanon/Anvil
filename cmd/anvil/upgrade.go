@@ -208,7 +208,7 @@ func cmdUpgrade(args []string) {
 	//
 	// systemctl stop only affects processes systemd is tracking. Real-world
 	// failure mode (seen in production 2026-04-17): a prior instance of
-	// <node-a> crashed but its PID remained running outside systemd's view,
+	// anvil-a crashed but its PID remained running outside systemd's view,
 	// holding LevelDB LOCK files. The shared binary got replaced but the
 	// orphan kept serving on the port, so the "upgrade succeeded" only in
 	// the sense that the tool thought it did.
@@ -457,7 +457,7 @@ func runningAnvilServices() []string {
 		// (e.g. systemctl not installed in a test env). Preserves the prior
 		// behavior exactly.
 		var running []string
-		for _, svc := range []string{"<node-a>", "<node-b>"} {
+		for _, svc := range []string{"anvil-a", "anvil-b"} {
 			out, err := exec.Command("systemctl", "is-active", svc).Output()
 			if err == nil && strings.TrimSpace(string(out)) == "active" {
 				running = append(running, svc)
