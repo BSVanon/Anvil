@@ -11,6 +11,7 @@ data/
 docs/internal/
 docs/logs*
 DIAGNOSTIC_*.md
+docs/operator/*deploy-plan*
 
 # IDE
 .vscode/
