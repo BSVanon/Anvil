@@ -17,6 +17,7 @@ package lookups
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
+	"github.com/bsv-blockchain/go-sdk/storage"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
@@ -67,8 +69,8 @@ type UHRPLookupService struct {
 func NewUHRPLookupService(db *leveldb.DB) *UHRPLookupService {
 	return &UHRPLookupService{
 		db: db,
-		docs: "UHRP Lookup (BRC-26): resolve content by SHA-256 hash. Query " +
-			"by hash to find hosting locations, or list all advertised content.",
+		docs: "UHRP Lookup (BRC-26): resolve content by SHA-256 hash (content_hash) " +
+			"or by canonical uhrp:// URL (uhrpUrl), or list all advertised content (list).",
 		meta: &overlay.MetaData{
 			Name:        topics.UHRPLookupServiceName,
 			Description: "UHRP content resolution by SHA-256 hash",
@@ -253,6 +255,19 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		}
 	}
 
+	// Canonical @bsv/sdk StorageDownloader clients resolve content by its
+	// uhrp:// URL, not by raw hash. Decode the URL to the content hash so
+	// those queries hit the same hash index — accept what canonical clients
+	// send (same lesson as V1/atomic BEEF on submit). An explicit
+	// content_hash takes precedence when both are supplied.
+	if q.ContentHash == "" && q.UhrpUrl != "" {
+		hashBytes, err := storage.GetHashFromURL(q.UhrpUrl)
+		if err != nil {
+			return nil, fmt.Errorf("uhrp lookup: invalid uhrpUrl %q: %w", q.UhrpUrl, err)
+		}
+		q.ContentHash = hex.EncodeToString(hashBytes)
+	}
+
 	switch {
 	case q.ContentHash != "":
 		formulas, err := s.scanByHash(strings.ToLower(q.ContentHash))
@@ -285,7 +300,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		}, nil
 
 	default:
-		return nil, errors.New("uhrp lookup: query must specify content_hash or list")
+		return nil, errors.New("uhrp lookup: query must specify content_hash, uhrpUrl, or list")
 	}
 }
 

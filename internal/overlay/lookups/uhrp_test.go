@@ -12,6 +12,7 @@ import (
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/storage"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/syndtr/goleveldb/leveldb"
 )
@@ -114,6 +115,58 @@ func TestUHRP_AdmitAndLookupByHash(t *testing.T) {
 	got := answer.Formulas[0].Outpoint
 	if got == nil || !got.Equal(want) {
 		t.Fatalf("formula outpoint mismatch: got %v, want %v", got, want)
+	}
+}
+
+// TestUHRP_LookupByUhrpUrl proves a canonical BRC-26 uhrp:// URL resolves to
+// the same outpoint as a raw content_hash query — the contract divergence an
+// external dev hit (canonical @bsv/sdk StorageDownloader clients query by URL,
+// never by raw hex hash).
+func TestUHRP_LookupByUhrpUrl(t *testing.T) {
+	s := newUHRPLookup(t)
+
+	payload := buildUHRPAdmitPayload(t, sampleHashA, "https://example.com/a", "image/png")
+	if err := s.OutputAdmittedByTopic(ctxBg(), payload); err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	want := mustOutpointFromPayload(t, payload)
+
+	// Build the canonical uhrp:// URL for that hash — what a StorageDownloader
+	// client actually sends (base58check over [0xce,0x00]+hash+checksum).
+	hashBytes, _ := hex.DecodeString(sampleHashA)
+	b58, err := storage.GetURLForHash(hashBytes)
+	if err != nil {
+		t.Fatalf("GetURLForHash: %v", err)
+	}
+
+	// uhrp://, web+uhrp://, and the bare base58 must all resolve identically.
+	for _, url := range []string{"uhrp://" + b58, "web+uhrp://" + b58, b58} {
+		q, _ := json.Marshal(topics.UHRPLookupQuery{UhrpUrl: url})
+		answer, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{
+			Service: topics.UHRPLookupServiceName,
+			Query:   q,
+		})
+		if err != nil {
+			t.Fatalf("lookup by %q: %v", url, err)
+		}
+		if answer.Type != lookup.AnswerTypeFormula || len(answer.Formulas) != 1 {
+			t.Fatalf("%q: expected 1 formula, got type=%s n=%d", url, answer.Type, len(answer.Formulas))
+		}
+		if got := answer.Formulas[0].Outpoint; got == nil || !got.Equal(want) {
+			t.Fatalf("%q: outpoint mismatch: got %v want %v", url, got, want)
+		}
+	}
+
+	// An explicit content_hash still wins when both are supplied.
+	qBoth, _ := json.Marshal(topics.UHRPLookupQuery{ContentHash: sampleHashA, UhrpUrl: "uhrp://zzz"})
+	if _, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{Service: topics.UHRPLookupServiceName, Query: qBoth}); err != nil {
+		t.Fatalf("content_hash should take precedence over a bad uhrpUrl: %v", err)
+	}
+
+	// A malformed uhrpUrl is a clean error, not a silent empty result.
+	qBad, _ := json.Marshal(topics.UHRPLookupQuery{UhrpUrl: "uhrp://zzz"})
+	if _, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{Service: topics.UHRPLookupServiceName, Query: qBad}); err == nil {
+		t.Fatalf("expected error for malformed uhrpUrl")
 	}
 }
 

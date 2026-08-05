@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/store"
 	sdkchainhash "github.com/bsv-blockchain/go-sdk/chainhash"
 	p2pwire "github.com/libsv/go-p2p/chaincfg/chainhash"
 	"github.com/libsv/go-p2p/wire"
-	"github.com/BSVanon/Anvil/internal/store"
 	"github.com/syndtr/goleveldb/leveldb"
 )
 
@@ -22,23 +22,37 @@ import (
 // returned alongside this error is authoritative for the snapshot.
 var ErrRangeExceedsTip = errors.New("headers: range exceeds tip")
 
+// ErrPrevHashMismatch is returned by AddHeaders when a header does not link to
+// the current tip — the signal that our tip may be on a minority fork. The
+// syncer catches this (errors.Is) and attempts ReorgTo instead of giving up.
+// The wrapped message deliberately keeps the literal "prev hash mismatch"
+// substring that `anvil doctor` and /status health checks match on.
+var ErrPrevHashMismatch = errors.New("prev hash mismatch")
+
+// maxReorgDepth bounds how far below the tip ReorgTo will roll back to adopt a
+// competing chain. Real BSV reorgs are a handful of blocks; a day of headers is
+// a generous ceiling that still stops a broken/hostile peer from forcing an
+// unbounded rollback. A fork deeper than this is surfaced as an error for
+// operator/doctor handling rather than auto-adopted.
+const maxReorgDepth = 144
+
 // Key prefixes for LevelDB.
 var (
-	prefixHeader    = []byte("h:")  // h:<height_be> → serialized 80-byte header
-	prefixHash      = []byte("hi:") // hi:<hash> → height (4 bytes big-endian)
-	prefixMerkle    = []byte("m:")  // m:<height_be> → merkle root (32 bytes)
-	keyTip          = []byte("tip") // tip → height (4 bytes big-endian)
-	keyWork         = []byte("work") // work → cumulative chain work (big.Int bytes)
+	prefixHeader = []byte("h:")   // h:<height_be> → serialized 80-byte header
+	prefixHash   = []byte("hi:")  // hi:<hash> → height (4 bytes big-endian)
+	prefixMerkle = []byte("m:")   // m:<height_be> → merkle root (32 bytes)
+	keyTip       = []byte("tip")  // tip → height (4 bytes big-endian)
+	keyWork      = []byte("work") // work → cumulative chain work (big.Int bytes)
 )
 
 // Store is a LevelDB-backed block header store that implements the go-sdk
 // ChainTracker interface for sovereign SPV verification.
 type Store struct {
-	db       *leveldb.DB
-	mu       sync.RWMutex
-	tip      uint32
-	work     *big.Int // cumulative work of the active chain
-	skipPoW  bool     // for testing only
+	db      *leveldb.DB
+	mu      sync.RWMutex
+	tip     uint32
+	work    *big.Int // cumulative work of the active chain
+	skipPoW bool     // for testing only
 }
 
 // NewStore opens or creates a header store at the given path.
@@ -130,7 +144,10 @@ func (s *Store) AddHeaders(startHeight uint32, headers []*wire.BlockHeader) erro
 	for i, hdr := range headers {
 		// Check prev-hash linkage
 		if hdr.PrevBlock != *tipHash {
-			return fmt.Errorf("header %d: prev hash mismatch at height %d", i, height)
+			if i == 0 {
+				return fmt.Errorf("header %d at height %d: %w", i, height, ErrPrevHashMismatch)
+			}
+			return fmt.Errorf("header %d at height %d: batch linkage mismatch", i, height)
 		}
 
 		// Validate proof of work
@@ -233,6 +250,136 @@ func (s *Store) Rollback(toHeight uint32) error {
 	s.tip = toHeight
 	s.work = newWork
 	return nil
+}
+
+// ReorgTo attempts to adopt a competing chain delivered as a batch of headers
+// that fork below the current tip — the case the strict AddHeaders path reports
+// as ErrPrevHashMismatch. It locates the fork point from headers[0].PrevBlock,
+// validates the batch (linkage + PoW), and adopts it (atomically rolling back
+// the orphaned tip range and writing the new chain in one LevelDB batch) ONLY
+// if the resulting chain has strictly more cumulative work — Bitcoin's
+// most-work rule. A fork deeper than maxReorgDepth, or a fork point we don't
+// have, is refused so a broken/hostile peer cannot force an unbounded rollback
+// or trick us onto a lighter chain.
+//
+// Returns adopted=true when the new chain was committed; adopted=false when the
+// competing chain was valid but not heavier (current chain kept). A non-nil
+// error means the batch was unusable (unknown/too-deep fork, or invalid PoW) —
+// the caller surfaces it for operator/doctor handling.
+func (s *Store) ReorgTo(headers []*wire.BlockHeader) (adopted bool, forkHeight uint32, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(headers) == 0 {
+		return false, 0, errors.New("reorg: empty header batch")
+	}
+
+	// Locate the fork point: the height at which headers[0] attaches.
+	forkHash := headers[0].PrevBlock
+	fhBytes, err := s.db.Get(append(append([]byte{}, prefixHash...), forkHash[:]...), nil)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		return false, 0, fmt.Errorf("reorg: fork point %s not in store", forkHash.String())
+	}
+	if err != nil {
+		return false, 0, fmt.Errorf("reorg: lookup fork point: %w", err)
+	}
+	forkHeight = binary.BigEndian.Uint32(fhBytes)
+
+	if forkHeight >= s.tip {
+		// Fork point is at/above the tip — not a below-tip reorg; nothing to do.
+		return false, forkHeight, nil
+	}
+	if s.tip-forkHeight > maxReorgDepth {
+		return false, forkHeight, fmt.Errorf("reorg: depth %d exceeds max %d", s.tip-forkHeight, maxReorgDepth)
+	}
+
+	// Validate the incoming chain from the fork point and sum its work.
+	prevHash := forkHash
+	newBatchWork := new(big.Int)
+	for i, hdr := range headers {
+		if hdr.PrevBlock != prevHash {
+			return false, forkHeight, fmt.Errorf("reorg: header %d does not link at height %d", i, forkHeight+uint32(i)+1)
+		}
+		if !s.skipPoW {
+			if err := ValidatePoW(hdr); err != nil {
+				return false, forkHeight, fmt.Errorf("reorg: header %d invalid pow: %w", i, err)
+			}
+		}
+		newBatchWork.Add(newBatchWork, WorkForHeader(hdr))
+		bh := hdr.BlockHash()
+		prevHash = bh
+	}
+
+	// Work we would discard by rolling back to the fork point.
+	discardedWork := new(big.Int)
+	for h := forkHeight + 1; h <= s.tip; h++ {
+		raw, err := s.db.Get(heightToKey(prefixHeader, h), nil)
+		if err != nil {
+			return false, forkHeight, fmt.Errorf("reorg: read header at %d: %w", h, err)
+		}
+		var hdr wire.BlockHeader
+		if err := hdr.Deserialize(bytes.NewReader(raw)); err != nil {
+			return false, forkHeight, fmt.Errorf("reorg: deserialize header at %d: %w", h, err)
+		}
+		discardedWork.Add(discardedWork, WorkForHeader(&hdr))
+	}
+
+	// Most-work rule: adopt only if the competing chain is strictly heavier.
+	if newBatchWork.Cmp(discardedWork) <= 0 {
+		return false, forkHeight, nil
+	}
+
+	// Adopt atomically: delete the orphaned tip range, write the new chain,
+	// update tip + cumulative work — all in one batch. Deletes are queued
+	// before Puts, so any height present in both resolves to the new header.
+	batch := new(leveldb.Batch)
+	for h := s.tip; h > forkHeight; h-- {
+		raw, err := s.db.Get(heightToKey(prefixHeader, h), nil)
+		if err != nil {
+			return false, forkHeight, fmt.Errorf("reorg: read old header at %d: %w", h, err)
+		}
+		var hdr wire.BlockHeader
+		if err := hdr.Deserialize(bytes.NewReader(raw)); err != nil {
+			return false, forkHeight, fmt.Errorf("reorg: deserialize old header at %d: %w", h, err)
+		}
+		oldHash := hdr.BlockHash()
+		batch.Delete(heightToKey(prefixHeader, h))
+		batch.Delete(append(append([]byte{}, prefixHash...), oldHash[:]...))
+		batch.Delete(heightToKey(prefixMerkle, h))
+	}
+
+	height := forkHeight + 1
+	for _, hdr := range headers {
+		var buf bytes.Buffer
+		if err := hdr.Serialize(&buf); err != nil {
+			return false, forkHeight, fmt.Errorf("reorg: serialize header at %d: %w", height, err)
+		}
+		bh := hdr.BlockHash()
+		heightBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(heightBytes, height)
+		batch.Put(heightToKey(prefixHeader, height), buf.Bytes())
+		batch.Put(append(append([]byte{}, prefixHash...), bh[:]...), heightBytes)
+		batch.Put(heightToKey(prefixMerkle, height), hdr.MerkleRoot[:])
+		height++
+	}
+	newTip := height - 1
+
+	// New cumulative work = (work at fork) + new batch
+	//                     = (current work - discarded) + new batch.
+	newWork := new(big.Int).Sub(s.work, discardedWork)
+	newWork.Add(newWork, newBatchWork)
+
+	tipBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(tipBytes, newTip)
+	batch.Put(keyTip, tipBytes)
+	batch.Put(keyWork, newWork.Bytes())
+
+	if err := s.db.Write(batch, nil); err != nil {
+		return false, forkHeight, fmt.Errorf("reorg: write batch: %w", err)
+	}
+	s.tip = newTip
+	s.work = newWork
+	return true, forkHeight, nil
 }
 
 // HeaderAtHeight returns the raw 80-byte header at the given height.
@@ -349,11 +496,11 @@ var genesisHeaderBytes = func() []byte {
 	// Hardcoded genesis block header for BSV mainnet.
 	// This is the same as BTC genesis since BSV shares the same genesis.
 	h := wire.NewBlockHeader(
-		1,                                     // version
-		&p2pwire.Hash{},                       // prev block (all zeros)
+		1,               // version
+		&p2pwire.Hash{}, // prev block (all zeros)
 		mustHash("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"), // merkle root
-		0x1d00ffff,                            // bits
-		2083236893,                            // nonce
+		0x1d00ffff, // bits
+		2083236893, // nonce
 	)
 	h.Timestamp = time.Unix(1231006505, 0)
 	var buf bytes.Buffer
@@ -390,4 +537,3 @@ func mustHash(s string) *p2pwire.Hash {
 	}
 	return h
 }
-

@@ -1,6 +1,7 @@
 package headers
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -97,6 +98,28 @@ func (s *Syncer) SyncWith(peer HeaderPeer) (uint32, error) {
 
 		height := s.store.Tip() + 1
 		if err := s.store.AddHeaders(height, headers); err != nil {
+			// A prev-hash mismatch means our tip may sit on a minority fork:
+			// the peer's headers build on a different block at/below our tip.
+			// Attempt a most-work reorg rather than getting permanently stuck —
+			// the exact failure that silently froze nodes for days.
+			if errors.Is(err, ErrPrevHashMismatch) {
+				adopted, forkHeight, rerr := s.store.ReorgTo(headers)
+				if rerr != nil {
+					return 0, fmt.Errorf("reorg from height %d: %w", height, rerr)
+				}
+				if !adopted {
+					// Valid but not heavier — keep our chain, stop pulling this fork.
+					s.logger.Warn("received lighter fork, keeping current chain",
+						"fork_height", forkHeight, "tip", s.store.Tip())
+					break
+				}
+				s.logger.Info("reorg adopted",
+					"fork_height", forkHeight, "new_tip", s.store.Tip(), "count", len(headers))
+				if len(headers) < maxHeadersPerMsg {
+					break
+				}
+				continue
+			}
 			return 0, fmt.Errorf("store headers at %d: %w", height, err)
 		}
 

@@ -40,17 +40,17 @@ import (
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	anvilversion "github.com/BSVanon/Anvil/internal/version"
 	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
-	sdkwallet "github.com/bsv-blockchain/go-sdk/wallet"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	goSdkOverlay "github.com/bsv-blockchain/go-sdk/overlay"
+	sdkwallet "github.com/bsv-blockchain/go-sdk/wallet"
 
-	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/syndtr/goleveldb/leveldb/util"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/libsv/go-p2p/wire"
+	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
 func main() {
@@ -122,32 +122,32 @@ func main() {
 	log.Printf("header store opened at height %d", headerStore.Tip())
 
 	syncer := headers.NewSyncer(headerStore, wire.MainNet, logger)
-	for _, node := range cfg.BSV.Nodes {
-		tip, err := syncer.SyncFrom(node)
-		if err != nil {
-			log.Printf("header sync from %s failed: %v", node, err)
-			continue
-		}
-		log.Printf("header sync from %s complete, tip=%d", node, tip)
-		break
-	}
-
-	// Periodic header re-sync (without this, headers go stale after boot)
+	// Header sync runs entirely in the background so the API binds immediately.
+	// A from-genesis resync (e.g. after a doctor header rebuild) must never block
+	// boot — blocking made the node return 502 for the whole catch-up and made
+	// doctor's own rebuild look like it had failed. Every failure is logged
+	// loudly: the old periodic loop swallowed errors with a bare `continue`,
+	// which is exactly how a stalled sync stayed invisible for days.
 	go func() {
-		ticker := time.NewTicker(2 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
+		syncOnce := func() {
 			before := headerStore.Tip()
 			for _, node := range cfg.BSV.Nodes {
 				tip, err := syncer.SyncFrom(node)
 				if err != nil {
+					log.Printf("header sync from %s failed: %v", node, err)
 					continue
 				}
 				if tip > before {
-					logger.Info("header re-sync", "from", before, "to", tip, "new", tip-before)
+					logger.Info("header sync", "from", before, "to", tip, "new", tip-before)
 				}
 				break
 			}
+		}
+		syncOnce() // immediate first sync (non-blocking — we are in a goroutine)
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			syncOnce()
 		}
 	}()
 
@@ -791,8 +791,8 @@ func main() {
 		ProofFetcher:   spv.NewProofFetcher(arcClient, logger),
 		P2PTxSource:    p2pTxFetcher,
 		P2PBlockSource: p2pBlockFetcher,
-		MsgStore:   msgStore,
-		SigningKey: identityPrivKey,
+		MsgStore:       msgStore,
+		SigningKey:     identityPrivKey,
 		Wallet: func() sdkwallet.Interface {
 			if nodeWallet != nil {
 				return nodeWallet.Wallet()

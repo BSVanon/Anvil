@@ -10,8 +10,14 @@ const UHRPLookupServiceName = "ls_uhrp"
 // the legacy shim's /overlay/query handler so callers see identical
 // behaviour regardless of which route they hit.
 type UHRPLookupQuery struct {
-	// ContentHash resolves a specific file by its SHA-256 hash.
+	// ContentHash resolves a specific file by its SHA-256 hash (hex).
 	ContentHash string `json:"content_hash,omitempty"`
+	// UhrpUrl resolves a file by its canonical BRC-26 UHRP URL
+	// ("uhrp://..." / "web+uhrp://..."). Anvil decodes it to the content
+	// hash via go-sdk storage.GetHashFromURL, so canonical @bsv/sdk
+	// StorageDownloader clients — which resolve by uhrpUrl, not raw hash —
+	// work without pre-decoding. Explicit ContentHash wins if both are set.
+	UhrpUrl string `json:"uhrpUrl,omitempty"`
 	// List returns all UHRP entries. Values: "all", "hashes"
 	List string `json:"list,omitempty"`
 }
