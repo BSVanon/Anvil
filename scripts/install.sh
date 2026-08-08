@@ -354,6 +354,11 @@ if [ -n "$NODE_INFO" ]; then
   AUTH_TOKEN=$(echo "$NODE_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('auth_token',''))" 2>/dev/null || echo "")
 fi
 
+# Path to the identity env file (node-a.toml -> node-a.env). We deliberately do
+# NOT print the WIF on screen — it must not land in terminal scrollback / logs.
+# The operator views + backs it up with `sudo cat` instead.
+ENV_FILE="${CONFIG_FILE%.toml}.env"
+
 clear
 echo ""
 echo ""
@@ -362,28 +367,39 @@ echo ""
 echo ""
 echo -e "  ${RED}${BOLD}  ╔════════════════════════════════════════════════════╗${NC}"
 echo -e "  ${RED}${BOLD}  ║                                                    ║${NC}"
-echo -e "  ${RED}${BOLD}  ║   WRITE THIS DOWN. YOUR PRIVATE KEY CANNOT BE      ║${NC}"
-echo -e "  ${RED}${BOLD}  ║   RECOVERED IF YOU LOSE IT.                        ║${NC}"
+echo -e "  ${RED}${BOLD}  ║   BACK UP THIS PRIVATE KEY NOW.                    ║${NC}"
+echo -e "  ${RED}${BOLD}  ║   It is your node's identity.                      ║${NC}"
 echo -e "  ${RED}${BOLD}  ║                                                    ║${NC}"
 echo -e "  ${RED}${BOLD}  ╚════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo ""
-echo -e "  ${BOLD}Your private key (WIF) is stored in:${NC}"
+echo -e "  ${BOLD}Your private key (WIF) is saved on this server in:${NC}"
 echo ""
-echo -e "    ${CYAN}/etc/anvil/node-a.env${NC}"
+echo -e "    ${CYAN}${ENV_FILE}${NC}"
 echo ""
-echo -e "  ${BOLD}View it now and copy it somewhere safe:${NC}"
+echo -e "  ${DIM}The node reads it from there on every start. To view it and save${NC}"
+echo -e "  ${DIM}a copy somewhere safe (password manager or an offline note), run:${NC}"
 echo ""
-echo -e "    ${CYAN}sudo cat /etc/anvil/node-a.env${NC}"
+echo -e "    ${CYAN}sudo cat ${ENV_FILE}${NC}"
 echo ""
+echo -e "  ${DIM}If that file is ever lost and you have no backup, the identity${NC}"
+echo -e "  ${DIM}cannot be recovered.${NC}"
 echo ""
 if [ -n "$IDENTITY" ]; then
-  echo -e "  ${DIM}Your node's public identity:${NC}"
-  echo -e "    ${IDENTITY}"
+  echo -e "  ${DIM}Public identity: ${IDENTITY}${NC}"
   echo ""
 fi
-
-pause_msg
+echo ""
+# Require an explicit acknowledgement that the key is backed up before moving
+# on — the old flow let people press enter without ever seeing the key.
+while true; do
+  printf "  %bType SAVED once you have backed up your key: %b" "${BOLD}" "${NC}"
+  read -r _ack < /dev/tty || break
+  case "$_ack" in
+    SAVED|saved) break ;;
+    *) echo -e "  ${DIM}Back it up with the command above, then type SAVED to continue.${NC}" ;;
+  esac
+done
 
 # ══════════════════════════════════════════════════════════════
 # SCREEN 4: Fund your node

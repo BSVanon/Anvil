@@ -1,6 +1,8 @@
 package topics
 
 import (
+	"log/slog"
+
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 )
@@ -14,9 +16,9 @@ const canonicalVersion = "1.0.0"
 // UHRPCanonical returns the canonical engine.TopicManager for UHRP
 // (tm_uhrp). The name comes from UHRPTopicName so changing the canonical
 // identifier in uhrp.go automatically propagates to the engine
-// registration.
-func UHRPCanonical() engine.TopicManager {
-	return NewAdapter(UHRPTopicName, NewUHRPTopicManager(), &overlay.MetaData{
+// registration. logger (may be nil) receives admission-skip diagnostics.
+func UHRPCanonical(logger *slog.Logger) engine.TopicManager {
+	return NewAdapter(UHRPTopicName, NewUHRPTopicManager(WithLogger(logger)), &overlay.MetaData{
 		Name:        UHRPTopicName,
 		Description: "UHRP (BRC-26) content availability advertisements",
 		Version:     canonicalVersion,
@@ -57,8 +59,8 @@ func OrdLockBuyCanonical() engine.TopicManager {
 // Management Protocol (tm_users). Hosted in Anvil today as a pragmatic
 // transitional placement — see ump.go header for the upstream
 // destination + port notes.
-func UMPCanonical() engine.TopicManager {
-	return NewAdapter(UMPTopicName, NewUMPTopicManager(), &overlay.MetaData{
+func UMPCanonical(logger *slog.Logger) engine.TopicManager {
+	return NewAdapter(UMPTopicName, NewUMPTopicManager(WithLogger(logger)), &overlay.MetaData{
 		Name:        UMPTopicName,
 		Description: "UMP (User Management Protocol) account-descriptor tokens",
 		Version:     canonicalVersion,
@@ -68,8 +70,8 @@ func UMPCanonical() engine.TopicManager {
 // IdentityCanonical returns the canonical engine.TopicManager for the
 // BRC-52 identity certificate publication topic (tm_identity). Same
 // transitional placement note as UMPCanonical applies.
-func IdentityCanonical() engine.TopicManager {
-	return NewAdapter(IdentityTopicName, NewIdentityTopicManager(), &overlay.MetaData{
+func IdentityCanonical(logger *slog.Logger) engine.TopicManager {
+	return NewAdapter(IdentityTopicName, NewIdentityTopicManager(WithLogger(logger)), &overlay.MetaData{
 		Name:        IdentityTopicName,
 		Description: "BRC-52 verifiable identity certificate publication",
 		Version:     canonicalVersion,
@@ -79,8 +81,8 @@ func IdentityCanonical() engine.TopicManager {
 // KVStoreCanonical returns the canonical engine.TopicManager for the
 // BRC-35 key-value store publication topic (tm_kvstore). Same
 // transitional placement note as UMPCanonical applies.
-func KVStoreCanonical() engine.TopicManager {
-	return NewAdapter(KVStoreTopicName, NewKVStoreTopicManager(), &overlay.MetaData{
+func KVStoreCanonical(logger *slog.Logger) engine.TopicManager {
+	return NewAdapter(KVStoreTopicName, NewKVStoreTopicManager(WithLogger(logger)), &overlay.MetaData{
 		Name:        KVStoreTopicName,
 		Description: "BRC-35 canonical key-value record publication",
 		Version:     canonicalVersion,

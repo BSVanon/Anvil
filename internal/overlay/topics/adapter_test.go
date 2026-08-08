@@ -31,7 +31,7 @@ func (m *mockAnvilTopic) Admit(txData []byte, previousUTXOs []anvilov.AdmittedOu
 	}
 	return m.admit(txData, previousUTXOs)
 }
-func (m *mockAnvilTopic) GetDocumentation() string             { return m.docs }
+func (m *mockAnvilTopic) GetDocumentation() string            { return m.docs }
 func (m *mockAnvilTopic) GetMetadata() map[string]interface{} { return m.meta }
 
 // --- helpers ----------------------------------------------------------------
@@ -262,7 +262,7 @@ func TestUHRPCanonical_AdmitsRealUHRPOutput(t *testing.T) {
 		t.Fatalf("beef: %v", err)
 	}
 
-	tm := UHRPCanonical()
+	tm := UHRPCanonical(nil)
 	got, err := tm.IdentifyAdmissibleOutputs(context.Background(), beef, tx.TxID(), nil)
 	if err != nil {
 		t.Fatalf("admit: %v", err)
@@ -278,7 +278,7 @@ func TestAllCanonicalConstructors_ImplementInterface(t *testing.T) {
 		make func() engine.TopicManager
 		want string
 	}{
-		{"UHRP", UHRPCanonical, UHRPTopicName},
+		{"UHRP", func() engine.TopicManager { return UHRPCanonical(nil) }, UHRPTopicName},
 		{"DEXSwap", DEXSwapCanonical, DEXSwapTopicName},
 		{"OrdLock", OrdLockCanonical, OrdLockTopicName},
 		{"OrdLockBuy", OrdLockBuyCanonical, OrdLockBuyTopicName},

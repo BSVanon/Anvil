@@ -85,20 +85,24 @@ type UMPEntry struct {
 //     - umpVersion field byte must equal 3
 //     - kdfAlgorithm must be "argon2id" or "pbkdf2-sha512"
 //     - kdfParams must be valid JSON with positive iterations
-//  4. Admit the output index. Per-output errors are logged via the
-//     metadata channel and the output is silently skipped — matches
-//     TS console.warn behavior.
+//  4. Admit the output index. A UMP-shaped output that fails v3
+//     validation is skipped and its reason logged at Debug via the
+//     injected logger (matches the TS skip narration); non-UMP outputs
+//     are skipped silently.
 //
 // Anvil does NOT decrypt UMP fields. Field[6] (presentationHash) and
 // field[7] (recoveryHash) are stored in the lookup index as opaque hex
 // strings; the wallet's encrypted primaries (fields 1-5, 8-10, 11) stay
 // opaque to Anvil entirely.
-type UMPTopicManager struct{}
+type UMPTopicManager struct {
+	log admitLogger
+}
 
-// NewUMPTopicManager constructs a UMP topic manager. Stateless;
-// safe to call once at v3engine.New time.
-func NewUMPTopicManager() *UMPTopicManager {
-	return &UMPTopicManager{}
+// NewUMPTopicManager constructs a UMP topic manager. Stateless; safe to
+// call once at v3engine.New time. Pass WithLogger to surface per-output
+// admission-skip reasons; with no options the manager stays silent.
+func NewUMPTopicManager(opts ...TopicOption) *UMPTopicManager {
+	return &UMPTopicManager{log: newAdmitLogger(opts...)}
 }
 
 // Admit evaluates a transaction for UMP token outputs.
@@ -117,9 +121,16 @@ func (m *UMPTopicManager) Admit(txData []byte, previousUTXOs []anviloverlay.Admi
 			continue
 		}
 		entry, err := ParseUMPOutput(out.LockingScript.Bytes())
-		if err != nil || entry == nil {
-			// Per TS impl, malformed outputs are silently skipped.
+		if err != nil {
+			// The output is UMP-shaped but failed v3 validation
+			// (bad version / unsupported KDF / malformed params).
+			// Canonical logs the skip; mirror at Debug so the bounce is
+			// diagnosable. Admission skips.
+			m.log.skip(UMPTopicName, i, err)
 			continue
+		}
+		if entry == nil {
+			continue // not a UMP output — skip silently
 		}
 		outputsToAdmit = append(outputsToAdmit, i)
 		if meta, err := json.Marshal(entry); err == nil {
@@ -135,6 +146,7 @@ func (m *UMPTopicManager) Admit(txData []byte, previousUTXOs []anviloverlay.Admi
 	}
 
 	if len(outputsToAdmit) == 0 && len(coinsRemoved) == 0 {
+		m.log.nothingAdmitted(UMPTopicName)
 		return nil, nil
 	}
 

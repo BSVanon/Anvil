@@ -100,7 +100,54 @@ func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "submit failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, steak)
+	writeJSON(w, http.StatusOK, canonicalSteak(steak))
+}
+
+// topicAdmittance is one topic's entry in the canonical STEAK wire form:
+// camelCase keys and empty arrays (never null). The raw go-sdk
+// overlay.AdmittanceInstructions carries no JSON tags, so marshalling a
+// overlay.Steak directly emits PascalCase keys with null for empty slices —
+// a shape a canonical overlay client (e.g. @bsv/sdk) cannot parse. An empty
+// OutputsToAdmit is a valid 200 (nothing on the tx matched this topic — for a
+// single-purpose submit that usually means the token failed the topic
+// manager's admission validation), not an error, per engine.Submit.
+type topicAdmittance struct {
+	OutputsToAdmit []uint32 `json:"outputsToAdmit"`
+	CoinsToRetain  []uint32 `json:"coinsToRetain"`
+	CoinsRemoved   []uint32 `json:"coinsRemoved"`
+	AncillaryTxIDs []string `json:"ancillaryTxIDs"`
+}
+
+// canonicalSteak reshapes a go-sdk overlay.Steak into the canonical STEAK wire
+// form (camelCase keys, [] never null) so canonical clients can parse it.
+func canonicalSteak(steak overlay.Steak) map[string]topicAdmittance {
+	out := make(map[string]topicAdmittance, len(steak))
+	for topic, ai := range steak {
+		ta := topicAdmittance{
+			OutputsToAdmit: []uint32{},
+			CoinsToRetain:  []uint32{},
+			CoinsRemoved:   []uint32{},
+			AncillaryTxIDs: []string{},
+		}
+		if ai != nil {
+			if len(ai.OutputsToAdmit) > 0 {
+				ta.OutputsToAdmit = ai.OutputsToAdmit
+			}
+			if len(ai.CoinsToRetain) > 0 {
+				ta.CoinsToRetain = ai.CoinsToRetain
+			}
+			if len(ai.CoinsRemoved) > 0 {
+				ta.CoinsRemoved = ai.CoinsRemoved
+			}
+			for _, hh := range ai.AncillaryTxids {
+				if hh != nil {
+					ta.AncillaryTxIDs = append(ta.AncillaryTxIDs, hh.String())
+				}
+			}
+		}
+		out[topic] = ta
+	}
+	return out
 }
 
 // Lookup handles POST /lookup. Body is the canonical LookupQuestion

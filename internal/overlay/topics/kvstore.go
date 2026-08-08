@@ -111,8 +111,10 @@ type kvDecoded struct {
 //     ProtoWallet("anyone").VerifySignature over the remaining fields'
 //     concatenation, with the controller (field[3]) as counterparty,
 //     protocolID parsed from field[0], and keyID = UTF-8(field[1]).
-//  5. Admit the output. Per-output errors are silently skipped (matches
-//     the TS console.debug skip).
+//  5. Admit the output. An output that decoded as a KVStore token but
+//     failed validation is skipped and its reason logged at Debug via
+//     the injected logger (matches the TS console.debug skip); non-token
+//     outputs are skipped silently.
 //
 // Unlike UMP/Identity (spent-by-overwrite → CoinsRemoved), KVStore
 // retains previous coins: each key is its own token and updates spend
@@ -121,22 +123,28 @@ type kvDecoded struct {
 // mirrors KVStoreTopicManager.ts's `coinsToRetain: previousCoins`.
 type KVStoreTopicManager struct {
 	anyoneWallet *wallet.ProtoWallet
+	log          admitLogger
 }
 
 // NewKVStoreTopicManager constructs a KVStore topic manager. It holds a
 // single canonical "anyone" ProtoWallet for signature verification;
 // construction of the anyone wallet is deterministic and never fails in
 // practice, but a nil wallet is guarded at verify time.
-func NewKVStoreTopicManager() *KVStoreTopicManager {
+//
+// Pass WithLogger to surface per-output admission-skip reasons (matching
+// the canonical console.debug/console.warn narration); with no options
+// the manager stays silent, preserving the prior behavior.
+func NewKVStoreTopicManager(opts ...TopicOption) *KVStoreTopicManager {
+	log := newAdmitLogger(opts...)
 	w, err := wallet.NewProtoWallet(wallet.ProtoWalletArgs{Type: wallet.ProtoWalletArgsTypeAnyone})
 	if err != nil {
 		// The anyone constructor only builds a key deriver from a nil
 		// root key; it cannot error. Guard defensively anyway so a
 		// future SDK change surfaces as a clean admission-skip rather
 		// than a panic.
-		return &KVStoreTopicManager{anyoneWallet: nil}
+		return &KVStoreTopicManager{anyoneWallet: nil, log: log}
 	}
-	return &KVStoreTopicManager{anyoneWallet: w}
+	return &KVStoreTopicManager{anyoneWallet: w, log: log}
 }
 
 // Admit evaluates a transaction for KVStore token outputs.
@@ -156,12 +164,17 @@ func (m *KVStoreTopicManager) Admit(txData []byte, previousUTXOs []anviloverlay.
 		}
 		d, err := decodeKVStore(out.LockingScript.Bytes())
 		if err != nil || d == nil {
+			// Not a KVStore-shaped output (non-PushDrop, wrong field
+			// count, empty key/value) — skip silently, matching the
+			// canonical shape-mismatch `continue` (no log).
 			continue
 		}
-		valid, err := m.verifySignature(ctx, d)
-		if err != nil || !valid {
-			// Signature failure or malformed crypto material — skip per
-			// the canonical TS catch-and-continue.
+		if valid, reason := m.verifySignature(ctx, d); !valid {
+			// The output decoded as a KVStore token but failed signature
+			// or crypto validation. Canonical throws here and logs
+			// console.debug("Skipping output i: reason"); mirror that so
+			// the bounce is diagnosable. Admission still just skips.
+			m.log.skip(KVStoreTopicName, i, reason)
 			continue
 		}
 		outputsToAdmit = append(outputsToAdmit, i)
@@ -180,6 +193,10 @@ func (m *KVStoreTopicManager) Admit(txData []byte, previousUTXOs []anviloverlay.
 	}
 
 	if len(outputsToAdmit) == 0 && len(coinsToRetain) == 0 {
+		// Mirrors the canonical console.warn: a submit that admitted
+		// nothing and consumed no previous coins is a no-op — the exact
+		// case a dev sees as 200 + empty STEAK.
+		m.log.nothingAdmitted(KVStoreTopicName)
 		return nil, nil
 	}
 
@@ -211,25 +228,27 @@ func (m *KVStoreTopicManager) GetMetadata() map[string]interface{} {
 }
 
 // verifySignature performs the canonical anyone-wallet signature check
-// over a decoded KVStore output. Returns (false, nil) for any malformed
-// crypto material so admission cleanly skips the output (matching the TS
-// catch-and-continue); a non-nil error is reserved for unexpected wallet
-// faults the caller may want to surface.
+// over a decoded KVStore output. Returns (false, reason) for any invalid
+// or malformed crypto material so admission cleanly skips the output
+// (matching the TS catch-and-continue) while giving the caller a
+// human-readable reason to log — the canonical console.debug narration
+// Anvil previously dropped. Returns (true, nil) only on a valid
+// signature.
 func (m *KVStoreTopicManager) verifySignature(ctx context.Context, d *kvDecoded) (bool, error) {
 	if m.anyoneWallet == nil {
-		return false, errors.New("kvstore: anyone wallet unavailable")
+		return false, errors.New("anyone wallet unavailable")
 	}
 	var protocol wallet.Protocol
 	if err := json.Unmarshal([]byte(d.protocolID), &protocol); err != nil {
-		return false, nil // protocolID field is not a valid [level, name] array
+		return false, fmt.Errorf("protocolID field is not a valid [level,name] array: %w", err)
 	}
 	controllerPub, err := ec.PublicKeyFromBytes(d.controller)
 	if err != nil {
-		return false, nil // controller field is not a valid pubkey
+		return false, fmt.Errorf("controller field is not a valid public key: %w", err)
 	}
 	sig, err := ec.FromDER(d.signature)
 	if err != nil {
-		return false, nil // signature field is not valid DER
+		return false, fmt.Errorf("signature field is not valid DER: %w", err)
 	}
 	data := make([]byte, 0)
 	for _, f := range d.dataFields {
@@ -245,9 +264,12 @@ func (m *KVStoreTopicManager) verifySignature(ctx context.Context, d *kvDecoded)
 		Signature: sig,
 	}, "")
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("signature verification errored: %w", err)
 	}
-	return res.Valid, nil
+	if !res.Valid {
+		return false, errors.New("signature verification failed")
+	}
+	return true, nil
 }
 
 // ParseKVStoreOutput PushDrop-decodes a locking script and validates its

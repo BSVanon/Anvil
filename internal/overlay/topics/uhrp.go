@@ -38,11 +38,15 @@ type UHRPEntry struct {
 // When a UHRP UTXO is spent, the advertisement is removed (content no longer
 // advertised at that location). This enables versioning: spend old token,
 // create new one with updated hash.
-type UHRPTopicManager struct{}
+type UHRPTopicManager struct {
+	log admitLogger
+}
 
-// NewUHRPTopicManager creates a UHRP topic manager.
-func NewUHRPTopicManager() *UHRPTopicManager {
-	return &UHRPTopicManager{}
+// NewUHRPTopicManager creates a UHRP topic manager. Pass WithLogger to
+// surface per-output admission-skip reasons; with no options the manager
+// stays silent.
+func NewUHRPTopicManager(opts ...TopicOption) *UHRPTopicManager {
+	return &UHRPTopicManager{log: newAdmitLogger(opts...)}
 }
 
 // Admit evaluates a transaction for UHRP content advertisements.
@@ -62,14 +66,21 @@ func (u *UHRPTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admitted
 			continue
 		}
 
-		entry := ParseUHRPOutput(out.LockingScript.Bytes())
-		if entry != nil {
-			outputsToAdmit = append(outputsToAdmit, i)
-			// Serialize UHRP entry as metadata for storage
-			meta, err := json.Marshal(entry)
-			if err == nil {
-				outputMetadata[i] = meta
+		entry, reason := classifyUHRPOutput(out.LockingScript.Bytes())
+		if entry == nil {
+			if reason != "" {
+				// UHRP-tagged OP_RETURN whose hash field is malformed —
+				// log the skip reason so a bad advertisement is
+				// diagnosable. Non-UHRP outputs (reason == "") are silent.
+				u.log.skip(UHRPTopicName, i, reason)
 			}
+			continue
+		}
+		outputsToAdmit = append(outputsToAdmit, i)
+		// Serialize UHRP entry as metadata for storage
+		meta, err := json.Marshal(entry)
+		if err == nil {
+			outputMetadata[i] = meta
 		}
 	}
 
@@ -79,6 +90,7 @@ func (u *UHRPTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admitted
 	}
 
 	if len(outputsToAdmit) == 0 && len(coinsRemoved) == 0 {
+		u.log.nothingAdmitted(UHRPTopicName)
 		return nil, nil // nothing relevant
 	}
 
@@ -106,37 +118,53 @@ func (u *UHRPTopicManager) GetMetadata() map[string]interface{} {
 
 // ParseUHRPOutput checks if a script is a UHRP advertisement.
 // Expected format: OP_FALSE OP_RETURN <"UHRP"> <sha256_hash> [<url>] [<content_type>]
+// Returns nil for any non-UHRP or malformed-UHRP script. Callers that
+// want the malformed-vs-not-mine distinction (for skip logging) use
+// classifyUHRPOutput directly.
 func ParseUHRPOutput(script []byte) *UHRPEntry {
+	entry, _ := classifyUHRPOutput(script)
+	return entry
+}
+
+// classifyUHRPOutput decodes a locking script as a UHRP advertisement.
+// It returns (entry, "") for a valid advertisement and (nil, "") for a
+// script that is simply not a UHRP output (not OP_RETURN, wrong protocol
+// tag, too few fields). It returns (nil, reason) only when the output IS
+// UHRP-tagged but malformed (currently: an invalid content-hash length),
+// so admission can log why an otherwise-UHRP advertisement bounced
+// instead of dropping it silently.
+func classifyUHRPOutput(script []byte) (*UHRPEntry, string) {
 	if len(script) < 6 {
-		return nil
+		return nil, ""
 	}
 
 	// OP_FALSE (0x00) OP_RETURN (0x6a)
 	if script[0] != 0x00 || script[1] != 0x6a {
-		return nil
+		return nil, ""
 	}
 
 	// Parse push data fields after OP_FALSE OP_RETURN
 	fields := parsePushDataFields(script[2:])
 	if len(fields) < 2 {
-		return nil
+		return nil, ""
 	}
 
 	// Field 0: protocol ID must be "UHRP"
 	if string(fields[0]) != UHRPProtocolID {
-		return nil
+		return nil, ""
 	}
 
 	// Field 1: SHA-256 hash (32 bytes raw or 64 chars hex)
 	hashField := fields[1]
 	var contentHash string
-	if len(hashField) == 32 {
+	switch len(hashField) {
+	case 32:
 		contentHash = hex.EncodeToString(hashField)
-	} else if len(hashField) == 64 {
+	case 64:
 		// Already hex-encoded
 		contentHash = string(hashField)
-	} else {
-		return nil // invalid hash length
+	default:
+		return nil, fmt.Sprintf("invalid UHRP content-hash length %d (want 32 raw bytes or 64 hex chars)", len(hashField))
 	}
 
 	entry := &UHRPEntry{
@@ -153,7 +181,7 @@ func ParseUHRPOutput(script []byte) *UHRPEntry {
 		entry.ContentType = string(fields[3])
 	}
 
-	return entry
+	return entry, ""
 }
 
 // parsePushDataFields extracts push data elements from a script fragment.

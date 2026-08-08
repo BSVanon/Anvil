@@ -12,6 +12,7 @@ package v3engine
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/overlay/federation"
@@ -84,6 +85,14 @@ type Config struct {
 	LookupDB     *leveldb.DB
 	HostingURL   string
 
+	// Logger receives structured admission diagnostics from the canonical
+	// topic managers (per-output skip reasons at Debug, no-op admits at
+	// Warn) — the observability the canonical TypeScript managers emit
+	// via console.debug/console.warn that Anvil's ports previously
+	// dropped. Nil falls back to slog.Default(); it never changes the
+	// HTTP contract, only what is logged.
+	Logger *slog.Logger
+
 	// Advertiser publishes/revokes/parses SHIP+SLAP advertisements on
 	// behalf of this node. Nil disables auto-advertising. See
 	// internal/overlay/federation/ for Anvil's implementation, built on
@@ -152,8 +161,18 @@ func New(cfg *Config) (*engine.Engine, error) {
 		return nil, errors.New("v3engine: nil lookup db")
 	}
 
+	// Resolve the admission-diagnostics logger once. Nil is valid (tests,
+	// minimal callers) — fall back to slog.Default() so production always
+	// narrates skips/no-op admits. Debug-level per-output skips stay
+	// suppressed unless the operator lowers the level; Warn no-op admits
+	// show by default.
+	lg := cfg.Logger
+	if lg == nil {
+		lg = slog.Default()
+	}
+
 	managers := map[string]engine.TopicManager{
-		topics.UHRPTopicName:       topics.UHRPCanonical(),
+		topics.UHRPTopicName:       topics.UHRPCanonical(lg),
 		topics.DEXSwapTopicName:    topics.DEXSwapCanonical(),
 		topics.OrdLockTopicName:    topics.OrdLockCanonical(),
 		topics.OrdLockBuyTopicName: topics.OrdLockBuyCanonical(),
@@ -162,14 +181,14 @@ func New(cfg *Config) (*engine.Engine, error) {
 		// destined for go-overlay-discovery-services once that repo
 		// gains a topic-impl partition. See topics/ump.go +
 		// topics/identity.go headers for port provenance.
-		topics.UMPTopicName:      topics.UMPCanonical(),
-		topics.IdentityTopicName: topics.IdentityCanonical(),
+		topics.UMPTopicName:      topics.UMPCanonical(lg),
+		topics.IdentityTopicName: topics.IdentityCanonical(lg),
 		// v3.1.0: canonical BRC-35 KVStore — Go port of the canonical
 		// ts-stack KVStoreTopicManager. Hosted in Anvil as the same
 		// transitional placement as UMP/Identity. SendBSV-Wallet
 		// publishes encrypted cross-device settings under this topic.
 		// See topics/kvstore.go header for port provenance.
-		topics.KVStoreTopicName: topics.KVStoreCanonical(),
+		topics.KVStoreTopicName: topics.KVStoreCanonical(lg),
 	}
 
 	lookupServices := map[string]engine.LookupService{

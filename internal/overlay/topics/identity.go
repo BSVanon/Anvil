@@ -70,7 +70,9 @@ type IdentityEntry struct {
 //  3. Call cert.Verify(ctx) — canonical signature chain validation
 //     against the certifier's pubkey using the canonical "certificate
 //     signature" protocol ID.
-//  4. Admit the output index. Per-output errors are silently skipped.
+//  4. Admit the output index. A cert that decoded but failed
+//     verification is skipped and its reason logged at Debug via the
+//     injected logger; non-identity outputs are skipped silently.
 //
 // Why no DecryptFields check? The TS impl also calls
 // `certificate.decryptFields(anyoneWallet)` to verify >= 1 attribute
@@ -83,11 +85,16 @@ type IdentityEntry struct {
 // valid certs; the wallet does the semantic check. This is a documented
 // divergence from the TS impl pending a follow-up that adds keyring
 // extraction.
-type IdentityTopicManager struct{}
+type IdentityTopicManager struct {
+	log admitLogger
+}
 
-// NewIdentityTopicManager constructs an Identity topic manager.
-func NewIdentityTopicManager() *IdentityTopicManager {
-	return &IdentityTopicManager{}
+// NewIdentityTopicManager constructs an Identity topic manager. Pass
+// WithLogger to surface per-output admission-skip reasons (matching the
+// canonical console.error/console.warn narration); with no options the
+// manager stays silent.
+func NewIdentityTopicManager(opts ...TopicOption) *IdentityTopicManager {
+	return &IdentityTopicManager{log: newAdmitLogger(opts...)}
 }
 
 // Admit evaluates a transaction for identity certificate outputs.
@@ -107,12 +114,16 @@ func (m *IdentityTopicManager) Admit(txData []byte, previousUTXOs []anviloverlay
 			continue
 		}
 		entry, err := ParseIdentityOutput(ctx, out.LockingScript.Bytes())
-		if err != nil || entry == nil {
-			// Malformed cert or signature verification failure — silently
-			// skip per the TS impl's console.error pattern. Operators
-			// who want admission diagnostics can wire a structured
-			// logger here in a follow-up.
+		if err != nil {
+			// The output decoded as an identity cert but failed
+			// signature-chain verification. Canonical logs
+			// console.error("Error parsing output i", error); mirror that
+			// at Debug so the bounce is diagnosable. Admission skips.
+			m.log.skip(IdentityTopicName, i, err)
 			continue
+		}
+		if entry == nil {
+			continue // not an identity output — skip silently
 		}
 		outputsToAdmit = append(outputsToAdmit, i)
 		if meta, err := json.Marshal(entry); err == nil {
@@ -127,6 +138,8 @@ func (m *IdentityTopicManager) Admit(txData []byte, previousUTXOs []anviloverlay
 	}
 
 	if len(outputsToAdmit) == 0 && len(coinsRemoved) == 0 {
+		// Mirrors the canonical "no outputs admitted" console.error path.
+		m.log.nothingAdmitted(IdentityTopicName)
 		return nil, nil
 	}
 
@@ -198,4 +211,3 @@ func ParseIdentityOutput(ctx context.Context, scriptBytes []byte) (*IdentityEntr
 		SerialNumber: string(cert.SerialNumber),
 	}, nil
 }
-

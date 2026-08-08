@@ -292,6 +292,10 @@ func main() {
 			HostingURL:   cfg.Node.PublicURL,
 			SHIPStorage:  shipStore,
 			SLAPStorage:  slapStore,
+			// Structured admission diagnostics — canonical topic managers
+			// narrate per-output skip reasons (Debug) + no-op admits
+			// (Warn) so a bounced token is diagnosable operator-side.
+			Logger: logger,
 			// Wrap Anvil's broadcaster in the canonical SDK adapter so
 			// the v3 engine's Submit pipeline propagates SHIP/SLAP
 			// advertisement transactions through to ARC. Without this,
