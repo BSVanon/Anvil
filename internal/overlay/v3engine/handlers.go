@@ -7,8 +7,10 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/BSVanon/Anvil/internal/overlay/gaspstatus"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
@@ -27,6 +29,15 @@ import (
 type Handlers struct {
 	Engine       *engine.Engine
 	MaxBodyBytes int64
+
+	// SyncStatus, if set, supplies this node's GASP federation-sync state,
+	// which POST /lookup stamps as X-Overlay-Gasp-* response headers. It lets
+	// a caller judge how settled and complete this node's view is when
+	// weighing an answer — an empty result from a not-yet-synced node is not
+	// the same as one from a fully-synced node. Anvil reports the state; what
+	// a caller does with it is the caller's policy. Nil disables the headers.
+	// The legacy /overlay/query path carries the identical headers.
+	SyncStatus func() gaspstatus.Snapshot
 }
 
 const defaultMaxBodyBytes = 64 << 20 // 64 MiB
@@ -41,6 +52,27 @@ func (h *Handlers) maxBody() int64 {
 		return defaultMaxBodyBytes
 	}
 	return h.MaxBodyBytes
+}
+
+// writeSyncHeaders stamps the GASP federation-sync readiness headers on a
+// /lookup response. Identical contract + values to the legacy
+// /overlay/query shim (internal/overlay/legacyshim), so a caller reading
+// either endpoint sees the same X-Overlay-Gasp-* fields. Nil SyncStatus
+// (unwired, or single-node builds) emits nothing. The four header names
+// are already in the api server's Access-Control-Expose-Headers, so
+// browser JS can read them cross-origin.
+func (h *Handlers) writeSyncHeaders(w http.ResponseWriter) {
+	if h.SyncStatus == nil {
+		return
+	}
+	st := h.SyncStatus()
+	hdr := w.Header()
+	hdr.Set("X-Overlay-Gasp-Enabled", strconv.FormatBool(st.Enabled))
+	hdr.Set("X-Overlay-Gasp-Initial-Sync-Done", strconv.FormatBool(st.InitialSyncDone))
+	hdr.Set("X-Overlay-Gasp-Interval-Secs", strconv.Itoa(st.IntervalSecs))
+	if st.LastSyncUnix > 0 {
+		hdr.Set("X-Overlay-Gasp-Last-Sync-Unix", strconv.FormatInt(st.LastSyncUnix, 10))
+	}
 }
 
 // Submit handles POST /submit. The canonical contract (per pinned
@@ -171,6 +203,11 @@ func canonicalSteak(steak overlay.Steak) map[string]topicAdmittance {
 // Error envelope is the canonical `{status:"error",message:string}`
 // shape (vector overlay.lookup.10).
 func (h *Handlers) Lookup(w http.ResponseWriter, r *http.Request) {
+	// Stamp the GASP readiness headers before the status line, so the answer
+	// and the node's sync-state are bound atomically (matches the legacy
+	// /overlay/query behavior). They ride on every response — 200 and 4xx —
+	// so a caller can bind freshness to the exact answer regardless of outcome.
+	h.writeSyncHeaders(w)
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
 		return

@@ -313,6 +313,10 @@ func main() {
 			gaspInterval = 1800
 		}
 		gaspTracker = gaspstatus.New(gaspInterval)
+		// Canonical POST /lookup carries the same GASP readiness headers as the
+		// legacy /overlay/query, so a caller can judge how settled this node's
+		// synced view is when weighing a lookup answer.
+		v3Handlers.SyncStatus = gaspTracker.Snapshot
 		legacyShim = &legacyshim.Shim{
 			Engine:        v3Eng,
 			Parsers:       legacyshim.DefaultParsers(),
