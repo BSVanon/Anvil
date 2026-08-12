@@ -13,6 +13,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
+	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 // newTestServer wires the canonical handlers onto a fresh httptest
@@ -341,10 +342,11 @@ func TestLookupHandler_AggregationBinary(t *testing.T) {
 		t.Fatalf("expected count=1, got %d (raw byte=0x%x)", count, binBody[0])
 	}
 	cursor := 1
-	// Next 32 bytes: txid LE.
+	// Next 32 bytes: txid in DISPLAY (big-endian) order.
 	if len(binBody) < cursor+32 {
 		t.Fatalf("response truncated at txid")
 	}
+	txidBytes := binBody[cursor : cursor+32]
 	cursor += 32
 	// varint(outputIndex) — should be 0 (1-byte varint).
 	if binBody[cursor] != 0 {
@@ -356,11 +358,22 @@ func TestLookupHandler_AggregationBinary(t *testing.T) {
 		t.Fatalf("expected contextLen=0, got %d", binBody[cursor])
 	}
 	cursor++
-	// Remainder is the aggregated BEEF. We don't validate its exact
-	// shape (transaction.NewBeefFromBytes covers that internally), but
-	// it must be non-empty.
-	if len(binBody)-cursor == 0 {
+	// Remainder is the aggregated BEEF.
+	beefBlob := binBody[cursor:]
+	if len(beefBlob) == 0 {
 		t.Fatalf("aggregated BEEF missing")
+	}
+	// Byte-order regression: a canonical client (@bsv/sdk LookupResolver /
+	// go-sdk facilitator) hex-encodes the 32 txid bytes and finds the tx in
+	// the BEEF by that hex — which is the DISPLAY txid. So hex(txidBytes)
+	// must locate the tx; if the bytes were internal/LE order it would not.
+	aggBeef, err := transaction.NewBeefFromBytes(beefBlob)
+	if err != nil {
+		t.Fatalf("parse aggregated BEEF: %v", err)
+	}
+	gotTxidHex := hex.EncodeToString(txidBytes)
+	if aggBeef.FindTransaction(gotTxidHex) == nil {
+		t.Fatalf("txid %s (as written) not found in aggregated BEEF by display txid — wrong byte order", gotTxidHex)
 	}
 }
 

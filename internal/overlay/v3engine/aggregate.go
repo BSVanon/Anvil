@@ -15,9 +15,14 @@ import (
 // aggregation format required by vector overlay.lookup.3:
 //
 //	varint(numOutpoints) +
-//	foreach[ txid(32 bytes LE) + varint(outputIndex) +
+//	foreach[ txid(32 bytes, DISPLAY / big-endian order) + varint(outputIndex) +
 //	         varint(contextLen) + context ] +
 //	BEEF bytes (single BEEF holding every output's tx)
+//
+// Byte order: the canonical writer (OverlayExpress.ts) emits `tx.id()`
+// (@bsv/sdk display order), and both canonical readers hex-encode the 32
+// txid bytes and look the tx up in the BEEF by that hex — which is the
+// display txid. So the txid MUST be written in display/big-endian order.
 //
 // Implementation cross-checked against ts-stack
 // `overlay-express/src/OverlayExpress.ts:1205-1235`, the canonical
@@ -63,9 +68,20 @@ func writeAggregatedAnswer(w http.ResponseWriter, answer *lookup.LookupAnswer) e
 		if txid == nil {
 			return errors.New("nil txid from tx")
 		}
-		// vector says "txid(32 bytes LE)". chainhash.Hash is stored
-		// LE internally, so the raw bytes are already correct.
-		header.Write(txid[:])
+		// Emit the txid in DISPLAY (big-endian) byte order. The canonical
+		// writer (OverlayExpress.ts) writes `tx.id()` — @bsv/sdk display
+		// order — and BOTH canonical readers (@bsv/sdk LookupResolver and
+		// go-sdk's facilitator) hex-encode these 32 bytes and then find the
+		// tx in the BEEF by that hex; BEEF is indexed by the DISPLAY txid.
+		// go-sdk's chainhash.Hash stores the internal (reversed) order, so we
+		// reverse it here. Emitting internal order made every @bsv/sdk
+		// LookupResolver throw "<txid> does not exist in this Beef" (reported
+		// by a canonical-client integrator), a false-empty for a real hit.
+		var disp [32]byte
+		for i := 0; i < len(txid); i++ {
+			disp[i] = txid[len(txid)-1-i]
+		}
+		header.Write(disp[:])
 		writeVarInt(header, uint64(item.OutputIndex))
 		// Context is a TS-only extension; Go canonical writes 0.
 		writeVarInt(header, 0)
