@@ -82,7 +82,7 @@ func (s *Storage) UpdateTransactionBEEF(
 	if beef == nil {
 		return s.db.Delete(beefKey(txid), nil)
 	}
-	body, err := beef.Bytes()
+	body, err := storableBeefBytes(beef)
 	if err != nil {
 		return fmt.Errorf("storage: serialise beef: %w", err)
 	}
@@ -345,7 +345,7 @@ func (s *Storage) LoadAncillaryBeef(ctx context.Context, out *engine.Output) err
 			}
 			return fmt.Errorf("storage: load beef: %w", err)
 		}
-		beef, err := transaction.NewBeefFromBytes(blob)
+		beef, err := safeNewBeefFromBytes(blob)
 		if err != nil {
 			return fmt.Errorf("storage: parse beef: %w", err)
 		}
@@ -362,7 +362,11 @@ func (s *Storage) LoadAncillaryBeef(ctx context.Context, out *engine.Output) err
 			}
 			return fmt.Errorf("storage: load ancillary beef %s: %w", h.String(), err)
 		}
-		if err := out.Beef.MergeBeefBytes(blob); err != nil {
+		ancillaryBeef, err := safeNewBeefFromBytes(blob)
+		if err != nil {
+			return fmt.Errorf("storage: parse ancillary beef %s: %w", h.String(), err)
+		}
+		if err := out.Beef.MergeBeef(ancillaryBeef); err != nil {
 			return fmt.Errorf("storage: merge ancillary beef %s: %w", h.String(), err)
 		}
 	}

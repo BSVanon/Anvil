@@ -81,9 +81,11 @@ func (s *Storage) InsertOutputs(
 	score := float64(s.now().Unix())
 	batch := new(leveldb.Batch)
 
-	// Per-tx BEEF (if provided).
+	// Per-tx BEEF (if provided). Stored as V2 so hydration can re-parse it —
+	// go-sdk's V1 re-serialisation can panic its own parser (see
+	// storableBeefBytes).
 	if beef != nil {
-		bb, err := beef.Bytes()
+		bb, err := storableBeefBytes(beef)
 		if err != nil {
 			return fmt.Errorf("storage: serialise beef: %w", err)
 		}
@@ -501,6 +503,22 @@ func safeNewBeefFromBytes(blob []byte) (beef *transaction.Beef, err error) {
 		}
 	}()
 	return transaction.NewBeefFromBytes(blob)
+}
+
+// storableBeefBytes serialises a BEEF for on-disk storage in a form go-sdk can
+// reliably re-parse on hydration. go-sdk's V1 serialisation (beef.Bytes() when
+// Version==BEEF_V1) can emit output its OWN parser then panics on — observed
+// with a real 4-tx UMP submit (AtomicBEEF wrapping a V1 BEEF, a 3-deep
+// unconfirmed chain anchored to a BUMP): admission parsed it fine, but the V1
+// re-serialisation could not be re-read ("index out of range [N] with length
+// 1"), so the output silently dropped from lookup hydration. BEEF V2 (BRC-96)
+// round-trips correctly for the same data (verified byte-identical subject
+// script), so we always persist V2. Clone first so we never mutate the caller's
+// BEEF — the engine may reuse it for other topics in the same submit.
+func storableBeefBytes(beef *transaction.Beef) ([]byte, error) {
+	b := beef.Clone()
+	b.Version = transaction.BEEF_V2
+	return b.Bytes()
 }
 
 // decodeOutpointBlob splits a concatenated 36-byte-per-outpoint blob.
