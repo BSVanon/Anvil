@@ -153,10 +153,14 @@ Status derivation:
 | `arc.submitted && intermediate ARC state` (RECEIVED, STORED, ANNOUNCED, etc.) | `"queued"` |
 | No ARC attempt OR ARC HTTP failure (`submitted=false`) | `"validated-only"` |
 
-Query `?arc=true` to forward to miners after BEEF validation. ARC
-transport failures set `arc.submitted = false` and surface the error in
-`arc.error`; consumers should retry via another upstream (status will be
-`"validated-only"`, not `"queued"`).
+The request body is a BEEF (raw bytes, or `{"beef":"<hex>"}` with a JSON
+content-type) — the SPV contract carries the proof with the transaction.
+Query `?arc=true` to forward to miners after BEEF validation; Anvil hands
+ARC the transaction in extended format (BIP-239) so a 0-conf ancestor
+doesn't draw a "460 Missing input scripts". ARC transport failures set
+`arc.submitted = false` and surface the error in `arc.error`; consumers
+should retry via another upstream (status will be `"validated-only"`, not
+`"queued"`).
 
 ## BEEF response shape (v2.1.0+)
 

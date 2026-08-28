@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"time"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
+	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 // --- BEEF ---
@@ -168,6 +169,10 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /broadcast is SPV-validation-first: a BEEF Anvil cannot verify against its
+	// local header chain is rejected. Clients must send a proof-carrying BEEF
+	// (the SPV contract) — a bare transaction has no ancestry to validate and is
+	// refused here rather than relayed blind.
 	if result.Confidence == spv.ConfidenceInvalid {
 		writeJSON(w, http.StatusUnprocessableEntity, BroadcastResponse{
 			TxID:       result.TxID,
@@ -201,25 +206,30 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 
 		if r.URL.Query().Get("arc") == "true" {
 			arcStatus := &ARCStatus{}
-			if raw, ok := s.broadcaster.Mempool().Get(result.TxID); ok {
-				arcResult, err := s.broadcaster.BroadcastToARC(raw)
-				if err != nil {
+			// Hand ARC the tx parsed from the (already-validated) BEEF so it goes
+			// out as extended format — the input ancestry travels with it and ARC
+			// needn't fetch parents (avoids ARC's "460 Missing input scripts" on a
+			// 0-conf parent). The BEEF validated above, so this parse is safe.
+			tx, perr := transaction.NewTransactionFromBEEF(beefBytes)
+			if perr != nil {
+				arcStatus.Error = fmt.Sprintf("parse tx for ARC: %v", perr)
+			} else {
+				arcResult, aerr := s.broadcaster.BroadcastToARCTx(tx)
+				if aerr != nil {
 					// Configuration error (e.g. ARC not wired). Submitted stays false.
-					arcStatus.Error = err.Error()
+					arcStatus.Error = aerr.Error()
 				} else if arcResult.Status == "error" {
-					// Transport failure — BroadcastToARC swallows the HTTP error into
-					// a result with Status="error". We don't know whether the tx
+					// Transport failure — BroadcastToARCTx swallows the HTTP error
+					// into a result with Status="error". We don't know whether the tx
 					// reached ARC, so "Submitted=false" is the honest answer and
-					// deriveBroadcastStatus will land on "validated-only" (wallet
-					// should retry via a different upstream).
+					// deriveBroadcastStatus lands on "validated-only" (wallet should
+					// retry via a different upstream).
 					arcStatus.Submitted = false
 					arcStatus.Error = arcResult.Message
 				} else {
 					arcStatus.Submitted = true
 					arcStatus.TxStatus = arcResult.Status
 				}
-			} else {
-				arcStatus.Error = "tx not in mempool"
 			}
 			resp.ARC = arcStatus
 		}

@@ -80,8 +80,10 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 		return result, nil
 	}
 
-	// Parse the full Beef structure — go-sdk handles all BEEF versions
-	b, err := transaction.NewBeefFromBytes(beef)
+	// Parse the full Beef structure — go-sdk handles all BEEF versions.
+	// Panic-guarded: go-sdk's parser indexes/allocates from attacker-controlled
+	// length fields without bounds checks on some paths.
+	b, err := safeNewBeefFromBytes(beef)
 	if err != nil {
 		result := &Result{
 			Valid:      false,
@@ -92,8 +94,8 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 		return result, nil
 	}
 
-	// Parse the final transaction for its txid
-	tx, err := transaction.NewTransactionFromBEEF(beef)
+	// Parse the final transaction for its txid (same panic-guard rationale).
+	tx, err := safeNewTransactionFromBEEF(beef)
 	if err != nil {
 		result := &Result{
 			Valid:      false,
@@ -243,4 +245,35 @@ func confidenceMessage(confidence string, verified, total int) string {
 	default:
 		return ""
 	}
+}
+
+// safeNewBeefFromBytes wraps transaction.NewBeefFromBytes with a panic recover.
+// go-sdk's BEEF parsers index and allocate from attacker-controlled length
+// fields without bounds checks on some paths: a body starting with the
+// AtomicBEEF marker 0x01010101 but shorter than 36 bytes panics with "slice
+// bounds out of range [36:...]", and an oversized varint count panics with
+// "makeslice: len out of range". This is the same fragility class as the
+// storage-layer guard added in v3.2.14. On the public /broadcast ingress path an
+// unguarded panic crashes the request goroutine and the TLS front returns 502;
+// the caller must instead get a clean ConfidenceInvalid.
+func safeNewBeefFromBytes(beef []byte) (b *transaction.Beef, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			b = nil
+			err = fmt.Errorf("BEEF parse panicked: %v", r)
+		}
+	}()
+	return transaction.NewBeefFromBytes(beef)
+}
+
+// safeNewTransactionFromBEEF is the panic-guarded counterpart for extracting the
+// subject transaction. Same rationale as safeNewBeefFromBytes.
+func safeNewTransactionFromBEEF(beef []byte) (tx *transaction.Transaction, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			tx = nil
+			err = fmt.Errorf("transaction parse panicked: %v", r)
+		}
+	}()
+	return transaction.NewTransactionFromBEEF(beef)
 }

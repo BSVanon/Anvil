@@ -170,6 +170,57 @@ func (b *Broadcaster) BroadcastToARC(raw []byte) (*BroadcastResult, error) {
 	}, nil
 }
 
+// BroadcastToARCTx submits a parsed transaction to ARC, preferring EXTENDED
+// FORMAT (BIP-239 / EF) when the tx carries its input ancestry (parsed from
+// BEEF) so ARC needn't fetch parents — the same requirement the overlay submit
+// path already handles in sdk_adapter.go. A bare raw tx with unconfirmed parents
+// otherwise draws ARC's "460 Missing input scripts". Falls back to raw when EF
+// can't be built (a bare tx with no ancestry); ARC resolves confirmed parents
+// itself, so that is no worse than sending raw.
+//
+// Prefer this over BroadcastToARC(raw) for HTTP /broadcast: the caller holds the
+// parsed *Transaction (with ancestry from BEEF) and would otherwise lose it in a
+// raw round-trip through the mempool, forcing ARC to refetch parents.
+func (b *Broadcaster) BroadcastToARCTx(tx *transaction.Transaction) (*BroadcastResult, error) {
+	if b.arc == nil {
+		return nil, fmt.Errorf("ARC is not configured")
+	}
+	if tx == nil {
+		return nil, fmt.Errorf("nil transaction")
+	}
+	txid := tx.TxID().String()
+
+	wire := tx.Bytes()
+	if ef, efErr := tx.EF(); efErr == nil {
+		wire = ef
+	} else if b.logger != nil {
+		b.logger.Debug("ARC: extended format unavailable, sending raw tx",
+			"txid", txid, "error", efErr)
+	}
+
+	resp, err := b.arc.Submit(wire)
+	now := time.Now().Unix()
+	if err != nil {
+		b.arcLastFailure.Store(now)
+		return &BroadcastResult{
+			TxID:    txid,
+			ARC:     true,
+			Status:  "error",
+			Message: fmt.Sprintf("ARC submit failed: %v", err),
+		}, nil
+	}
+	b.arcLastSuccess.Store(now)
+
+	accepted := resp.Status == "SEEN_ON_NETWORK" || resp.Status == "MINED"
+	return &BroadcastResult{
+		TxID:     txid,
+		Accepted: accepted,
+		ARC:      true,
+		Status:   resp.Status,
+		Message:  fmt.Sprintf("ARC status: %s", resp.Status),
+	}, nil
+}
+
 // UpstreamStatus returns the current health of the broadcast upstream (ARC
 // today, Arcade post-Teranode). Capability-named output; value depends on
 // how recently we've seen successful and failed ARC interactions.

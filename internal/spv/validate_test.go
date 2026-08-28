@@ -2,6 +2,7 @@ package spv
 
 import (
 	"context"
+	"encoding/hex"
 	"testing"
 
 	"github.com/bsv-blockchain/go-sdk/chainhash"
@@ -113,6 +114,36 @@ func TestValidateBEEFEmptyInput(t *testing.T) {
 	}
 	if result.Confidence != ConfidenceInvalid {
 		t.Fatalf("expected confidence=invalid, got %s", result.Confidence)
+	}
+}
+
+// TestValidateBEEFDoesNotPanicOnMalformed pins the panic-guard. go-sdk's BEEF
+// parser indexes/allocates from attacker-controlled length fields without bounds
+// checks: a body starting with the AtomicBEEF marker 0x01010101 but shorter than
+// 36 bytes panics ("slice bounds out of range [36:...]") and an oversized varint
+// count panics ("makeslice: len out of range"). Unguarded on the /broadcast
+// ingress path that crashes the request goroutine -> the TLS front returns 502
+// (the petasats "garbage body -> 502" report). ValidateBEEF must recover and
+// return a clean Invalid. This test itself would fail (panic) without the guard.
+func TestValidateBEEFDoesNotPanicOnMalformed(t *testing.T) {
+	v := NewValidator(&gullibleTracker{})
+	malformed := []string{
+		"01010101",                   // AtomicBEEF marker, <36 bytes
+		"010101010100beef000101",     // AtomicBEEF marker + truncated inner BEEF
+		"0100beefff0000000000000100", // oversized varint count
+	}
+	for _, hexStr := range malformed {
+		raw, decErr := hex.DecodeString(hexStr)
+		if decErr != nil {
+			t.Fatalf("bad test hex %q: %v", hexStr, decErr)
+		}
+		result, err := v.ValidateBEEF(context.Background(), raw) // must not panic
+		if err != nil {
+			t.Fatalf("malformed %q: ValidateBEEF returned error, want nil with Invalid result: %v", hexStr, err)
+		}
+		if result.Confidence != ConfidenceInvalid {
+			t.Errorf("malformed %q: expected confidence=invalid, got %q", hexStr, result.Confidence)
+		}
 	}
 }
 
