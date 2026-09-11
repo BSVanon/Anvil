@@ -328,7 +328,7 @@ func TestBSVFallbackSeedsRepairSinglePeerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"seed.bitcoinsv.io:8333", "seed.cascharia.com:8333", "seed.satoshisvision.network:8333"}
+	want := []string{"seed.bitcoinsv.io:8333", "seed.satoshisvision.network:8333"}
 	if !bsvNodesEqual(cfg.BSV.Nodes, want) {
 		t.Fatalf("single-peer config not repaired: got %v, want %v", cfg.BSV.Nodes, want)
 	}
@@ -346,7 +346,7 @@ func TestBSVConfiguredPeerTriedFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"10.0.0.9:8333", "seed.bitcoinsv.io:8333", "seed.cascharia.com:8333", "seed.satoshisvision.network:8333"}
+	want := []string{"10.0.0.9:8333", "seed.bitcoinsv.io:8333", "seed.satoshisvision.network:8333"}
 	if !bsvNodesEqual(cfg.BSV.Nodes, want) {
 		t.Fatalf("custom peer ordering wrong: got %v, want %v", cfg.BSV.Nodes, want)
 	}
@@ -356,7 +356,7 @@ func TestBSVConfiguredPeerTriedFirst(t *testing.T) {
 // already-complete list is returned unchanged.
 func TestEnsureFallbackSeedsDedupes(t *testing.T) {
 	got := ensureFallbackSeeds([]string{"seed.bitcoinsv.io:8333", "", "seed.bitcoinsv.io:8333"})
-	want := []string{"seed.bitcoinsv.io:8333", "seed.cascharia.com:8333", "seed.satoshisvision.network:8333"}
+	want := []string{"seed.bitcoinsv.io:8333", "seed.satoshisvision.network:8333"}
 	if !bsvNodesEqual(got, want) {
 		t.Fatalf("dedupe failed: got %v, want %v", got, want)
 	}

@@ -87,7 +87,6 @@ type BSVConfig struct {
 // with no config edit needed on upgrade.
 var defaultBSVSeeds = []string{
 	"seed.bitcoinsv.io:8333",
-	"seed.cascharia.com:8333",
 	"seed.satoshisvision.network:8333",
 }
 
