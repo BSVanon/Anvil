@@ -71,6 +71,11 @@ type PeersConfig struct {
 
 type BSVConfig struct {
 	Nodes []string `toml:"nodes"`
+	// HeaderSyncIntervalSecs is how often the node polls its BSV peers for new
+	// block headers. Lower = tighter tip tracking (headers agree with canonical
+	// sooner and orphans reorg out faster) at the cost of more frequent P2P
+	// handshakes. 0 or unset → default 30s (down from the historic 120s).
+	HeaderSyncIntervalSecs int `toml:"header_sync_interval_secs"`
 }
 
 // defaultBSVSeeds is the canonical set of BSV P2P peers the header syncer pulls
@@ -203,6 +208,12 @@ type APIConfig struct {
 	EndpointPrices  map[string]int   `toml:"endpoint_prices"`  // per-endpoint price overrides (path → sats)
 	AppPayments     AppPaymentConfig `toml:"app_payments"`
 	ExplorerOrigin  string           `toml:"explorer_origin"` // fallback content_origin for /explorer (survives catalog expiry)
+	// NoncePoolSize is the target number of pre-minted x402 nonce UTXOs kept warm
+	// for fast challenge issuance on a CHARGING node (payment_satoshis > 0). Each
+	// nonce is a real on-chain output (~23 sat fee), so a charging node's revenue
+	// covers the pool. A FREE node never pre-mints (it mints on demand) to avoid
+	// burning fees on nonces it may never use. 0 or unset → default 100.
+	NoncePoolSize int `toml:"nonce_pool_size"`
 }
 
 // AppPaymentConfig controls which non-custodial payment models apps can use.
@@ -232,7 +243,8 @@ func Load(path string) (*Config, error) {
 			APIListen: "0.0.0.0:9333",
 		},
 		BSV: BSVConfig{
-			Nodes: append([]string(nil), defaultBSVSeeds...),
+			Nodes:                  append([]string(nil), defaultBSVSeeds...),
+			HeaderSyncIntervalSecs: 30,
 		},
 		ARC: ARCConfig{
 			Enabled: true,
@@ -275,7 +287,8 @@ func Load(path string) (*Config, error) {
 			WarnAtPercent:     80,
 		},
 		API: APIConfig{
-			RateLimit: 100,
+			RateLimit:     100,
+			NoncePoolSize: 100,
 			AppPayments: AppPaymentConfig{
 				AllowPassthrough: true,
 				AllowSplit:       true,

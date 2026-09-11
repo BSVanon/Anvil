@@ -144,7 +144,14 @@ func main() {
 			}
 		}
 		syncOnce() // immediate first sync (non-blocking — we are in a goroutine)
-		ticker := time.NewTicker(2 * time.Minute)
+		// Poll cadence bounds how far the tip can trail canonical (and how fast an
+		// orphan reorgs out). Default 30s keeps headers within ~½-minute of the
+		// chain; operators can tune via [bsv] header_sync_interval_secs.
+		interval := time.Duration(cfg.BSV.HeaderSyncIntervalSecs) * time.Second
+		if interval <= 0 {
+			interval = 30 * time.Second
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
 			syncOnce()
@@ -704,12 +711,23 @@ func main() {
 		}
 		payeeScriptHex = fmt.Sprintf("%x", []byte(*lockScript))
 		walletNonce := api.NewWalletNonceProvider(nodeWallet.Wallet())
-		nonceProvider = api.NewUTXONoncePool(walletNonce, 100, logger)
 		if paymentSatoshis > 0 {
-			log.Printf("x402: payment gating enabled (%d sats/request, payee=%s, nonce pool=100)",
-				paymentSatoshis, addr.AddressString)
+			// Charging node: keep a warm pre-minted nonce pool for fast challenge
+			// issuance — the per-request price covers the ~23 sat/nonce mint fee.
+			poolSize := cfg.API.NoncePoolSize
+			if poolSize <= 0 {
+				poolSize = 100
+			}
+			nonceProvider = api.NewUTXONoncePool(walletNonce, poolSize, logger)
+			log.Printf("x402: payment gating enabled (%d sats/request, payee=%s, nonce pool=%d)",
+				paymentSatoshis, addr.AddressString, poolSize)
 		} else {
-			log.Printf("x402: node is free, nonce pool ready for app passthrough/split payments")
+			// Free node: mint nonces on demand only. Pre-minting a pool here burns
+			// ~23 sat/nonce on every restart for nonces a free node may never use
+			// (app passthrough/split is rare) — the wallet-drain observed on
+			// lightly-funded nodes. On-demand minting costs nothing until used.
+			nonceProvider = walletNonce
+			log.Printf("x402: node is free, nonces minted on demand (no pre-mint pool)")
 		}
 	} else if paymentSatoshis > 0 {
 		log.Printf("x402: payment_satoshis=%d but identity.wif or wallet missing — payment gating DISABLED", paymentSatoshis)
