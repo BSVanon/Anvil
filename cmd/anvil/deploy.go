@@ -329,7 +329,7 @@ api_listen = "0.0.0.0:%s"
 %s
 
 [bsv]
-nodes = ["seed.bitcoinsv.io:8333"]
+nodes = ["seed.bitcoinsv.io:8333", "seed.cascharia.com:8333", "seed.satoshisvision.network:8333"]
 
 [arc]
 enabled = true

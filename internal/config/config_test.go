@@ -313,3 +313,63 @@ func TestEnvVarDoesNotOverrideWhenEmpty(t *testing.T) {
 		t.Fatalf("TOML ARC URL should survive when no env var set, got %s", cfg.ARC.URL)
 	}
 }
+
+// TestBSVFallbackSeedsRepairSinglePeerConfig covers the runtime repair of the
+// single-peer configs older `anvil deploy` templates wrote. Loading such a
+// config must transparently append the canonical fallback seeds so the header
+// syncer has peers to rotate to when the first drops the P2P handshake.
+func TestBSVFallbackSeedsRepairSinglePeerConfig(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-bsv-*.toml")
+	f.WriteString("[bsv]\nnodes = [\"seed.bitcoinsv.io:8333\"]\n")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"seed.bitcoinsv.io:8333", "seed.cascharia.com:8333", "seed.satoshisvision.network:8333"}
+	if !bsvNodesEqual(cfg.BSV.Nodes, want) {
+		t.Fatalf("single-peer config not repaired: got %v, want %v", cfg.BSV.Nodes, want)
+	}
+}
+
+// TestBSVConfiguredPeerTriedFirst verifies an operator's own peer stays first
+// (tried before the public seeds), with the canonical seeds appended as fallback.
+func TestBSVConfiguredPeerTriedFirst(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-bsv-custom-*.toml")
+	f.WriteString("[bsv]\nnodes = [\"10.0.0.9:8333\"]\n")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"10.0.0.9:8333", "seed.bitcoinsv.io:8333", "seed.cascharia.com:8333", "seed.satoshisvision.network:8333"}
+	if !bsvNodesEqual(cfg.BSV.Nodes, want) {
+		t.Fatalf("custom peer ordering wrong: got %v, want %v", cfg.BSV.Nodes, want)
+	}
+}
+
+// TestEnsureFallbackSeedsDedupes checks empties/duplicates are dropped and an
+// already-complete list is returned unchanged.
+func TestEnsureFallbackSeedsDedupes(t *testing.T) {
+	got := ensureFallbackSeeds([]string{"seed.bitcoinsv.io:8333", "", "seed.bitcoinsv.io:8333"})
+	want := []string{"seed.bitcoinsv.io:8333", "seed.cascharia.com:8333", "seed.satoshisvision.network:8333"}
+	if !bsvNodesEqual(got, want) {
+		t.Fatalf("dedupe failed: got %v, want %v", got, want)
+	}
+}
+
+func bsvNodesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

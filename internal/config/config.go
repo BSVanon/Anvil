@@ -50,7 +50,7 @@ type MeshConfig struct {
 	BondCheckURL string   `toml:"bond_check_url"` // UTXO lookup API (default: WoC)
 	LocalPubkeys []string `toml:"local_pubkeys"`  // app pubkeys exempt from double-publish slashing on this node
 	RatePerSec   float64  `toml:"rate_per_sec"`   // per-peer envelope rate limit (default: 30)
-	RateBurst    int      `toml:"rate_burst"`      // per-peer burst allowance (default: 100)
+	RateBurst    int      `toml:"rate_burst"`     // per-peer burst allowance (default: 100)
 }
 
 type NodeConfig struct {
@@ -71,6 +71,43 @@ type PeersConfig struct {
 
 type BSVConfig struct {
 	Nodes []string `toml:"nodes"`
+}
+
+// defaultBSVSeeds is the canonical set of BSV P2P peers the header syncer pulls
+// block headers from. The syncer (cmd/anvil/main.go) tries each in order and
+// rotates to the next on any failure, so it needs more than one to survive a
+// single flaky peer dropping the version handshake. These are appended as
+// fallbacks to whatever the operator configured — which also repairs older
+// single-peer configs written by earlier `anvil deploy` templates, at runtime,
+// with no config edit needed on upgrade.
+var defaultBSVSeeds = []string{
+	"seed.bitcoinsv.io:8333",
+	"seed.cascharia.com:8333",
+	"seed.satoshisvision.network:8333",
+}
+
+// ensureFallbackSeeds returns the operator-configured peers with any missing
+// canonical seeds appended (deduped, order-preserving). Configured peers are
+// tried first; the defaults act purely as fallbacks, so a node whose config
+// lists a single (possibly flaky) peer always has others to rotate to.
+func ensureFallbackSeeds(nodes []string) []string {
+	seen := make(map[string]bool, len(nodes)+len(defaultBSVSeeds))
+	out := make([]string, 0, len(nodes)+len(defaultBSVSeeds))
+	for _, n := range nodes {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	for _, s := range defaultBSVSeeds {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 type ARCConfig struct {
@@ -195,11 +232,7 @@ func Load(path string) (*Config, error) {
 			APIListen: "0.0.0.0:9333",
 		},
 		BSV: BSVConfig{
-			Nodes: []string{
-				"seed.bitcoinsv.io:8333",
-				"seed.cascharia.com:8333",
-				"seed.satoshisvision.network:8333",
-			},
+			Nodes: append([]string(nil), defaultBSVSeeds...),
 		},
 		ARC: ARCConfig{
 			Enabled: true,
@@ -219,8 +252,8 @@ func Load(path string) (*Config, error) {
 			URL:     "junglebus.gorillapool.io",
 		},
 		Overlay: OverlayConfig{
-			Enabled:        true,
-			Topics:         []string{"anvil:mainnet"},
+			Enabled:               true,
+			Topics:                []string{"anvil:mainnet"},
 			EnableGASPSync:        true,
 			GASPSyncIntervalSecs:  1800, // v3.0.7 default — was hardcoded 300s pre-v3.0.7
 			AdvertiseIntervalSecs: 1800, // matches SyncAdvertisements historic cadence
@@ -260,6 +293,14 @@ func Load(path string) (*Config, error) {
 	if len(cfg.Foundry.Seeds) > 0 && len(cfg.Mesh.Seeds) == 0 {
 		cfg.Mesh.Seeds = cfg.Foundry.Seeds
 	}
+
+	// Guarantee the BSV header-sync peer list always carries the canonical
+	// fallback seeds. Older `anvil deploy` templates wrote a single peer
+	// (seed.bitcoinsv.io:8333); when that seed drops the P2P handshake the syncer
+	// has nothing to rotate to and headers go stale. Appending the defaults here
+	// repairs those configs at runtime — the fix takes effect on `anvil upgrade`
+	// with no config edit required.
+	cfg.BSV.Nodes = ensureFallbackSeeds(cfg.BSV.Nodes)
 
 	// Environment variable overrides
 	if v := os.Getenv("ANVIL_IDENTITY_WIF"); v != "" {
