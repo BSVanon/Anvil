@@ -308,15 +308,24 @@ func cmdDoctor(args []string) {
 	// ── 5. External connectivity ──
 	section("External Connectivity")
 
-	// BSV seed node
+	// BSV seed nodes. Header sync needs only ONE reachable peer — the syncer
+	// rotates past any that fail, and config.ensureFallbackSeeds intentionally
+	// lists several so a single flaky/down seed is tolerated. So a down fallback
+	// is a warning, not a fault; only fail the run when EVERY configured peer is
+	// unreachable (a genuine can't-sync outage).
+	reachableBSV := 0
 	for _, node := range cfg.BSV.Nodes {
 		host := strings.Split(node, ":")[0]
 		if canResolve(host) {
 			pass("BSV node reachable: %s", node)
+			reachableBSV++
 		} else {
-			fail("BSV node unreachable: %s", node)
-			issues++
+			warn("BSV node unreachable: %s (fallback — sync uses another peer)", node)
 		}
+	}
+	if len(cfg.BSV.Nodes) > 0 && reachableBSV == 0 {
+		fail("no BSV peer reachable — header sync cannot proceed")
+		issues++
 	}
 
 	// ARC
