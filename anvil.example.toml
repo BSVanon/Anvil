@@ -25,14 +25,18 @@ seeds = [
 nodes = ["seed.bitcoinsv.io:8333"]
 # header_sync_interval_secs = 30   # how often to poll BSV peers for new headers (default 30)
 #
-# Mesh header self-heal (OPT-IN). If this node's BSV P2P peers are unreachable or
-# stale, it can catch up headers over HTTPS from a TRUSTED Anvil peer you list
-# here. Point it ONLY at nodes you operate or trust (e.g. your own anvil-prime).
+# Mesh header self-heal (ON by default). If ALL this node's BSV P2P peers fail a
+# sync round, it catches up headers over HTTPS from a TRUSTED Anvil peer. A
+# canonical default (https://anvil.sendbsv.com) is baked into the binary, so this
+# works after `anvil upgrade` with NO config edit — the same way the default BSV
+# seeds above do. To ADD your own trusted peers (tried before the default), list
+# them here; to turn the fallback off entirely, set header_fallback_disabled.
 # TRUST NOTE: fetched headers are PoW + most-work validated but NOT difficulty-
 # adjustment (DAA) validated — a listed peer is trusted to the same degree as a
-# [bsv] node above, so the URL must be https:// (http:// allowed only for
-# localhost). Empty = feature off.
-# header_fallback_peers = ["https://anvil.sendbsv.com"]
+# [bsv] node above, so any URL you add must be https:// (http:// allowed only for
+# localhost). Consulted ONLY when P2P is down, so a healthy node never calls it.
+# header_fallback_peers = ["https://my-other-node.example"]
+# header_fallback_disabled = false   # set true to disable the self-heal on this node
 
 # ARC — GorillaPool is the default (free, no API key required)
 [arc]

@@ -17,7 +17,9 @@ seeds = []
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333"]
-# header_fallback_peers = ["https://anvil.sendbsv.com"]  # opt-in mesh header self-heal (https-only trusted peers; see anvil.example.toml)
+# Mesh header self-heal is ON by default (baked-in trusted peer, active on `anvil upgrade`).
+# header_fallback_peers = ["https://my-other-node.example"]  # optional: your own trusted peers, tried first (https-only; see anvil.example.toml)
+# header_fallback_disabled = true                            # optional: turn the self-heal off on this node
 
 [arc]
 enabled = true

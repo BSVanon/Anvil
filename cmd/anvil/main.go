@@ -129,7 +129,7 @@ func main() {
 	// loudly: the old periodic loop swallowed errors with a bare `continue`,
 	// which is exactly how a stalled sync stayed invisible for days.
 	//
-	// Validate the opt-in header-fallback peers up front. This feature omits DAA
+	// Validate the header-fallback peers up front. This feature omits DAA
 	// validation, so an insecure (plaintext, non-loopback) peer would be a MITM
 	// header-authority risk — reject those loudly and trust only https URLs.
 	validHeaderPeers, rejectedHeaderPeers := config.FilterTrustedHeaderPeers(cfg.BSV.HeaderFallbackPeers)
@@ -137,31 +137,36 @@ func main() {
 		log.Printf("WARNING: ignoring header_fallback_peer %q — must be an https:// URL (or http://localhost for dev)", r)
 	}
 	if len(validHeaderPeers) > 0 {
-		log.Printf("header fallback: %d trusted peer(s) configured", len(validHeaderPeers))
+		log.Printf("header self-heal: %d trusted fallback peer(s) available (used only when BSV P2P is down)", len(validHeaderPeers))
 	}
 	go func() {
 		syncOnce := func() {
 			before := headerStore.Tip()
+			p2pOK := false
 			for _, node := range cfg.BSV.Nodes {
 				tip, err := syncer.SyncFrom(node)
 				if err != nil {
 					log.Printf("header sync from %s failed: %v", node, err)
 					continue
 				}
+				p2pOK = true
 				if tip > before {
 					logger.Info("header sync", "from", before, "to", tip, "new", tip-before)
 				}
 				break
 			}
-			// Trusted header-fallback peers (opt-in [bsv] header_fallback_peers),
-			// consulted every round so a stale/unreachable BSV source can't keep
-			// this node behind. SyncFromHTTPPeers tries each in order, skips a
-			// not-ahead or erroring peer (non-terminal), and stops at the first
-			// that advances us. Headers still pass PoW + most-work validation on
-			// apply; peers are https-only and trusted to the same degree as [bsv]
-			// nodes (opt-in for exactly that reason — see config docs).
-			if len(validHeaderPeers) > 0 {
-				syncer.SyncFromHTTPPeers(validHeaderPeers)
+			// Mesh header self-heal: only when BSV P2P sync is DOWN (every configured
+			// peer errored this round) do we consult a trusted HTTPS header peer. Gating
+			// on P2P failure means a healthy node never calls the fallback, so the
+			// baked-in default peer never becomes every node in the fleet polling one
+			// endpoint forever. SyncFromHTTPPeers tries each in order, skips a not-ahead
+			// or erroring peer (non-terminal), stops at the first that advances us.
+			// Headers still pass PoW + most-work validation on apply; peers are
+			// https-only and trusted to the same degree as [bsv] nodes (see config docs).
+			if !p2pOK && len(validHeaderPeers) > 0 {
+				if tip, advanced := syncer.SyncFromHTTPPeers(validHeaderPeers); advanced {
+					logger.Info("header self-heal via fallback peer", "from", before, "to", tip, "new", tip-before)
+				}
 			}
 		}
 		syncOnce() // immediate first sync (non-blocking — we are in a goroutine)

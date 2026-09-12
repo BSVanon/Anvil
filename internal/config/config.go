@@ -80,17 +80,27 @@ type BSVConfig struct {
 	HeaderSyncIntervalSecs int `toml:"header_sync_interval_secs"`
 
 	// HeaderFallbackPeers are HTTPS base URLs of TRUSTED Anvil nodes (e.g.
-	// "https://anvil.sendbsv.com") this node may pull headers from when its BSV
-	// P2P peers are unreachable or stale — the mesh header self-heal. It is
-	// OPT-IN (empty by default) and deliberately explicit: point it only at nodes
-	// you operate or trust. TRUST MODEL — headers fetched from these peers are
+	// "https://anvil.sendbsv.com") this node pulls headers from when its BSV P2P
+	// peers are all unreachable — the mesh header self-heal. A canonical default
+	// (defaultHeaderFallbackPeers) is baked into the binary and appended here on
+	// load, so the self-heal is active after `anvil upgrade` with NO config edit —
+	// the same posture as the default BSV P2P seeds. Operators may prepend their
+	// own trusted peers (tried first) or turn the fallback off entirely with
+	// HeaderFallbackDisabled. TRUST MODEL — headers fetched from these peers are
 	// applied through the same validation as BSV P2P headers (per-header PoW: hash
 	// ≤ stated target, prev-hash linkage, cumulative most-work) but NOT full
 	// difficulty-adjustment (DAA) or a min-difficulty floor, so a source could in
 	// principle feed an easy-difficulty chain. This is the standard SPV-header
-	// trust model — you trust the peers you configure — which is why enabling
-	// this is an explicit operator choice rather than automatic mesh discovery.
+	// trust model — you trust the (few, baked-in or operator-listed) peers, which
+	// is why the source is a fixed default, NOT auto-discovered from the gossip
+	// mesh: a SHIP/SLAP-advertised peer is not trust-qualified for header authority.
 	HeaderFallbackPeers []string `toml:"header_fallback_peers"`
+
+	// HeaderFallbackDisabled turns the mesh header self-heal off entirely (no
+	// default peer, no operator peers). Left false, the baked-in default applies.
+	// An operator only needs this to opt a node out of consulting any HTTPS header
+	// fallback (e.g. a node that must never reach outside its own BSV P2P peers).
+	HeaderFallbackDisabled bool `toml:"header_fallback_disabled"`
 }
 
 // defaultBSVSeeds is the canonical set of BSV P2P peers the header syncer pulls
@@ -168,6 +178,54 @@ func ensureFallbackSeeds(nodes []string) []string {
 		seen[s] = true
 		out = append(out, s)
 	}
+	return out
+}
+
+// defaultHeaderFallbackPeers is the canonical set of TRUSTED Anvil nodes a node
+// pulls block headers from over HTTPS when its BSV P2P header sync is down — the
+// mesh header self-heal. Like defaultBSVSeeds, these ship in the binary so the
+// self-heal is active after `anvil upgrade` with no per-node config edit. Same
+// trust posture as the default P2P seeds: baked into the installed binary,
+// operator-overridable, and NOT auto-discovered from untrusted gossip. The
+// fallback is consulted only when every P2P peer failed a sync round (see
+// cmd/anvil/main.go), so a healthy node never calls these.
+var defaultHeaderFallbackPeers = []string{
+	"https://anvil.sendbsv.com",
+}
+
+// ensureHeaderFallbackPeers returns the operator-configured header peers with the
+// canonical defaults appended (deduped, order-preserving) — operator peers are
+// tried first. Any entry whose host matches selfPublicURL is dropped so a node
+// never header-syncs from itself (notably the default node, which is its own
+// public URL). If disabled is true the fallback is off entirely (returns nil),
+// honoring an explicit operator opt-out.
+func ensureHeaderFallbackPeers(peers []string, selfPublicURL string, disabled bool) []string {
+	if disabled {
+		return nil
+	}
+	selfHost := ""
+	if u, err := url.Parse(strings.TrimSpace(selfPublicURL)); err == nil {
+		selfHost = strings.ToLower(u.Hostname())
+	}
+	seen := make(map[string]bool, len(peers)+len(defaultHeaderFallbackPeers))
+	out := make([]string, 0, len(peers)+len(defaultHeaderFallbackPeers))
+	add := func(list []string) {
+		for _, p := range list {
+			p = strings.TrimSpace(p)
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			if selfHost != "" {
+				if u, err := url.Parse(p); err == nil && strings.ToLower(u.Hostname()) == selfHost {
+					continue // never header-sync from ourselves
+				}
+			}
+			out = append(out, p)
+		}
+	}
+	add(peers)
+	add(defaultHeaderFallbackPeers)
 	return out
 }
 
@@ -370,6 +428,12 @@ func Load(path string) (*Config, error) {
 	// repairs those configs at runtime — the fix takes effect on `anvil upgrade`
 	// with no config edit required.
 	cfg.BSV.Nodes = ensureFallbackSeeds(cfg.BSV.Nodes)
+
+	// Bake the canonical header-fallback peer into every config (unless the
+	// operator disabled it), minus this node's own public URL. This makes the
+	// mesh header self-heal automatic on `anvil upgrade` — no per-node config edit
+	// — mirroring the default BSV seeds above. Consulted only when P2P sync fails.
+	cfg.BSV.HeaderFallbackPeers = ensureHeaderFallbackPeers(cfg.BSV.HeaderFallbackPeers, cfg.Node.PublicURL, cfg.BSV.HeaderFallbackDisabled)
 
 	// Environment variable overrides
 	if v := os.Getenv("ANVIL_IDENTITY_WIF"); v != "" {

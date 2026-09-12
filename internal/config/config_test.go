@@ -413,9 +413,10 @@ func TestHeaderSyncAndNoncePoolOverride(t *testing.T) {
 	}
 }
 
-// TestHeaderFallbackPeersDefaultEmptyAndOverride: the mesh header fallback is
-// opt-in (empty default) and operator-configurable.
-func TestHeaderFallbackPeersDefaultEmptyAndOverride(t *testing.T) {
+// TestHeaderFallbackPeersDefaultOn: the mesh header fallback ships a baked-in
+// default so the self-heal is active on `anvil upgrade` with no config edit. An
+// operator's own peers are tried first; the default is appended (deduped).
+func TestHeaderFallbackPeersDefaultOn(t *testing.T) {
 	f, _ := os.CreateTemp("", "anvil-cfg-hfp-*.toml")
 	f.WriteString("[node]\nname = \"x\"\n")
 	f.Close()
@@ -424,20 +425,71 @@ func TestHeaderFallbackPeersDefaultEmptyAndOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.BSV.HeaderFallbackPeers) != 0 {
-		t.Fatalf("header_fallback_peers should default empty, got %v", cfg.BSV.HeaderFallbackPeers)
+	if len(cfg.BSV.HeaderFallbackPeers) != 1 || cfg.BSV.HeaderFallbackPeers[0] != "https://anvil.sendbsv.com" {
+		t.Fatalf("header_fallback_peers should default to the baked-in peer, got %v", cfg.BSV.HeaderFallbackPeers)
 	}
 
+	// Operator peer is tried first; the default is appended after it.
 	f2, _ := os.CreateTemp("", "anvil-cfg-hfp2-*.toml")
-	f2.WriteString("[bsv]\nheader_fallback_peers = [\"https://anvil.sendbsv.com\"]\n")
+	f2.WriteString("[bsv]\nheader_fallback_peers = [\"https://my.trusted.node\"]\n")
 	f2.Close()
 	defer os.Remove(f2.Name())
 	cfg2, err := Load(f2.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg2.BSV.HeaderFallbackPeers) != 1 || cfg2.BSV.HeaderFallbackPeers[0] != "https://anvil.sendbsv.com" {
-		t.Fatalf("header_fallback_peers override wrong: %v", cfg2.BSV.HeaderFallbackPeers)
+	want := []string{"https://my.trusted.node", "https://anvil.sendbsv.com"}
+	if !bsvNodesEqual(cfg2.BSV.HeaderFallbackPeers, want) {
+		t.Fatalf("header_fallback_peers = %v, want %v", cfg2.BSV.HeaderFallbackPeers, want)
+	}
+}
+
+// TestHeaderFallbackSelfSkip: a node never header-syncs from itself; the default
+// peer is dropped when its host matches the node's own public_url.
+func TestHeaderFallbackSelfSkip(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-hfpself-*.toml")
+	f.WriteString("[node]\npublic_url = \"https://anvil.sendbsv.com\"\n")
+	f.Close()
+	defer os.Remove(f.Name())
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.BSV.HeaderFallbackPeers) != 0 {
+		t.Fatalf("node should not list itself as a header peer, got %v", cfg.BSV.HeaderFallbackPeers)
+	}
+}
+
+// TestHeaderFallbackDisabled: header_fallback_disabled turns the fallback off
+// entirely (no default, no operator peers).
+func TestHeaderFallbackDisabled(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-hfpoff-*.toml")
+	f.WriteString("[bsv]\nheader_fallback_disabled = true\nheader_fallback_peers = [\"https://my.trusted.node\"]\n")
+	f.Close()
+	defer os.Remove(f.Name())
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.BSV.HeaderFallbackPeers) != 0 {
+		t.Fatalf("disabled fallback should yield no peers, got %v", cfg.BSV.HeaderFallbackPeers)
+	}
+}
+
+// TestEnsureHeaderFallbackPeers unit-tests the append/dedup/self-skip/disable logic.
+func TestEnsureHeaderFallbackPeers(t *testing.T) {
+	if got := ensureHeaderFallbackPeers(nil, "", false); !bsvNodesEqual(got, []string{"https://anvil.sendbsv.com"}) {
+		t.Fatalf("empty+enabled = %v", got)
+	}
+	got := ensureHeaderFallbackPeers([]string{"https://a.example", "https://anvil.sendbsv.com"}, "", false)
+	if !bsvNodesEqual(got, []string{"https://a.example", "https://anvil.sendbsv.com"}) {
+		t.Fatalf("dedup = %v", got)
+	}
+	if got := ensureHeaderFallbackPeers(nil, "https://anvil.sendbsv.com/", false); len(got) != 0 {
+		t.Fatalf("self-skip = %v", got)
+	}
+	if got := ensureHeaderFallbackPeers([]string{"https://a.example"}, "", true); got != nil {
+		t.Fatalf("disabled = %v", got)
 	}
 }
 
