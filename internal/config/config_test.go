@@ -412,3 +412,52 @@ func TestHeaderSyncAndNoncePoolOverride(t *testing.T) {
 		t.Fatalf("override nonce_pool_size = %d, want 5", cfg.API.NoncePoolSize)
 	}
 }
+
+// TestHeaderFallbackPeersDefaultEmptyAndOverride: the mesh header fallback is
+// opt-in (empty default) and operator-configurable.
+func TestHeaderFallbackPeersDefaultEmptyAndOverride(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-hfp-*.toml")
+	f.WriteString("[node]\nname = \"x\"\n")
+	f.Close()
+	defer os.Remove(f.Name())
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.BSV.HeaderFallbackPeers) != 0 {
+		t.Fatalf("header_fallback_peers should default empty, got %v", cfg.BSV.HeaderFallbackPeers)
+	}
+
+	f2, _ := os.CreateTemp("", "anvil-cfg-hfp2-*.toml")
+	f2.WriteString("[bsv]\nheader_fallback_peers = [\"https://anvil.sendbsv.com\"]\n")
+	f2.Close()
+	defer os.Remove(f2.Name())
+	cfg2, err := Load(f2.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg2.BSV.HeaderFallbackPeers) != 1 || cfg2.BSV.HeaderFallbackPeers[0] != "https://anvil.sendbsv.com" {
+		t.Fatalf("header_fallback_peers override wrong: %v", cfg2.BSV.HeaderFallbackPeers)
+	}
+}
+
+// TestFilterTrustedHeaderPeers: only https (or loopback http) URLs are trusted;
+// plaintext non-loopback, bad schemes, and malformed entries are rejected.
+func TestFilterTrustedHeaderPeers(t *testing.T) {
+	valid, rejected := FilterTrustedHeaderPeers([]string{
+		"https://anvil.sendbsv.com",
+		"http://anvil.sendbsv.com", // rejected: plaintext non-loopback
+		"http://localhost:9333",    // ok: loopback dev
+		"http://127.0.0.1:9333",    // ok: loopback dev
+		"ftp://x",                  // rejected: bad scheme
+		"not a url",                // rejected: malformed (no host)
+		"  https://spaced.example  ",
+	})
+	wantValid := []string{"https://anvil.sendbsv.com", "http://localhost:9333", "http://127.0.0.1:9333", "https://spaced.example"}
+	if !bsvNodesEqual(valid, wantValid) {
+		t.Fatalf("valid = %v, want %v", valid, wantValid)
+	}
+	if len(rejected) != 3 {
+		t.Fatalf("expected 3 rejected, got %d: %v", len(rejected), rejected)
+	}
+}

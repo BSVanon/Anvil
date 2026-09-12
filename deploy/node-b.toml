@@ -18,6 +18,7 @@ seeds = [
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333"]
+# header_fallback_peers = ["https://anvil.sendbsv.com"]  # opt-in mesh header self-heal (https-only trusted peers; see anvil.example.toml)
 
 [arc]
 enabled = true

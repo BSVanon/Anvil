@@ -23,6 +23,16 @@ seeds = [
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333"]
+# header_sync_interval_secs = 30   # how often to poll BSV peers for new headers (default 30)
+#
+# Mesh header self-heal (OPT-IN). If this node's BSV P2P peers are unreachable or
+# stale, it can catch up headers over HTTPS from a TRUSTED Anvil peer you list
+# here. Point it ONLY at nodes you operate or trust (e.g. your own anvil-prime).
+# TRUST NOTE: fetched headers are PoW + most-work validated but NOT difficulty-
+# adjustment (DAA) validated — a listed peer is trusted to the same degree as a
+# [bsv] node above, so the URL must be https:// (http:// allowed only for
+# localhost). Empty = feature off.
+# header_fallback_peers = ["https://anvil.sendbsv.com"]
 
 # ARC — GorillaPool is the default (free, no API key required)
 [arc]

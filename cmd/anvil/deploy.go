@@ -330,6 +330,11 @@ api_listen = "0.0.0.0:%s"
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333", "seed.satoshisvision.network:8333"]
+# Mesh header self-heal (OPT-IN): catch up headers over HTTPS from a TRUSTED
+# Anvil peer when BSV P2P is unreachable/stale. Point ONLY at nodes you trust;
+# headers are PoW + most-work validated but NOT DAA-validated, so https is
+# required (trusted like a [bsv] node). Empty = off.
+# header_fallback_peers = ["https://anvil.sendbsv.com"]
 
 [arc]
 enabled = true

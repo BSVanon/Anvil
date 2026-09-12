@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -76,6 +78,19 @@ type BSVConfig struct {
 	// sooner and orphans reorg out faster) at the cost of more frequent P2P
 	// handshakes. 0 or unset → default 30s (down from the historic 120s).
 	HeaderSyncIntervalSecs int `toml:"header_sync_interval_secs"`
+
+	// HeaderFallbackPeers are HTTPS base URLs of TRUSTED Anvil nodes (e.g.
+	// "https://anvil.sendbsv.com") this node may pull headers from when its BSV
+	// P2P peers are unreachable or stale — the mesh header self-heal. It is
+	// OPT-IN (empty by default) and deliberately explicit: point it only at nodes
+	// you operate or trust. TRUST MODEL — headers fetched from these peers are
+	// applied through the same validation as BSV P2P headers (per-header PoW: hash
+	// ≤ stated target, prev-hash linkage, cumulative most-work) but NOT full
+	// difficulty-adjustment (DAA) or a min-difficulty floor, so a source could in
+	// principle feed an easy-difficulty chain. This is the standard SPV-header
+	// trust model — you trust the peers you configure — which is why enabling
+	// this is an explicit operator choice rather than automatic mesh discovery.
+	HeaderFallbackPeers []string `toml:"header_fallback_peers"`
 }
 
 // defaultBSVSeeds is the canonical set of BSV P2P peers the header syncer pulls
@@ -88,6 +103,48 @@ type BSVConfig struct {
 var defaultBSVSeeds = []string{
 	"seed.bitcoinsv.io:8333",
 	"seed.satoshisvision.network:8333",
+}
+
+// isTrustedHeaderPeerURL reports whether a header_fallback_peers entry is safe to
+// trust as a header source. This feature deliberately omits DAA / max-target
+// consensus validation, so the transport MUST be authenticated (https) — a
+// plaintext peer would let a network MITM substitute the header stream, turning
+// transport into header authority. An explicit loopback http URL is allowed for
+// local/dev use only.
+func isTrustedHeaderPeerURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	// A header peer is an API base URL (an optional path prefix is allowed, e.g.
+	// https://host/anvil); a query or fragment is never valid and is rejected.
+	if u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		switch u.Hostname() {
+		case "localhost", "127.0.0.1", "::1":
+			return true
+		}
+	}
+	return false
+}
+
+// FilterTrustedHeaderPeers splits header_fallback_peers into entries safe to use
+// (https, or loopback http for dev) and rejected ones, so the caller can warn
+// about insecure/malformed peers loudly without ever trusting them.
+func FilterTrustedHeaderPeers(peers []string) (valid, rejected []string) {
+	for _, p := range peers {
+		if isTrustedHeaderPeerURL(p) {
+			valid = append(valid, strings.TrimSpace(p))
+		} else {
+			rejected = append(rejected, p)
+		}
+	}
+	return valid, rejected
 }
 
 // ensureFallbackSeeds returns the operator-configured peers with any missing

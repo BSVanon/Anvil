@@ -142,6 +142,146 @@ func (s *Syncer) SyncWith(peer HeaderPeer) (uint32, error) {
 	return finalTip, nil
 }
 
+// SyncFromHTTPPeer catches up (or reorgs) the header chain from a TRUSTED,
+// operator-configured peer Anvil node's HTTP header API (config
+// header_fallback_peers) — the fallback used when BSV P2P peers are unreachable
+// or stale. Every fetched header is applied through the SAME PoW + linkage +
+// most-work validation (AddHeaders / ReorgTo) as a native BSV peer: it rejects a
+// lower-work chain and any header failing its own stated target, but does not
+// verify difficulty-adjustment, so a configured peer is trusted to the same
+// degree as a [bsv] node. Returns the resulting tip height (unchanged when the
+// peer is not ahead — the caller then tries the next configured peer).
+func (s *Syncer) SyncFromHTTPPeer(baseURL string) (uint32, error) {
+	label := "mesh:" + baseURL
+
+	src := NewHTTPHeaderSource(baseURL)
+	peerTip, err := src.Tip()
+	if err != nil {
+		// Tip probe failed. Surface to the caller (which logs) but do NOT record a
+		// sync attempt: this fallback is probed every poll, so a no-op or failed
+		// probe must not overwrite the real (BSV P2P) source in /status stats.
+		return 0, fmt.Errorf("peer tip: %w", err)
+	}
+	ourTip := s.store.Tip()
+	if peerTip <= ourTip {
+		// Peer not ahead — a no-op probe; leave sync stats untouched.
+		return ourTip, nil
+	}
+
+	// Peer is genuinely ahead: a real sync from this source, worth recording.
+	s.recordAttempt(label)
+	ancestor, forked, err := s.findCommonAncestorHTTP(src, ourTip)
+	if err != nil {
+		s.recordFailure(label, err)
+		return 0, err
+	}
+
+	if !forked {
+		// Forward catch-up: our tip is a valid ancestor of the peer's chain.
+		for from := ancestor + 1; from <= peerTip; from += httpMaxHeadersPerReq {
+			count := peerTip - from + 1
+			if count > httpMaxHeadersPerReq {
+				count = httpMaxHeadersPerReq
+			}
+			hdrs, err := src.HeadersFrom(from, count)
+			if err != nil {
+				s.recordFailure(label, err)
+				return 0, err
+			}
+			if len(hdrs) == 0 {
+				break
+			}
+			if err := s.store.AddHeaders(s.store.Tip()+1, hdrs); err != nil {
+				s.recordFailure(label, err)
+				return 0, fmt.Errorf("apply headers at %d: %w", from, err)
+			}
+		}
+	} else {
+		// Fork: accumulate the whole competing branch (bounded) and let ReorgTo
+		// apply the most-work rule. The bound (maxReorgDepth + a batch of
+		// headroom) stops a hostile peer from making us buffer unbounded data.
+		var branch []*wire.BlockHeader
+		for from := ancestor + 1; from <= peerTip; from += httpMaxHeadersPerReq {
+			count := peerTip - from + 1
+			if count > httpMaxHeadersPerReq {
+				count = httpMaxHeadersPerReq
+			}
+			hdrs, err := src.HeadersFrom(from, count)
+			if err != nil {
+				s.recordFailure(label, err)
+				return 0, err
+			}
+			branch = append(branch, hdrs...)
+			if len(branch) > maxReorgDepth+httpMaxHeadersPerReq {
+				berr := fmt.Errorf("peer fork branch exceeds %d headers — leaving to BSV P2P", maxReorgDepth)
+				s.recordFailure(label, berr)
+				return 0, berr
+			}
+		}
+		adopted, forkHeight, err := s.store.ReorgTo(branch)
+		if err != nil {
+			s.recordFailure(label, err)
+			return 0, fmt.Errorf("reorg from peer: %w", err)
+		}
+		if !adopted {
+			s.logger.Warn("mesh peer offered a lighter fork, keeping current chain",
+				"fork_height", forkHeight, "tip", s.store.Tip())
+		}
+	}
+
+	tip := s.store.Tip()
+	s.recordSuccess(label, tip)
+	s.logger.Info("mesh header sync complete", "peer", baseURL, "tip", tip)
+	return tip, nil
+}
+
+// findCommonAncestorHTTP returns the highest height at which our chain and the
+// peer's chain agree, walking back from ourTip up to maxReorgDepth. `forked` is
+// false when the common ancestor IS our tip (a pure forward catch-up — the
+// overwhelmingly common case, resolved in a single request).
+func (s *Syncer) findCommonAncestorHTTP(src *HTTPHeaderSource, ourTip uint32) (ancestor uint32, forked bool, err error) {
+	floor := uint32(0)
+	if ourTip > maxReorgDepth {
+		floor = ourTip - maxReorgDepth
+	}
+	for h := ourTip; ; h-- {
+		ourHash, herr := s.store.HashAtHeight(h)
+		if herr != nil {
+			return 0, false, fmt.Errorf("local hash at %d: %w", h, herr)
+		}
+		peerHash, perr := src.HashAt(h)
+		if perr != nil {
+			return 0, false, fmt.Errorf("peer hash at %d: %w", h, perr)
+		}
+		if ourHash.IsEqual(peerHash) {
+			return h, h != ourTip, nil
+		}
+		if h == floor {
+			return 0, false, fmt.Errorf("no common ancestor within %d blocks of tip %d", maxReorgDepth, ourTip)
+		}
+	}
+}
+
+// SyncFromHTTPPeers tries each trusted fallback peer in order and returns as soon
+// as one advances our tip. A not-ahead or erroring peer is skipped
+// (non-terminal), so a stale first peer never blocks a healthy later one.
+// Returns the resulting tip and whether any peer advanced us this call.
+func (s *Syncer) SyncFromHTTPPeers(peers []string) (uint32, bool) {
+	for _, p := range peers {
+		pre := s.store.Tip()
+		tip, err := s.SyncFromHTTPPeer(p)
+		if err != nil {
+			s.logger.Warn("header fallback peer failed", "peer", p, "error", err)
+			continue
+		}
+		if tip > pre {
+			s.logger.Info("header fallback sync", "peer", p, "from", pre, "to", tip)
+			return tip, true
+		}
+	}
+	return s.store.Tip(), false
+}
+
 func (s *Syncer) Stats() SyncStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
