@@ -330,12 +330,14 @@ api_listen = "0.0.0.0:%s"
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333", "seed.satoshisvision.network:8333"]
-# Mesh header self-heal (ON by default): when ALL BSV P2P peers fail a sync round,
-# catch up headers over HTTPS from a TRUSTED Anvil peer. A default peer is baked
+# header_stale_after_secs = 1800
+# Default 1800s; a node behind by more than this consults the trusted fallback even if a P2P peer is still connected.
+# Mesh header self-heal (ON by default): when all BSV P2P peers fail a sync round
+# or the stored tip is stale, catch up over HTTPS from a TRUSTED Anvil peer. A default peer is baked
 # into the binary (active on upgrade, no edit needed). Add your own trusted peers
 # below (tried first), or set header_fallback_disabled = true to turn it off.
 # Headers are PoW + most-work validated but NOT DAA-validated, so any URL must be
-# https (trusted like a [bsv] node). Consulted only when P2P is down.
+# https (trusted like a [bsv] node). A healthy, advancing P2P tip never calls it.
 # header_fallback_peers = ["https://my-other-node.example"]
 # header_fallback_disabled = false
 

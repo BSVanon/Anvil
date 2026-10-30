@@ -374,8 +374,8 @@ func bsvNodesEqual(a, b []string) bool {
 	return true
 }
 
-// TestHeaderSyncAndNoncePoolDefaults pins the v3.2.19 defaults: a 30s header
-// poll (tighter tip tracking) and a 100-nonce pool target for charging nodes.
+// TestHeaderSyncAndNoncePoolDefaults pins the header-sync defaults and the
+// 100-nonce pool target for charging nodes.
 func TestHeaderSyncAndNoncePoolDefaults(t *testing.T) {
 	f, _ := os.CreateTemp("", "anvil-cfg-defs-*.toml")
 	f.WriteString("[node]\nname = \"x\"\n")
@@ -389,15 +389,33 @@ func TestHeaderSyncAndNoncePoolDefaults(t *testing.T) {
 	if cfg.BSV.HeaderSyncIntervalSecs != 30 {
 		t.Fatalf("default header_sync_interval_secs = %d, want 30", cfg.BSV.HeaderSyncIntervalSecs)
 	}
+	if cfg.BSV.HeaderStaleAfterSecs != 1800 {
+		t.Fatalf("default header_stale_after_secs = %d, want 1800", cfg.BSV.HeaderStaleAfterSecs)
+	}
 	if cfg.API.NoncePoolSize != 100 {
 		t.Fatalf("default nonce_pool_size = %d, want 100", cfg.API.NoncePoolSize)
 	}
 }
 
-// TestHeaderSyncAndNoncePoolOverride verifies both knobs are operator-tunable.
+func TestHeaderStaleAfterZeroUsesDefault(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-stale-zero-*.toml")
+	f.WriteString("[bsv]\nheader_stale_after_secs = 0\n")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BSV.HeaderStaleAfterSecs != 1800 {
+		t.Fatalf("zero header_stale_after_secs = %d, want default 1800", cfg.BSV.HeaderStaleAfterSecs)
+	}
+}
+
+// TestHeaderSyncAndNoncePoolOverride verifies the knobs are operator-tunable.
 func TestHeaderSyncAndNoncePoolOverride(t *testing.T) {
 	f, _ := os.CreateTemp("", "anvil-cfg-ovr-*.toml")
-	f.WriteString("[bsv]\nheader_sync_interval_secs = 15\n[api]\nnonce_pool_size = 5\n")
+	f.WriteString("[bsv]\nheader_sync_interval_secs = 15\nheader_stale_after_secs = 900\n[api]\nnonce_pool_size = 5\n")
 	f.Close()
 	defer os.Remove(f.Name())
 
@@ -407,6 +425,9 @@ func TestHeaderSyncAndNoncePoolOverride(t *testing.T) {
 	}
 	if cfg.BSV.HeaderSyncIntervalSecs != 15 {
 		t.Fatalf("override header_sync_interval_secs = %d, want 15", cfg.BSV.HeaderSyncIntervalSecs)
+	}
+	if cfg.BSV.HeaderStaleAfterSecs != 900 {
+		t.Fatalf("override header_stale_after_secs = %d, want 900", cfg.BSV.HeaderStaleAfterSecs)
 	}
 	if cfg.API.NoncePoolSize != 5 {
 		t.Fatalf("override nonce_pool_size = %d, want 5", cfg.API.NoncePoolSize)

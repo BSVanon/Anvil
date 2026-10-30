@@ -40,7 +40,12 @@ type HTTPHeaderSource struct {
 func NewHTTPHeaderSource(baseURL string) *HTTPHeaderSource {
 	return &HTTPHeaderSource{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{Timeout: 15 * time.Second},
+		client: &http.Client{
+			Timeout: 15 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return fmt.Errorf("header peer redirects are not allowed")
+			},
+		},
 	}
 }
 

@@ -24,9 +24,11 @@ seeds = [
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333"]
 # header_sync_interval_secs = 30   # how often to poll BSV peers for new headers (default 30)
+# header_stale_after_secs = 1800
+# Default 1800s; a node behind by more than this consults the trusted fallback even if a P2P peer is still connected.
 #
-# Mesh header self-heal (ON by default). If ALL this node's BSV P2P peers fail a
-# sync round, it catches up headers over HTTPS from a TRUSTED Anvil peer. A
+# Mesh header self-heal (ON by default). If ALL BSV P2P peers fail a sync round,
+# or the stored tip is stale, it catches up over HTTPS from a TRUSTED Anvil peer. A
 # canonical default (https://anvil.sendbsv.com) is baked into the binary, so this
 # works after `anvil upgrade` with NO config edit — the same way the default BSV
 # seeds above do. To ADD your own trusted peers (tried before the default), list
@@ -34,7 +36,7 @@ nodes = ["seed.bitcoinsv.io:8333"]
 # TRUST NOTE: fetched headers are PoW + most-work validated but NOT difficulty-
 # adjustment (DAA) validated — a listed peer is trusted to the same degree as a
 # [bsv] node above, so any URL you add must be https:// (http:// allowed only for
-# localhost). Consulted ONLY when P2P is down, so a healthy node never calls it.
+# localhost). A healthy, advancing P2P tip never calls the fallback.
 # header_fallback_peers = ["https://my-other-node.example"]
 # header_fallback_disabled = false   # set true to disable the self-heal on this node
 

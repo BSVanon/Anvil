@@ -71,6 +71,8 @@ type PeersConfig struct {
 	Seeds []string `toml:"seeds"`
 }
 
+const defaultHeaderStaleAfterSecs = 1800
+
 type BSVConfig struct {
 	Nodes []string `toml:"nodes"`
 	// HeaderSyncIntervalSecs is how often the node polls its BSV peers for new
@@ -78,12 +80,17 @@ type BSVConfig struct {
 	// sooner and orphans reorg out faster) at the cost of more frequent P2P
 	// handshakes. 0 or unset → default 30s (down from the historic 120s).
 	HeaderSyncIntervalSecs int `toml:"header_sync_interval_secs"`
+	// HeaderStaleAfterSecs is the maximum age of the stored tip header before a
+	// trusted HTTPS fallback is consulted even when a BSV P2P peer is connected.
+	// 0 or unset → default 1800s.
+	HeaderStaleAfterSecs int `toml:"header_stale_after_secs"`
 
 	// HeaderFallbackPeers are HTTPS base URLs of TRUSTED Anvil nodes (e.g.
 	// "https://anvil.sendbsv.com") this node pulls headers from when its BSV P2P
-	// peers are all unreachable — the mesh header self-heal. A canonical default
-	// (defaultHeaderFallbackPeers) is baked into the binary and appended here on
-	// load, so the self-heal is active after `anvil upgrade` with NO config edit —
+	// peers are all unreachable or the stored tip is stale — the mesh header
+	// self-heal. A canonical default (defaultHeaderFallbackPeers) is baked into
+	// the binary and appended here on load, so the self-heal is active after
+	// `anvil upgrade` with NO config edit —
 	// the same posture as the default BSV P2P seeds. Operators may prepend their
 	// own trusted peers (tried first) or turn the fallback off entirely with
 	// HeaderFallbackDisabled. TRUST MODEL — headers fetched from these peers are
@@ -359,6 +366,7 @@ func Load(path string) (*Config, error) {
 		BSV: BSVConfig{
 			Nodes:                  append([]string(nil), defaultBSVSeeds...),
 			HeaderSyncIntervalSecs: 30,
+			HeaderStaleAfterSecs:   defaultHeaderStaleAfterSecs,
 		},
 		ARC: ARCConfig{
 			Enabled: true,
@@ -415,6 +423,9 @@ func Load(path string) (*Config, error) {
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	if cfg.BSV.HeaderStaleAfterSecs == 0 {
+		cfg.BSV.HeaderStaleAfterSecs = defaultHeaderStaleAfterSecs
+	}
 
 	// Merge deprecated [foundry] into [mesh] for backward compatibility
 	if len(cfg.Foundry.Seeds) > 0 && len(cfg.Mesh.Seeds) == 0 {
@@ -432,7 +443,8 @@ func Load(path string) (*Config, error) {
 	// Bake the canonical header-fallback peer into every config (unless the
 	// operator disabled it), minus this node's own public URL. This makes the
 	// mesh header self-heal automatic on `anvil upgrade` — no per-node config edit
-	// — mirroring the default BSV seeds above. Consulted only when P2P sync fails.
+	// — mirroring the default BSV seeds above. Consulted when P2P sync fails or the
+	// stored tip is stale.
 	cfg.BSV.HeaderFallbackPeers = ensureHeaderFallbackPeers(cfg.BSV.HeaderFallbackPeers, cfg.Node.PublicURL, cfg.BSV.HeaderFallbackDisabled)
 
 	// Environment variable overrides

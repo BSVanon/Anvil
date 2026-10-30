@@ -175,6 +175,32 @@ func TestHTTPHeaderSource_RejectsShortRange(t *testing.T) {
 	}
 }
 
+// TestHTTPHeaderSource_RejectsRedirects verifies that neither endpoint can
+// redirect the trusted header client to a different scheme or authority.
+func TestHTTPHeaderSource_RejectsRedirects(t *testing.T) {
+	redirected := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirected" {
+			redirected++
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, "/redirected", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	src := NewHTTPHeaderSource(srv.URL)
+	if _, err := src.Tip(); err == nil {
+		t.Fatal("expected tip redirect to fail")
+	}
+	if _, err := src.HeadersFrom(1, 1); err == nil {
+		t.Fatal("expected range redirect to fail")
+	}
+	if redirected != 0 {
+		t.Fatalf("redirect target was requested %d times, want 0", redirected)
+	}
+}
+
 // TestSyncFromHTTPPeer_PeerNotAheadIsNoOp: a reachable-but-stale peer must be a
 // no-op (leave our tip unchanged) so the caller moves on to the next peer.
 func TestSyncFromHTTPPeer_PeerNotAheadIsNoOp(t *testing.T) {

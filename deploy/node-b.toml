@@ -18,6 +18,8 @@ seeds = [
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333"]
+# header_stale_after_secs = 1800
+# Default 1800s; a node behind by more than this consults the trusted fallback even if a P2P peer is still connected.
 # Mesh header self-heal is ON by default (baked-in trusted peer, active on `anvil upgrade`).
 # header_fallback_peers = ["https://my-other-node.example"]  # optional: your own trusted peers, tried first (https-only; see anvil.example.toml)
 # header_fallback_disabled = true                            # optional: turn the self-heal off on this node

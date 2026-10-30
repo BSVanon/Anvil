@@ -137,7 +137,7 @@ func main() {
 		log.Printf("WARNING: ignoring header_fallback_peer %q — must be an https:// URL (or http://localhost for dev)", r)
 	}
 	if len(validHeaderPeers) > 0 {
-		log.Printf("header self-heal: %d trusted fallback peer(s) available (used only when BSV P2P is down)", len(validHeaderPeers))
+		log.Printf("header self-heal: %d trusted fallback peer(s) available (used when BSV P2P is down or the stored tip is stale)", len(validHeaderPeers))
 	}
 	go func() {
 		syncOnce := func() {
@@ -155,15 +155,30 @@ func main() {
 				}
 				break
 			}
-			// Mesh header self-heal: only when BSV P2P sync is DOWN (every configured
-			// peer errored this round) do we consult a trusted HTTPS header peer. Gating
-			// on P2P failure means a healthy node never calls the fallback, so the
-			// baked-in default peer never becomes every node in the fleet polling one
-			// endpoint forever. SyncFromHTTPPeers tries each in order, skips a not-ahead
-			// or erroring peer (non-terminal), stops at the first that advances us.
+			// Mesh header self-heal: consult a trusted HTTPS header peer when every
+			// configured BSV P2P peer errored this round, or when a connected peer left
+			// the stored tip stale. A healthy, advancing tip never calls the fallback,
+			// so the baked-in peer does not become a fleet-wide polling endpoint.
+			// SyncFromHTTPPeers tries each in order, skips a not-ahead or erroring peer
+			// (non-terminal), and stops at the first that advances us.
 			// Headers still pass PoW + most-work validation on apply; peers are
 			// https-only and trusted to the same degree as [bsv] nodes (see config docs).
-			if !p2pOK && len(validHeaderPeers) > 0 {
+			tipStale := false
+			if p2pOK && len(validHeaderPeers) > 0 {
+				tipHeight := headerStore.Tip()
+				raw, err := headerStore.HeaderAtHeight(tipHeight)
+				if err != nil {
+					log.Printf("header self-heal: read stored tip %d: %v", tipHeight, err)
+				} else {
+					var tipHeader wire.BlockHeader
+					if err := tipHeader.Deserialize(bytes.NewReader(raw)); err != nil {
+						log.Printf("header self-heal: decode stored tip %d: %v", tipHeight, err)
+					} else {
+						tipStale = tipIsStale(tipHeader.Timestamp.Unix(), time.Now().Unix(), cfg.BSV.HeaderStaleAfterSecs)
+					}
+				}
+			}
+			if (!p2pOK || tipStale) && len(validHeaderPeers) > 0 {
 				if tip, advanced := syncer.SyncFromHTTPPeers(validHeaderPeers); advanced {
 					logger.Info("header self-heal via fallback peer", "from", before, "to", tip, "new", tip-before)
 				}
@@ -966,6 +981,10 @@ func main() {
 	s := <-sig
 	_, _ = fmt.Println()
 	log.Printf("received %v, shutting down", s)
+}
+
+func tipIsStale(tipUnix, nowUnix int64, thresholdSecs int) bool {
+	return nowUnix-tipUnix > int64(thresholdSecs)
 }
 
 // overlayNetworkFromBSV returns the canonical overlay network identifier
