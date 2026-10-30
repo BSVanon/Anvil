@@ -32,7 +32,8 @@ After a fresh install:
 ```bash
 sudo ufw allow 8333/tcp              # mesh peering
 sudo ufw allow 9333/tcp              # REST API
-sudo anvil info                       # your address + auth token
+sudo anvil info                       # your identity + funding address
+sudo anvil token                      # your operator auth token
 ```
 
 Send 1,000,000 sats to the address shown, wait for 1 confirmation, then:

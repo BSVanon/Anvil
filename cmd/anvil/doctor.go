@@ -111,14 +111,14 @@ func cmdDoctor(args []string) {
 		}
 		issues++
 	} else {
-		pass("identity WIF present (%s...)", cfg.Identity.WIF[:8])
+		pass("identity WIF present (%s)", doctorSecretFingerprint(cfg.Identity.WIF))
 	}
 
 	if cfg.API.AuthToken == "" {
 		fail("auth token not derived (WIF missing or invalid)")
 		issues++
 	} else {
-		pass("auth token derived (%s...)", cfg.API.AuthToken[:12])
+		pass("auth token derived (%s)", doctorSecretFingerprint(cfg.API.AuthToken))
 	}
 	if len(cfg.Mesh.Seeds) == 0 {
 		warn("no mesh seeds configured — this node will not auto-connect to the mesh")
@@ -423,6 +423,10 @@ func cmdDoctor(args []string) {
 		fmt.Printf("=== %d issue(s) found ===\n", issues)
 		os.Exit(1)
 	}
+}
+
+func doctorSecretFingerprint(secret string) string {
+	return "sha256:" + secretFingerprint(secret)
 }
 
 // runSelfHealingChecks runs the four checks that cover every failure mode

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/libsv/go-p2p/chaincfg/chainhash"
 	"github.com/libsv/go-p2p/wire"
 	"github.com/syndtr/goleveldb/leveldb"
 )
@@ -76,9 +77,56 @@ func (s *Server) handleFindHeaderHexForHeight(w http.ResponseWriter, r *http.Req
 		writeChaintracksError(w, http.StatusInternalServerError, "header decode failed")
 		return
 	}
-	hash := hdr.BlockHash()
+	writeChaintracksValue(w, chaintracksHeaderFor(hdr, height))
+}
 
-	writeChaintracksValue(w, chaintracksHeader{
+// handleFindHeaderHexForBlockHash serves GET /findHeaderHexForBlockHash?hash=
+// <display-order hash>. Chaintracks treats an undefined result as a normal
+// lookup miss, so misses intentionally return success without a value key.
+func (s *Server) handleFindHeaderHexForBlockHash(w http.ResponseWriter, r *http.Request) {
+	displayHash := r.URL.Query().Get("hash")
+	if len(displayHash) != 64 {
+		writeChaintracksHashParamError(w)
+		return
+	}
+	hash, err := chainhash.NewHashFromStr(displayHash)
+	if err != nil {
+		writeChaintracksHashParamError(w)
+		return
+	}
+	height, err := s.headerStore.HeightForHash(hash)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		writeChaintracksMiss(w)
+		return
+	}
+	if err != nil {
+		writeChaintracksStoreError(w)
+		return
+	}
+	raw, err := s.headerStore.HeaderAtHeight(height)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		writeChaintracksMiss(w)
+		return
+	}
+	if err != nil {
+		writeChaintracksStoreError(w)
+		return
+	}
+	var hdr wire.BlockHeader
+	if err := hdr.Deserialize(bytes.NewReader(raw)); err != nil {
+		writeChaintracksStoreError(w)
+		return
+	}
+	if hdr.BlockHash() != *hash { // index can lag an active-chain reorg
+		writeChaintracksMiss(w)
+		return
+	}
+	writeChaintracksValue(w, chaintracksHeaderFor(hdr, height))
+}
+
+func chaintracksHeaderFor(hdr wire.BlockHeader, height uint32) chaintracksHeader {
+	hash := hdr.BlockHash()
+	return chaintracksHeader{
 		Version:      hdr.Version,
 		PreviousHash: hdr.PrevBlock.String(),  // wire->display reversal
 		MerkleRoot:   hdr.MerkleRoot.String(), // wire->display reversal
@@ -87,7 +135,7 @@ func (s *Server) handleFindHeaderHexForHeight(w http.ResponseWriter, r *http.Req
 		Nonce:        hdr.Nonce,
 		Height:       height,
 		Hash:         hash.String(), // wire->display reversal
-	})
+	}
 }
 
 // handleGetPresentHeight serves GET /getPresentHeight, returning the node's
@@ -104,6 +152,29 @@ func writeChaintracksValue(w http.ResponseWriter, value interface{}) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status": "success",
 		"value":  value,
+	})
+}
+
+func writeChaintracksMiss(w http.ResponseWriter) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "success"})
+}
+
+func writeChaintracksHashParamError(w http.ResponseWriter) {
+	const msg = "hash must be 64 hex characters"
+	writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"status":      "error",
+		"code":        "ERR_INVALID_PARAMS",
+		"description": msg,
+		"error":       msg,
+	})
+}
+
+func writeChaintracksStoreError(w http.ResponseWriter) {
+	writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+		"status":      "error",
+		"code":        "ERR_INTERNAL",
+		"description": "An internal error has occurred.",
+		"error":       "header store read failed",
 	})
 }
 

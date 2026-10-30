@@ -346,12 +346,10 @@ NODE_INFO=$("${INSTALL_DIR}/anvil" info -config "$CONFIG_FILE" -json 2>/dev/null
 
 IDENTITY=""
 WALLET_ADDR=""
-AUTH_TOKEN=""
 
 if [ -n "$NODE_INFO" ]; then
   IDENTITY=$(echo "$NODE_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('identity_key',''))" 2>/dev/null || echo "")
   WALLET_ADDR=$(echo "$NODE_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('address',''))" 2>/dev/null || echo "")
-  AUTH_TOKEN=$(echo "$NODE_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('auth_token',''))" 2>/dev/null || echo "")
 fi
 
 # Path to the identity env file (node-a.toml -> node-a.env). We deliberately do
@@ -558,7 +556,7 @@ echo -e "  mesh and peering with other nodes automatically."
 echo ""
 echo ""
 
-if [ -n "$WALLET_ADDR" ] && [ -n "$AUTH_TOKEN" ]; then
+if [ -n "$WALLET_ADDR" ]; then
   echo -e "  ${BOLD}LAST STEP: Claim your funds${NC}"
   echo ""
   echo -e "  ${DIM}If you've already sent BSV to your address and it has${NC}"
@@ -566,7 +564,7 @@ if [ -n "$WALLET_ADDR" ] && [ -n "$AUTH_TOKEN" ]; then
   echo -e "  ${DIM}the funds into your node's wallet:${NC}"
   echo ""
   echo -e "    ${CYAN}curl -X POST http://localhost:${API_PORT}/wallet/scan \\${NC}"
-  echo -e "    ${CYAN}  -H \"Authorization: Bearer ${AUTH_TOKEN}\"${NC}"
+  echo -e "    ${CYAN}  -H \"Authorization: Bearer \$(sudo anvil token -config ${CONFIG_FILE})\"${NC}"
   echo ""
   echo -e "  ${DIM}Run this any time you send more funds to your node.${NC}"
   echo ""

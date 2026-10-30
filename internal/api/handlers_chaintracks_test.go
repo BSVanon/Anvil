@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/libsv/go-p2p/chaincfg/chainhash"
 )
 
 // fetchChaintracks issues a GET against path and decodes the {status,value,...}
@@ -21,6 +24,71 @@ func fetchChaintracks(t *testing.T, srv *Server, path string) (int, map[string]i
 		}
 	}
 	return w.Code, resp
+}
+
+func TestFindHeaderHexForBlockHashGenesisDisplayOrder(t *testing.T) {
+	srv := testServer(t)
+	const genesis = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+	code, resp := fetchChaintracks(t, srv, "/findHeaderHexForBlockHash?hash="+genesis)
+	if code != http.StatusOK || resp["status"] != "success" {
+		t.Fatalf("expected success, got %d %#v", code, resp)
+	}
+	value := resp["value"].(map[string]interface{})
+	if value["height"].(float64) != 0 || value["hash"] != genesis {
+		t.Fatalf("unexpected genesis value: %#v", value)
+	}
+
+	// The wire-order bytes rendered as hex are not a display hash lookup key.
+	parts := make([]string, 0, 64)
+	for i := len(genesis); i > 0; i -= 2 {
+		parts = append(parts, genesis[i-2:i])
+	}
+	code, resp = fetchChaintracks(t, srv, "/findHeaderHexForBlockHash?hash="+strings.Join(parts, ""))
+	if code != http.StatusOK || resp["status"] != "success" {
+		t.Fatalf("reversed hash: expected successful miss, got %d %#v", code, resp)
+	}
+	if _, ok := resp["value"]; ok {
+		t.Fatal("reversed hash must be a miss")
+	}
+}
+
+func TestFindHeaderHexForBlockHashMissAndErrors(t *testing.T) {
+	srv := testServer(t)
+	unknown := strings.Repeat("1", 64)
+	code, resp := fetchChaintracks(t, srv, "/findHeaderHexForBlockHash?hash="+unknown)
+	if code != http.StatusOK || resp["status"] != "success" {
+		t.Fatalf("unknown: expected successful miss, got %d %#v", code, resp)
+	}
+	if _, ok := resp["value"]; ok {
+		t.Fatal("unknown hash response must omit value")
+	}
+
+	code, resp = fetchChaintracks(t, srv, "/findHeaderHexForBlockHash?hash=bad")
+	if code != http.StatusBadRequest || resp["code"] != "ERR_INVALID_PARAMS" {
+		t.Fatalf("malformed: got %d %#v", code, resp)
+	}
+
+	srv.headerStore.Close()
+	code, resp = fetchChaintracks(t, srv, "/findHeaderHexForBlockHash?hash="+unknown)
+	if code != http.StatusInternalServerError || resp["code"] != "ERR_INTERNAL" {
+		t.Fatalf("store failure: got %d %#v", code, resp)
+	}
+}
+
+type staleHashIndexStore struct{ headerStore }
+
+func (s staleHashIndexStore) HeightForHash(*chainhash.Hash) (uint32, error) { return 0, nil }
+
+func TestFindHeaderHexForBlockHashRejectsStaleIndex(t *testing.T) {
+	srv := testServer(t)
+	srv.headerStore = staleHashIndexStore{srv.headerStore}
+	code, resp := fetchChaintracks(t, srv, "/findHeaderHexForBlockHash?hash="+strings.Repeat("1", 64))
+	if code != http.StatusOK || resp["status"] != "success" {
+		t.Fatalf("expected successful stale-index miss, got %d %#v", code, resp)
+	}
+	if _, ok := resp["value"]; ok {
+		t.Fatal("stale hash index must not return the active header")
+	}
 }
 
 func TestGetPresentHeightGenesis(t *testing.T) {
@@ -159,7 +227,7 @@ func TestFindHeaderHexForHeightBadRequest(t *testing.T) {
 func TestChaintracksPublicAndCORS(t *testing.T) {
 	srv := testServerNoAuth(t)
 	addServerTestChain(t, srv, 2)
-	for _, path := range []string{"/getPresentHeight", "/findHeaderHexForHeight?height=1"} {
+	for _, path := range []string{"/getPresentHeight", "/findHeaderHexForHeight?height=1", "/findHeaderHexForBlockHash?hash=000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"} {
 		req := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(w, req)
@@ -198,7 +266,7 @@ func TestChaintracksPublicUnderPaymentGate(t *testing.T) {
 		t.Fatalf("/headers/tip: expected 402 under priced gate, got %d", w.Code)
 	}
 
-	for _, path := range []string{"/getPresentHeight", "/findHeaderHexForHeight?height=1"} {
+	for _, path := range []string{"/getPresentHeight", "/findHeaderHexForHeight?height=1", "/findHeaderHexForBlockHash?hash=000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"} {
 		code, resp := fetchChaintracks(t, srv, path)
 		if code != http.StatusOK {
 			t.Fatalf("%s: expected 200 under priced payment gate, got %d", path, code)

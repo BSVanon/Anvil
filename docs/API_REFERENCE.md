@@ -395,7 +395,7 @@ Returned by `GET /identity/02abc...def` and included in `GET /topics/{topic}`.
 
 ```bash
 anvil help                  # full command reference
-sudo anvil info             # identity, funding address, auth token
+sudo anvil info             # identity, funding address (token redacted; -show-secrets prints it)
 sudo anvil doctor           # validate config, connectivity, mesh health
 sudo anvil token            # print auth token
 curl -s localhost:9333/status   # node status

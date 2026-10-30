@@ -18,12 +18,7 @@ import (
 
 // --- BEEF ---
 
-// handleGetBEEF serves a transaction as a complete BEEF envelope.
-// First checks the local proof store cache. On cache miss, fetches the raw
-// transaction and merkle proof from external sources (ARC/WhatsOnChain),
-// builds Atomic BEEF, validates against local headers, caches the result,
-// and returns it. Returns 404 only if the tx is genuinely unconfirmed or
-// cannot be found.
+// handleGetBEEF serves a complete BEEF envelope, fetching it on cache misses.
 func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 	txid := r.PathValue("txid")
 	if len(txid) != 64 {
@@ -31,10 +26,18 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Cache hit — serve from proof store
+	// 1. Cache hit — periodically refresh an unproven subject.
 	source := spv.BEEFSourceCached
 	beefBytes, err := s.proofStore.GetBEEF(txid)
-	if err != nil && s.proofFetcher != nil {
+	if err == nil {
+		cachedTx, parseErr := transaction.NewTransactionFromBEEF(beefBytes)
+		subjectProven := parseErr == nil && cachedTx.MerklePath != nil
+		if !subjectProven {
+			beefBytes, source, subjectProven = s.refreshCachedBEEF(txid, beefBytes)
+		}
+		serveBEEF(w, r, txid, beefBytes, source, subjectProven, s.validator)
+		return
+	} else if s.proofFetcher != nil {
 		// 2. Cache miss — fetch on demand; fetcher returns which upstream
 		// supplied the proof so the caller can distinguish overlay-cached
 		// data from passthrough from an external indexer.
@@ -46,18 +49,9 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 3. Validate against local headers before caching
-		if s.validator != nil {
-			valResult, valErr := s.validator.ValidateBEEF(r.Context(), fetched)
-			if valErr != nil {
-				s.logger.Warn("fetched BEEF validation error", "txid", txid, "error", valErr)
-				writeError(w, http.StatusNotFound, "fetched proof failed local validation")
-				return
-			}
-			if valResult.Confidence == spv.ConfidenceInvalid {
-				s.logger.Warn("fetched BEEF invalid confidence", "txid", txid, "message", valResult.Message)
-				writeError(w, http.StatusNotFound, "fetched proof failed local header verification")
-				return
-			}
+		if validationErr := s.fetchedBEEFVerified(r.Context(), fetched); validationErr != nil {
+			writeError(w, http.StatusNotFound, beefValidationErrorMessage(validationErr))
+			return
 		}
 
 		// 4. Cache for future requests
@@ -74,19 +68,24 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	serveBEEF(w, r, txid, beefBytes, source, beefSubjectProven(beefBytes), s.validator)
+}
+
+func serveBEEF(w http.ResponseWriter, r *http.Request, txid string, beefBytes []byte, source string, subjectProven bool, validator *spv.Validator) {
 	// Serve as binary if requested — source is surfaced via header since the
 	// body is pure BEEF bytes with no room for metadata.
 	if strings.Contains(r.Header.Get("Accept"), "application/octet-stream") {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("X-BEEF-Source", source)
+		w.Header().Set("X-BEEF-Subject-Proven", fmt.Sprintf("%t", subjectProven))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(beefBytes) // error is client-side disconnect, nothing to do
 		return
 	}
 
 	confidence := ""
-	if s.validator != nil {
-		result, err := s.validator.ValidateBEEF(r.Context(), beefBytes)
+	if validator != nil {
+		result, err := validator.ValidateBEEF(r.Context(), beefBytes)
 		if err == nil {
 			confidence = result.Confidence
 		}
@@ -100,6 +99,7 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 	if confidence != "" {
 		resp["confidence"] = confidence
 	}
+	w.Header().Set("X-BEEF-Subject-Proven", fmt.Sprintf("%t", subjectProven))
 	writeJSON(w, http.StatusOK, resp)
 }
 

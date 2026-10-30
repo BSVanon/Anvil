@@ -3,13 +3,16 @@ package api
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/headers"
@@ -17,7 +20,325 @@ import (
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/libsv/go-p2p/chaincfg/chainhash"
+	"github.com/libsv/go-p2p/wire"
 )
+
+type staticBEEFFetcher struct {
+	beef   []byte
+	source string
+	err    error
+	calls  int
+}
+
+func (f *staticBEEFFetcher) FetchBEEF(string) ([]byte, string, error) {
+	f.calls++
+	return f.beef, f.source, f.err
+}
+
+func (f *staticBEEFFetcher) TxStatus(string) (*spv.TxStatusResult, error) {
+	return nil, errors.New("not used by BEEF refresh tests")
+}
+
+type delayedBEEFFetcher struct {
+	beef   []byte
+	source string
+	err    error
+	delay  time.Duration
+	done   chan struct{}
+	calls  atomic.Int32
+}
+
+func (f *delayedBEEFFetcher) FetchBEEF(string) ([]byte, string, error) {
+	f.calls.Add(1)
+	time.Sleep(f.delay)
+	close(f.done)
+	return f.beef, f.source, f.err
+}
+
+func (f *delayedBEEFFetcher) TxStatus(string) (*spv.TxStatusResult, error) {
+	return nil, errors.New("not used by BEEF refresh tests")
+}
+
+func shortenProofRefreshWait(t *testing.T, wait time.Duration) {
+	t.Helper()
+	previous := proofRefreshWait
+	proofRefreshWait = wait
+	t.Cleanup(func() { proofRefreshWait = previous })
+}
+
+func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				t.Fatal("condition not met before timeout")
+			}
+		}
+	}
+}
+
+func makeRefreshBEEFs(t *testing.T, srv *Server, addValidHeader bool) (string, []byte, []byte) {
+	t.Helper()
+	tx := transaction.NewTransaction()
+	tx.AddOutput(&transaction.TransactionOutput{Satoshis: 1000, LockingScript: mustDecodeScript(t, "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac")})
+	plain, err := transaction.NewBeefFromTransaction(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unproven, err := plain.AtomicBytes(tx.TxID())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	isTrue := true
+	path := [][]*transaction.PathElement{{
+		{Offset: 0, Hash: tx.TxID(), Txid: &isTrue},
+		{Offset: 1, Hash: tx.TxID()},
+	}}
+	tx.MerklePath = transaction.NewMerklePath(1, path)
+	provenBEEF, err := transaction.NewBeefFromTransaction(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proven, err := provenBEEF.AtomicBytes(tx.TxID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addValidHeader {
+		prev, err := srv.headerStore.HashAtHeight(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		merkleRoot, err := tx.MerklePath.ComputeRoot(tx.TxID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, err := chainhash.NewHashFromStr(merkleRoot.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		hdr := wire.NewBlockHeader(1, prev, root, 0x1d00ffff, 1)
+		if err := srv.headerStore.AddHeaders(1, []*wire.BlockHeader{hdr}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return tx.TxID().String(), unproven, proven
+}
+
+func TestGetBEEFRefreshesCachedUnprovenSubject(t *testing.T) {
+	srv := testServer(t)
+	txid, unproven, proven := makeRefreshBEEFs(t, srv, true)
+	if _, err := srv.proofStore.StoreBEEF(unproven); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &staticBEEFFetcher{beef: proven, source: spv.BEEFSourceWoC}
+	srv.proofFetcher = fetcher
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil))
+	if w.Code != http.StatusOK || w.Header().Get("X-BEEF-Subject-Proven") != "true" {
+		t.Fatalf("expected refreshed proven response, got %d %q", w.Code, w.Header().Get("X-BEEF-Subject-Proven"))
+	}
+	if fetcher.calls != 1 {
+		t.Fatalf("fetch calls = %d, want 1", fetcher.calls)
+	}
+	stored, err := srv.proofStore.GetBEEF(txid)
+	if err != nil || string(stored) != string(proven) {
+		t.Fatalf("cache was not replaced by proven BEEF: %v", err)
+	}
+
+	// The reservation remains in force for 60 seconds after a successful fetch.
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil))
+	if fetcher.calls != 1 {
+		t.Fatalf("throttle allowed %d fetches, want 1", fetcher.calls)
+	}
+}
+
+func TestGetBEEFRefreshFallbacksLeaveCachedCopyUntouched(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		withHeader bool
+		fetcher    func([]byte) *staticBEEFFetcher
+	}{
+		{"unproven fetch", false, func(unproven []byte) *staticBEEFFetcher {
+			return &staticBEEFFetcher{beef: unproven, source: spv.BEEFSourceWoC}
+		}},
+		{"fetch error", false, func([]byte) *staticBEEFFetcher { return &staticBEEFFetcher{err: errors.New("upstream unavailable")} }},
+		{"failed local validation", false, func(_ []byte) *staticBEEFFetcher { return &staticBEEFFetcher{} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+			txid, unproven, proven := makeRefreshBEEFs(t, srv, tc.withHeader)
+			if tc.name == "failed local validation" {
+				tc.fetcher = func([]byte) *staticBEEFFetcher { return &staticBEEFFetcher{beef: proven, source: spv.BEEFSourceWoC} }
+			}
+			if _, err := srv.proofStore.StoreBEEF(unproven); err != nil {
+				t.Fatal(err)
+			}
+			fetcher := tc.fetcher(unproven)
+			srv.proofFetcher = fetcher
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil))
+			if w.Code != http.StatusOK || w.Header().Get("X-BEEF-Subject-Proven") != "false" {
+				t.Fatalf("expected cached unproven response, got %d %q", w.Code, w.Header().Get("X-BEEF-Subject-Proven"))
+			}
+			stored, err := srv.proofStore.GetBEEF(txid)
+			if err != nil || string(stored) != string(unproven) {
+				t.Fatalf("cached BEEF changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestGetBEEFSlowRefreshServesCachedCopyThenStoresProvenBEEF(t *testing.T) {
+	shortenProofRefreshWait(t, 10*time.Millisecond)
+	srv := testServer(t)
+	txid, unproven, proven := makeRefreshBEEFs(t, srv, true)
+	if _, err := srv.proofStore.StoreBEEF(unproven); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &delayedBEEFFetcher{
+		beef:   proven,
+		source: spv.BEEFSourceWoC,
+		delay:  50 * time.Millisecond,
+		done:   make(chan struct{}),
+	}
+	srv.proofFetcher = fetcher
+
+	started := time.Now()
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil))
+	if elapsed := time.Since(started); elapsed > proofRefreshWait+25*time.Millisecond {
+		t.Fatalf("cached response took %s, want no more than %s", elapsed, proofRefreshWait+25*time.Millisecond)
+	}
+	if w.Code != http.StatusOK || w.Header().Get("X-BEEF-Subject-Proven") != "false" {
+		t.Fatalf("expected cached unproven response, got %d %q", w.Code, w.Header().Get("X-BEEF-Subject-Proven"))
+	}
+
+	eventually(t, time.Second, func() bool {
+		stored, err := srv.proofStore.GetBEEF(txid)
+		return err == nil && string(stored) == string(proven)
+	})
+	if fetcher.calls.Load() != 1 {
+		t.Fatalf("fetch calls = %d, want 1", fetcher.calls.Load())
+	}
+}
+
+func TestGetBEEFSlowRefreshFallbacksDoNotReplaceCachedCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		withHeader bool
+		fetched    func(unproven, proven []byte) []byte
+		fetchErr   error
+	}{
+		{name: "unproven BEEF", fetched: func(unproven, _ []byte) []byte { return unproven }},
+		{name: "invalid BEEF", fetched: func(_, proven []byte) []byte { return proven }},
+		{name: "fetch error", fetchErr: errors.New("upstream unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shortenProofRefreshWait(t, 10*time.Millisecond)
+			srv := testServer(t)
+			txid, unproven, proven := makeRefreshBEEFs(t, srv, false)
+			if _, err := srv.proofStore.StoreBEEF(unproven); err != nil {
+				t.Fatal(err)
+			}
+			var fetched []byte
+			if tc.fetched != nil {
+				fetched = tc.fetched(unproven, proven)
+			}
+			fetcher := &delayedBEEFFetcher{
+				beef:   fetched,
+				source: spv.BEEFSourceWoC,
+				err:    tc.fetchErr,
+				delay:  50 * time.Millisecond,
+				done:   make(chan struct{}),
+			}
+			srv.proofFetcher = fetcher
+
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil))
+			if w.Code != http.StatusOK || w.Header().Get("X-BEEF-Subject-Proven") != "false" {
+				t.Fatalf("expected cached unproven response, got %d %q", w.Code, w.Header().Get("X-BEEF-Subject-Proven"))
+			}
+			select {
+			case <-fetcher.done:
+			case <-time.After(time.Second):
+				t.Fatal("slow fetch did not finish")
+			}
+			eventually(t, time.Second, func() bool {
+				stored, err := srv.proofStore.GetBEEF(txid)
+				return err == nil && string(stored) == string(unproven)
+			})
+		})
+	}
+}
+
+func TestReserveProofRefreshEvictsExpiredEntryBeforeOldestLiveEntry(t *testing.T) {
+	srv := testServer(t)
+	now := time.Now()
+	expiredID := "expired"
+	oldestLiveID := "oldest-live"
+	srv.proofRefreshes[expiredID] = now.Add(-proofRefreshInterval - time.Second)
+	srv.proofRefreshes[oldestLiveID] = now.Add(-time.Second)
+	for i := 0; i < maxProofRefreshes-2; i++ {
+		srv.proofRefreshes[fmt.Sprintf("live-%d", i)] = now
+	}
+
+	if !srv.reserveProofRefresh("new") {
+		t.Fatal("expected refresh reservation")
+	}
+	if _, ok := srv.proofRefreshes[expiredID]; ok {
+		t.Fatal("expired entry was not evicted")
+	}
+	if _, ok := srv.proofRefreshes[oldestLiveID]; !ok {
+		t.Fatal("oldest live entry was evicted before expired entry")
+	}
+	if _, ok := srv.proofRefreshes["new"]; !ok {
+		t.Fatal("new reservation was not recorded")
+	}
+}
+
+func TestGetBEEFSubjectProofHeaderWithoutFetcherAndForProvenCache(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		withHeader  bool
+		storeProven bool
+		want        string
+	}{
+		{"unproven without fetcher", false, false, "false"},
+		{"proven cache bypasses fetcher", true, true, "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+			txid, unproven, proven := makeRefreshBEEFs(t, srv, tc.withHeader)
+			cached := unproven
+			if tc.storeProven {
+				cached = proven
+				srv.proofFetcher = &staticBEEFFetcher{beef: unproven}
+			}
+			if _, err := srv.proofStore.StoreBEEF(cached); err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil))
+			if w.Code != http.StatusOK || w.Header().Get("X-BEEF-Subject-Proven") != tc.want {
+				t.Fatalf("got %d %q, want header %q", w.Code, w.Header().Get("X-BEEF-Subject-Proven"), tc.want)
+			}
+			if f, ok := srv.proofFetcher.(*staticBEEFFetcher); ok && f.calls != 0 {
+				t.Fatalf("already-proven cache triggered %d fetches", f.calls)
+			}
+		})
+	}
+}
 
 func TestGetBEEFCacheHit(t *testing.T) {
 	srv := testServer(t)
@@ -158,14 +479,14 @@ func testServerWithFetcher(t *testing.T, fetcher *spv.ProofFetcher) *Server {
 	t.Cleanup(func() { es.Close() })
 
 	return NewServer(ServerConfig{
-		HeaderStore:  hs,
-		ProofStore:   ps,
+		HeaderStore:   hs,
+		ProofStore:    ps,
 		EnvelopeStore: es,
-		Validator:    nil, // skip header validation in fetcher tests (no real headers)
-		Broadcaster:  txrelay.NewBroadcaster(txrelay.NewMempool(), nil, slog.Default()),
-		AuthToken:    "test-token",
-		Logger:       slog.Default(),
-		ProofFetcher: fetcher,
+		Validator:     nil, // skip header validation in fetcher tests (no real headers)
+		Broadcaster:   txrelay.NewBroadcaster(txrelay.NewMempool(), nil, slog.Default()),
+		AuthToken:     "test-token",
+		Logger:        slog.Default(),
+		ProofFetcher:  fetcher,
 	})
 }
 

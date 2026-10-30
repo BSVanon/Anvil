@@ -25,7 +25,7 @@ func cmdHelp(args []string) {
 	fmt.Printf("  %sNODE INFO%s\n", bold, nc)
 	fmt.Println()
 	fmt.Printf("    %ssudo anvil info%s\n", cyan, nc)
-	fmt.Printf("    %sShows your identity key, funding address, and auth token.%s\n", dim, nc)
+	fmt.Printf("    %sShows your identity key and funding address (token redacted; sudo anvil token prints it).%s\n", dim, nc)
 	fmt.Println()
 	fmt.Printf("  %s─────────────────────────────────────────────────────%s\n", dim, nc)
 	fmt.Println()

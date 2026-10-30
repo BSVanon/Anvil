@@ -1,10 +1,38 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestInfoRedactsTokenUnlessShowSecrets(t *testing.T) {
+	const token = "very-secret-operator-token-value"
+	const wif = "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S"
+	sum := sha256.Sum256([]byte(token))
+	fingerprint := hex.EncodeToString(sum[:])[:12]
+
+	for _, jsonOut := range []bool{false, true} {
+		var out bytes.Buffer
+		writeInfo(&out, "identity", "address", token, jsonOut, false)
+		got := out.String()
+		if bytes.Contains([]byte(got), []byte(token)) || bytes.Contains([]byte(got), []byte(wif[:8])) {
+			t.Fatalf("default info leaked a secret: %q", got)
+		}
+		if !bytes.Contains([]byte(got), []byte("<redacted> sha256:"+fingerprint)) {
+			t.Fatalf("default info omitted fingerprint: %q", got)
+		}
+	}
+
+	var shown bytes.Buffer
+	writeInfo(&shown, "identity", "address", token, false, true)
+	if !bytes.Contains(shown.Bytes(), []byte(token)) {
+		t.Fatalf("--show-secrets output omitted token: %q", shown.String())
+	}
+}
 
 func TestLoadEnvFilePathDerivation(t *testing.T) {
 	// Create a temp dir with a fake env file

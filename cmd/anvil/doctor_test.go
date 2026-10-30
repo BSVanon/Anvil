@@ -21,6 +21,17 @@ PrivateTmp=no
 	}
 }
 
+func TestDoctorSecretFingerprintsDoNotExposePrefixes(t *testing.T) {
+	const token = "very-secret-operator-token-value"
+	const wif = "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S"
+	for _, secret := range []string{token, wif} {
+		got := doctorSecretFingerprint(secret)
+		if !strings.HasPrefix(got, "sha256:") || strings.Contains(got, secret[:8]) {
+			t.Fatalf("unsafe fingerprint for %q: %q", secret[:8], got)
+		}
+	}
+}
+
 // TestParsePrivateTmpStatus_SkipsWhenPrivateTmpYes verifies that an
 // operator who has already applied a PrivateTmp=true override is
 // correctly reported as not-needing remediation.

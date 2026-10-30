@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/bond"
@@ -22,11 +24,31 @@ import (
 	"github.com/BSVanon/Anvil/internal/version"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
+	"github.com/libsv/go-p2p/chaincfg/chainhash"
+	"github.com/libsv/go-p2p/wire"
 )
+
+// headerStore is the subset of the header chain used by API handlers. Keeping
+// it narrow makes the hash-index/reorg guard independently testable.
+type headerStore interface {
+	AddHeaders(uint32, []*wire.BlockHeader) error
+	Close() error
+	HashAtHeight(uint32) (*chainhash.Hash, error)
+	HeaderAtHeight(uint32) ([]byte, error)
+	HeightForHash(*chainhash.Hash) (uint32, error)
+	RangeHeaders(uint32, uint32) ([][]byte, uint32, error)
+	Tip() uint32
+	Work() *big.Int
+}
+
+type beefFetcher interface {
+	FetchBEEF(string) ([]byte, string, error)
+	TxStatus(string) (*spv.TxStatusResult, error)
+}
 
 // Server is the Anvil REST API server.
 type Server struct {
-	headerStore       *headers.Store
+	headerStore       headerStore
 	proofStore        *spv.ProofStore
 	envelopeStore     *envelope.Store
 	overlayDir        *overlay.Directory
@@ -53,7 +75,9 @@ type Server struct {
 	sseHub            *envelopeHub
 	msgHub            *messageHub
 	watcher           *mempool.Watcher
-	proofFetcher      *spv.ProofFetcher
+	proofFetcher      beefFetcher
+	proofRefreshMu    sync.Mutex
+	proofRefreshes    map[string]time.Time
 	msgStore          *messaging.Store
 	signingKey        *ec.PrivateKey // node identity key for signing envelopes
 	healthChecks      []HealthCheck  // registered subsystem health checks
@@ -72,7 +96,7 @@ type HealthCheck struct {
 
 // ServerConfig holds all parameters for NewServer.
 type ServerConfig struct {
-	HeaderStore         *headers.Store
+	HeaderStore         headerStore
 	ProofStore          *spv.ProofStore
 	EnvelopeStore       *envelope.Store
 	OverlayDir          *overlay.Directory
@@ -113,7 +137,7 @@ type ServerConfig struct {
 	ServiceHealthFn func() string
 	SPVProofSource  string
 	Watcher         *mempool.Watcher
-	ProofFetcher    *spv.ProofFetcher
+	ProofFetcher    beefFetcher
 	MsgStore        *messaging.Store
 	SigningKey      *ec.PrivateKey // node identity key for signing envelopes
 	// Wallet is the node-identity go-sdk wallet. When non-nil, the BRC-33
@@ -198,6 +222,7 @@ func NewServer(cfg ServerConfig) *Server {
 		msgHub:            newMessageHub(),
 		watcher:           cfg.Watcher,
 		proofFetcher:      cfg.ProofFetcher,
+		proofRefreshes:    make(map[string]time.Time),
 		msgStore:          cfg.MsgStore,
 		signingKey:        cfg.SigningKey,
 		customCaps:        cfg.CustomCapabilities,
@@ -234,6 +259,7 @@ func (s *Server) routes() {
 	// gate) so these public-infrastructure reads stay unauthenticated even on a
 	// node with x402 pricing enabled — the contract requires no 402/token gate.
 	s.mux.HandleFunc("GET /findHeaderHexForHeight", s.openPublic(s.handleFindHeaderHexForHeight))
+	s.mux.HandleFunc("GET /findHeaderHexForBlockHash", s.openPublic(s.handleFindHeaderHexForBlockHash))
 	s.mux.HandleFunc("GET /getPresentHeight", s.openPublic(s.handleGetPresentHeight))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
 	// Confirmation-count status: openPublic (free/portable) so SPV consumers can
@@ -338,7 +364,8 @@ func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
 // priceForPath charges any non-/content//.well-known/ path at the node's
 // priceSats — so on a node with PriceSats>0 an openRead endpoint answers an
 // unauthenticated GET with a 402 challenge. The chaintracks SPV-header source
-// (findHeaderHexForHeight/getPresentHeight) does unauthenticated browser GETs
+// (findHeaderHexForHeight/findHeaderHexForBlockHash/getPresentHeight) does
+// unauthenticated browser GETs
 // and must never see a 402/token challenge, so it uses this path instead.
 func (s *Server) openPublic(next http.HandlerFunc) http.HandlerFunc {
 	h := next

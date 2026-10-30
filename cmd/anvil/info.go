@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +17,7 @@ import (
 )
 
 // cmdInfo prints the node's identity public key and P2PKH funding address.
-// Usage: anvil info [-config /etc/anvil/node-a.toml] [-json]
+// Usage: anvil info [-config /etc/anvil/node-a.toml] [-json] [-show-secrets]
 //
 // Automatically loads the matching .env file (node-a.toml → node-a.env)
 // so it works the same way as the systemd service.
@@ -23,6 +25,7 @@ func cmdInfo(args []string) {
 	fs := flag.NewFlagSet("info", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	jsonOut := fs.Bool("json", false, "output as JSON")
+	showSecrets := fs.Bool("show-secrets", false, "show the full operator token")
 	_ = fs.Parse(args)
 
 	// Auto-load the matching env file (e.g. node-a.toml → node-a.env)
@@ -54,20 +57,36 @@ func cmdInfo(args []string) {
 		os.Exit(1)
 	}
 
-	if *jsonOut {
+	writeInfo(os.Stdout, identityHex, addr.AddressString, cfg.API.AuthToken, *jsonOut, *showSecrets)
+}
+
+func writeInfo(w io.Writer, identity, address, authToken string, jsonOut, showSecrets bool) {
+	token := redactedSecret(authToken, showSecrets)
+	if jsonOut {
 		out := map[string]string{
-			"identity_key": identityHex,
-			"address":      addr.AddressString,
-			"auth_token":   cfg.API.AuthToken,
+			"identity_key": identity,
+			"address":      address,
+			"auth_token":   token,
 		}
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
+		enc.SetEscapeHTML(false)
 		_ = enc.Encode(out)
 	} else {
-		fmt.Printf("Identity:  %s\n", identityHex)
-		fmt.Printf("Address:   %s\n", addr.AddressString)
-		fmt.Printf("Token:     %s\n", cfg.API.AuthToken)
+		_, _ = fmt.Fprintf(w, "Identity:  %s\nAddress:   %s\nToken:     %s\n", identity, address, token)
 	}
+}
+
+func redactedSecret(secret string, show bool) string {
+	if show {
+		return secret
+	}
+	return "<redacted> sha256:" + secretFingerprint(secret)
+}
+
+func secretFingerprint(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return fmt.Sprintf("%x", sum[:])[:12]
 }
 
 // defaultConfigPath returns the most likely config file path.
