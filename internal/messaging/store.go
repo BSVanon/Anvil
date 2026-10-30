@@ -2,158 +2,191 @@ package messaging
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"sync/atomic"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/store"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
-var (
-	prefixMsg = []byte("msg:") // msg:<recipient>:<messageId> → Message JSON
+const (
+	MaxMessageBoxBytes  = 128
+	MaxMessageBodyBytes = 1 << 20
+	expiryChunkSize     = 10000
 )
 
-// Message is a point-to-point message between two identities.
+var (
+	ErrInvalidRecipient    = errors.New("invalid recipient public key")
+	ErrInvalidSender       = errors.New("invalid sender public key")
+	ErrInvalidMessageID    = errors.New("invalid message ID")
+	ErrInvalidMessageBox   = errors.New("messageBox required")
+	ErrMessageBoxTooLarge  = errors.New("messageBox exceeds 128 bytes")
+	ErrMessageBodyTooLarge = errors.New("message body exceeds 1 MiB")
+	ErrInvalidMessageBody  = errors.New("message body required")
+	ErrPairQuota           = errors.New("sender-recipient quota exceeded")
+	ErrInboxQuota          = errors.New("recipient inbox quota exceeded")
+	ErrStoreFull           = errors.New("node message store full")
+)
+
+// Message is the gossip wire type. Storage-only fields must never be added here.
 type Message struct {
 	MessageID  string `json:"messageId"`
-	Sender     string `json:"sender"`     // compressed pubkey hex
-	Recipient  string `json:"recipient"`  // compressed pubkey hex
-	MessageBox string `json:"messageBox"` // named box (e.g., "inbox", "payment_inbox")
-	Body       string `json:"body"`       // opaque content
-	Timestamp  int64  `json:"timestamp"`  // unix seconds
+	Sender     string `json:"sender"`
+	Recipient  string `json:"recipient"`
+	MessageBox string `json:"messageBox"`
+	Body       string `json:"body"`
+	Timestamp  int64  `json:"timestamp"`
 }
 
-// OnMessage is called after a message is stored (Send or Deliver).
-// Used by the API layer to push SSE notifications.
-type OnMessage func(msg *Message)
+// StoredMessage is the list/SSE view. ReceivedAt is deliberately omitted from JSON.
+type StoredMessage struct {
+	Message
+	AttestedBy string `json:"senderAttestedBy"`
+	ReceivedAt int64  `json:"-"`
+}
 
-// Store manages point-to-point messages in LevelDB.
-// Messages are keyed by recipient pubkey + auto-incrementing ID.
+type diskRecord struct {
+	Message
+	AttestedBy string `json:"senderAttestedBy"`
+	ReceivedAt int64  `json:"receivedAt"`
+}
+
+type Options struct {
+	TTLSeconds       int64
+	MaxPairMessages  int64
+	MaxPairBytes     int64
+	MaxInboxMessages int64
+	MaxInboxBytes    int64
+	MaxStoreMessages int64
+	MaxStoreBytes    int64
+}
+
 type Store struct {
-	db            *leveldb.DB
-	nextID        atomic.Int64
-	ttl           time.Duration // auto-expire unacknowledged messages (0 = no expiry)
-	onMessage     OnMessage     // optional callback for SSE notifications
-	onListIterate func()        // test hook called for every message examined by ListN
+	db   *leveldb.DB
+	opts Options
+
+	writeMu sync.Mutex
+	seq     uint64
+	now     func() time.Time
+
+	callbackMu      sync.RWMutex
+	onMessage       func(*Message)
+	onStoredMessage func(*StoredMessage)
+	onListIterate   func()
 }
 
-// NewStore opens or creates a message store.
-func NewStore(path string, ttlSeconds int) (*Store, error) {
+func NewStore(path string, opts Options) (*Store, error) {
 	db, err := store.OpenWithRecover(path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open message store: %w", err)
 	}
-
-	s := &Store{
-		db:  db,
-		ttl: time.Duration(ttlSeconds) * time.Second,
+	s := &Store{db: db, opts: normalizeOptions(opts), now: time.Now}
+	if s.seq, err = readUint64(db, keyMetaSeq); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("read message sequence: %w", err)
 	}
-
-	// Seed next ID from existing messages.
-	s.nextID.Store(s.highWaterMark() + 1)
+	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
-// SetOnMessage sets the callback invoked after each stored message.
-func (s *Store) SetOnMessage(fn OnMessage) {
+// SetOnMessage is retained for the existing API constructor.
+func (s *Store) SetOnMessage(fn func(*Message)) {
+	s.callbackMu.Lock()
 	s.onMessage = fn
+	s.onStoredMessage = nil
+	s.callbackMu.Unlock()
 }
 
-// Close closes the underlying LevelDB.
-func (s *Store) Close() error {
-	return s.db.Close()
+// SetOnStoredMessage preserves sender attestation in notifications.
+func (s *Store) SetOnStoredMessage(fn func(*StoredMessage)) {
+	s.callbackMu.Lock()
+	s.onStoredMessage = fn
+	s.onMessage = nil
+	s.callbackMu.Unlock()
 }
 
-// Send stores a message for the recipient. Returns the assigned message ID.
-func (s *Store) Send(msg *Message) (string, error) {
-	if msg.Recipient == "" {
-		return "", fmt.Errorf("recipient required")
-	}
-	if msg.MessageBox == "" {
-		return "", fmt.Errorf("messageBox required")
-	}
-	if msg.Body == "" {
-		return "", fmt.Errorf("body required")
-	}
+func (s *Store) Close() error { return s.db.Close() }
 
-	id := s.nextID.Add(1)
-	msg.MessageID = fmt.Sprintf("%d", id)
+func (s *Store) Send(msg *Message, originNode string) (string, error) {
+	if err := validateMessage(msg, false); err != nil {
+		return "", err
+	}
+	originNode = strings.ToLower(originNode)
+	if _, err := parseCompressedKey(originNode); err != nil {
+		return "", fmt.Errorf("invalid origin node: %w", err)
+	}
+	msg.Recipient = strings.ToLower(msg.Recipient)
 	if msg.Timestamp == 0 {
-		msg.Timestamp = time.Now().Unix()
+		msg.Timestamp = s.now().Unix()
 	}
-
-	data, err := json.Marshal(msg)
+	id, err := NewMessageID(msg, originNode)
 	if err != nil {
-		return "", fmt.Errorf("marshal message: %w", err)
+		return "", err
 	}
-
-	key := s.messageKey(msg.Recipient, msg.MessageID)
-	if err := s.db.Put(key, data, nil); err != nil {
-		return "", fmt.Errorf("store message: %w", err)
+	msg.MessageID = id
+	record := &StoredMessage{Message: *msg, AttestedBy: "local", ReceivedAt: s.now().Unix()}
+	if err := s.insert(record, true); err != nil {
+		return "", err
 	}
-	if s.onMessage != nil {
-		s.onMessage(msg)
-	}
-	return msg.MessageID, nil
+	s.notify(record)
+	return id, nil
 }
 
-// Deliver stores a message with a pre-assigned MessageID (from another node).
-// Used for forwarded messages where the ID must be stable across hops.
-// Returns false if the message already exists (dedup).
-func (s *Store) Deliver(msg *Message) (bool, error) {
-	if msg.MessageID == "" || msg.Recipient == "" || msg.Body == "" {
-		return false, fmt.Errorf("messageID, recipient, and body required")
+func (s *Store) Deliver(msg *Message, attestedBy string) (bool, error) {
+	if msg == nil || msg.MessageID == "" {
+		return false, errors.New("messageID required")
 	}
-
-	key := s.messageKey(msg.Recipient, msg.MessageID)
-
-	// Dedup: don't overwrite existing messages with the same ID.
-	if ok, _ := s.db.Has(key, nil); ok {
-		return false, nil
+	if err := validateDeliveryEnvelope(msg); err != nil {
+		return false, err
 	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return false, fmt.Errorf("marshal message: %w", err)
+	if err := validateMessage(msg, false); err != nil {
+		return false, err
 	}
-	if err := s.db.Put(key, data, nil); err != nil {
-		return false, fmt.Errorf("store message: %w", err)
+	stored := *msg
+	stored.Recipient = strings.ToLower(stored.Recipient)
+	record := &StoredMessage{
+		Message: stored, AttestedBy: strings.ToLower(attestedBy), ReceivedAt: s.now().Unix(),
 	}
-	if s.onMessage != nil {
-		s.onMessage(msg)
+	inserted, err := s.insertIfAbsent(record, true)
+	if err != nil || !inserted {
+		return inserted, err
 	}
+	s.notify(record)
 	return true, nil
 }
 
-// List returns every message for a recipient in a given message box.
-// Results are in LevelDB key order, matching the historical behavior.
-func (s *Store) List(recipient, messageBox string) ([]*Message, error) {
+func (s *Store) List(recipient, messageBox string) ([]*StoredMessage, error) {
 	return s.ListN(recipient, messageBox, 0)
 }
 
-// ListN returns up to limit messages for a recipient in a given message box.
-// A limit of zero returns every message. Results are in LevelDB key order.
-func (s *Store) ListN(recipient, messageBox string, limit int) ([]*Message, error) {
-	prefix := append(append([]byte{}, prefixMsg...), []byte(recipient+":")...)
-
-	var results []*Message
-	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
+func (s *Store) ListN(recipient, messageBox string, limit int) ([]*StoredMessage, error) {
+	recipient, err := normalizeRecipient(recipient)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateMessageBox(messageBox); err != nil {
+		return nil, err
+	}
+	results := make([]*StoredMessage, 0)
+	iter := s.db.NewIterator(util.BytesPrefix(primaryPrefix(recipient, messageBox)), nil)
 	defer iter.Release()
-
 	for iter.Next() {
 		if s.onListIterate != nil {
 			s.onListIterate()
 		}
-		var msg Message
-		if err := json.Unmarshal(iter.Value(), &msg); err != nil {
+		record, err := decodeRecord(iter.Value())
+		if err != nil || record.Recipient != recipient || record.MessageBox != messageBox {
 			continue
 		}
-		if msg.MessageBox != messageBox {
-			continue
-		}
-		results = append(results, &msg)
+		results = append(results, record)
 		if limit > 0 && len(results) >= limit {
 			break
 		}
@@ -164,79 +197,158 @@ func (s *Store) ListN(recipient, messageBox string, limit int) ([]*Message, erro
 	return results, nil
 }
 
-// Acknowledge deletes messages by ID for a given recipient.
-// Returns the number of messages deleted.
-func (s *Store) Acknowledge(recipient string, messageIDs []string) (int, error) {
+func (s *Store) Acknowledge(recipient string, ids []string) (int, error) {
+	recipient, err := normalizeRecipient(recipient)
+	if err != nil {
+		return 0, err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	deleted := 0
-	for _, id := range messageIDs {
-		key := s.messageKey(recipient, id)
-		if ok, _ := s.db.Has(key, nil); ok {
-			if err := s.db.Delete(key, nil); err != nil {
-				return deleted, fmt.Errorf("delete message %s: %w", id, err)
-			}
+	for _, id := range ids {
+		primary, err := s.db.Get(indexKey(recipient, id), nil)
+		if errors.Is(err, leveldb.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return deleted, fmt.Errorf("read message index: %w", err)
+		}
+		if ok, err := s.deletePrimaryLocked(primary); err != nil {
+			return deleted, err
+		} else if ok {
 			deleted++
 		}
 	}
 	return deleted, nil
 }
 
-// ExpireOld removes messages older than the configured TTL.
-// Call periodically. Returns the number expired.
 func (s *Store) ExpireOld() int {
-	if s.ttl <= 0 {
+	cutoff := s.now().Unix() - s.opts.TTLSeconds
+	expired := 0
+	for {
+		expiryKeys, primaries := s.expiredKeys(cutoff, expiryChunkSize)
+		if len(expiryKeys) == 0 {
+			return expired
+		}
+		processed := 0
+		s.writeMu.Lock()
+		for i, primary := range primaries {
+			ok, err := s.deletePrimaryLocked(primary)
+			if err != nil {
+				continue
+			}
+			if ok {
+				expired++
+				processed++
+				continue
+			}
+			batch := new(leveldb.Batch)
+			batch.Delete(expiryKeys[i])
+			if s.db.Write(batch, nil) == nil {
+				processed++
+			}
+		}
+		s.writeMu.Unlock()
+		if processed == 0 {
+			return expired
+		}
+	}
+}
+
+func (s *Store) Count() int {
+	c, err := readCounter(s.db, keyNodeCounter)
+	if err != nil {
 		return 0
 	}
-	cutoff := time.Now().Add(-s.ttl).Unix()
-
-	var toDelete [][]byte
-	iter := s.db.NewIterator(util.BytesPrefix(prefixMsg), nil)
-	for iter.Next() {
-		var msg Message
-		if err := json.Unmarshal(iter.Value(), &msg); err != nil {
-			continue
-		}
-		if msg.Timestamp < cutoff {
-			keyCopy := make([]byte, len(iter.Key()))
-			copy(keyCopy, iter.Key())
-			toDelete = append(toDelete, keyCopy)
-		}
-	}
-	iter.Release()
-
-	for _, k := range toDelete {
-		_ = s.db.Delete(k, nil)
-	}
-	return len(toDelete)
+	return int(c.Count)
 }
 
-// Count returns the total number of messages stored.
-func (s *Store) Count() int {
-	count := 0
-	iter := s.db.NewIterator(util.BytesPrefix(prefixMsg), nil)
-	for iter.Next() {
-		count++
+func validateMessage(msg *Message, migration bool) error {
+	if msg == nil {
+		return errors.New("message required")
 	}
-	iter.Release()
-	return count
-}
-
-func (s *Store) messageKey(recipient, messageID string) []byte {
-	return append(append([]byte{}, prefixMsg...), []byte(recipient+":"+messageID)...)
-}
-
-func (s *Store) highWaterMark() int64 {
-	var max int64
-	iter := s.db.NewIterator(util.BytesPrefix(prefixMsg), nil)
-	defer iter.Release()
-	for iter.Next() {
-		var msg Message
-		if err := json.Unmarshal(iter.Value(), &msg); err != nil {
-			continue
+	if !migration {
+		if _, err := normalizeRecipient(msg.Recipient); err != nil {
+			return err
 		}
-		var id int64
-		if _, err := fmt.Sscanf(msg.MessageID, "%d", &id); err == nil && id > max {
-			max = id
+		if err := validateMessageBox(msg.MessageBox); err != nil {
+			return err
 		}
 	}
-	return max
+	if msg.Body == "" {
+		return ErrInvalidMessageBody
+	}
+	if len(msg.Body) > MaxMessageBodyBytes {
+		return ErrMessageBodyTooLarge
+	}
+	return nil
+}
+
+func validateMessageBox(box string) error {
+	if box == "" {
+		return ErrInvalidMessageBox
+	}
+	if len(box) > MaxMessageBoxBytes {
+		return ErrMessageBoxTooLarge
+	}
+	return nil
+}
+
+func validateDeliveryEnvelope(msg *Message) error {
+	if _, err := parseCompressedKey(msg.Sender); err != nil {
+		return ErrInvalidSender
+	}
+	if len(msg.MessageID) > 128 {
+		return ErrInvalidMessageID
+	}
+	for i := 0; i < len(msg.MessageID); i++ {
+		if msg.MessageID[i] < 0x21 || msg.MessageID[i] > 0x7e {
+			return ErrInvalidMessageID
+		}
+	}
+	return nil
+}
+
+func normalizeRecipient(recipient string) (string, error) {
+	recipient = strings.ToLower(recipient)
+	if _, err := parseCompressedKey(recipient); err != nil {
+		return "", ErrInvalidRecipient
+	}
+	return recipient, nil
+}
+
+func parseCompressedKey(value string) (*ec.PublicKey, error) {
+	if len(value) != 66 {
+		return nil, ErrInvalidRecipient
+	}
+	b, err := decodeHex(value)
+	if err != nil || len(b) != 33 || (b[0] != 2 && b[0] != 3) {
+		return nil, ErrInvalidRecipient
+	}
+	return ec.PublicKeyFromBytes(b)
+}
+
+func encodeRecord(record *StoredMessage) ([]byte, error) {
+	return json.Marshal(diskRecord{Message: record.Message, AttestedBy: record.AttestedBy, ReceivedAt: record.ReceivedAt})
+}
+
+func decodeRecord(data []byte) (*StoredMessage, error) {
+	var record diskRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, err
+	}
+	return &StoredMessage{Message: record.Message, AttestedBy: record.AttestedBy, ReceivedAt: record.ReceivedAt}, nil
+}
+
+func (s *Store) notify(record *StoredMessage) {
+	s.callbackMu.RLock()
+	storedFn, legacyFn := s.onStoredMessage, s.onMessage
+	s.callbackMu.RUnlock()
+	view := *record
+	if storedFn != nil {
+		storedFn(&view)
+	} else if legacyFn != nil {
+		msg := record.Message
+		legacyFn(&msg)
+	}
 }

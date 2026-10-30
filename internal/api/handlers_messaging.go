@@ -24,7 +24,10 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// JSON escaping can make a valid 1 MiB decoded body substantially larger on
+	// the wire. Bound the request at the worst-case escape expansion, then apply
+	// the exact decoded-body limit in messaging.Store.
+	body, err := io.ReadAll(io.LimitReader(r.Body, 6*messaging.MaxMessageBodyBytes+(64<<10)))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to read body")
 		return
@@ -40,10 +43,6 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Recipient) != 66 {
-		writeError(w, http.StatusBadRequest, "recipient must be 66-char compressed pubkey hex")
-		return
-	}
 	// Sender is the authenticated caller: their own identity under BRC-31, or
 	// the node identity under the operator-token fallback. Either way the
 	// forwarded message is signed by the node, so the hop is verifiable.
@@ -56,9 +55,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		Body:       req.Body,
 	}
 
-	id, err := s.msgStore.Send(msg)
+	id, err := s.msgStore.Send(msg, s.identityPub)
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("send failed: %v", err))
+		writeMessagingError(w, err, http.StatusUnprocessableEntity)
 		return
 	}
 
@@ -105,13 +104,17 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.MessageBox == "" {
-		writeError(w, http.StatusBadRequest, "messageBox required")
+		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGEBOX", "Invalid message box.")
+		return
+	}
+	if len(req.MessageBox) > messaging.MaxMessageBoxBytes {
+		writeCodedError(w, http.StatusBadRequest, "ERR_MESSAGEBOX_TOO_LARGE", "Message box names must not exceed 128 bytes.")
 		return
 	}
 	limit := 0
 	if len(req.Limit) != 0 {
 		if err := json.Unmarshal(req.Limit, &limit); err != nil || limit < 0 {
-			writeError(w, http.StatusBadRequest, "limit must be a non-negative integer")
+			writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_LIMIT", "limit must be a non-negative integer")
 			return
 		}
 	}
@@ -122,7 +125,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 
 	msgs, err := s.msgStore.ListN(recipient, req.MessageBox, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("list failed: %v", err))
+		writeMessagingError(w, err, http.StatusInternalServerError)
 		return
 	}
 
@@ -162,14 +165,18 @@ func (s *Server) handleAcknowledgeMessage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(req.MessageIDs) == 0 {
-		writeError(w, http.StatusBadRequest, "messageIds required")
+		writeCodedError(w, http.StatusBadRequest, "ERR_MESSAGE_ID_REQUIRED", "Please provide the ID of the message(s) to acknowledge!")
+		return
+	}
+	if len(req.MessageIDs) > 1000 {
+		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGE_ID", "Message IDs must be an array of at most 1000 non-empty strings.")
 		return
 	}
 	recipient := s.scopedRecipient(caller, req.Recipient)
 
 	n, err := s.msgStore.Acknowledge(recipient, req.MessageIDs)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("acknowledge failed: %v", err))
+		writeMessagingError(w, err, http.StatusInternalServerError)
 		return
 	}
 

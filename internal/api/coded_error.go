@@ -1,0 +1,44 @@
+package api
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/BSVanon/Anvil/internal/messaging"
+)
+
+type codedError struct {
+	Status      string `json:"status"`
+	Code        string `json:"code"`
+	Description string `json:"description"`
+	Error       string `json:"error"`
+}
+
+func writeCodedError(w http.ResponseWriter, status int, code, description string) {
+	writeJSON(w, status, codedError{
+		Status: "error", Code: code, Description: description, Error: description,
+	})
+}
+
+func writeMessagingError(w http.ResponseWriter, err error, fallbackStatus int) {
+	switch {
+	case errors.Is(err, messaging.ErrInvalidRecipient):
+		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_RECIPIENT_KEY", "Recipient must be a valid compressed secp256k1 public key.")
+	case errors.Is(err, messaging.ErrInvalidMessageBox):
+		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGEBOX", "Invalid message box.")
+	case errors.Is(err, messaging.ErrMessageBoxTooLarge):
+		writeCodedError(w, http.StatusBadRequest, "ERR_MESSAGEBOX_TOO_LARGE", "Message box names must not exceed 128 bytes.")
+	case errors.Is(err, messaging.ErrInvalidMessageBody):
+		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGE_BODY", "Invalid message body.")
+	case errors.Is(err, messaging.ErrMessageBodyTooLarge):
+		writeCodedError(w, http.StatusRequestEntityTooLarge, "ERR_MESSAGE_BODY_TOO_LARGE", "Message bodies must not exceed 1048576 bytes.")
+	case errors.Is(err, messaging.ErrPairQuota):
+		writeCodedError(w, http.StatusTooManyRequests, "ERR_SENDER_QUOTA_EXCEEDED", "Sender quota exceeded for this recipient.")
+	case errors.Is(err, messaging.ErrInboxQuota):
+		writeCodedError(w, http.StatusTooManyRequests, "ERR_INBOX_QUOTA_EXCEEDED", "Recipient inbox quota exceeded.")
+	case errors.Is(err, messaging.ErrStoreFull):
+		writeCodedError(w, http.StatusTooManyRequests, "ERR_NODE_STORE_FULL", "Node message store is full.")
+	default:
+		writeCodedError(w, fallbackStatus, "ERR_MESSAGEBOX_OPERATION_FAILED", err.Error())
+	}
+}

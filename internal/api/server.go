@@ -880,8 +880,8 @@ func (s *Server) NotifyEnvelope(env *envelope.Envelope) {
 
 // NotifyMessage pushes a message to SSE subscribers on its recipient+messageBox.
 // Called by the gossip onMessage callback for mesh-forwarded messages.
-func (s *Server) NotifyMessage(msg *messaging.Message) {
-	s.msgHub.notify(msg)
+func (s *Server) NotifyMessage(msg *messaging.StoredMessage) {
+	s.msgHub.notifyStored(msg)
 }
 func (s *Server) Mux() *http.ServeMux { return s.mux }
 

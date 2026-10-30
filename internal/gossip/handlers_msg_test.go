@@ -65,7 +65,7 @@ func TestForward_OriginNodeAttestation_RoundTrip(t *testing.T) {
 
 	// Node B receives and delivers it.
 	mgrB := NewManager(ManagerConfig{Logger: slog.Default()})
-	ms, err := messaging.NewStore(t.TempDir(), 86400)
+	ms, err := messaging.NewStore(t.TempDir(), messaging.Options{TTLSeconds: 86400})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +86,9 @@ func TestForward_OriginNodeAttestation_RoundTrip(t *testing.T) {
 	}
 	if got[0].Sender != aliceHex {
 		t.Errorf("delivered sender must be the BRC-31 user %s, got %s", aliceHex, got[0].Sender)
+	}
+	if got[0].AttestedBy != fwd.OriginNode {
+		t.Errorf("attestation = %q, want %q", got[0].AttestedBy, fwd.OriginNode)
 	}
 }
 

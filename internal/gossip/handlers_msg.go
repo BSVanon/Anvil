@@ -5,12 +5,24 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 
 	"github.com/BSVanon/Anvil/internal/messaging"
 )
+
+type messageQuotaDropState struct {
+	mu       sync.Mutex
+	dropped  int
+	lastWarn time.Time
+}
+
+var messageQuotaDrops sync.Map
 
 // MsgForwardPayload carries a point-to-point message for cross-node delivery.
 //
@@ -119,7 +131,24 @@ func (m *Manager) ForwardMessage(msg *messaging.Message) {
 	if msg == nil {
 		return
 	}
+	fwd := m.signedForwardPayload(msg)
+	payload, err := Encode(MsgForward, fwd)
+	if err != nil {
+		m.logger.Warn("failed to encode message forward", "error", err)
+		return
+	}
 
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, peer := range m.peers {
+		if peer.Peer != nil {
+			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
+		}
+	}
+}
+
+func (m *Manager) signedForwardPayload(msg *messaging.Message) MsgForwardPayload {
 	// This node authenticated the sender (BRC-31) and attests it: OriginNode is
 	// our identity, and we sign over (OriginNode + Sender + content).
 	var sigHex, originNode string
@@ -133,24 +162,10 @@ func (m *Manager) ForwardMessage(msg *messaging.Message) {
 			sigHex = hex.EncodeToString(sig.Serialize())
 		}
 	}
-
-	payload, err := Encode(MsgForward, MsgForwardPayload{
+	return MsgForwardPayload{
 		Message:    *msg,
 		Signature:  sigHex,
 		OriginNode: originNode,
-	})
-	if err != nil {
-		m.logger.Warn("failed to encode message forward", "error", err)
-		return
-	}
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, peer := range m.peers {
-		if peer.Peer != nil {
-			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
-		}
 	}
 }
 
@@ -190,18 +205,18 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	}
 
 	msg := &fwd.Message
-	if msg.Recipient == "" || msg.Body == "" || msg.MessageID == "" {
+	if msg.Sender == "" || msg.Recipient == "" || msg.MessageBox == "" || msg.Body == "" || msg.MessageID == "" {
 		return nil
 	}
 
-	// Dedup: use message ID as seen key to prevent loops.
+	// Check for an already-authenticated duplicate, but do not mark this ID yet.
+	// Invalid forwards must never be able to suppress a later legitimate one.
 	dedup := "msg:" + msg.MessageID
 	m.seenMu.Lock()
 	if _, seen := m.seen[dedup]; seen {
 		m.seenMu.Unlock()
 		return nil
 	}
-	m.seen[dedup] = struct{}{}
 	m.seenMu.Unlock()
 
 	// Require and verify the forward signature. v3.2.0+ forwards are signed by
@@ -214,19 +229,54 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	}
 	if !verifyForwardSignature(&fwd) {
 		m.logger.Warn("forwarded message signature invalid",
-			"sender", msg.Sender[:16], "recipient", msg.Recipient[:16])
+			"sender", msg.Sender, "recipient", msg.Recipient)
 		return nil
 	}
+	if messaging.IsV2MessageID(msg.MessageID) && !messaging.VerifyMessageID(msg, fwd.OriginNode) {
+		m.logger.Warn("forwarded message ID binding invalid", "id", msg.MessageID)
+		return nil
+	}
+
+	// Mark seen only after both the unchanged forward signature and the v2 ID
+	// binding have verified. Re-check while holding the lock for concurrent peers.
+	m.seenMu.Lock()
+	if _, seen := m.seen[dedup]; seen {
+		m.seenMu.Unlock()
+		return nil
+	}
+	m.seen[dedup] = struct{}{}
+	if len(m.seen) >= m.maxSeen {
+		removed := 0
+		for key := range m.seen {
+			if key == dedup {
+				continue
+			}
+			delete(m.seen, key)
+			removed++
+			if removed >= m.maxSeen/2 {
+				break
+			}
+		}
+	}
+	m.seenMu.Unlock()
 
 	// Store using Deliver (preserves original MessageID) — only if we
 	// have a message store. Every node stores forwarded messages so the
 	// recipient can query any node they're connected to.
 	if m.msgStore != nil {
-		if ok, err := m.msgStore.Deliver(msg); err != nil {
-			m.logger.Debug("forwarded message store failed", "error", err)
+		attestedBy := "sender"
+		if fwd.OriginNode != "" {
+			attestedBy = strings.ToLower(fwd.OriginNode)
+		}
+		if ok, err := m.msgStore.Deliver(msg, attestedBy); err != nil {
+			if errors.Is(err, messaging.ErrPairQuota) || errors.Is(err, messaging.ErrInboxQuota) || errors.Is(err, messaging.ErrStoreFull) {
+				m.logMessageQuotaDrop(err)
+			} else {
+				m.logger.Debug("forwarded message store failed", "error", err)
+			}
 		} else if ok {
 			m.logger.Debug("forwarded message delivered",
-				"id", msg.MessageID, "recipient", msg.Recipient[:16])
+				"id", msg.MessageID, "recipient", msg.Recipient)
 		}
 	}
 
@@ -247,6 +297,29 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	m.mu.RUnlock()
 
 	return nil
+}
+
+func (m *Manager) logMessageQuotaDrop(err error) {
+	reason := "node_store_full"
+	switch {
+	case errors.Is(err, messaging.ErrPairQuota):
+		reason = "sender_quota"
+	case errors.Is(err, messaging.ErrInboxQuota):
+		reason = "inbox_quota"
+	}
+	key := fmt.Sprintf("%p:%s", m, reason)
+	value, _ := messageQuotaDrops.LoadOrStore(key, &messageQuotaDropState{})
+	state := value.(*messageQuotaDropState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.dropped++
+	now := time.Now()
+	if !state.lastWarn.IsZero() && now.Sub(state.lastWarn) < time.Minute {
+		return
+	}
+	m.logger.Warn("forwarded message dropped by storage quota", "reason", reason, "dropped", state.dropped)
+	state.dropped = 0
+	state.lastWarn = now
 }
 
 // SetMsgStore sets the message store for forwarded message delivery.

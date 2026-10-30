@@ -245,12 +245,20 @@ func main() {
 
 	// Point-to-point messaging (BRC-33)
 	msgDir := filepath.Join(cfg.Node.DataDir, "messages")
-	msgStore, err := anvilmsg.NewStore(msgDir, 7*24*3600) // 7-day TTL
+	msgStore, err := anvilmsg.NewStore(msgDir, anvilmsg.Options{
+		TTLSeconds:       cfg.Messaging.TTLSeconds,
+		MaxPairMessages:  cfg.Messaging.MaxPairMessages,
+		MaxPairBytes:     cfg.Messaging.MaxPairBytes,
+		MaxInboxMessages: cfg.Messaging.MaxInboxMessages,
+		MaxInboxBytes:    cfg.Messaging.MaxInboxBytes,
+		MaxStoreMessages: cfg.Messaging.MaxStoreMessages,
+		MaxStoreBytes:    cfg.Messaging.MaxStoreBytes,
+	})
 	if err != nil {
 		log.Fatalf("message store: %v", err)
 	}
 	defer msgStore.Close()
-	log.Printf("message store opened (7-day TTL)")
+	log.Printf("message store opened (TTL %ds)", cfg.Messaging.TTLSeconds)
 
 	// Periodic message expiry (demand decay added after gossipMgr init)
 	go func() {
@@ -881,6 +889,7 @@ func main() {
 		},
 		CustomCapabilities: cfg.Capabilities.Custom,
 	})
+	msgStore.SetOnStoredMessage(srv.NotifyMessage)
 
 	if nodeWallet != nil {
 		nodeWallet.RegisterRoutes(srv.Mux(), srv.RequireAuth)

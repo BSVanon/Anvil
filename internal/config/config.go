@@ -23,6 +23,7 @@ type Config struct {
 	JungleBus    JungleBusConfig    `toml:"junglebus"`
 	Overlay      OverlayConfig      `toml:"overlay"`
 	Envelopes    EnvelopeConfig     `toml:"envelopes"`
+	Messaging    MessagingConfig    `toml:"messaging"`
 	Mempool      MempoolConfig      `toml:"mempool"`
 	API          APIConfig          `toml:"api"`
 	Capabilities CapabilitiesConfig `toml:"capabilities"`
@@ -318,6 +319,16 @@ type EnvelopeConfig struct {
 	WarnAtPercent     int `toml:"warn_at_percent"`
 }
 
+type MessagingConfig struct {
+	TTLSeconds       int64 `toml:"ttl_seconds"`
+	MaxPairMessages  int64 `toml:"max_pair_messages"`
+	MaxPairBytes     int64 `toml:"max_pair_bytes"`
+	MaxStoreMessages int64 `toml:"max_store_messages"`
+	MaxStoreBytes    int64 `toml:"max_store_bytes"`
+	MaxInboxMessages int64 `toml:"max_inbox_messages"`
+	MaxInboxBytes    int64 `toml:"max_inbox_bytes"`
+}
+
 type APIConfig struct {
 	AuthToken           string           `toml:"auth_token"`
 	TLSCert             string           `toml:"tls_cert"`
@@ -411,6 +422,13 @@ func Load(path string) (*Config, error) {
 			MaxDurableStoreMB: 10240,
 			WarnAtPercent:     80,
 		},
+		Messaging: MessagingConfig{
+			TTLSeconds:       604800,
+			MaxPairMessages:  1000,
+			MaxPairBytes:     64 << 20,
+			MaxStoreMessages: 1000000,
+			MaxStoreBytes:    2 << 30,
+		},
 		API: APIConfig{
 			RateLimit:           100,
 			TrustProxyHops:      1,
@@ -440,6 +458,27 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.BSV.HeaderStaleAfterSecs == 0 {
 		cfg.BSV.HeaderStaleAfterSecs = defaultHeaderStaleAfterSecs
+	}
+	if cfg.Messaging.TTLSeconds <= 0 {
+		cfg.Messaging.TTLSeconds = 604800
+	}
+	if cfg.Messaging.MaxPairMessages <= 0 {
+		cfg.Messaging.MaxPairMessages = 1000
+	}
+	if cfg.Messaging.MaxPairBytes <= 0 {
+		cfg.Messaging.MaxPairBytes = 64 << 20
+	}
+	if cfg.Messaging.MaxStoreMessages <= 0 {
+		cfg.Messaging.MaxStoreMessages = 1000000
+	}
+	if cfg.Messaging.MaxStoreBytes <= 0 {
+		cfg.Messaging.MaxStoreBytes = 2 << 30
+	}
+	if cfg.Messaging.MaxInboxMessages < 0 {
+		cfg.Messaging.MaxInboxMessages = 0
+	}
+	if cfg.Messaging.MaxInboxBytes < 0 {
+		cfg.Messaging.MaxInboxBytes = 0
 	}
 
 	// Merge deprecated [foundry] into [mesh] for backward compatibility

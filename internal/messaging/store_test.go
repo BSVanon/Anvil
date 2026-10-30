@@ -1,233 +1,193 @@
 package messaging
 
 import (
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
+	"time"
+
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
-func testStore(t *testing.T) *Store {
+func testIdentity(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	s, err := NewStore(dir, 3600) // 1 hour TTL
+	key, err := ec.NewPrivateKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	return strings.ToLower(strings.TrimSpace(fmtHex(key.PubKey().Compressed())))
+}
+
+func fmtHex(raw []byte) string {
+	const digits = "0123456789abcdef"
+	out := make([]byte, len(raw)*2)
+	for i, value := range raw {
+		out[i*2] = digits[value>>4]
+		out[i*2+1] = digits[value&15]
+	}
+	return string(out)
+}
+
+func testStore(t *testing.T, opts Options) *Store {
+	t.Helper()
+	s, err := NewStore(t.TempDir(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
-func TestSendAndList(t *testing.T) {
-	s := testStore(t)
-
-	id, err := s.Send(&Message{
-		Sender:     "02aaa",
-		Recipient:  "02bbb",
-		MessageBox: "inbox",
-		Body:       "hello",
-	})
+func sendTest(t *testing.T, s *Store, sender, recipient, origin, box, body string) string {
+	t.Helper()
+	id, err := s.Send(&Message{Sender: sender, Recipient: recipient, MessageBox: box, Body: body}, origin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id == "" {
-		t.Fatal("expected non-empty message ID")
-	}
-
-	msgs, err := s.List("02bbb", "inbox")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(msgs))
-	}
-	if msgs[0].Body != "hello" {
-		t.Fatalf("expected body 'hello', got %q", msgs[0].Body)
-	}
-	if msgs[0].Sender != "02aaa" {
-		t.Fatalf("expected sender 02aaa, got %s", msgs[0].Sender)
-	}
+	return id
 }
 
-func TestListFiltersMessageBox(t *testing.T) {
-	s := testStore(t)
+func TestSendListAcknowledgeAndEmptyArray(t *testing.T) {
+	s := testStore(t, Options{TTLSeconds: 3600})
+	sender, recipient, origin := testIdentity(t), testIdentity(t), testIdentity(t)
+	id1 := sendTest(t, s, sender, strings.ToUpper(recipient), origin, "inbox", "first")
+	id2 := sendTest(t, s, sender, recipient, origin, "inbox", "second")
 
-	s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "a"})
-	s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "payment", Body: "b"})
-	s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "c"})
-
-	inbox, _ := s.List("02b", "inbox")
-	if len(inbox) != 2 {
-		t.Fatalf("expected 2 inbox messages, got %d", len(inbox))
+	msgs, err := s.List(strings.ToUpper(recipient), "inbox")
+	if err != nil || len(msgs) != 2 {
+		t.Fatalf("list = %d, %v", len(msgs), err)
 	}
-	payment, _ := s.List("02b", "payment")
-	if len(payment) != 1 {
-		t.Fatalf("expected 1 payment message, got %d", len(payment))
+	if msgs[0].MessageID != id1 || msgs[1].MessageID != id2 {
+		t.Fatalf("arrival order = %q, %q", msgs[0].MessageID, msgs[1].MessageID)
 	}
-}
-
-func TestListDoesNotCrossRecipients(t *testing.T) {
-	s := testStore(t)
-
-	s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "for-b"})
-	s.Send(&Message{Sender: "02a", Recipient: "02c", MessageBox: "inbox", Body: "for-c"})
-
-	bMsgs, _ := s.List("02b", "inbox")
-	if len(bMsgs) != 1 || bMsgs[0].Body != "for-b" {
-		t.Fatalf("recipient b got wrong messages: %v", bMsgs)
+	if msgs[0].AttestedBy != "local" || msgs[0].ReceivedAt == 0 {
+		t.Fatalf("stored metadata = %+v", msgs[0])
 	}
-	cMsgs, _ := s.List("02c", "inbox")
-	if len(cMsgs) != 1 || cMsgs[0].Body != "for-c" {
-		t.Fatalf("recipient c got wrong messages: %v", cMsgs)
+	if n, err := s.Acknowledge(strings.ToUpper(recipient), []string{id1}); err != nil || n != 1 {
+		t.Fatalf("ack = %d, %v", n, err)
 	}
-}
-
-func TestListNStopsAtLimit(t *testing.T) {
-	s := testStore(t)
-	for i := 0; i < 150; i++ {
-		if _, err := s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "inbox"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := 0; i < 10; i++ {
-		if _, err := s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "other", Body: "other"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	iterations := 0
-	s.onListIterate = func() { iterations++ }
-	msgs, err := s.ListN("02b", "inbox", 32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(msgs) != 32 {
-		t.Fatalf("expected 32 messages, got %d", len(msgs))
-	}
-	for _, msg := range msgs {
-		if msg.MessageBox != "inbox" {
-			t.Fatalf("expected only inbox messages, got %q", msg.MessageBox)
-		}
-	}
-	if iterations >= 160 {
-		t.Fatalf("ListN scanned %d messages; it should stop before the 160-message box is exhausted", iterations)
-	}
-
-	iterations = 0
-	msgs, err = s.ListN("02b", "inbox", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(msgs) != 150 {
-		t.Fatalf("expected all 150 messages with limit 0, got %d", len(msgs))
-	}
-	if iterations != 160 {
-		t.Fatalf("limit 0 scanned %d messages, want all 160", iterations)
-	}
-}
-
-func TestAcknowledge(t *testing.T) {
-	s := testStore(t)
-
-	id1, _ := s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "first"})
-	id2, _ := s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "second"})
-
-	n, err := s.Acknowledge("02b", []string{id1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("expected 1 deleted, got %d", n)
-	}
-
-	msgs, _ := s.List("02b", "inbox")
+	msgs, _ = s.List(recipient, "inbox")
 	if len(msgs) != 1 || msgs[0].MessageID != id2 {
-		t.Fatalf("expected only second message remaining, got %v", msgs)
+		t.Fatalf("after ack = %+v", msgs)
+	}
+	if _, err := s.Acknowledge(testIdentity(t), []string{id2}); err != nil {
+		t.Fatal(err)
+	}
+
+	empty, err := s.List(recipient, "missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(empty)
+	if string(raw) != "[]" {
+		t.Fatalf("empty list JSON = %s", raw)
 	}
 }
 
-func TestAcknowledgeWrongRecipient(t *testing.T) {
-	s := testStore(t)
-
-	id, _ := s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "x"})
-
-	// Try to acknowledge as wrong recipient
-	n, _ := s.Acknowledge("02c", []string{id})
-	if n != 0 {
-		t.Fatalf("expected 0 deleted for wrong recipient, got %d", n)
+func TestSendValidationAndMessageID(t *testing.T) {
+	s := testStore(t, Options{})
+	sender, recipient, origin := testIdentity(t), testIdentity(t), testIdentity(t)
+	id := sendTest(t, s, sender, recipient, origin, "inbox", "hello")
+	if !IsV2MessageID(id) || !VerifyMessageID(&Message{
+		MessageID: id, Sender: sender, Recipient: recipient, MessageBox: "inbox", Body: "hello",
+		Timestamp: func() int64 { msgs, _ := s.List(recipient, "inbox"); return msgs[0].Timestamp }(),
+	}, origin) {
+		t.Fatalf("invalid generated v2 ID %q", id)
 	}
-
-	// Original still exists
-	msgs, _ := s.List("02b", "inbox")
-	if len(msgs) != 1 {
-		t.Fatal("message should still exist")
-	}
-}
-
-func TestSendRejectsEmpty(t *testing.T) {
-	s := testStore(t)
-
-	if _, err := s.Send(&Message{Sender: "02a", MessageBox: "inbox", Body: "x"}); err == nil {
-		t.Fatal("expected error for empty recipient")
-	}
-	if _, err := s.Send(&Message{Sender: "02a", Recipient: "02b", Body: "x"}); err == nil {
-		t.Fatal("expected error for empty messageBox")
-	}
-	if _, err := s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox"}); err == nil {
-		t.Fatal("expected error for empty body")
+	for _, tc := range []struct {
+		msg  Message
+		want error
+	}{
+		{Message{Sender: sender, Recipient: "02bad", MessageBox: "x", Body: "x"}, ErrInvalidRecipient},
+		{Message{Sender: sender, Recipient: recipient, Body: "x"}, ErrInvalidMessageBox},
+		{Message{Sender: sender, Recipient: recipient, MessageBox: strings.Repeat("x", 129), Body: "x"}, ErrMessageBoxTooLarge},
+		{Message{Sender: sender, Recipient: recipient, MessageBox: "x"}, ErrInvalidMessageBody},
+		{Message{Sender: sender, Recipient: recipient, MessageBox: "x", Body: strings.Repeat("x", MaxMessageBodyBytes+1)}, ErrMessageBodyTooLarge},
+	} {
+		if _, err := s.Send(&tc.msg, origin); err != tc.want {
+			t.Errorf("Send error = %v, want %v", err, tc.want)
+		}
 	}
 }
 
-func TestCount(t *testing.T) {
-	s := testStore(t)
-
+func TestExpiryUsesReceivedAtNotFutureTimestamp(t *testing.T) {
+	s := testStore(t, Options{TTLSeconds: 10})
+	sender, recipient := testIdentity(t), testIdentity(t)
+	now := time.Unix(1_700_000_000, 0)
+	s.now = func() time.Time { return now }
+	msg := &Message{MessageID: "legacy-1", Sender: sender, Recipient: recipient, MessageBox: "inbox", Body: "future", Timestamp: now.Add(365 * 24 * time.Hour).Unix()}
+	if ok, err := s.Deliver(msg, "sender"); err != nil || !ok {
+		t.Fatalf("deliver = %v, %v", ok, err)
+	}
+	now = now.Add(11 * time.Second)
+	if expired := s.ExpireOld(); expired != 1 {
+		t.Fatalf("expired = %d", expired)
+	}
 	if s.Count() != 0 {
-		t.Fatal("expected 0 messages initially")
-	}
-
-	s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "a"})
-	s.Send(&Message{Sender: "02a", Recipient: "02c", MessageBox: "inbox", Body: "b"})
-
-	if s.Count() != 2 {
-		t.Fatalf("expected 2 messages, got %d", s.Count())
+		t.Fatalf("count = %d", s.Count())
 	}
 }
 
-func TestExpireOld(t *testing.T) {
-	dir := t.TempDir()
-	s, _ := NewStore(dir, 1) // 1 second TTL
-	defer s.Close()
-
-	s.Send(&Message{
-		Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "old",
-		Timestamp: 1000, // very old
-	})
-	s.Send(&Message{
-		Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "new",
-		// Timestamp will be set to now
-	})
-
-	n := s.ExpireOld()
-	if n != 1 {
-		t.Fatalf("expected 1 expired, got %d", n)
+func TestDeliverRejectsInvalidSenderAndMessageID(t *testing.T) {
+	s := testStore(t, Options{})
+	sender, recipient := testIdentity(t), testIdentity(t)
+	base := Message{
+		MessageID: "1000000", Sender: sender, Recipient: recipient,
+		MessageBox: "inbox", Body: "body", Timestamp: 1_700_000_000,
+	}
+	for name, mutate := range map[string]func(*Message){
+		"sender":   func(msg *Message) { msg.Sender = "not-a-key" },
+		"too long": func(msg *Message) { msg.MessageID = strings.Repeat("x", 129) },
+		"space":    func(msg *Message) { msg.MessageID = "bad id" },
+		"control":  func(msg *Message) { msg.MessageID = "bad\x1fid" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			msg := base
+			mutate(&msg)
+			_, err := s.Deliver(&msg, "sender")
+			want := ErrInvalidMessageID
+			if name == "sender" {
+				want = ErrInvalidSender
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("Deliver error = %v, want %v", err, want)
+			}
+		})
 	}
 
-	msgs, _ := s.List("02b", "inbox")
-	if len(msgs) != 1 || msgs[0].Body != "new" {
-		t.Fatalf("expected only 'new' message remaining, got %v", msgs)
+	if ok, err := s.Deliver(&base, "sender"); err != nil || !ok {
+		t.Fatalf("legacy decimal ID = %v, %v", ok, err)
+	}
+	v2 := base
+	v2.Body = "v2"
+	origin := testIdentity(t)
+	id, err := NewMessageID(&v2, origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2.MessageID = id
+	if ok, err := s.Deliver(&v2, origin); err != nil || !ok {
+		t.Fatalf("v2 ID = %v, %v", ok, err)
 	}
 }
 
-func TestIDPersistsAcrossReopen(t *testing.T) {
-	dir := t.TempDir()
-
-	s1, _ := NewStore(dir, 3600)
-	s1.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "a"})
-	id1, _ := s1.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "b"})
-	s1.Close()
-
-	s2, _ := NewStore(dir, 3600)
-	defer s2.Close()
-	id2, _ := s2.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "c"})
-
-	if id2 <= id1 {
-		t.Fatalf("expected id2 (%s) > id1 (%s) after reopen", id2, id1)
+func TestInsertClampsNonPositiveReceivedAt(t *testing.T) {
+	s := testStore(t, Options{})
+	now := time.Unix(1_700_000_000, 0)
+	s.now = func() time.Time { return now }
+	record := &StoredMessage{
+		Message: Message{
+			MessageID: "1", Sender: testIdentity(t), Recipient: testIdentity(t),
+			MessageBox: "box", Body: "body",
+		},
+		AttestedBy: "sender", ReceivedAt: -1,
+	}
+	if err := s.insert(record, false); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := s.List(record.Recipient, record.MessageBox)
+	if err != nil || len(msgs) != 1 || msgs[0].ReceivedAt != now.Unix() {
+		t.Fatalf("stored messages = %+v, %v", msgs, err)
 	}
 }

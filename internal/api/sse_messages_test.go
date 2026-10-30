@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,9 +18,9 @@ import (
 func TestMessageHubFanout(t *testing.T) {
 	hub := newMessageHub()
 
-	chA := make(chan *messaging.Message, 4)
-	chB := make(chan *messaging.Message, 4)
-	chOther := make(chan *messaging.Message, 4)
+	chA := make(chan *messaging.StoredMessage, 4)
+	chB := make(chan *messaging.StoredMessage, 4)
+	chOther := make(chan *messaging.StoredMessage, 4)
 
 	unsubA := hub.subscribe("recipient-1", "avos.offer", chA)
 	unsubB := hub.subscribe("recipient-1", "avos.offer", chB)
@@ -68,8 +69,8 @@ func TestMessageHubNotifyDropsSlowClient(t *testing.T) {
 	hub := newMessageHub()
 
 	// Unbuffered channel — will block on any send
-	slowCh := make(chan *messaging.Message)
-	fastCh := make(chan *messaging.Message, 4)
+	slowCh := make(chan *messaging.StoredMessage)
+	fastCh := make(chan *messaging.StoredMessage, 4)
 
 	hub.subscribe("r", "box", slowCh)
 	hub.subscribe("r", "box", fastCh)
@@ -101,7 +102,7 @@ func TestMessageHubNotifyDropsSlowClient(t *testing.T) {
 // that channel.
 func TestMessageHubUnsubscribe(t *testing.T) {
 	hub := newMessageHub()
-	ch := make(chan *messaging.Message, 4)
+	ch := make(chan *messaging.StoredMessage, 4)
 	unsub := hub.subscribe("r", "box", ch)
 
 	unsub() // stop receiving
@@ -128,6 +129,24 @@ func TestMessageHubNextIDIsMonotonic(t *testing.T) {
 	}
 }
 
+func TestMessageHubStoredViewCarriesAttestation(t *testing.T) {
+	hub := newMessageHub()
+	ch := make(chan *messaging.StoredMessage, 1)
+	defer hub.subscribe("recipient", "box", ch)()
+	hub.notifyStored(&messaging.StoredMessage{
+		Message:    messaging.Message{Recipient: "recipient", MessageBox: "box", Body: "body"},
+		AttestedBy: "origin", ReceivedAt: 123,
+	})
+	msg := <-ch
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"senderAttestedBy":"origin"`) || strings.Contains(string(raw), "receivedAt") {
+		t.Fatalf("stored SSE view = %s", raw)
+	}
+}
+
 // testServerWithMsgStore returns a server with a real on-disk message store
 // attached, so the SSE subscribe handler (which short-circuits to 503 when
 // msgStore is nil) can actually exercise its reconnect-comment path.
@@ -135,7 +154,7 @@ func testServerWithMsgStore(t *testing.T) *Server {
 	t.Helper()
 	srv := testServer(t)
 	dir := t.TempDir()
-	ms, err := messaging.NewStore(dir, 86400)
+	ms, err := messaging.NewStore(dir, messaging.Options{TTLSeconds: 86400})
 	if err != nil {
 		t.Fatal(err)
 	}

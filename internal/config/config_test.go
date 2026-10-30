@@ -420,6 +420,34 @@ func TestHeaderSyncAndNoncePoolDefaults(t *testing.T) {
 	}
 }
 
+func TestMessagingDefaultsAndOverrides(t *testing.T) {
+	f, _ := os.CreateTemp("", "anvil-cfg-messaging-*.toml")
+	f.WriteString("[messaging]\nttl_seconds = 0\nmax_pair_messages = -1\nmax_pair_bytes = 0\nmax_store_messages = 0\nmax_store_bytes = -1\nmax_inbox_messages = 0\nmax_inbox_bytes = 0\n")
+	f.Close()
+	defer os.Remove(f.Name())
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Messaging.TTLSeconds != 604800 || cfg.Messaging.MaxPairMessages != 1000 || cfg.Messaging.MaxPairBytes != 64<<20 ||
+		cfg.Messaging.MaxStoreMessages != 1000000 || cfg.Messaging.MaxStoreBytes != 2<<30 ||
+		cfg.Messaging.MaxInboxMessages != 0 || cfg.Messaging.MaxInboxBytes != 0 {
+		t.Fatalf("messaging defaults = %+v", cfg.Messaging)
+	}
+
+	f2, _ := os.CreateTemp("", "anvil-cfg-messaging-override-*.toml")
+	f2.WriteString("[messaging]\nttl_seconds = 60\nmax_pair_messages = 2\nmax_pair_bytes = 3\nmax_store_messages = 4\nmax_store_bytes = 5\nmax_inbox_messages = 6\nmax_inbox_bytes = 7\n")
+	f2.Close()
+	defer os.Remove(f2.Name())
+	cfg, err = Load(f2.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Messaging != (MessagingConfig{TTLSeconds: 60, MaxPairMessages: 2, MaxPairBytes: 3, MaxStoreMessages: 4, MaxStoreBytes: 5, MaxInboxMessages: 6, MaxInboxBytes: 7}) {
+		t.Fatalf("messaging override = %+v", cfg.Messaging)
+	}
+}
+
 func TestHeaderStaleAfterZeroUsesDefault(t *testing.T) {
 	f, _ := os.CreateTemp("", "anvil-cfg-stale-zero-*.toml")
 	f.WriteString("[bsv]\nheader_stale_after_secs = 0\n")

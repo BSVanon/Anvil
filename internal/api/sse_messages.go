@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,27 +24,27 @@ var sseHeartbeatInterval = 25 * time.Second
 // messageHub fans out new messages to SSE subscribers by recipient+messageBox.
 type messageHub struct {
 	mu    sync.RWMutex
-	subs  map[string]map[chan *messaging.Message]struct{} // "recipient:messageBox" → set of channels
+	subs  map[string]map[chan *messaging.StoredMessage]struct{} // "recipient:messageBox" → set of channels
 	seqID atomic.Int64
 }
 
 func newMessageHub() *messageHub {
 	return &messageHub{
-		subs: make(map[string]map[chan *messaging.Message]struct{}),
+		subs: make(map[string]map[chan *messaging.StoredMessage]struct{}),
 	}
 }
 
 func messageSubKey(recipient, messageBox string) string {
-	return recipient + ":" + messageBox
+	return strings.ToLower(recipient) + ":" + messageBox
 }
 
 // subscribe registers a channel for a recipient+messageBox pair.
 // Returns an unsubscribe function.
-func (h *messageHub) subscribe(recipient, messageBox string, ch chan *messaging.Message) func() {
+func (h *messageHub) subscribe(recipient, messageBox string, ch chan *messaging.StoredMessage) func() {
 	key := messageSubKey(recipient, messageBox)
 	h.mu.Lock()
 	if h.subs[key] == nil {
-		h.subs[key] = make(map[chan *messaging.Message]struct{})
+		h.subs[key] = make(map[chan *messaging.StoredMessage]struct{})
 	}
 	h.subs[key][ch] = struct{}{}
 	h.mu.Unlock()
@@ -61,6 +62,10 @@ func (h *messageHub) subscribe(recipient, messageBox string, ch chan *messaging.
 // notify sends a message to all subscribers matching recipient+messageBox.
 // Non-blocking: slow clients are skipped.
 func (h *messageHub) notify(msg *messaging.Message) {
+	h.notifyStored(&messaging.StoredMessage{Message: *msg})
+}
+
+func (h *messageHub) notifyStored(msg *messaging.StoredMessage) {
 	key := messageSubKey(msg.Recipient, msg.MessageBox)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -144,7 +149,7 @@ func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) 
 
 	flusher.Flush()
 
-	ch := make(chan *messaging.Message, 16)
+	ch := make(chan *messaging.StoredMessage, 16)
 	unsub := s.msgHub.subscribe(recipient, messageBox, ch)
 	defer unsub()
 

@@ -61,7 +61,7 @@ func testServerBRC31(t *testing.T) (*Server, *httptest.Server, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { es.Close() })
-	ms, err := messaging.NewStore(t.TempDir(), 86400)
+	ms, err := messaging.NewStore(t.TempDir(), messaging.Options{TTLSeconds: 86400})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestMessagebox_ListLimits(t *testing.T) {
 		for i := 0; i < 150; i++ {
 			if _, err := srv.msgStore.Send(&messaging.Message{
 				Sender: "test", Recipient: recipient, MessageBox: "bounded", Body: "message",
-			}); err != nil {
+			}, srv.identityPub); err != nil {
 				t.Fatal(err)
 			}
 		}
