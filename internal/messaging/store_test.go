@@ -79,6 +79,50 @@ func TestListDoesNotCrossRecipients(t *testing.T) {
 	}
 }
 
+func TestListNStopsAtLimit(t *testing.T) {
+	s := testStore(t)
+	for i := 0; i < 150; i++ {
+		if _, err := s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "inbox", Body: "inbox"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := s.Send(&Message{Sender: "02a", Recipient: "02b", MessageBox: "other", Body: "other"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	iterations := 0
+	s.onListIterate = func() { iterations++ }
+	msgs, err := s.ListN("02b", "inbox", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 32 {
+		t.Fatalf("expected 32 messages, got %d", len(msgs))
+	}
+	for _, msg := range msgs {
+		if msg.MessageBox != "inbox" {
+			t.Fatalf("expected only inbox messages, got %q", msg.MessageBox)
+		}
+	}
+	if iterations >= 160 {
+		t.Fatalf("ListN scanned %d messages; it should stop before the 160-message box is exhausted", iterations)
+	}
+
+	iterations = 0
+	msgs, err = s.ListN("02b", "inbox", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 150 {
+		t.Fatalf("expected all 150 messages with limit 0, got %d", len(msgs))
+	}
+	if iterations != 160 {
+		t.Fatalf("limit 0 scanned %d messages, want all 160", iterations)
+	}
+}
+
 func TestAcknowledge(t *testing.T) {
 	s := testStore(t)
 

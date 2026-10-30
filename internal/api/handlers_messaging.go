@@ -96,8 +96,9 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Recipient  string `json:"recipient"`
-		MessageBox string `json:"messageBox"`
+		Recipient  string          `json:"recipient"`
+		MessageBox string          `json:"messageBox"`
+		Limit      json.RawMessage `json:"limit"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
@@ -107,9 +108,19 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "messageBox required")
 		return
 	}
+	limit := 0
+	if len(req.Limit) != 0 {
+		if err := json.Unmarshal(req.Limit, &limit); err != nil || limit < 0 {
+			writeError(w, http.StatusBadRequest, "limit must be a non-negative integer")
+			return
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
 	recipient := s.scopedRecipient(caller, req.Recipient)
 
-	msgs, err := s.msgStore.List(recipient, req.MessageBox)
+	msgs, err := s.msgStore.ListN(recipient, req.MessageBox, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("list failed: %v", err))
 		return

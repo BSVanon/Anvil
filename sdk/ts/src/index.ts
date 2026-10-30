@@ -392,9 +392,10 @@ export class AnvilClient {
   }
 
   /** List messages in a message box. */
-  async listMessages(messageBox: string, recipient?: string): Promise<{ status: string; messages: Message[] }> {
-    const req: Record<string, string> = { messageBox };
+  async listMessages(messageBox: string, recipient?: string, limit?: number): Promise<{ status: string; messages: Message[] }> {
+    const req: Record<string, unknown> = { messageBox };
     if (recipient) req.recipient = recipient;
+    if (limit !== undefined) req.limit = limit;
     return this.post('/listMessages', req) as Promise<{ status: string; messages: Message[] }>;
   }
 

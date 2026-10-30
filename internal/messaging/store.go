@@ -32,10 +32,11 @@ type OnMessage func(msg *Message)
 // Store manages point-to-point messages in LevelDB.
 // Messages are keyed by recipient pubkey + auto-incrementing ID.
 type Store struct {
-	db        *leveldb.DB
-	nextID    atomic.Int64
-	ttl       time.Duration // auto-expire unacknowledged messages (0 = no expiry)
-	onMessage OnMessage     // optional callback for SSE notifications
+	db            *leveldb.DB
+	nextID        atomic.Int64
+	ttl           time.Duration // auto-expire unacknowledged messages (0 = no expiry)
+	onMessage     OnMessage     // optional callback for SSE notifications
+	onListIterate func()        // test hook called for every message examined by ListN
 }
 
 // NewStore opens or creates a message store.
@@ -126,9 +127,15 @@ func (s *Store) Deliver(msg *Message) (bool, error) {
 	return true, nil
 }
 
-// List returns messages for a recipient in a given message box.
-// Results are ordered by message ID (ascending = oldest first).
+// List returns every message for a recipient in a given message box.
+// Results are in LevelDB key order, matching the historical behavior.
 func (s *Store) List(recipient, messageBox string) ([]*Message, error) {
+	return s.ListN(recipient, messageBox, 0)
+}
+
+// ListN returns up to limit messages for a recipient in a given message box.
+// A limit of zero returns every message. Results are in LevelDB key order.
+func (s *Store) ListN(recipient, messageBox string, limit int) ([]*Message, error) {
 	prefix := append(append([]byte{}, prefixMsg...), []byte(recipient+":")...)
 
 	var results []*Message
@@ -136,6 +143,9 @@ func (s *Store) List(recipient, messageBox string) ([]*Message, error) {
 	defer iter.Release()
 
 	for iter.Next() {
+		if s.onListIterate != nil {
+			s.onListIterate()
+		}
 		var msg Message
 		if err := json.Unmarshal(iter.Value(), &msg); err != nil {
 			continue
@@ -144,6 +154,9 @@ func (s *Store) List(recipient, messageBox string) ([]*Message, error) {
 			continue
 		}
 		results = append(results, &msg)
+		if limit > 0 && len(results) >= limit {
+			break
+		}
 	}
 	if err := iter.Error(); err != nil {
 		return nil, fmt.Errorf("iterate messages: %w", err)

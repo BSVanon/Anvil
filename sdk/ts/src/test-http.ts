@@ -161,6 +161,13 @@ describe('SDK HTTP methods — messaging (BRC-33)', () => {
     const result = await client.listMessages('inbox');
     assert.strictEqual(result.messages.length, 1);
     assert.strictEqual(result.messages[0].messageId, 'msg-1');
+    assert.deepStrictEqual(JSON.parse(lastReq!.body), { messageBox: 'inbox' });
+  });
+
+  it('listMessages() sends an explicit limit', async () => {
+    const client = new AnvilClient({ wif: TEST_WIF, nodeUrl: url });
+    await client.listMessages('inbox', undefined, 32);
+    assert.deepStrictEqual(JSON.parse(lastReq!.body), { messageBox: 'inbox', limit: 32 });
   });
 
   it('acknowledgeMessages() sends message IDs for deletion', async () => {

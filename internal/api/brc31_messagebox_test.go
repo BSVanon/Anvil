@@ -244,6 +244,96 @@ func TestMessagebox_OperatorFallback(t *testing.T) {
 	_ = srv
 }
 
+func TestMessagebox_ListLimits(t *testing.T) {
+	srv, ts, nodeHex := testServerBRC31(t)
+	_, bobHex, bobW := newKeyWallet(t)
+	for _, recipient := range []string{bobHex, nodeHex} {
+		for i := 0; i < 150; i++ {
+			if _, err := srv.msgStore.Send(&messaging.Message{
+				Sender: "test", Recipient: recipient, MessageBox: "bounded", Body: "message",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	tests := []struct {
+		name       string
+		limit      any
+		include    bool
+		wantStatus int
+		wantCount  int
+	}{
+		{name: "absent", wantStatus: http.StatusOK, wantCount: 150},
+		{name: "null", limit: nil, include: true, wantStatus: http.StatusOK, wantCount: 150},
+		{name: "zero", limit: 0, include: true, wantStatus: http.StatusOK, wantCount: 150},
+		{name: "limited", limit: 32, include: true, wantStatus: http.StatusOK, wantCount: 32},
+		{name: "capped", limit: 500, include: true, wantStatus: http.StatusOK, wantCount: 100},
+		{name: "negative", limit: -1, include: true, wantStatus: http.StatusBadRequest},
+		{name: "non_integer", limit: 1.5, include: true, wantStatus: http.StatusBadRequest},
+	}
+
+	for _, authPath := range []struct {
+		name string
+		post func(t *testing.T, payload any) (map[string]any, int)
+	}{
+		{
+			name: "brc31",
+			post: func(t *testing.T, payload any) (map[string]any, int) {
+				return authPost(t, bobW, ts.URL+"/listMessages", payload)
+			},
+		},
+		{
+			name: "operator",
+			post: func(t *testing.T, payload any) (map[string]any, int) {
+				body, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req, err := http.NewRequest("POST", ts.URL+"/listMessages", bytes.NewReader(body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Authorization", "Bearer test-operator-token")
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				var out map[string]any
+				if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+					t.Fatal(err)
+				}
+				return out, resp.StatusCode
+			},
+		},
+	} {
+		for _, tt := range tests {
+			t.Run(authPath.name+"/"+tt.name, func(t *testing.T) {
+				payload := map[string]any{"messageBox": "bounded"}
+				if tt.include {
+					payload["limit"] = tt.limit
+				}
+				out, status := authPath.post(t, payload)
+				if status != tt.wantStatus {
+					t.Fatalf("status = %d, want %d (%v)", status, tt.wantStatus, out)
+				}
+				if status == http.StatusBadRequest {
+					if out["error"] != "limit must be a non-negative integer" {
+						t.Fatalf("unexpected error: %v", out)
+					}
+					return
+				}
+				msgs, _ := out["messages"].([]any)
+				if len(msgs) != tt.wantCount {
+					t.Fatalf("got %d messages, want %d", len(msgs), tt.wantCount)
+				}
+			})
+		}
+	}
+}
+
 // TestSessionTokenStore covers mint/resolve/expiry/eviction of the SSE session
 // token store directly (deterministic clock).
 func TestSessionTokenStore(t *testing.T) {
