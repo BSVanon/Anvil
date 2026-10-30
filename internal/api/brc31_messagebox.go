@@ -101,7 +101,7 @@ func (s *Server) registerMessageboxBRC31() {
 	sub.HandleFunc("POST /acknowledgeMessage", s.handleAcknowledgeMessage)
 	sub.HandleFunc("POST /messages/session", s.handleMessageSession)
 
-	wrapped := brc31CORS(authMW.HTTPHandler(sub))
+	wrapped := brc31CORS(messageboxRateLimit(s.messageboxLimiter, authMW.HTTPHandler(sub)))
 
 	// Path-only patterns: preflight OPTIONS and the handshake/write POSTs all
 	// reach the wrapper. The auth middleware handles /.well-known/auth
@@ -114,17 +114,17 @@ func (s *Server) registerMessageboxBRC31() {
 
 	// SSE stays a direct route (EventSource can't do the handshake); it is
 	// gated by the per-identity session token minted at /messages/session.
-	s.mux.HandleFunc("GET /messages/subscribe", s.handleMessageSubscribe)
+	s.mux.Handle("GET /messages/subscribe", messageboxRateLimit(s.messageboxLimiter, http.HandlerFunc(s.handleMessageSubscribe)))
 }
 
 // registerMessageboxLegacy mounts the messagebox routes behind the operator
 // auth token only — used when no node wallet is available (mesh/wallet
 // disabled), which means canonical BRC-31 server auth cannot be performed.
 func (s *Server) registerMessageboxLegacy() {
-	s.mux.HandleFunc("POST /sendMessage", s.requireAuth(s.handleSendMessage))
-	s.mux.HandleFunc("POST /listMessages", s.requireAuth(s.handleListMessages))
-	s.mux.HandleFunc("POST /acknowledgeMessage", s.requireAuth(s.handleAcknowledgeMessage))
-	s.mux.HandleFunc("GET /messages/subscribe", s.requireAuthSSE(s.handleMessageSubscribe))
+	s.mux.Handle("POST /sendMessage", messageboxRateLimit(s.messageboxLimiter, s.requireAuth(s.handleSendMessage)))
+	s.mux.Handle("POST /listMessages", messageboxRateLimit(s.messageboxLimiter, s.requireAuth(s.handleListMessages)))
+	s.mux.Handle("POST /acknowledgeMessage", messageboxRateLimit(s.messageboxLimiter, s.requireAuth(s.handleAcknowledgeMessage)))
+	s.mux.Handle("GET /messages/subscribe", messageboxRateLimit(s.messageboxLimiter, s.requireAuthSSE(s.handleMessageSubscribe)))
 }
 
 // brc31CORS wraps the BRC-31 messagebox handler with permissive CORS. Browser

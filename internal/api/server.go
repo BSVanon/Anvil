@@ -13,53 +13,54 @@ import (
 	"github.com/BSVanon/Anvil/internal/content"
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/gossip"
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
-	sdk "github.com/bsv-blockchain/go-sdk/wallet"
-	"github.com/BSVanon/Anvil/internal/messaging"
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/mempool"
+	"github.com/BSVanon/Anvil/internal/messaging"
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	"github.com/BSVanon/Anvil/internal/version"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 )
 
 // Server is the Anvil REST API server.
 type Server struct {
-	headerStore      *headers.Store
-	proofStore       *spv.ProofStore
-	envelopeStore    *envelope.Store
-	overlayDir       *overlay.Directory
-	validator        *spv.Validator
-	broadcaster      *txrelay.Broadcaster
-	gossipMgr        *gossip.Manager
-	rateLimiter      *RateLimiter
-	paymentGate      *PaymentGate
-	tokenGate        *TokenGate
-	logger           *slog.Logger
-	mux              *http.ServeMux
-	authToken        string
-	nodeName         string
-	identityPub      string
-	bondChecker      *bond.Checker
-	contentServer    *content.Server
-	explorerOrigin   string
-	publicURL        string // HTTPS public URL — used for /app/ redirects so wallet connections work
-	meshTopicCache   *topicCache
-	headerSyncStatus func() headers.SyncStats
-	serviceHealthFn  func() string
-	spvProofSource   string
-	sseHub           *envelopeHub
-	msgHub           *messageHub
-	watcher          *mempool.Watcher
-	proofFetcher     *spv.ProofFetcher
-	msgStore         *messaging.Store
-	signingKey       *ec.PrivateKey // node identity key for signing envelopes
-	healthChecks     []HealthCheck  // registered subsystem health checks
-	customCaps       []map[string]interface{}
-	nodeWallet       sdk.Interface     // go-sdk wallet for canonical BRC-31 messagebox auth (nil if mesh/wallet disabled)
-	msgSessions      *sessionTokenStore // 2a: per-identity SSE session tokens minted from a BRC-31 handshake
-	messageboxBRC31  bool               // true when messagebox routes are served behind canonical BRC-31 mutual auth
+	headerStore       *headers.Store
+	proofStore        *spv.ProofStore
+	envelopeStore     *envelope.Store
+	overlayDir        *overlay.Directory
+	validator         *spv.Validator
+	broadcaster       *txrelay.Broadcaster
+	gossipMgr         *gossip.Manager
+	rateLimiter       *RateLimiter
+	messageboxLimiter *RateLimiter
+	paymentGate       *PaymentGate
+	tokenGate         *TokenGate
+	logger            *slog.Logger
+	mux               *http.ServeMux
+	authToken         string
+	nodeName          string
+	identityPub       string
+	bondChecker       *bond.Checker
+	contentServer     *content.Server
+	explorerOrigin    string
+	publicURL         string // HTTPS public URL — used for /app/ redirects so wallet connections work
+	meshTopicCache    *topicCache
+	headerSyncStatus  func() headers.SyncStats
+	serviceHealthFn   func() string
+	spvProofSource    string
+	sseHub            *envelopeHub
+	msgHub            *messageHub
+	watcher           *mempool.Watcher
+	proofFetcher      *spv.ProofFetcher
+	msgStore          *messaging.Store
+	signingKey        *ec.PrivateKey // node identity key for signing envelopes
+	healthChecks      []HealthCheck  // registered subsystem health checks
+	customCaps        []map[string]interface{}
+	nodeWallet        sdk.Interface      // go-sdk wallet for canonical BRC-31 messagebox auth (nil if mesh/wallet disabled)
+	msgSessions       *sessionTokenStore // 2a: per-identity SSE session tokens minted from a BRC-31 handshake
+	messageboxBRC31   bool               // true when messagebox routes are served behind canonical BRC-31 mutual auth
 }
 
 // HealthCheck is a named subsystem health probe. Returns a warning string
@@ -71,47 +72,50 @@ type HealthCheck struct {
 
 // ServerConfig holds all parameters for NewServer.
 type ServerConfig struct {
-	HeaderStore      *headers.Store
-	ProofStore       *spv.ProofStore
-	EnvelopeStore    *envelope.Store
-	OverlayDir       *overlay.Directory
-	Validator        *spv.Validator
-	Broadcaster      *txrelay.Broadcaster
-	GossipMgr        *gossip.Manager
-	AuthToken        string
-	RateLimit        int
-	TrustProxy       bool
-	PaymentSatoshis  int
-	PayeeScriptHex   string
-	NonceProvider    NonceProvider
-	AllowPassthrough bool
-	AllowSplit       bool
-	AllowTokenGating bool
-	MaxAppPriceSats  int
-	EndpointPrices   map[string]int // per-endpoint price overrides
-	ARCClient        *txrelay.ARCClient
-	RequireMempool   bool
-	Logger           *slog.Logger
-	NodeName         string
-	IdentityPub      string
-	BondChecker      *bond.Checker
-	P2PTxSource      content.TxSource
-	P2PBlockSource   content.BlockTxSource
-	HeaderLookup     func(int) string
-	ExplorerOrigin   string // fallback content_origin for /explorer when catalog is empty
-	PublicURL        string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
-	HeaderSyncStatus func() headers.SyncStats
+	HeaderStore         *headers.Store
+	ProofStore          *spv.ProofStore
+	EnvelopeStore       *envelope.Store
+	OverlayDir          *overlay.Directory
+	Validator           *spv.Validator
+	Broadcaster         *txrelay.Broadcaster
+	GossipMgr           *gossip.Manager
+	AuthToken           string
+	RateLimit           int
+	TrustProxy          bool
+	TrustProxyHops      int
+	MessageboxRateLimit int
+	MessageboxRateBurst int
+	PaymentSatoshis     int
+	PayeeScriptHex      string
+	NonceProvider       NonceProvider
+	AllowPassthrough    bool
+	AllowSplit          bool
+	AllowTokenGating    bool
+	MaxAppPriceSats     int
+	EndpointPrices      map[string]int // per-endpoint price overrides
+	ARCClient           *txrelay.ARCClient
+	RequireMempool      bool
+	Logger              *slog.Logger
+	NodeName            string
+	IdentityPub         string
+	BondChecker         *bond.Checker
+	P2PTxSource         content.TxSource
+	P2PBlockSource      content.BlockTxSource
+	HeaderLookup        func(int) string
+	ExplorerOrigin      string // fallback content_origin for /explorer when catalog is empty
+	PublicURL           string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
+	HeaderSyncStatus    func() headers.SyncStats
 	// ServiceHealthFn returns this node's own service-process health as
 	// "healthy" | "degraded" | "broken" | "" (unknown). Wired from main.go
 	// using the diagnostics package. Used to surface service_health on
 	// /mesh/status so wallet consumers can distinguish an upstream failure
 	// from a local service-process meltdown. Returning "" omits the field.
-	ServiceHealthFn  func() string
-	SPVProofSource   string
-	Watcher          *mempool.Watcher
-	ProofFetcher     *spv.ProofFetcher
-	MsgStore         *messaging.Store
-	SigningKey       *ec.PrivateKey // node identity key for signing envelopes
+	ServiceHealthFn func() string
+	SPVProofSource  string
+	Watcher         *mempool.Watcher
+	ProofFetcher    *spv.ProofFetcher
+	MsgStore        *messaging.Store
+	SigningKey      *ec.PrivateKey // node identity key for signing envelopes
 	// Wallet is the node-identity go-sdk wallet. When non-nil, the BRC-33
 	// messagebox routes (/sendMessage, /listMessages, /acknowledgeMessage,
 	// /messages/subscribe) are served behind canonical BRC-31 mutual auth so
@@ -130,8 +134,23 @@ type ServerConfig struct {
 func NewServer(cfg ServerConfig) *Server {
 	var rl *RateLimiter
 	if cfg.RateLimit > 0 {
-		rl = NewRateLimiter(cfg.RateLimit, cfg.TrustProxy)
+		// Same burst as NewRateLimiter (rate, min 10), plus the configured hops.
+		rl = NewRateLimiterWithBurst(cfg.RateLimit, max(cfg.RateLimit, 10), cfg.TrustProxy, cfg.TrustProxyHops)
 	}
+	messageboxRateLimit := cfg.MessageboxRateLimit
+	if messageboxRateLimit <= 0 {
+		messageboxRateLimit = 20
+	}
+	messageboxRateBurst := cfg.MessageboxRateBurst
+	if messageboxRateBurst <= 0 {
+		messageboxRateBurst = 40
+	}
+	messageboxLimiter := NewRateLimiterWithBurst(
+		messageboxRateLimit,
+		messageboxRateBurst,
+		cfg.TrustProxy,
+		cfg.TrustProxyHops,
+	)
 	resolver := NewTopicMonetizationResolver(cfg.EnvelopeStore)
 	pg := NewPaymentGate(PaymentGateConfig{
 		PriceSats:        cfg.PaymentSatoshis,
@@ -151,37 +170,38 @@ func NewServer(cfg ServerConfig) *Server {
 		logger = slog.Default()
 	}
 	s := &Server{
-		headerStore:      cfg.HeaderStore,
-		proofStore:       cfg.ProofStore,
-		envelopeStore:    cfg.EnvelopeStore,
-		overlayDir:       cfg.OverlayDir,
-		validator:        cfg.Validator,
-		broadcaster:      cfg.Broadcaster,
-		gossipMgr:        cfg.GossipMgr,
-		rateLimiter:      rl,
-		paymentGate:      pg,
-		tokenGate:        tg,
-		logger:           logger,
-		mux:              http.NewServeMux(),
-		authToken:        cfg.AuthToken,
-		nodeName:         cfg.NodeName,
-		identityPub:      cfg.IdentityPub,
-		bondChecker:      cfg.BondChecker,
-		contentServer:    content.NewServer("", cfg.P2PTxSource, cfg.P2PBlockSource, cfg.HeaderLookup),
-		explorerOrigin:   cfg.ExplorerOrigin,
-		publicURL:        strings.TrimRight(cfg.PublicURL, "/"),
-		meshTopicCache:   newTopicCache(10 * time.Second),
-		headerSyncStatus: cfg.HeaderSyncStatus,
-		serviceHealthFn:  cfg.ServiceHealthFn,
-		spvProofSource:   cfg.SPVProofSource,
-		sseHub:           newEnvelopeHub(),
-		msgHub:           newMessageHub(),
-		watcher:          cfg.Watcher,
-		proofFetcher:     cfg.ProofFetcher,
-		msgStore:         cfg.MsgStore,
-		signingKey:       cfg.SigningKey,
-		customCaps:       cfg.CustomCapabilities,
-		nodeWallet:       cfg.Wallet,
+		headerStore:       cfg.HeaderStore,
+		proofStore:        cfg.ProofStore,
+		envelopeStore:     cfg.EnvelopeStore,
+		overlayDir:        cfg.OverlayDir,
+		validator:         cfg.Validator,
+		broadcaster:       cfg.Broadcaster,
+		gossipMgr:         cfg.GossipMgr,
+		rateLimiter:       rl,
+		messageboxLimiter: messageboxLimiter,
+		paymentGate:       pg,
+		tokenGate:         tg,
+		logger:            logger,
+		mux:               http.NewServeMux(),
+		authToken:         cfg.AuthToken,
+		nodeName:          cfg.NodeName,
+		identityPub:       cfg.IdentityPub,
+		bondChecker:       cfg.BondChecker,
+		contentServer:     content.NewServer("", cfg.P2PTxSource, cfg.P2PBlockSource, cfg.HeaderLookup),
+		explorerOrigin:    cfg.ExplorerOrigin,
+		publicURL:         strings.TrimRight(cfg.PublicURL, "/"),
+		meshTopicCache:    newTopicCache(10 * time.Second),
+		headerSyncStatus:  cfg.HeaderSyncStatus,
+		serviceHealthFn:   cfg.ServiceHealthFn,
+		spvProofSource:    cfg.SPVProofSource,
+		sseHub:            newEnvelopeHub(),
+		msgHub:            newMessageHub(),
+		watcher:           cfg.Watcher,
+		proofFetcher:      cfg.ProofFetcher,
+		msgStore:          cfg.MsgStore,
+		signingKey:        cfg.SigningKey,
+		customCaps:        cfg.CustomCapabilities,
+		nodeWallet:        cfg.Wallet,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
@@ -836,7 +856,7 @@ func (s *Server) NotifyEnvelope(env *envelope.Envelope) {
 func (s *Server) NotifyMessage(msg *messaging.Message) {
 	s.msgHub.notify(msg)
 }
-func (s *Server) Mux() *http.ServeMux   { return s.mux }
+func (s *Server) Mux() *http.ServeMux { return s.mux }
 
 func (s *Server) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireAuth(next)

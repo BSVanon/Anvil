@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -93,24 +94,151 @@ func TestRateLimiterMiddlewareXForwardedFor(t *testing.T) {
 func TestClientIPParsing(t *testing.T) {
 	tests := []struct {
 		remoteAddr string
-		xff        string
+		xff        []string
+		trustProxy bool
+		hops       int
 		expected   string
 	}{
-		{"1.2.3.4:5678", "", "1.2.3.4"},
-		{"[::1]:5678", "", "[::1]"},
-		{"1.2.3.4:5678", "10.0.0.1", "10.0.0.1"},
-		{"1.2.3.4:5678", "10.0.0.1, 10.0.0.2", "10.0.0.1"},
+		{"127.0.0.1:5555", []string{"forged, 203.0.113.7"}, false, 1, "203.0.113.7"},
+		{"[::1]:5555", []string{"198.51.100.1, 203.0.113.7"}, false, 1, "203.0.113.7"},
+		{"198.51.100.2:1234", []string{"1.2.3.4"}, false, 1, "198.51.100.2"},
+		{"198.51.100.2:1234", []string{"198.51.100.1, 198.51.100.2"}, true, 1, "198.51.100.2"},
+		{"198.51.100.2:1234", []string{"198.51.100.1, 198.51.100.2, 198.51.100.3"}, true, 2, "198.51.100.2"},
+		{"198.51.100.2:1234", []string{"198.51.100.1, 198.51.100.2"}, true, 9, "198.51.100.1"},
+		{"198.51.100.2:1234", []string{"garbage"}, true, 1, "198.51.100.2"},
+		{"198.51.100.2:1234", []string{"198.51.100.1", "198.51.100.2, 198.51.100.3"}, true, 2, "198.51.100.2"},
+		{"198.51.100.2", nil, false, 1, "198.51.100.2"},
+		{"2001:db8::1", nil, false, 1, "2001:db8::1"},
 	}
 	for _, tt := range tests {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.RemoteAddr = tt.remoteAddr
-		if tt.xff != "" {
-			r.Header.Set("X-Forwarded-For", tt.xff)
+		for _, xff := range tt.xff {
+			r.Header.Add("X-Forwarded-For", xff)
 		}
-		got := clientIP(r, true) // trustProxy=true for these tests
+		got := clientIP(r, tt.trustProxy, tt.hops)
 		if got != tt.expected {
 			t.Errorf("clientIP(%q, xff=%q) = %q, want %q", tt.remoteAddr, tt.xff, got, tt.expected)
 		}
+	}
+}
+
+func TestRateLimiterIPv6PrefixKey(t *testing.T) {
+	rl := NewRateLimiterWithBurst(1, 1, false, 1)
+	handler := rl.Middleware(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	request := func(addr string) int {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = addr
+		w := httptest.NewRecorder()
+		handler(w, req)
+		return w.Code
+	}
+	if got := request("[2001:db8:1:2::1]:1234"); got != http.StatusOK {
+		t.Fatalf("first IPv6 request: got %d", got)
+	}
+	if got := request("[2001:db8:1:2::2]:1234"); got != http.StatusTooManyRequests {
+		t.Fatalf("same /64 should share a bucket, got %d", got)
+	}
+	if got := request("[2001:db8:1:3::1]:1234"); got != http.StatusOK {
+		t.Fatalf("different /64 should have another bucket, got %d", got)
+	}
+}
+
+func TestMessageboxAndReadLimitersAreSeparate(t *testing.T) {
+	newServer := func() *Server {
+		srv := testServer(t)
+		srv.rateLimiter = NewRateLimiterWithBurst(1, 1, false, 1)
+		srv.messageboxLimiter = NewRateLimiterWithBurst(1, 1, false, 1)
+		srv.mux = http.NewServeMux()
+		srv.routes()
+		return srv
+	}
+	request := func(srv *Server, method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		req.RemoteAddr = "203.0.113.7:1234"
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	srv := newServer()
+	request(srv, http.MethodPost, "/sendMessage")
+	if got := request(srv, http.MethodPost, "/sendMessage").Code; got != http.StatusTooManyRequests {
+		t.Fatalf("exhausted messagebox limiter: got %d, want 429", got)
+	}
+	if got := request(srv, http.MethodGet, "/status").Code; got != http.StatusOK {
+		t.Fatalf("messagebox limit must not affect read limiter: got %d", got)
+	}
+
+	srv = newServer()
+	request(srv, http.MethodGet, "/status")
+	if got := request(srv, http.MethodGet, "/status").Code; got != http.StatusTooManyRequests {
+		t.Fatalf("exhausted read limiter: got %d, want 429", got)
+	}
+	if got := request(srv, http.MethodPost, "/sendMessage").Code; got == http.StatusTooManyRequests {
+		t.Fatal("read limit must not affect messagebox limiter")
+	}
+}
+
+func TestMessageboxLimiterActiveWithoutGeneralRateLimit(t *testing.T) {
+	srv := testServer(t)
+	if srv.rateLimiter != nil {
+		t.Fatal("test server should not have a general rate limiter")
+	}
+	srv.messageboxLimiter = NewRateLimiterWithBurst(1, 1, false, 1)
+	srv.mux = http.NewServeMux()
+	srv.routes()
+
+	request := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/sendMessage", nil)
+		req.RemoteAddr = "203.0.113.7:1234"
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w.Code
+	}
+	request()
+	if got := request(); got != http.StatusTooManyRequests {
+		t.Fatalf("messagebox route should be limited without a general limiter, got %d", got)
+	}
+}
+
+func TestMessageboxBRC31RateLimitResponse(t *testing.T) {
+	srv := testServer(t)
+	_, _, srv.nodeWallet = newKeyWallet(t)
+	srv.messageboxLimiter = NewRateLimiterWithBurst(1, 1, false, 1)
+	srv.mux = http.NewServeMux()
+	srv.routes()
+
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/.well-known/auth", nil)
+		req.RemoteAddr = "203.0.113.7:1234"
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w
+	}
+	request()
+	w := request()
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("handshake should be rate limited, got %d", w.Code)
+	}
+	if got := w.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want 1", got)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("BRC-31 429 missing CORS header: %q", got)
+	}
+	body, err := io.ReadAll(w.Result().Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(body), messageboxRateLimitBody; got != want {
+		t.Fatalf("429 body = %s, want %s", got, want)
 	}
 }
 
@@ -169,5 +297,18 @@ func TestServerWithRateLimit(t *testing.T) {
 	// Should not be 429 — should be 400 (empty body) instead
 	if w3.Code == http.StatusTooManyRequests {
 		t.Fatal("write endpoints should not be rate limited")
+	}
+}
+
+func TestGeneralLimiterHonorsTrustProxyHops(t *testing.T) {
+	s := NewServer(ServerConfig{RateLimit: 5, TrustProxy: true, TrustProxyHops: 2})
+	if s.rateLimiter == nil {
+		t.Fatal("general limiter not built")
+	}
+	if s.rateLimiter.trustHops != 2 || s.messageboxLimiter.trustHops != 2 {
+		t.Fatalf("trustHops general=%d messagebox=%d, want 2", s.rateLimiter.trustHops, s.messageboxLimiter.trustHops)
+	}
+	if s.rateLimiter.burst != 10 {
+		t.Fatalf("general burst = %d, want 10 (rate 5, min 10)", s.rateLimiter.burst)
 	}
 }

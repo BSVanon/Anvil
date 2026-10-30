@@ -42,6 +42,29 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.API.RateLimit != 100 {
 		t.Fatalf("expected default rate_limit=100, got %d", cfg.API.RateLimit)
 	}
+	if cfg.API.MessageboxRateLimit != 20 || cfg.API.MessageboxRateBurst != 40 || cfg.API.TrustProxyHops != 1 {
+		t.Fatalf("unexpected messagebox defaults: %+v", cfg.API)
+	}
+}
+
+func TestLoadMessageboxRateLimitInvalidValuesUseDefaults(t *testing.T) {
+	f, err := os.CreateTemp("", "anvil-cfg-messagebox-*.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("[api]\nmessagebox_rate_limit = 0\nmessagebox_rate_burst = -1\ntrust_proxy_hops = 0\n")
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.API.MessageboxRateLimit != 20 || cfg.API.MessageboxRateBurst != 40 || cfg.API.TrustProxyHops != 1 {
+		t.Fatalf("invalid messagebox settings did not use defaults: %+v", cfg.API)
+	}
 }
 
 func TestLoadFullConfig(t *testing.T) {

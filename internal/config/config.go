@@ -319,16 +319,19 @@ type EnvelopeConfig struct {
 }
 
 type APIConfig struct {
-	AuthToken       string           `toml:"auth_token"`
-	TLSCert         string           `toml:"tls_cert"`
-	TLSKey          string           `toml:"tls_key"`
-	RateLimit       int              `toml:"rate_limit"`
-	TrustProxy      bool             `toml:"trust_proxy"`
-	PaymentSatoshis int              `toml:"payment_satoshis"` // default per-request price; 0 = free
-	RequireMempool  bool             `toml:"require_mempool"`  // require ARC SEEN_ON_NETWORK before accepting x402 payment
-	EndpointPrices  map[string]int   `toml:"endpoint_prices"`  // per-endpoint price overrides (path → sats)
-	AppPayments     AppPaymentConfig `toml:"app_payments"`
-	ExplorerOrigin  string           `toml:"explorer_origin"` // fallback content_origin for /explorer (survives catalog expiry)
+	AuthToken           string           `toml:"auth_token"`
+	TLSCert             string           `toml:"tls_cert"`
+	TLSKey              string           `toml:"tls_key"`
+	RateLimit           int              `toml:"rate_limit"`
+	TrustProxy          bool             `toml:"trust_proxy"`
+	TrustProxyHops      int              `toml:"trust_proxy_hops"`
+	MessageboxRateLimit int              `toml:"messagebox_rate_limit"`
+	MessageboxRateBurst int              `toml:"messagebox_rate_burst"`
+	PaymentSatoshis     int              `toml:"payment_satoshis"` // default per-request price; 0 = free
+	RequireMempool      bool             `toml:"require_mempool"`  // require ARC SEEN_ON_NETWORK before accepting x402 payment
+	EndpointPrices      map[string]int   `toml:"endpoint_prices"`  // per-endpoint price overrides (path → sats)
+	AppPayments         AppPaymentConfig `toml:"app_payments"`
+	ExplorerOrigin      string           `toml:"explorer_origin"` // fallback content_origin for /explorer (survives catalog expiry)
 	// NoncePoolSize is the target number of pre-minted x402 nonce UTXOs kept warm
 	// for fast challenge issuance on a CHARGING node (payment_satoshis > 0). Each
 	// nonce is a real on-chain output (~23 sat fee), so a charging node's revenue
@@ -409,8 +412,11 @@ func Load(path string) (*Config, error) {
 			WarnAtPercent:     80,
 		},
 		API: APIConfig{
-			RateLimit:     100,
-			NoncePoolSize: 100,
+			RateLimit:           100,
+			TrustProxyHops:      1,
+			MessageboxRateLimit: 20,
+			MessageboxRateBurst: 40,
+			NoncePoolSize:       100,
 			AppPayments: AppPaymentConfig{
 				AllowPassthrough: true,
 				AllowSplit:       true,
@@ -422,6 +428,15 @@ func Load(path string) (*Config, error) {
 
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if cfg.API.TrustProxyHops < 1 {
+		cfg.API.TrustProxyHops = 1
+	}
+	if cfg.API.MessageboxRateLimit <= 0 {
+		cfg.API.MessageboxRateLimit = 20
+	}
+	if cfg.API.MessageboxRateBurst <= 0 {
+		cfg.API.MessageboxRateBurst = 40
 	}
 	if cfg.BSV.HeaderStaleAfterSecs == 0 {
 		cfg.BSV.HeaderStaleAfterSecs = defaultHeaderStaleAfterSecs
