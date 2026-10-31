@@ -26,6 +26,7 @@ var (
 	ListResponseMaxBodyBytes = 32 << 20
 
 	ErrInvalidRecipient    = errors.New("invalid recipient public key")
+	ErrInvalidOriginNode   = errors.New("invalid origin node public key")
 	ErrInvalidSender       = errors.New("invalid sender public key")
 	ErrInvalidMessageID    = errors.New("invalid message ID")
 	ErrInvalidMessageBox   = errors.New("messageBox required")
@@ -109,8 +110,10 @@ func (s *Store) Send(msg *Message, originNode string) (string, error) {
 		return "", err
 	}
 	originNode = strings.ToLower(originNode)
-	if _, err := parseCompressedKey(originNode); err != nil {
-		return "", fmt.Errorf("invalid origin node: %w", err)
+	if originNode != "" {
+		if _, err := parseCompressedKey(originNode); err != nil {
+			return "", ErrInvalidOriginNode
+		}
 	}
 	msg.Sender = strings.ToLower(msg.Sender)
 	msg.Recipient = strings.ToLower(msg.Recipient)
@@ -305,7 +308,7 @@ func validateDeliveryEnvelope(msg *Message) error {
 	if _, err := parseCompressedKey(msg.Sender); err != nil {
 		return ErrInvalidSender
 	}
-	if msg.MessageID == "" || len(msg.MessageID) > 128 {
+	if msg.MessageID == "" || len(msg.MessageID) > MaxMessageIDBytes {
 		return ErrInvalidMessageID
 	}
 	for i := 0; i < len(msg.MessageID); i++ {

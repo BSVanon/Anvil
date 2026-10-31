@@ -22,6 +22,8 @@ func writeCodedError(w http.ResponseWriter, status int, code, description string
 
 func writeMessagingError(w http.ResponseWriter, err error, fallbackStatus int) {
 	switch {
+	case errors.Is(err, messaging.ErrInvalidOriginNode):
+		writeCodedError(w, http.StatusInternalServerError, "ERR_INTERNAL", "An internal error has occurred.")
 	case errors.Is(err, messaging.ErrInvalidRecipient):
 		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_RECIPIENT_KEY", "Recipient must be a valid compressed secp256k1 public key.")
 	case errors.Is(err, messaging.ErrInvalidMessageBox):

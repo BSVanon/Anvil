@@ -50,6 +50,41 @@ func TestForwardForgedThenLegitimateSameID(t *testing.T) {
 	}
 }
 
+func TestForwardAcceptsCanonicalMessageIDLimitBeforeDedup(t *testing.T) {
+	node, _ := newID(t)
+	_, sender := newID(t)
+	_, recipient := newID(t)
+	store, err := messaging.NewStore(t.TempDir(), messaging.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
+	mgr.SetMsgStore(store)
+
+	accepted := &messaging.Message{MessageID: strings.Repeat("x", 200), Sender: sender, Recipient: recipient, MessageBox: "box", Body: "body"}
+	raw, _ := json.Marshal(originAttest(t, node, accepted))
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.List(recipient, "box"); err != nil || len(got) != 1 || got[0].MessageID != accepted.MessageID {
+		t.Fatalf("200-byte ID delivery = %+v, %v", got, err)
+	}
+
+	rejected := *accepted
+	rejected.MessageID = strings.Repeat("x", messaging.MaxMessageIDBytes+1)
+	raw, _ = json.Marshal(originAttest(t, node, &rejected))
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	mgr.seenMu.Lock()
+	_, seen := mgr.seen["msg:"+rejected.MessageID]
+	mgr.seenMu.Unlock()
+	if seen || store.Count() != 1 {
+		t.Fatalf("257-byte ID was accepted: seen=%v stored=%d", seen, store.Count())
+	}
+}
+
 func TestForwardLegacyDigestReframeDoesNotMarkSeen(t *testing.T) {
 	senderKey, sender := newID(t)
 	_, recipient := newID(t)

@@ -132,6 +132,34 @@ func TestMessageHTTPValidationAndEmptyList(t *testing.T) {
 	}
 }
 
+func TestMessageHTTPWithoutNodeIdentityAndMalformedOrigin(t *testing.T) {
+	srv, _ := messageHandlerServer(t, messaging.Options{})
+	_, recipient, _ := newKeyWallet(t)
+	srv.identityPub = ""
+	response, body := callMessageHandler(t, srv.handleSendMessage, map[string]string{
+		"recipient": recipient, "messageBox": "box", "body": "body",
+	})
+	id, _ := body["messageId"].(string)
+	if response.Code != http.StatusOK || !messaging.IsV2MessageID(id) {
+		t.Fatalf("identity-less send = %d, %v", response.Code, body)
+	}
+	response, body = callMessageHandler(t, srv.handleListMessages, map[string]string{
+		"recipient": recipient, "messageBox": "box",
+	})
+	messages, _ := body["messages"].([]any)
+	if response.Code != http.StatusOK || len(messages) != 1 || messages[0].(map[string]any)["senderAttestedBy"] != "local" {
+		t.Fatalf("identity-less list = %d, %v", response.Code, body)
+	}
+
+	srv.identityPub = "not-a-key"
+	response, body = callMessageHandler(t, srv.handleSendMessage, map[string]string{
+		"recipient": recipient, "messageBox": "box", "body": "bad origin",
+	})
+	if response.Code != http.StatusInternalServerError || body["code"] != "ERR_INTERNAL" || body["description"] != "An internal error has occurred." {
+		t.Fatalf("malformed origin = %d, %v", response.Code, body)
+	}
+}
+
 func TestMessageHTTPDefaultListBudgetAndExplicitLimit(t *testing.T) {
 	previousMessages, previousBytes := messaging.ListResponseMaxMessages, messaging.ListResponseMaxBodyBytes
 	messaging.ListResponseMaxMessages, messaging.ListResponseMaxBodyBytes = 2, 1<<20

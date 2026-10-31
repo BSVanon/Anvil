@@ -99,13 +99,16 @@ node attested the claimed sender after authenticating the submission),
 end-to-end sender signature. An empty box returns `"messages":[]`.
 
 A positive `limit` is capped at 100. When `limit` is omitted, `null`, or zero,
-one call returns at most 10,000 messages. Every call, with or without `limit`,
+one call returns at most 10,000 messages. Treating zero as omitted is a deliberate
+back-compat divergence: the canonical server rejects zero. Every call, with or without `limit`,
 returns at most 32 MiB of total body bytes, so a page can hold fewer messages
 than `limit` (at least one message is returned when the box is non-empty).
 Acknowledge the returned IDs and list again to drain any remainder.
 
 For BRC-31 callers the recipient is always the caller's identity. With the
-operator token, an omitted recipient defaults to the node identity.
+operator token, an omitted recipient defaults to the node identity. On a node
+without an identity key, operator-token list and acknowledge requests must name
+the recipient explicitly; otherwise they return `400 ERR_INVALID_RECIPIENT_KEY`.
 
 ### POST /acknowledgeMessage
 
@@ -170,6 +173,10 @@ the node. IPv6 clients share a client key by `/64`.
 | `/findHeaderHexForHeight?height=N` | GET | No | Chaintracks-compatible parsed header lookup by height |
 | `/findHeaderHexForBlockHash?hash=H` | GET | No | Chaintracks-compatible parsed header lookup by display-order block hash |
 | `/content/{txid}_{vout}` | GET | No | Raw content from a transaction output |
+
+For back-compatibility, a miss from `/findHeaderHexForHeight` retains its
+existing response shape, unlike the canonical-shaped miss from
+`/findHeaderHexForBlockHash`.
 
 ## Node-Signed Publishing
 
@@ -417,7 +424,9 @@ messagebox_rate_burst = 40
 ```
 
 Message storage defaults apply on upgrade without a config edit. Byte quotas
-count message body bytes; a zero inbox limit disables that dimension.
+count message body bytes. The pair and node limits cannot be disabled: a value
+less than or equal to zero uses the default. Inbox limits use zero to disable
+that dimension.
 
 ```toml
 [messaging]

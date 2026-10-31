@@ -112,6 +112,23 @@ func TestSendValidationAndMessageID(t *testing.T) {
 	}
 }
 
+func TestSendAllowsEmptyOriginAndRejectsMalformedOrigin(t *testing.T) {
+	s := testStore(t, Options{})
+	sender, recipient := testIdentity(t), testIdentity(t)
+	id, err := s.Send(&Message{Sender: sender, Recipient: recipient, MessageBox: "inbox", Body: "hello"}, "")
+	if err != nil || !IsV2MessageID(id) {
+		t.Fatalf("Send with empty origin = %q, %v", id, err)
+	}
+	msgs, err := s.List(recipient, "inbox")
+	if err != nil || len(msgs) != 1 || msgs[0].AttestedBy != "local" {
+		t.Fatalf("stored empty-origin message = %+v, %v", msgs, err)
+	}
+	_, err = s.Send(&Message{Sender: sender, Recipient: recipient, MessageBox: "inbox", Body: "bad origin"}, "not-a-key")
+	if !errors.Is(err, ErrInvalidOriginNode) || errors.Is(err, ErrInvalidRecipient) {
+		t.Fatalf("malformed origin error = %v", err)
+	}
+}
+
 func TestListDefaultResponseBudgetAndExplicitLimit(t *testing.T) {
 	previousMessages, previousBytes := ListResponseMaxMessages, ListResponseMaxBodyBytes
 	t.Cleanup(func() {
@@ -185,7 +202,7 @@ func TestDeliverRejectsInvalidSenderAndMessageID(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*Message){
 		"sender":   func(msg *Message) { msg.Sender = "not-a-key" },
-		"too long": func(msg *Message) { msg.MessageID = strings.Repeat("x", 129) },
+		"too long": func(msg *Message) { msg.MessageID = strings.Repeat("x", MaxMessageIDBytes+1) },
 		"space":    func(msg *Message) { msg.MessageID = "bad id" },
 		"control":  func(msg *Message) { msg.MessageID = "bad\x1fid" },
 	} {

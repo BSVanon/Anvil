@@ -58,6 +58,13 @@ func (s *Store) migrate() error {
 	if err != nil && !errors.Is(err, leveldb.ErrNotFound) {
 		return fmt.Errorf("read message schema: %w", err)
 	}
+	resuming, err := s.hasMigrationIndex()
+	if err != nil {
+		return err
+	}
+	if resuming {
+		log.Printf("messagebox store migration resuming after an interruption")
+	}
 
 	started := time.Now()
 	counts := migrationCounts{}
@@ -77,7 +84,7 @@ func (s *Store) migrate() error {
 	if err := s.db.Put(keyMetaSchema, []byte("2"), nil); err != nil {
 		return fmt.Errorf("write message schema: %w", err)
 	}
-	log.Printf("messagebox store migrated: %d messages in %s (%d undecodable, %d unservable, %d duplicate v1 records left in place)",
+	log.Printf("messagebox store migrated: %d messages in %s this run (%d undecodable, %d unservable, %d duplicate v1 records left in place)",
 		counts.inserted, time.Since(started).Round(time.Millisecond), counts.undecodable, counts.unservable, counts.duplicate)
 	return nil
 }
