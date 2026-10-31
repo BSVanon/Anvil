@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/spv"
@@ -90,6 +91,10 @@ func (s *Server) refreshCachedBEEF(txid string, cached []byte) ([]byte, string, 
 			resultCh <- beefRefreshResult{}
 			return
 		}
+		if !beefSubjectMatches(fetched, txid) {
+			resultCh <- beefRefreshResult{}
+			return
+		}
 		if err := s.fetchedBEEFSPVVerified(ctx, fetched); err != nil {
 			resultCh <- beefRefreshResult{}
 			return
@@ -166,4 +171,9 @@ func (s *Server) fetchedBEEFSPVVerified(ctx context.Context, beef []byte) error 
 func beefSubjectProven(beef []byte) bool {
 	tx, err := transaction.NewTransactionFromBEEF(beef)
 	return err == nil && tx.MerklePath != nil
+}
+
+func beefSubjectMatches(beef []byte, txid string) bool {
+	tx, err := transaction.NewTransactionFromBEEF(beef)
+	return err == nil && tx.TxID().String() == strings.ToLower(txid)
 }

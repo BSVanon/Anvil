@@ -105,6 +105,10 @@ func (s *Store) insertIfAbsent(record *StoredMessage, enforce bool) (bool, error
 }
 
 func (s *Store) insertLocked(record *StoredMessage, enforce bool) error {
+	return s.insertLockedWithDeletes(record, enforce, nil)
+}
+
+func (s *Store) insertLockedWithDeletes(record *StoredMessage, enforce bool, deleteKeys [][]byte) error {
 	if record.ReceivedAt <= 0 {
 		record.ReceivedAt = s.now().Unix()
 	}
@@ -145,6 +149,9 @@ func (s *Store) insertLocked(record *StoredMessage, enforce bool) error {
 	batch.Put(indexKey(record.Recipient, record.MessageID), primary)
 	batch.Put(expiryKey(record.ReceivedAt, primary), nil)
 	putUint64(batch, keyMetaSeq, seq)
+	for _, key := range deleteKeys {
+		batch.Delete(key)
+	}
 	pair.Count++
 	pair.Bytes += bodyBytes
 	inbox.Count++

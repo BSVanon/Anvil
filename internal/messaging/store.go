@@ -124,6 +124,7 @@ func (s *Store) Send(msg *Message, originNode string) (string, error) {
 	if _, err := parseCompressedKey(originNode); err != nil {
 		return "", fmt.Errorf("invalid origin node: %w", err)
 	}
+	msg.Sender = strings.ToLower(msg.Sender)
 	msg.Recipient = strings.ToLower(msg.Recipient)
 	if msg.Timestamp == 0 {
 		msg.Timestamp = s.now().Unix()
@@ -152,6 +153,7 @@ func (s *Store) Deliver(msg *Message, attestedBy string) (bool, error) {
 		return false, err
 	}
 	stored := *msg
+	stored.Sender = strings.ToLower(stored.Sender)
 	stored.Recipient = strings.ToLower(stored.Recipient)
 	record := &StoredMessage{
 		Message: stored, AttestedBy: strings.ToLower(attestedBy), ReceivedAt: s.now().Unix(),

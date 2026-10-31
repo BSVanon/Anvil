@@ -295,14 +295,14 @@ func TestHeadersRangeExceedsTip(t *testing.T) {
 func TestHeadersRangeBadParams(t *testing.T) {
 	srv := testServer(t)
 	cases := []string{
-		"/headers/range",                   // missing both
-		"/headers/range?from=0",            // missing count
-		"/headers/range?count=3",           // missing from
-		"/headers/range?from=abc&count=3",  // non-integer from
-		"/headers/range?from=0&count=abc",  // non-integer count
-		"/headers/range?from=0&count=0",    // count < 1
-		"/headers/range?from=0&count=51",   // count > MAX
-		"/headers/range?from=-1&count=3",   // negative from
+		"/headers/range",                  // missing both
+		"/headers/range?from=0",           // missing count
+		"/headers/range?count=3",          // missing from
+		"/headers/range?from=abc&count=3", // non-integer from
+		"/headers/range?from=0&count=abc", // non-integer count
+		"/headers/range?from=0&count=0",   // count < 1
+		"/headers/range?from=0&count=51",  // count > MAX
+		"/headers/range?from=-1&count=3",  // negative from
 	}
 	for _, path := range cases {
 		req := httptest.NewRequest("GET", path, nil)
@@ -345,6 +345,23 @@ func TestGetBEEFBadTxid(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestBEEFCORSExposesSourceAndSubjectHeaders(t *testing.T) {
+	srv := testServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/tx/0000000000000000000000000000000000000000000000000000000000000000/beef", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	exposed := w.Header().Get("Access-Control-Expose-Headers")
+	for _, header := range []string{
+		"X-Overlay-Gasp-Enabled", "X-Overlay-Gasp-Initial-Sync-Done",
+		"X-Overlay-Gasp-Last-Sync-Unix", "X-Overlay-Gasp-Interval-Secs",
+		"X-BEEF-Source", "X-BEEF-Subject-Proven",
+	} {
+		if !strings.Contains(exposed, header) {
+			t.Errorf("exposed headers %q missing %s", exposed, header)
+		}
 	}
 }
 
@@ -626,4 +643,3 @@ func overlayTestKey() *ec.PrivateKey {
 	key, _ := ec.PrivateKeyFromWif("KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74sHUHy8S")
 	return key
 }
-

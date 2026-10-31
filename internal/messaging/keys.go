@@ -10,15 +10,16 @@ import (
 )
 
 var (
-	prefixPrimary  = []byte("m2:")
-	prefixIndex    = []byte("mi:")
-	prefixExpiry   = []byte("ex:")
-	prefixV1       = []byte("msg:")
-	prefixPair     = []byte("qp:")
-	prefixInbox    = []byte("qr:")
-	keyNodeCounter = []byte("qn:")
-	keyMetaSeq     = []byte("meta:seq")
-	keyMetaSchema  = []byte("meta:schema")
+	prefixPrimary   = []byte("m2:")
+	prefixIndex     = []byte("mi:")
+	prefixExpiry    = []byte("ex:")
+	prefixV1        = []byte("msg:")
+	prefixMigration = []byte("mg:")
+	prefixPair      = []byte("qp:")
+	prefixInbox     = []byte("qr:")
+	keyNodeCounter  = []byte("qn:")
+	keyMetaSeq      = []byte("meta:seq")
+	keyMetaSchema   = []byte("meta:schema")
 )
 
 func primaryPrefix(recipient, box string) []byte {

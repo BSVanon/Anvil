@@ -2,11 +2,11 @@ package messaging
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,13 +15,24 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
-var migrationTestHook func(inserted int) error
+const migrationIndexBatchSize = 1000
 
-type v1Record struct {
-	key       []byte
-	timestamp int64
-	messageID string
-	recipient string
+var (
+	migrationPass1TestHook func(indexed int) error
+	migrationTestHook      func(inserted int) error
+)
+
+type migrationCounts struct {
+	inserted    int
+	undecodable int
+	unservable  int
+	duplicate   int
+}
+
+type v1Metadata struct {
+	Timestamp int64  `json:"timestamp"`
+	MessageID string `json:"messageId"`
+	Recipient string `json:"recipient"`
 }
 
 func (s *Store) migrate() error {
@@ -32,136 +43,214 @@ func (s *Store) migrate() error {
 	if err != nil && !errors.Is(err, leveldb.ErrNotFound) {
 		return fmt.Errorf("read message schema: %w", err)
 	}
+
 	started := time.Now()
-	records, undecodable, err := s.readV1Records()
+	counts := migrationCounts{}
+	if err := s.buildMigrationIndex(&counts); err != nil {
+		return err
+	}
+	if err := s.moveMigrationIndex(&counts); err != nil {
+		return err
+	}
+	remaining, err := s.hasMigrationIndex()
 	if err != nil {
 		return err
 	}
-	if len(records) == 0 && undecodable == 0 {
-		if err := s.db.Put(keyMetaSchema, []byte("2"), nil); err != nil {
-			return fmt.Errorf("write message schema: %w", err)
+	if remaining {
+		return errors.New("migration index was not fully processed")
+	}
+	if err := s.db.Put(keyMetaSchema, []byte("2"), nil); err != nil {
+		return fmt.Errorf("write message schema: %w", err)
+	}
+	log.Printf("messagebox store migrated: %d messages in %s (%d undecodable, %d unservable, %d duplicate v1 records left in place)",
+		counts.inserted, time.Since(started).Round(time.Millisecond), counts.undecodable, counts.unservable, counts.duplicate)
+	return nil
+}
+
+func (s *Store) buildMigrationIndex(counts *migrationCounts) error {
+	iter := s.db.NewIterator(util.BytesPrefix(prefixV1), nil)
+	defer iter.Release()
+	batch := new(leveldb.Batch)
+	batched := 0
+	indexed := 0
+	flush := func() error {
+		if batched == 0 {
+			return nil
+		}
+		if err := s.db.Write(batch, nil); err != nil {
+			return fmt.Errorf("write migration index: %w", err)
+		}
+		indexed += batched
+		batch.Reset()
+		batched = 0
+		if migrationPass1TestHook != nil {
+			return migrationPass1TestHook(indexed)
 		}
 		return nil
 	}
-	sort.SliceStable(records, func(i, j int) bool {
-		if records[i].timestamp != records[j].timestamp {
-			return records[i].timestamp < records[j].timestamp
-		}
-		a, aErr := strconv.ParseUint(records[i].messageID, 10, 64)
-		b, bErr := strconv.ParseUint(records[j].messageID, 10, 64)
-		if aErr == nil && bErr == nil {
-			return a < b
-		}
-		return records[i].messageID < records[j].messageID
-	})
-	now := s.now().Unix()
-	inserted := 0
-	unservable := 0
-	deleteKeys := make([][]byte, 0, len(records))
-	for i := range records {
-		raw, getErr := s.db.Get(records[i].key, nil)
-		if errors.Is(getErr, leveldb.ErrNotFound) {
+	for iter.Next() {
+		metadata, err := decodeV1Metadata(iter.Key(), iter.Value())
+		if err != nil {
+			counts.undecodable++
 			continue
 		}
-		if getErr != nil {
-			return fmt.Errorf("read v1 message: %w", getErr)
+		original := append([]byte(nil), iter.Key()...)
+		batch.Put(migrationIndexKey(metadata.Timestamp, metadata.MessageID, original), original)
+		batched++
+		if batched == migrationIndexBatchSize {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return fmt.Errorf("iterate v1 messages: %w", err)
+	}
+	return flush()
+}
+
+func (s *Store) moveMigrationIndex(counts *migrationCounts) error {
+	iter := s.db.NewIterator(util.BytesPrefix(prefixMigration), nil)
+	defer iter.Release()
+	now := s.now().Unix()
+	for iter.Next() {
+		migrationKey := append([]byte(nil), iter.Key()...)
+		v1Key := append([]byte(nil), iter.Value()...)
+		raw, err := s.db.Get(v1Key, nil)
+		if errors.Is(err, leveldb.ErrNotFound) {
+			if err := s.deleteMigrationKey(migrationKey); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read v1 message: %w", err)
+		}
+		metadata, err := decodeV1Metadata(v1Key, raw)
+		if err != nil {
+			counts.undecodable++
+			if err := s.deleteMigrationKey(migrationKey); err != nil {
+				return err
+			}
+			continue
 		}
 		var msg Message
 		if err := json.Unmarshal(raw, &msg); err != nil {
-			undecodable++
+			counts.undecodable++
+			if err := s.deleteMigrationKey(migrationKey); err != nil {
+				return err
+			}
 			continue
 		}
-		recipient, err := normalizeRecipient(records[i].recipient)
-		if err != nil || len(msg.MessageBox) == 0 || len(msg.MessageBox) > MaxMessageBoxBytes {
-			unservable++
+		recipient, err := normalizeRecipient(metadata.Recipient)
+		if err != nil || validateMessageBox(msg.MessageBox) != nil {
+			counts.unservable++
+			if err := s.deleteMigrationKey(migrationKey); err != nil {
+				return err
+			}
 			continue
 		}
-		msg.Timestamp = records[i].timestamp
-		msg.MessageID = records[i].messageID
+		msg.Timestamp = metadata.Timestamp
+		msg.MessageID = metadata.MessageID
 		msg.Recipient = recipient
-		idx := indexKey(msg.Recipient, msg.MessageID)
-		primary, getErr := s.db.Get(idx, nil)
-		if getErr == nil {
-			ok, hasErr := s.db.Has(primary, nil)
-			if hasErr != nil {
-				return fmt.Errorf("read migration primary: %w", hasErr)
-			}
-			if ok {
-				deleteKeys = append(deleteKeys, records[i].key)
-				continue
-			}
-		} else if !errors.Is(getErr, leveldb.ErrNotFound) {
-			return fmt.Errorf("read migration index: %w", getErr)
+		if _, err := parseCompressedKey(msg.Sender); err == nil {
+			msg.Sender = strings.ToLower(msg.Sender)
 		}
 		receivedAt := msg.Timestamp
 		if receivedAt <= 0 || receivedAt > now {
 			receivedAt = now
 		}
 		record := &StoredMessage{Message: msg, AttestedBy: "unknown", ReceivedAt: receivedAt}
+
+		moved := false
 		s.writeMu.Lock()
-		err = s.insertLocked(record, false)
+		_, indexErr := s.db.Get(indexKey(msg.Recipient, msg.MessageID), nil)
+		if indexErr == nil {
+			counts.duplicate++
+			err = s.deleteMigrationKey(migrationKey)
+		} else if !errors.Is(indexErr, leveldb.ErrNotFound) {
+			err = fmt.Errorf("read migration index: %w", indexErr)
+		} else {
+			err = s.insertLockedWithDeletes(record, false, [][]byte{v1Key, migrationKey})
+			if err == nil {
+				counts.inserted++
+				moved = true
+			}
+		}
 		s.writeMu.Unlock()
 		if err != nil {
 			return fmt.Errorf("migrate message %s: %w", msg.MessageID, err)
 		}
-		deleteKeys = append(deleteKeys, records[i].key)
-		inserted++
-		if migrationTestHook != nil {
-			if err := migrationTestHook(inserted); err != nil {
+		if moved && migrationTestHook != nil {
+			if err := migrationTestHook(counts.inserted); err != nil {
 				return err
 			}
 		}
 	}
-	for start := 0; start < len(deleteKeys); start += 1000 {
-		end := start + 1000
-		if end > len(deleteKeys) {
-			end = len(deleteKeys)
-		}
-		batch := new(leveldb.Batch)
-		for _, key := range deleteKeys[start:end] {
-			batch.Delete(key)
-		}
-		if err := s.db.Write(batch, nil); err != nil {
-			return fmt.Errorf("delete migrated v1 messages: %w", err)
-		}
+	if err := iter.Error(); err != nil {
+		return fmt.Errorf("iterate migration index: %w", err)
 	}
-	if err := s.db.Put(keyMetaSchema, []byte("2"), nil); err != nil {
-		return fmt.Errorf("write message schema: %w", err)
-	}
-	log.Printf("messagebox store migrated: %d messages in %s (%d undecodable, %d unservable v1 records left in place)",
-		len(deleteKeys), time.Since(started).Round(time.Millisecond), undecodable, unservable)
 	return nil
 }
 
-func (s *Store) readV1Records() ([]v1Record, int, error) {
-	records := make([]v1Record, 0)
-	undecodable := 0
-	iter := s.db.NewIterator(util.BytesPrefix(prefixV1), nil)
+func decodeV1Metadata(key, raw []byte) (v1Metadata, error) {
+	var metadata v1Metadata
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		return metadata, err
+	}
+	keyTail := string(key[len(prefixV1):])
+	if split := strings.IndexByte(keyTail, ':'); split >= 0 {
+		metadata.Recipient = keyTail[:split]
+		metadata.MessageID = keyTail[split+1:]
+	}
+	return metadata, nil
+}
+
+func migrationIndexKey(timestamp int64, messageID string, original []byte) []byte {
+	key := make([]byte, 0, len(prefixMigration)+8+1+8+4+len(messageID)+len(original))
+	key = append(key, prefixMigration...)
+	var raw [8]byte
+	binary.BigEndian.PutUint64(raw[:], uint64(timestamp)^(uint64(1)<<63))
+	key = append(key, raw[:]...)
+	if numeric, ok := decimalUint64(messageID); ok {
+		key = append(key, 0)
+		binary.BigEndian.PutUint64(raw[:], numeric)
+		key = append(key, raw[:]...)
+	} else {
+		key = append(key, 1)
+		key = appendLP(key, messageID)
+	}
+	return append(key, original...)
+}
+
+func decimalUint64(value string) (uint64, bool) {
+	if value == "" {
+		return 0, false
+	}
+	for i := range value {
+		if value[i] < '0' || value[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(value, 10, 64)
+	return n, err == nil
+}
+
+func (s *Store) deleteMigrationKey(key []byte) error {
+	batch := new(leveldb.Batch)
+	batch.Delete(key)
+	if err := s.db.Write(batch, nil); err != nil {
+		return fmt.Errorf("delete migration index: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) hasMigrationIndex() (bool, error) {
+	iter := s.db.NewIterator(util.BytesPrefix(prefixMigration), nil)
 	defer iter.Release()
-	for iter.Next() {
-		var metadata struct {
-			Timestamp int64  `json:"timestamp"`
-			MessageID string `json:"messageId"`
-			Recipient string `json:"recipient"`
-		}
-		if err := json.Unmarshal(iter.Value(), &metadata); err != nil {
-			undecodable++
-			continue
-		}
-		keyTail := string(iter.Key()[len(prefixV1):])
-		if split := strings.IndexByte(keyTail, ':'); split >= 0 {
-			metadata.Recipient = keyTail[:split]
-			metadata.MessageID = keyTail[split+1:]
-		}
-		records = append(records, v1Record{
-			key:       append([]byte(nil), iter.Key()...),
-			timestamp: metadata.Timestamp,
-			messageID: metadata.MessageID,
-			recipient: metadata.Recipient,
-		})
-	}
+	remaining := iter.Next()
 	if err := iter.Error(); err != nil {
-		return nil, undecodable, fmt.Errorf("iterate v1 messages: %w", err)
+		return false, fmt.Errorf("inspect migration index: %w", err)
 	}
-	return records, undecodable, nil
+	return remaining, nil
 }

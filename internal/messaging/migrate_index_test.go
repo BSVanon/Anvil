@@ -1,0 +1,201 @@
+package messaging
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/util"
+)
+
+func writeV1Messages(t *testing.T, path, recipient string, count int) {
+	t.Helper()
+	db, err := leveldb.OpenFile(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	batch := new(leveldb.Batch)
+	for i := 0; i < count; i++ {
+		msg := Message{
+			MessageID: fmt.Sprint(i), Sender: "sender", Recipient: recipient,
+			MessageBox: "box", Body: "x", Timestamp: int64(i),
+		}
+		raw, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		batch.Put([]byte("msg:"+recipient+":"+msg.MessageID), raw)
+		if (i+1)%1000 == 0 {
+			if err := db.Write(batch, nil); err != nil {
+				t.Fatal(err)
+			}
+			batch.Reset()
+		}
+	}
+	if batch.Len() != 0 {
+		if err := db.Write(batch, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func countPrefix(t *testing.T, db *leveldb.DB, prefix []byte) int {
+	t.Helper()
+	count := 0
+	iter := db.NewIterator(util.BytesPrefix(prefix), nil)
+	defer iter.Release()
+	for iter.Next() {
+		count++
+	}
+	if err := iter.Error(); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func TestMigrationIndexOrdersSignedTimestampsAndMixedIDs(t *testing.T) {
+	path := t.TempDir()
+	recipient := testIdentity(t)
+	db, err := leveldb.OpenFile(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := []Message{
+		{MessageID: "10", Timestamp: -1},
+		{MessageID: "2", Timestamp: -1},
+		{MessageID: "1x", Timestamp: -1},
+		{MessageID: "0", Timestamp: 0},
+		{MessageID: "zero-nonnumeric", Timestamp: 0},
+	}
+	for _, msg := range fixtures {
+		msg.Sender, msg.Recipient, msg.MessageBox, msg.Body = "sender", recipient, "box", "x"
+		raw, _ := json.Marshal(msg)
+		if err := db.Put([]byte("msg:"+recipient+":"+msg.MessageID), raw, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewStore(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	msgs, err := s.List(recipient, "box")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"2", "10", "1x", "0", "zero-nonnumeric"}
+	for i, id := range want {
+		if msgs[i].MessageID != id {
+			t.Fatalf("order[%d] = %q, want %q", i, msgs[i].MessageID, id)
+		}
+	}
+}
+
+func TestMigrationResumesAfterPartialPassOne(t *testing.T) {
+	path := t.TempDir()
+	recipient := testIdentity(t)
+	writeV1Messages(t, path, recipient, 1500)
+	migrationPass1TestHook = func(indexed int) error {
+		if indexed == migrationIndexBatchSize {
+			return errors.New("simulated pass one crash")
+		}
+		return nil
+	}
+	_, err := NewStore(path, Options{})
+	migrationPass1TestHook = nil
+	if err == nil || err.Error() != "simulated pass one crash" {
+		t.Fatalf("first migration error = %v", err)
+	}
+
+	s, err := NewStore(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Count() != 1500 || countPrefix(t, s.db, prefixV1) != 0 || countPrefix(t, s.db, prefixMigration) != 0 {
+		t.Fatalf("resumed migration counts: stored=%d v1=%d mg=%d", s.Count(), countPrefix(t, s.db, prefixV1), countPrefix(t, s.db, prefixMigration))
+	}
+	checkCounterInvariant(t, s)
+}
+
+func TestMigrationDuplicateIndexLeavesV1Record(t *testing.T) {
+	path := t.TempDir()
+	recipient := testIdentity(t)
+	writeV1Messages(t, path, recipient, 1)
+	db, err := leveldb.OpenFile(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Put(indexKey(recipient, "0"), []byte("stale-primary"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewStore(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	v1Key := []byte("msg:" + recipient + ":0")
+	if present, err := s.db.Has(v1Key, nil); err != nil || !present {
+		t.Fatalf("duplicate v1 present=%v err=%v", present, err)
+	}
+	if got := countPrefix(t, s.db, prefixMigration); got != 0 {
+		t.Fatalf("migration index keys = %d, want 0", got)
+	}
+}
+
+func TestMigrationNormalizesValidSender(t *testing.T) {
+	path := t.TempDir()
+	recipient, sender := testIdentity(t), testIdentity(t)
+	db, err := leveldb.OpenFile(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := Message{MessageID: "1", Sender: strings.ToUpper(sender), Recipient: recipient, MessageBox: "box", Body: "x", Timestamp: time.Now().Unix()}
+	raw, _ := json.Marshal(msg)
+	if err := db.Put([]byte("msg:"+recipient+":1"), raw, nil); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	s, err := NewStore(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	msgs, err := s.List(recipient, "box")
+	if err != nil || len(msgs) != 1 || msgs[0].Sender != sender {
+		t.Fatalf("migrated sender = %+v, err=%v", msgs, err)
+	}
+}
+
+func TestMigrationFiftyThousandRecords(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large migration")
+	}
+	path := t.TempDir()
+	recipient := testIdentity(t)
+	writeV1Messages(t, path, recipient, 50000)
+	s, err := NewStore(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Count() != 50000 {
+		t.Fatalf("count = %d, want 50000", s.Count())
+	}
+	if countPrefix(t, s.db, prefixV1) != 0 || countPrefix(t, s.db, prefixMigration) != 0 {
+		t.Fatal("migration left v1 or migration-index keys")
+	}
+}

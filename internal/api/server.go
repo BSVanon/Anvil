@@ -401,7 +401,7 @@ func cors(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics, x-includes-off-chain-values, x-aggregation, X-BSV-Topic")
 		// Expose the /overlay/query readiness headers so browser callers can read
 		// them (custom response headers are hidden from JS unless exposed).
-		w.Header().Set("Access-Control-Expose-Headers", "X-Overlay-Gasp-Enabled, X-Overlay-Gasp-Initial-Sync-Done, X-Overlay-Gasp-Last-Sync-Unix, X-Overlay-Gasp-Interval-Secs")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Overlay-Gasp-Enabled, X-Overlay-Gasp-Initial-Sync-Done, X-Overlay-Gasp-Last-Sync-Unix, X-Overlay-Gasp-Interval-Secs, X-BEEF-Source, X-BEEF-Subject-Proven")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

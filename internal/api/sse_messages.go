@@ -19,7 +19,60 @@ import (
 // with no traffic — so we keep well under that. Comment lines (leading ':') are
 // ignored by EventSource, so this is invisible to clients. Var, not const, so
 // tests can shorten it.
-var sseHeartbeatInterval = 25 * time.Second
+var (
+	sseHeartbeatInterval      = 25 * time.Second
+	sseMaxStreamsPerClientKey = 64
+	sseMaxStreamsPerIdentity  = 16
+	sseMaxStreamsNodeWide     = 10000
+	liveMessageStreamCounts   = struct {
+		sync.Mutex
+		byClient   map[string]int
+		byIdentity map[string]int
+		total      int
+	}{byClient: make(map[string]int), byIdentity: make(map[string]int)}
+)
+
+func acquireMessageStream(clientKey, identity string) (release func(), ok bool) {
+	identity = strings.ToLower(identity)
+	liveMessageStreamCounts.Lock()
+	defer liveMessageStreamCounts.Unlock()
+	if liveMessageStreamCounts.byClient[clientKey] >= sseMaxStreamsPerClientKey ||
+		liveMessageStreamCounts.byIdentity[identity] >= sseMaxStreamsPerIdentity ||
+		liveMessageStreamCounts.total >= sseMaxStreamsNodeWide {
+		return nil, false
+	}
+	liveMessageStreamCounts.byClient[clientKey]++
+	liveMessageStreamCounts.byIdentity[identity]++
+	liveMessageStreamCounts.total++
+	return func() {
+		liveMessageStreamCounts.Lock()
+		defer liveMessageStreamCounts.Unlock()
+		liveMessageStreamCounts.byClient[clientKey]--
+		if liveMessageStreamCounts.byClient[clientKey] == 0 {
+			delete(liveMessageStreamCounts.byClient, clientKey)
+		}
+		liveMessageStreamCounts.byIdentity[identity]--
+		if liveMessageStreamCounts.byIdentity[identity] == 0 {
+			delete(liveMessageStreamCounts.byIdentity, identity)
+		}
+		liveMessageStreamCounts.total--
+	}, true
+}
+
+func (s *Server) messageStreamClientKey(r *http.Request) string {
+	trustProxy, trustHops := false, 1
+	if s.messageboxLimiter != nil {
+		trustProxy, trustHops = s.messageboxLimiter.trustProxy, s.messageboxLimiter.trustHops
+	}
+	return rateLimitKey(clientIP(r, trustProxy, trustHops))
+}
+
+func writeMessageStreamLimit(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = w.Write([]byte(messageboxRateLimitBody))
+}
 
 // messageHub fans out new messages to SSE subscribers by recipient+messageBox.
 type messageHub struct {
@@ -120,6 +173,12 @@ func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	release, ok := acquireMessageStream(s.messageStreamClientKey(r), identity)
+	if !ok {
+		writeMessageStreamLimit(w)
+		return
+	}
+	defer release()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

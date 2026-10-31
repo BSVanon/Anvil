@@ -242,6 +242,30 @@ func TestMessageboxBRC31RateLimitResponse(t *testing.T) {
 	}
 }
 
+func TestMessageboxBRC31SSERateLimitResponseHasCORS(t *testing.T) {
+	srv := testServer(t)
+	_, _, srv.nodeWallet = newKeyWallet(t)
+	srv.messageboxLimiter = NewRateLimiterWithBurst(1, 1, false, 1)
+	srv.mux = http.NewServeMux()
+	srv.routes()
+
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/messages/subscribe?messageBox=box&token=invalid", nil)
+		req.RemoteAddr = "203.0.113.7:1234"
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w
+	}
+	request()
+	w := request()
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("SSE status = %d, want 429", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("SSE 429 missing CORS header: %q", got)
+	}
+}
+
 func TestOpenReadEndpointsAreRateLimited(t *testing.T) {
 	srv := testServer(t)
 	// Default test server has no rate limiter — open reads should work fine

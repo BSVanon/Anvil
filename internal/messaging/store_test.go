@@ -172,6 +172,42 @@ func TestDeliverRejectsInvalidSenderAndMessageID(t *testing.T) {
 	}
 }
 
+func TestSenderCaseVariantsSharePairQuota(t *testing.T) {
+	sender, recipient := testIdentity(t), testIdentity(t)
+
+	t.Run("deliver", func(t *testing.T) {
+		s := testStore(t, Options{MaxPairMessages: 1, MaxStoreMessages: 10})
+		first := &Message{MessageID: "upper", Sender: strings.ToUpper(sender), Recipient: recipient, MessageBox: "box", Body: "one"}
+		if inserted, err := s.Deliver(first, "sender"); err != nil || !inserted {
+			t.Fatalf("first deliver = %v, %v", inserted, err)
+		}
+		second := &Message{MessageID: "lower", Sender: sender, Recipient: recipient, MessageBox: "box", Body: "two"}
+		if _, err := s.Deliver(second, "sender"); !errors.Is(err, ErrPairQuota) {
+			t.Fatalf("second deliver error = %v, want pair quota", err)
+		}
+		msgs, _ := s.List(recipient, "box")
+		if len(msgs) != 1 || msgs[0].Sender != sender {
+			t.Fatalf("stored sender = %+v, want lowercase", msgs)
+		}
+	})
+
+	t.Run("send", func(t *testing.T) {
+		s := testStore(t, Options{MaxPairMessages: 1, MaxStoreMessages: 10})
+		origin := testIdentity(t)
+		upper := &Message{Sender: strings.ToUpper(sender), Recipient: recipient, MessageBox: "box", Body: "one"}
+		if _, err := s.Send(upper, origin); err != nil {
+			t.Fatal(err)
+		}
+		if upper.Sender != sender {
+			t.Fatalf("send sender = %q, want %q", upper.Sender, sender)
+		}
+		lower := &Message{Sender: sender, Recipient: recipient, MessageBox: "box", Body: "two"}
+		if _, err := s.Send(lower, origin); !errors.Is(err, ErrPairQuota) {
+			t.Fatalf("second send error = %v, want pair quota", err)
+		}
+	})
+}
+
 func TestInsertClampsNonPositiveReceivedAt(t *testing.T) {
 	s := testStore(t, Options{})
 	now := time.Unix(1_700_000_000, 0)

@@ -11,7 +11,7 @@
 | `/data` | POST | Bearer or x402 | Publish a signed envelope |
 | `/data` | DELETE | Bearer | Delete a stored envelope by `topic` + `key` |
 | `/broadcast` | POST | Bearer or x402 | Submit BEEF for validation; forwards to ARC if `?arc=true`. Returns derived `status` field. x402 accepted only when node sets a positive broadcast price. |
-| `/messages/subscribe` | GET | Bearer (via `?token=`) | SSE stream of new BRC-33 messages in real time |
+| `/messages/subscribe` | GET | Session or operator token (via `?token=`) | SSE stream of new BRC-33 messages in real time |
 | `/mesh/status` | GET | No | Rich live health snapshot; carries `upstream_status` for wallet failover decisions |
 | `/mesh/nodes` | GET | No | Authoritative federation directory (merged from SHIP + heartbeat + gossip adjacency) |
 
@@ -29,13 +29,17 @@
 
 ## Messaging Endpoints (BRC-33)
 
-Point-to-point messaging between identities.
+Point-to-point messaging between compressed secp256k1 identities. BRC-31
+mutual authentication is preferred and scopes callers to their own identity;
+the operator token remains a broad, node-scoped fallback.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/sendMessage` | POST | Bearer | Send a message to a recipient by pubkey |
-| `/listMessages` | POST | Bearer | Retrieve messages for a recipient's message box |
-| `/acknowledgeMessage` | POST | Bearer | Delete messages after receipt |
+| `/sendMessage` | POST | BRC-31 or operator token | Send a message to a recipient by pubkey |
+| `/listMessages` | POST | BRC-31 or operator token | Retrieve messages for a recipient's message box |
+| `/acknowledgeMessage` | POST | BRC-31 or operator token | Delete messages after receipt |
+| `/messages/session` | POST | BRC-31 | Mint a five-minute, identity-scoped SSE token |
+| `/messages/subscribe` | GET | Session or operator token | Stream newly arrived messages for one message box |
 
 ### POST /sendMessage
 
@@ -47,10 +51,15 @@ Point-to-point messaging between identities.
 }
 ```
 
-Response: `{"status": "success", "messageId": "42"}`
+Response: `{"status":"success","messageId":"7f..."}`
 
-The sender is the node's identity. Messages are forwarded across the mesh
-via gossip with sender signature verification. Unacknowledged messages
+`messageId` is an opaque string. Newly generated IDs are 64 lowercase hex
+characters, while messages received from older nodes can retain legacy IDs.
+Never parse, sort, increment, or otherwise treat a message ID as a number.
+
+The sender is the BRC-31-authenticated caller identity, or the node identity
+when the operator-token fallback is used. Messages are forwarded across the
+mesh via gossip with sender signature verification. Unacknowledged messages
 expire after 7 days.
 
 ### POST /listMessages
@@ -62,9 +71,30 @@ expire after 7 days.
 }
 ```
 
-Response: `{"status": "success", "messages": [{"messageId": "42", "sender": "02xyz...", "body": "hello", "timestamp": 1712345678}]}`
+Response:
 
-If `recipient` is omitted, defaults to the node's identity.
+```json
+{
+  "status": "success",
+  "messages": [{
+    "messageId": "7f...",
+    "sender": "02xyz...",
+    "recipient": "02abc...def",
+    "messageBox": "inbox",
+    "body": "hello",
+    "timestamp": 1712345678,
+    "senderAttestedBy": "local"
+  }]
+}
+```
+
+Entries are returned in local arrival order. `senderAttestedBy` is one of
+`"local"` (created by this node), an origin node's compressed public key,
+`"sender"` (legacy sender-attested delivery), or `"unknown"` (migrated legacy
+record). An empty box returns `"messages":[]`.
+
+For BRC-31 callers the recipient is always the caller's identity. With the
+operator token, an omitted recipient defaults to the node identity.
 
 ### POST /acknowledgeMessage
 
@@ -77,6 +107,40 @@ If `recipient` is omitted, defaults to the node's identity.
 
 Response: `{"status": "success", "acknowledged": 2}`
 
+### Message validation, quotas, and errors
+
+- `recipient` must be a valid 33-byte compressed secp256k1 public key encoded
+  as 66 hex characters.
+- `messageBox` is required and is 1–128 bytes. Message bodies are required and
+  are limited to 1 MiB.
+- An acknowledgement accepts at most 1,000 message ID strings. A list `limit`
+  must be a non-negative integer and is capped at 100.
+- Per sender/recipient storage defaults to 1,000 messages and 64 MiB. The
+  node-wide defaults are 1,000,000 messages and 2 GiB. Per-inbox limits are
+  disabled by default.
+
+Coded failures use this shape:
+
+```json
+{"status":"error","code":"ERR_...","description":"...","error":"..."}
+```
+
+| HTTP | Code | Meaning |
+|------|------|---------|
+| 400 | `ERR_INVALID_RECIPIENT_KEY` | Recipient is not a compressed secp256k1 key |
+| 400 | `ERR_INVALID_MESSAGEBOX` | Message box is empty |
+| 400 | `ERR_MESSAGEBOX_TOO_LARGE` | Message box exceeds 128 bytes |
+| 429 | `ERR_SENDER_QUOTA_EXCEEDED` | Sender/recipient pair quota is full |
+| 429 | `ERR_INBOX_QUOTA_EXCEEDED` | Configured recipient inbox quota is full |
+| 429 | `ERR_NODE_STORE_FULL` | Node-wide message store quota is full |
+| 429 | `ERR_RATE_LIMITED` | Messagebox request or live-stream cap exceeded |
+
+Every messagebox route, including the BRC-31 handshake and SSE endpoint, has a
+separate per-client token bucket: 20 requests/second with a burst of 40. A
+limited request includes `Retry-After: 1`. Live SSE streams are additionally
+limited to 64 per client key, 16 per authenticated identity, and 10,000 across
+the node. IPv6 clients share a client key by `/64`.
+
 ## Proof and Content Endpoints
 
 | Endpoint | Method | Auth | Description |
@@ -84,6 +148,9 @@ Response: `{"status": "success", "acknowledged": 2}`
 | `/tx/{txid}/beef` | GET | No | BEEF proof for a transaction. `Accept: application/octet-stream` returns raw bytes. |
 | `/headers/tip` | GET | No | Current BSV header-chain tip: `{height, hash}` |
 | `/headers/range` | GET | No | N consecutive raw 80-byte block headers. Query: `from`, `count` (1..50). JSON default; `Accept: application/octet-stream` returns `count × 80` raw bytes. Used by SPV proof-builders. |
+| `/getPresentHeight` | GET | No | Chaintracks-compatible current header height |
+| `/findHeaderHexForHeight?height=N` | GET | No | Chaintracks-compatible parsed header lookup by height |
+| `/findHeaderHexForBlockHash?hash=H` | GET | No | Chaintracks-compatible parsed header lookup by display-order block hash |
 | `/content/{txid}_{vout}` | GET | No | Raw content from a transaction output |
 
 ## Node-Signed Publishing
@@ -176,10 +243,21 @@ proof came from:
 }
 ```
 
-Binary responses (on `Accept: application/octet-stream`) surface the
-same value via the `X-BEEF-Source` header. Wallets doing multi-source
-BEEF chains should prefer `"cached"` from Anvil and fall back to a
+Binary responses (on `Accept: application/octet-stream`) surface the same
+value via the `X-BEEF-Source` header. Both JSON and binary responses include
+`X-BEEF-Subject-Proven: true|false`; it reports whether the requested subject
+transaction itself has a Merkle path, rather than only an ancestor having one.
+Both headers are exposed to browser JavaScript by CORS. Wallets doing
+multi-source BEEF chains should prefer `"cached"` from Anvil and fall back to a
 direct upstream for `"arc"`/`"woc"` (passthrough).
+
+On a cache miss, Anvil accepts a fetched BEEF only when its subject transaction
+ID matches the requested txid and it passes local validation. When a cached
+subject is still unproven, Anvil periodically attempts to refresh it. The cache
+is upgraded only by a matching, subject-proven, locally SPV-verified BEEF. A
+failed, mismatched, invalid, or slow refresh leaves the cached copy untouched
+and serves that copy; if the refresh takes more than three seconds, it may
+finish and populate the cache after the current response has returned.
 
 ## Mesh status response shape (v2.1.0+)
 
@@ -291,8 +369,10 @@ proprietary data feeds, etc.) without Anvil code changes.
 
 ### GET /messages/subscribe (v2.1.0+)
 
-SSE push for new BRC-33 messages. EventSource cannot set custom headers,
-so the auth token is passed via `?token=` query param:
+SSE push for new BRC-33 messages. EventSource cannot perform BRC-31 or set
+custom headers, so first mint an identity-scoped token with authenticated
+`POST /messages/session`, then pass it via `?token=`. The operator token is
+also accepted as a broad fallback:
 
 ```js
 const url = `http://localhost:9333/messages/subscribe?messageBox=avos.offer&token=${token}`;
@@ -303,16 +383,44 @@ source.onmessage = (e) => console.log(JSON.parse(e.data));
 Each message arrives as a `data:` event with a monotonic `id:` field.
 On reconnect, use `Last-Event-ID` + `POST /listMessages` to backfill.
 
+## v3.4 messaging configuration
+
+The v3.4 API limiter keys default as follows; non-positive values fall back to
+these defaults. With `trust_proxy = true`, `trust_proxy_hops` selects the
+forwarded-for entry that many hops from the right.
+
+```toml
+[api]
+trust_proxy_hops = 1
+messagebox_rate_limit = 20
+messagebox_rate_burst = 40
+```
+
+Message storage defaults apply on upgrade without a config edit. Byte quotas
+count message body bytes; a zero inbox limit disables that dimension.
+
+```toml
+[messaging]
+ttl_seconds = 604800
+max_pair_messages = 1000
+max_pair_bytes = 67108864
+max_store_messages = 1000000
+max_store_bytes = 2147483648
+max_inbox_messages = 0
+max_inbox_bytes = 0
+```
+
 ## Authentication
 
-Transport auth for publishing data and sending messages:
+Transport auth for publishing data:
 
 1. **Bearer token** — operator auth, derived from WIF: `Authorization: Bearer <token>`
 2. **x402 payment** — anyone can publish/query by paying the node's price
 
 Every published envelope is also signed by the app's BSV key. The signature
 proves authorship, but it does not replace bearer auth or x402 payment for
-write endpoints.
+data write endpoints. Messagebox authentication is described above and does
+not use x402.
 
 Get your auth token:
 ```bash
@@ -395,9 +503,10 @@ Returned by `GET /identity/02abc...def` and included in `GET /topics/{topic}`.
 
 ```bash
 anvil help                  # full command reference
-sudo anvil info             # identity, funding address (token redacted; -show-secrets prints it)
+sudo anvil info             # identity and funding address; operator token is redacted
+sudo anvil info -show-secrets # include the full operator token
 sudo anvil doctor           # validate config, connectivity, mesh health
-sudo anvil token            # print auth token
+sudo anvil token            # print the full operator token directly
 curl -s localhost:9333/status   # node status
 sudo journalctl -u anvil-a -f  # live logs
 sudo systemctl restart anvil-a  # restart

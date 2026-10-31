@@ -47,6 +47,10 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "no BEEF available: "+fetchErr.Error())
 			return
 		}
+		if !beefSubjectMatches(fetched, txid) {
+			writeError(w, http.StatusNotFound, "fetched proof subject does not match txid")
+			return
+		}
 
 		// 3. Validate against local headers before caching
 		if validationErr := s.fetchedBEEFVerified(r.Context(), fetched); validationErr != nil {

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +103,12 @@ func TestMigrationRecoversAfterInterruptedInsert(t *testing.T) {
 	if s.Count() != 3 {
 		t.Fatalf("recovered count = %d", s.Count())
 	}
+	if got := countPrefix(t, s.db, prefixPrimary); got != 3 {
+		t.Fatalf("recovered primary records = %d, want 3", got)
+	}
+	if got := countPrefix(t, s.db, prefixMigration); got != 0 {
+		t.Fatalf("recovered migration index records = %d, want 0", got)
+	}
 	checkCounterInvariant(t, s)
 	for _, id := range []string{"alpha", "999999", "1000000"} {
 		var found bool
@@ -161,24 +166,6 @@ func TestMigrationLeavesUndecodableV1RecordAndSucceeds(t *testing.T) {
 	}
 	if ok, err := s.db.Has(badKey, nil); err != nil || !ok {
 		t.Fatalf("bad v1 record missing after second open: present=%v err=%v", ok, err)
-	}
-}
-
-func TestMigrationPassOneRecordContainsOnlyMetadata(t *testing.T) {
-	typ := reflect.TypeOf(v1Record{})
-	want := []string{"key", "timestamp", "messageID", "recipient"}
-	wantTypes := []reflect.Type{
-		reflect.TypeOf([]byte(nil)), reflect.TypeOf(int64(0)),
-		reflect.TypeOf(""), reflect.TypeOf(""),
-	}
-	if typ.NumField() != len(want) {
-		t.Fatalf("v1Record has %d fields, want metadata fields %v", typ.NumField(), want)
-	}
-	for i, name := range want {
-		field := typ.Field(i)
-		if field.Name != name || field.Type != wantTypes[i] {
-			t.Fatalf("v1Record field %d = %s %v, want %s %v", i, field.Name, field.Type, name, wantTypes[i])
-		}
 	}
 }
 

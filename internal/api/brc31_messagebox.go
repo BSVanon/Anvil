@@ -114,7 +114,7 @@ func (s *Server) registerMessageboxBRC31() {
 
 	// SSE stays a direct route (EventSource can't do the handshake); it is
 	// gated by the per-identity session token minted at /messages/session.
-	s.mux.Handle("GET /messages/subscribe", messageboxRateLimit(s.messageboxLimiter, http.HandlerFunc(s.handleMessageSubscribe)))
+	s.mux.Handle("GET /messages/subscribe", brc31CORS(messageboxRateLimit(s.messageboxLimiter, http.HandlerFunc(s.handleMessageSubscribe))))
 }
 
 // registerMessageboxLegacy mounts the messagebox routes behind the operator
