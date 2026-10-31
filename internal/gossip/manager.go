@@ -62,6 +62,8 @@ type Manager struct {
 	seen    map[string]struct{}
 	seenMu  sync.Mutex
 	maxSeen int
+	// seenOwners maps a message seen entry to the in-flight forward that set it (guarded by seenMu).
+	seenOwners map[string]*forwardSeenOwner
 
 	// callback for new envelopes from the mesh
 	onEnvelope func(*envelope.Envelope)

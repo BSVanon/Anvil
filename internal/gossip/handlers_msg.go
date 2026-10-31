@@ -24,6 +24,8 @@ type messageQuotaDropState struct {
 
 var messageQuotaDrops sync.Map
 
+type forwardSeenOwner struct{}
+
 // MsgForwardPayload carries a point-to-point message for cross-node delivery.
 //
 // Sender attestation (canonical BRC-33 model): under canonical MessageBox the
@@ -262,6 +264,11 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 		return nil
 	}
 	m.seen[dedup] = struct{}{}
+	seenOwner := &forwardSeenOwner{}
+	if m.seenOwners == nil {
+		m.seenOwners = make(map[string]*forwardSeenOwner)
+	}
+	m.seenOwners[dedup] = seenOwner
 	if len(m.seen) >= m.maxSeen {
 		removed := 0
 		for key := range m.seen {
@@ -278,6 +285,7 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	m.seenMu.Unlock()
 
 	relay := m.msgStore == nil
+	clearSeen := false
 	// Store using Deliver (preserves original MessageID) when a message store is
 	// available. Copies on non-home nodes are never acknowledged, so an
 	// intermediate node's pair quota can fill for a busy pair. Relaying
@@ -293,6 +301,7 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 				m.logMessageQuotaDrop(err)
 				relay = m.allowUnstoredRelay()
 			} else {
+				clearSeen = true
 				m.logger.Debug("forwarded message store failed", "error", err)
 			}
 		} else if ok {
@@ -301,12 +310,25 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 				"id", msg.MessageID, "recipient", msg.Recipient)
 		}
 	}
+	m.finishForwardSeen(dedup, seenOwner, clearSeen)
 
 	if relay {
 		m.relayMessageForward(senderPKHex, fwd)
 	}
 
 	return nil
+}
+
+func (m *Manager) finishForwardSeen(dedup string, owner *forwardSeenOwner, clearSeen bool) {
+	m.seenMu.Lock()
+	defer m.seenMu.Unlock()
+	if m.seenOwners[dedup] != owner {
+		return
+	}
+	if clearSeen {
+		delete(m.seen, dedup)
+	}
+	delete(m.seenOwners, dedup)
 }
 
 func (m *Manager) logMessageQuotaDrop(err error) {

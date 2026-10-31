@@ -138,11 +138,14 @@ divergence from the canonical server).
   node-wide defaults are 1,000,000 messages and 2 GiB. Per-inbox limits are
   disabled by default.
 
-Coded failures use this shape:
+Validation, quota, rate-limit, and internal failures use this shape:
 
 ```json
 {"status":"error","code":"ERR_...","description":"...","error":"..."}
 ```
+
+Malformed JSON request bodies and authentication failures retain the simpler
+`{"error":"..."}` shape.
 
 | HTTP | Code | Meaning |
 |------|------|---------|
@@ -155,6 +158,7 @@ Coded failures use this shape:
 | 429 | `ERR_INBOX_QUOTA_EXCEEDED` | Configured recipient inbox quota is full |
 | 429 | `ERR_NODE_STORE_FULL` | Node-wide message store quota is full |
 | 429 | `ERR_RATE_LIMITED` | Messagebox request or live-stream cap exceeded |
+| 500 | `ERR_INTERNAL` | Internal messagebox operation failure; description and error are generic |
 
 Every messagebox route, including the BRC-31 handshake and SSE endpoint, has a
 separate per-client token bucket: 20 requests/second with a burst of 40. A

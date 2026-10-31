@@ -20,10 +20,13 @@ func writeCodedError(w http.ResponseWriter, status int, code, description string
 	})
 }
 
-func writeMessagingError(w http.ResponseWriter, err error, fallbackStatus int) {
+// writeMessagingError reports whether the mapped error is an internal failure
+// that the calling handler must log with its server logger.
+func writeMessagingError(w http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, messaging.ErrInvalidOriginNode):
 		writeCodedError(w, http.StatusInternalServerError, "ERR_INTERNAL", "An internal error has occurred.")
+		return true
 	case errors.Is(err, messaging.ErrInvalidRecipient):
 		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_RECIPIENT_KEY", "Recipient must be a valid compressed secp256k1 public key.")
 	case errors.Is(err, messaging.ErrInvalidMessageBox):
@@ -41,6 +44,8 @@ func writeMessagingError(w http.ResponseWriter, err error, fallbackStatus int) {
 	case errors.Is(err, messaging.ErrStoreFull):
 		writeCodedError(w, http.StatusTooManyRequests, "ERR_NODE_STORE_FULL", "Node message store is full.")
 	default:
-		writeCodedError(w, fallbackStatus, "ERR_MESSAGEBOX_OPERATION_FAILED", err.Error())
+		writeCodedError(w, http.StatusInternalServerError, "ERR_INTERNAL", "An internal error has occurred.")
+		return true
 	}
+	return false
 }

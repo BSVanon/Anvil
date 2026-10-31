@@ -453,6 +453,9 @@ func (s *Store) HeightForHash(hash *p2pwire.Hash) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	if len(val) != 4 {
+		return 0, fmt.Errorf("invalid hash height index value length: got %d, want 4", len(val))
+	}
 	return binary.BigEndian.Uint32(val), nil
 }
 

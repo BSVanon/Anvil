@@ -58,7 +58,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	id, err := s.msgStore.Send(msg, s.identityPub)
 	if err != nil {
-		writeMessagingError(w, err, http.StatusUnprocessableEntity)
+		if writeMessagingError(w, err) {
+			s.logger.Error("messagebox send failed", "error", err)
+		}
 		return
 	}
 
@@ -126,7 +128,9 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 
 	msgs, err := s.msgStore.ListN(recipient, req.MessageBox, limit)
 	if err != nil {
-		writeMessagingError(w, err, http.StatusInternalServerError)
+		if writeMessagingError(w, err) {
+			s.logger.Error("messagebox list failed", "error", err)
+		}
 		return
 	}
 
@@ -201,7 +205,9 @@ func (s *Server) handleAcknowledgeMessage(w http.ResponseWriter, r *http.Request
 
 	n, err := s.msgStore.Acknowledge(recipient, uniqueIDs)
 	if err != nil {
-		writeMessagingError(w, err, http.StatusInternalServerError)
+		if writeMessagingError(w, err) {
+			s.logger.Error("messagebox acknowledge failed", "error", err)
+		}
 		return
 	}
 

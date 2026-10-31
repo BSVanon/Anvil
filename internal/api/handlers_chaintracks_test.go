@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/libsv/go-p2p/chaincfg/chainhash"
+	"github.com/syndtr/goleveldb/leveldb"
 )
 
 // fetchChaintracks issues a GET against path and decodes the {status,value,...}
@@ -88,6 +90,45 @@ func TestFindHeaderHexForBlockHashRejectsStaleIndex(t *testing.T) {
 	}
 	if _, ok := resp["value"]; ok {
 		t.Fatal("stale hash index must not return the active header")
+	}
+}
+
+func TestFindHeaderHexForBlockHashTruncatedIndexIsInternalError(t *testing.T) {
+	const genesis = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+	dir := t.TempDir()
+	store, err := headers.NewTestStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := chainhash.NewHashFromStr(genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := leveldb.OpenFile(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := append([]byte("hi:"), hash[:]...)
+	if err := db.Put(key, []byte{0, 0, 0}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = headers.NewTestStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	srv := testServer(t)
+	srv.headerStore = store
+	code, resp := fetchChaintracks(t, srv, "/findHeaderHexForBlockHash?hash="+genesis)
+	if code != http.StatusInternalServerError || resp["status"] != "error" || resp["code"] != "ERR_INTERNAL" {
+		t.Fatalf("truncated hash index: got %d %#v", code, resp)
 	}
 }
 

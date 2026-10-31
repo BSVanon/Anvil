@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -157,6 +158,52 @@ func TestMessageHTTPWithoutNodeIdentityAndMalformedOrigin(t *testing.T) {
 	})
 	if response.Code != http.StatusInternalServerError || body["code"] != "ERR_INTERNAL" || body["description"] != "An internal error has occurred." {
 		t.Fatalf("malformed origin = %d, %v", response.Code, body)
+	}
+}
+
+func TestMessageHTTPStoreFailuresAreGenericInternalErrors(t *testing.T) {
+	srv, nodeHex := messageHandlerServer(t, messaging.Options{})
+	var logs bytes.Buffer
+	srv.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if err := srv.msgStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+		payload any
+	}{
+		{name: "send", handler: srv.handleSendMessage, payload: map[string]string{
+			"recipient": nodeHex, "messageBox": "box", "body": "body",
+		}},
+		{name: "list", handler: srv.handleListMessages, payload: map[string]string{
+			"recipient": nodeHex, "messageBox": "box",
+		}},
+		{name: "acknowledge", handler: srv.handleAcknowledgeMessage, payload: map[string]any{
+			"recipient": nodeHex, "messageIds": []string{"message-id"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response, body := callMessageHandler(t, tc.handler, tc.payload)
+			if response.Code != http.StatusInternalServerError ||
+				body["status"] != "error" || body["code"] != "ERR_INTERNAL" ||
+				body["description"] != "An internal error has occurred." ||
+				body["error"] != "An internal error has occurred." {
+				t.Fatalf("store failure = %d, %v", response.Code, body)
+			}
+			if strings.Contains(response.Body.String(), "leveldb") || strings.Contains(response.Body.String(), "closed") {
+				t.Fatalf("response leaked store error: %s", response.Body.String())
+			}
+		})
+	}
+	logged := logs.String()
+	for _, want := range []string{
+		"messagebox send failed", "messagebox list failed", "messagebox acknowledge failed", "leveldb: closed",
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("store error log missing %q: %q", want, logged)
+		}
 	}
 }
 
