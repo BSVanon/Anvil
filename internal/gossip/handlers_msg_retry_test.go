@@ -2,6 +2,7 @@ package gossip
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"testing"
 
@@ -192,4 +193,66 @@ func TestMsgSeenEvictionSkipsOwnedEntries(t *testing.T) {
 			t.Fatalf("msgSeen remained over capacity after owners finished: len=%d cap=%d", gotLen, mgr.maxSeen)
 		}
 	})
+}
+
+func TestMsgSeenEvictionBatchesUnownedEntries(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Logger: slog.Default(), MaxSeen: 10})
+	firstOwned := "msg:first-owned"
+	secondOwned := "msg:second-owned"
+	mgr.seenMu.Lock()
+	mgr.seenOwners = map[string]*forwardSeenOwner{
+		firstOwned:  {},
+		secondOwned: {},
+	}
+	for i := 0; i < mgr.maxSeen-2; i++ {
+		mgr.msgSeen[fmt.Sprintf("msg:existing-%d", i)] = struct{}{}
+	}
+	mgr.msgSeen[firstOwned] = struct{}{}
+	mgr.msgSeen[secondOwned] = struct{}{}
+	mgr.seenMu.Unlock()
+
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	msg := sampleMsg(sender, recipient)
+	msg.MessageID = "batched"
+	raw, err := json.Marshal(legacyForward(t, senderKey, msg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr.seenMu.Lock()
+	_, firstSeen := mgr.msgSeen[firstOwned]
+	_, secondSeen := mgr.msgSeen[secondOwned]
+	_, newSeen := mgr.msgSeen["msg:batched"]
+	gotLen := len(mgr.msgSeen)
+	mgr.seenMu.Unlock()
+	if !firstSeen || !secondSeen || !newSeen || gotLen > mgr.maxSeen/2+1 {
+		t.Fatalf("msgSeen after batch eviction: first=%v second=%v new=%v len=%d", firstSeen, secondSeen, newSeen, gotLen)
+	}
+}
+
+func TestMsgSeenEvictionKeepsSequentialForwardsBounded(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Logger: slog.Default(), MaxSeen: 10})
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	for i := 0; i < 50; i++ {
+		msg := sampleMsg(sender, recipient)
+		msg.MessageID = fmt.Sprintf("sequential-%d", i)
+		raw, err := json.Marshal(legacyForward(t, senderKey, msg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.onMsgForward("peer", raw); err != nil {
+			t.Fatal(err)
+		}
+		mgr.seenMu.Lock()
+		gotLen := len(mgr.msgSeen)
+		mgr.seenMu.Unlock()
+		if gotLen > mgr.maxSeen {
+			t.Fatalf("forward %d left msgSeen over capacity: len=%d cap=%d", i, gotLen, mgr.maxSeen)
+		}
+	}
 }

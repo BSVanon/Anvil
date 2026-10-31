@@ -268,15 +268,7 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 		m.seenOwners = make(map[string]*forwardSeenOwner)
 	}
 	if len(m.msgSeen) >= m.maxSeen {
-		for key := range m.msgSeen {
-			if m.seenOwners[key] != nil {
-				continue
-			}
-			delete(m.msgSeen, key)
-			if len(m.msgSeen) < m.maxSeen {
-				break
-			}
-		}
+		m.evictMsgSeenLocked(dedup)
 	}
 	m.msgSeen[dedup] = struct{}{}
 	seenOwner := &forwardSeenOwner{}
@@ -329,15 +321,21 @@ func (m *Manager) finishForwardSeen(dedup string, owner *forwardSeenOwner, clear
 	}
 	delete(m.seenOwners, dedup)
 	if len(m.msgSeen) > m.maxSeen {
-		for key := range m.msgSeen {
-			if key == dedup || m.seenOwners[key] != nil {
-				continue
-			}
-			delete(m.msgSeen, key)
-			if len(m.msgSeen) <= m.maxSeen {
-				break
-			}
+		m.evictMsgSeenLocked(dedup)
+	}
+}
+
+// evictMsgSeenLocked amortizes msgSeen eviction while preserving in-flight forwards.
+// The caller must hold seenMu.
+func (m *Manager) evictMsgSeenLocked(keep string) {
+	for key := range m.msgSeen {
+		if len(m.msgSeen) <= m.maxSeen/2 {
+			return
 		}
+		if key == keep || m.seenOwners[key] != nil {
+			continue
+		}
+		delete(m.msgSeen, key)
 	}
 }
 
