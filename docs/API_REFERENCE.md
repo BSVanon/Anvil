@@ -59,8 +59,11 @@ Never parse, sort, increment, or otherwise treat a message ID as a number.
 
 The sender is the BRC-31-authenticated caller identity, or the node identity
 when the operator-token fallback is used. Messages are forwarded across the
-mesh via gossip with sender signature verification. Unacknowledged messages
-expire after 7 days.
+mesh via gossip. Each forward is signed by its origin node, which attests the
+sender it authenticated (legacy forwards are signed by the sender), and is
+verified before delivery. A mesh forward's non-empty
+`OriginNode` must be a 66-character compressed secp256k1 public key. Unacknowledged
+messages expire after 7 days.
 
 ### POST /listMessages
 
@@ -115,9 +118,10 @@ operator token, an omitted recipient defaults to the node identity.
 
 Response: `{"status": "success", "acknowledged": 2}`
 
-Each ID must be 1–256 bytes. Duplicate IDs are acknowledged once. If none of
-the valid IDs match stored messages, the idempotent response remains HTTP 200
-with `"acknowledged":0` (an intentional divergence from the canonical server).
+Each ID must be 1–256 bytes and not whitespace-only. Duplicate IDs are
+acknowledged once. If none of the valid IDs match stored messages, the
+idempotent response remains HTTP 200 with `"acknowledged":0` (an intentional
+divergence from the canonical server).
 
 ### Message validation, quotas, and errors
 
@@ -141,7 +145,8 @@ Coded failures use this shape:
 |------|------|---------|
 | 400 | `ERR_INVALID_RECIPIENT_KEY` | Recipient is not a compressed secp256k1 key |
 | 400 | `ERR_INVALID_MESSAGEBOX` | Message box is empty or contains a forbidden control byte |
-| 400 | `ERR_INVALID_MESSAGE_ID` | An acknowledgement ID is empty or exceeds 256 bytes |
+| 400 | `ERR_MESSAGE_ID_REQUIRED` | `messageIds` is missing, null, or an empty array |
+| 400 | `ERR_INVALID_MESSAGE_ID` | `messageIds` has the wrong type, or an ID is empty, whitespace-only, or exceeds 256 bytes |
 | 400 | `ERR_MESSAGEBOX_TOO_LARGE` | Message box exceeds 128 bytes |
 | 429 | `ERR_SENDER_QUOTA_EXCEEDED` | Sender/recipient pair quota is full |
 | 429 | `ERR_INBOX_QUOTA_EXCEEDED` | Configured recipient inbox quota is full |

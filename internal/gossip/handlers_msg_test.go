@@ -92,6 +92,53 @@ func TestForward_OriginNodeAttestation_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestForwardRejectsUncompressedOriginNodeWithoutMarkingSeen(t *testing.T) {
+	node, compressed := newID(t)
+	_, sender := newID(t)
+	_, recipient := newID(t)
+	msg := sampleMsg(sender, recipient)
+	uncompressed := hex.EncodeToString(node.PubKey().Uncompressed())
+	digest := messageForwardDigest(msg, uncompressed)
+	signature, err := node.Sign(digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := MsgForwardPayload{
+		Message:    *msg,
+		Signature:  hex.EncodeToString(signature.Serialize()),
+		OriginNode: uncompressed,
+	}
+
+	store, err := messaging.NewStore(t.TempDir(), messaging.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
+	mgr.SetMsgStore(store)
+	raw, _ := json.Marshal(invalid)
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	dedupKey := "msg:" + msg.MessageID
+	mgr.seenMu.Lock()
+	_, seen := mgr.seen[dedupKey]
+	mgr.seenMu.Unlock()
+	if seen || store.Count() != 0 {
+		t.Fatalf("uncompressed origin was accepted: seen=%v stored=%d", seen, store.Count())
+	}
+
+	valid := originAttest(t, node, msg)
+	raw, _ = json.Marshal(valid)
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.List(recipient, msg.MessageBox)
+	if err != nil || len(got) != 1 || got[0].AttestedBy != compressed {
+		t.Fatalf("compressed origin delivery = %+v, err=%v", got, err)
+	}
+}
+
 // TestForward_RejectsTamperedSender ensures a relay cannot swap the attested
 // sender: the origin digest binds Sender, so changing it breaks the signature.
 func TestForward_RejectsTamperedSender(t *testing.T) {

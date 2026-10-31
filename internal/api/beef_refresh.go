@@ -90,14 +90,14 @@ func (s *Server) refreshCachedBEEF(txid string, cached []byte) ([]byte, string, 
 			<-s.proofRefreshSlots
 			resultCh <- result
 		}()
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-
 		fetched, source, err := s.proofFetcher.FetchBEEF(txid)
 		if err != nil {
 			s.logger.Debug("cached BEEF refresh failed", "txid", txid, "error", err)
 			return
 		}
+		// FetchBEEF is itself bounded by the fetcher's per-request 30 s HTTP timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
 		if !beefSubjectMatches(fetched, txid) {
 			return
 		}

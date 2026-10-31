@@ -9,6 +9,9 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
+// MaxMessageIDBytes is the largest message ID accepted by MessageBox APIs.
+const MaxMessageIDBytes = 256
+
 var (
 	prefixPrimary   = []byte("m2:")
 	prefixIndex     = []byte("mi:")

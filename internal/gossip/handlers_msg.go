@@ -99,6 +99,14 @@ func pubKeyFromHex(h string) (*ec.PublicKey, error) {
 	return ec.PublicKeyFromBytes(b)
 }
 
+func isCompressedKeyHex(value string) bool {
+	if len(value) != 66 || (value[0] != '0') || (value[1] != '2' && value[1] != '3') {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
 // messageDigest is the legacy (pre-v3.2.0) content digest: sender signs this.
 func messageDigest(msg *messaging.Message) [32]byte {
 	canonical := msg.MessageID + "\n" +
@@ -207,6 +215,10 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	msg := &fwd.Message
 	if err := messaging.ValidateForwardMessage(msg); err != nil {
 		m.logger.Debug("forwarded message rejected: invalid shape", "error", err)
+		return nil
+	}
+	if fwd.OriginNode != "" && !isCompressedKeyHex(fwd.OriginNode) {
+		m.logger.Debug("forwarded message rejected: invalid origin node")
 		return nil
 	}
 

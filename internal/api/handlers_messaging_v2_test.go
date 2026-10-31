@@ -190,6 +190,53 @@ func TestMessageHTTPAcknowledgementValidationDedupAndIdempotence(t *testing.T) {
 	}
 }
 
+func TestMessageHTTPAcknowledgementMessageIDJSONValidation(t *testing.T) {
+	srv, nodeHex := messageHandlerServer(t, messaging.Options{})
+	overLimit, err := json.Marshal(map[string]any{"recipient": nodeHex, "messageIds": make([]string, 1001)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		body string
+		code string
+	}{
+		{name: "missing", body: `{}`, code: "ERR_MESSAGE_ID_REQUIRED"},
+		{name: "null", body: `{"messageIds":null}`, code: "ERR_MESSAGE_ID_REQUIRED"},
+		{name: "empty array", body: `{"messageIds":[]}`, code: "ERR_MESSAGE_ID_REQUIRED"},
+		{name: "number element", body: `{"messageIds":[123]}`, code: "ERR_INVALID_MESSAGE_ID"},
+		{name: "string", body: `{"messageIds":"abc"}`, code: "ERR_INVALID_MESSAGE_ID"},
+		{name: "object", body: `{"messageIds":{"a":1}}`, code: "ERR_INVALID_MESSAGE_ID"},
+		{name: "null element", body: `{"messageIds":[null]}`, code: "ERR_INVALID_MESSAGE_ID"},
+		{name: "too many", body: string(overLimit), code: "ERR_INVALID_MESSAGE_ID"},
+		{name: "empty ID", body: `{"messageIds":[""]}`, code: "ERR_INVALID_MESSAGE_ID"},
+		{name: "whitespace ID", body: `{"messageIds":[" \t"]}`, code: "ERR_INVALID_MESSAGE_ID"},
+		{name: "oversized ID", body: `{"messageIds":["` + strings.Repeat("x", messaging.MaxMessageIDBytes+1) + `"]}`, code: "ERR_INVALID_MESSAGE_ID"},
+		{name: "malformed JSON", body: `{"messageIds":`, code: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer test-token")
+			response := httptest.NewRecorder()
+			srv.handleAcknowledgeMessage(response, req)
+			var payload map[string]any
+			_ = json.Unmarshal(response.Body.Bytes(), &payload)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("response = %d, %v", response.Code, payload)
+			}
+			if tc.code == "" {
+				if _, coded := payload["code"]; coded {
+					t.Fatalf("malformed JSON returned a coded error: %v", payload)
+				}
+				return
+			}
+			if payload["code"] != tc.code {
+				t.Fatalf("response = %d, %v", response.Code, payload)
+			}
+		})
+	}
+}
+
 func TestMessageHTTPSSEPushUsesStoredView(t *testing.T) {
 	srv, _ := messageHandlerServer(t, messaging.Options{})
 	_, recipient, _ := newKeyWallet(t)

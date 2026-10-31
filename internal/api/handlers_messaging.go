@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/BSVanon/Anvil/internal/messaging"
 )
@@ -157,8 +158,8 @@ func (s *Server) handleAcknowledgeMessage(w http.ResponseWriter, r *http.Request
 	}
 
 	var req struct {
-		Recipient  string   `json:"recipient"`
-		MessageIDs []string `json:"messageIds"`
+		Recipient  string          `json:"recipient"`
+		MessageIDs json.RawMessage `json:"messageIds"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
@@ -168,14 +169,25 @@ func (s *Server) handleAcknowledgeMessage(w http.ResponseWriter, r *http.Request
 		writeCodedError(w, http.StatusBadRequest, "ERR_MESSAGE_ID_REQUIRED", "Please provide the ID of the message(s) to acknowledge!")
 		return
 	}
-	if len(req.MessageIDs) > 1000 {
+	var rawIDs []json.RawMessage
+	if err := json.Unmarshal(req.MessageIDs, &rawIDs); err != nil {
 		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGE_ID", "Message IDs must be an array of at most 1000 non-empty strings.")
 		return
 	}
-	uniqueIDs := make([]string, 0, len(req.MessageIDs))
-	seenIDs := make(map[string]struct{}, len(req.MessageIDs))
-	for _, id := range req.MessageIDs {
-		if id == "" || len(id) > 256 {
+	if len(rawIDs) == 0 {
+		writeCodedError(w, http.StatusBadRequest, "ERR_MESSAGE_ID_REQUIRED", "Please provide the ID of the message(s) to acknowledge!")
+		return
+	}
+	if len(rawIDs) > 1000 {
+		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGE_ID", "Message IDs must be an array of at most 1000 non-empty strings.")
+		return
+	}
+	uniqueIDs := make([]string, 0, len(rawIDs))
+	seenIDs := make(map[string]struct{}, len(rawIDs))
+	for _, rawID := range rawIDs {
+		var id string
+		if err := json.Unmarshal(rawID, &id); err != nil ||
+			strings.TrimSpace(id) == "" || len(id) > messaging.MaxMessageIDBytes {
 			writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGE_ID", "Message IDs must be non-empty and at most 256 bytes.")
 			return
 		}

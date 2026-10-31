@@ -143,7 +143,8 @@ func (s *Store) moveMigrationIndex(counts *migrationCounts) error {
 			continue
 		}
 		recipient, err := normalizeRecipient(metadata.Recipient)
-		if err != nil || validateMessageBox(msg.MessageBox) != nil {
+		if err != nil || validateMessageBox(msg.MessageBox) != nil ||
+			!validMigratedMessageID(metadata.MessageID) || validateMessage(&msg, true) != nil {
 			counts.unservable++
 			if err := s.deleteMigrationKey(migrationKey); err != nil {
 				return err
@@ -191,6 +192,18 @@ func (s *Store) moveMigrationIndex(counts *migrationCounts) error {
 		return fmt.Errorf("iterate migration index: %w", err)
 	}
 	return nil
+}
+
+func validMigratedMessageID(messageID string) bool {
+	if len(messageID) == 0 || len(messageID) > MaxMessageIDBytes {
+		return false
+	}
+	for i := range messageID {
+		if messageID[i] < 0x21 || messageID[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func decodeV1Metadata(key, raw []byte) (v1Metadata, error) {

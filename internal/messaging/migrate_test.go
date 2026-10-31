@@ -202,6 +202,80 @@ func TestMigrationLeavesControlCharacterBoxUnservable(t *testing.T) {
 	}
 }
 
+func TestMigrationLeavesUnservableIDsAndBodiesInV1(t *testing.T) {
+	path := t.TempDir()
+	recipient := testIdentity(t)
+	validID := strings.Repeat("x", MaxMessageIDBytes)
+	fixtures := []struct {
+		message Message
+		valid   bool
+	}{
+		{message: Message{MessageID: strings.Repeat("x", MaxMessageIDBytes+1), Body: "body"}},
+		{message: Message{MessageID: "has space", Body: "body"}},
+		{message: Message{MessageID: "has\x01control", Body: "body"}},
+		{message: Message{MessageID: "empty-body", Body: ""}},
+		{message: Message{MessageID: "large-body", Body: strings.Repeat("x", MaxMessageBodyBytes+1)}},
+		{message: Message{MessageID: validID, Body: strings.Repeat("x", MaxMessageBodyBytes)}, valid: true},
+	}
+	db, err := leveldb.OpenFile(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidKeys := make([][]byte, 0, len(fixtures)-1)
+	for _, fixture := range fixtures {
+		msg := fixture.message
+		msg.Sender, msg.Recipient, msg.MessageBox, msg.Timestamp = "sender", recipient, "box", 1
+		raw, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := []byte("msg:" + recipient + ":" + msg.MessageID)
+		if err := db.Put(key, raw, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !fixture.valid {
+			invalidKeys = append(invalidKeys, key)
+		}
+	}
+
+	s := &Store{db: db, now: time.Now}
+	counts := migrationCounts{}
+	if err := s.buildMigrationIndex(&counts); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.moveMigrationIndex(&counts); err != nil {
+		t.Fatal(err)
+	}
+	if counts.inserted != 1 || counts.unservable != 5 || counts.undecodable != 0 || counts.duplicate != 0 {
+		t.Fatalf("migration counts = %+v, want inserted=1 unservable=5", counts)
+	}
+	if got := countPrefix(t, db, prefixV1); got != 5 {
+		t.Fatalf("v1 keys remaining = %d, want 5", got)
+	}
+	for _, key := range invalidKeys {
+		if present, err := db.Has(key, nil); err != nil || !present {
+			t.Fatalf("unservable v1 key %q present=%v err=%v", key, present, err)
+		}
+	}
+	if got := countPrefix(t, db, prefixMigration); got != 0 {
+		t.Fatalf("migration index keys remaining = %d, want 0", got)
+	}
+	msgs, err := s.List(recipient, "box")
+	if err != nil || len(msgs) != 1 || msgs[0].MessageID != validID || len(msgs[0].Body) != MaxMessageBodyBytes {
+		bodyBytes := 0
+		if len(msgs) == 1 {
+			bodyBytes = len(msgs[0].Body)
+		}
+		t.Fatalf("migrated message count=%d bodyBytes=%d err=%v", len(msgs), bodyBytes, err)
+	}
+	if deleted, err := s.Acknowledge(recipient, []string{validID}); err != nil || deleted != 1 {
+		t.Fatalf("acknowledge migrated message = %d, %v", deleted, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMigrationClampsNonPositiveTimestampToNow(t *testing.T) {
 	path := t.TempDir()
 	recipient := testIdentity(t)
