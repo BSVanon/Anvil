@@ -20,7 +20,7 @@
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v3.0.4/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v3.4.0/scripts/install.sh | sudo bash
 ```
 
 The script detects whether you have an existing install. **Fresh installs** get the guided 6-screen tour — download binary, verify SHA256, generate identity, sync headers, show funding address. **Existing installs** get the upgrade flow — atomic SHA256-verified binary swap, auto-migrate v2→v3 LevelDB data, post-install doctor self-heal. Takes about 3 minutes either way.
