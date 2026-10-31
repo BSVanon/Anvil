@@ -205,7 +205,8 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	}
 
 	msg := &fwd.Message
-	if msg.Sender == "" || msg.Recipient == "" || msg.MessageBox == "" || msg.Body == "" || msg.MessageID == "" {
+	if err := messaging.ValidateForwardMessage(msg); err != nil {
+		m.logger.Debug("forwarded message rejected: invalid shape", "error", err)
 		return nil
 	}
 

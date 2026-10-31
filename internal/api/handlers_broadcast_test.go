@@ -113,6 +113,47 @@ func buildValidBEEF(t *testing.T) []byte {
 	return out
 }
 
+func TestBroadcastDoesNotDowngradeCachedSubjectProof(t *testing.T) {
+	srv := testServerGullible(t)
+	unproven := buildTestBEEF(t)
+	subject, err := transaction.NewTransactionFromBEEF(unproven)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txid := subject.TxID().String()
+	isTrue := true
+	subject.MerklePath = transaction.NewMerklePath(101, [][]*transaction.PathElement{{
+		{Offset: 0, Hash: subject.TxID(), Txid: &isTrue},
+		{Offset: 1, Duplicate: &isTrue},
+	}})
+	proven, err := subject.BEEF()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.proofStore.StoreBEEF(proven); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/broadcast", bytes.NewReader(unproven))
+	req.Header.Set("Authorization", "Bearer test-token")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("broadcast unproven copy = %d: %s", w.Code, w.Body.String())
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/tx/"+txid+"/beef", nil)
+	get.Header.Set("Accept", "application/octet-stream")
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, get)
+	if w.Code != http.StatusOK || w.Header().Get("X-BEEF-Subject-Proven") != "true" {
+		t.Fatalf("cached proof after broadcast = %d %q", w.Code, w.Header().Get("X-BEEF-Subject-Proven"))
+	}
+	if !bytes.Equal(w.Body.Bytes(), proven) {
+		t.Fatal("unproven broadcast replaced the cached proven BEEF")
+	}
+}
+
 // TestBroadcastRejectsBypassWhenPaymentGateZeroPriced is the regression test
 // for the high-severity auth bypass Codex caught in the Path C audit.
 //

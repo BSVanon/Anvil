@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -81,34 +82,39 @@ func (s *Server) refreshCachedBEEF(txid string, cached []byte) ([]byte, string, 
 
 	resultCh := make(chan beefRefreshResult, 1)
 	go func() {
-		defer func() { <-s.proofRefreshSlots }()
+		result := beefRefreshResult{}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				s.logger.Error("cached BEEF refresh panicked", "txid", txid, "panic", recovered)
+			}
+			<-s.proofRefreshSlots
+			resultCh <- result
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
 		fetched, source, err := s.proofFetcher.FetchBEEF(txid)
 		if err != nil {
 			s.logger.Debug("cached BEEF refresh failed", "txid", txid, "error", err)
-			resultCh <- beefRefreshResult{}
 			return
 		}
 		if !beefSubjectMatches(fetched, txid) {
-			resultCh <- beefRefreshResult{}
 			return
 		}
 		if err := s.fetchedBEEFSPVVerified(ctx, fetched); err != nil {
-			resultCh <- beefRefreshResult{}
 			return
 		}
 		if !beefSubjectProven(fetched) {
-			resultCh <- beefRefreshResult{}
 			return
 		}
-		if _, err := s.proofStore.StoreBEEF(fetched); err != nil {
+		stored, err := s.cacheBEEF(fetched)
+		if err != nil {
 			s.logger.Warn("failed to cache refreshed BEEF", "txid", txid, "error", err)
-			resultCh <- beefRefreshResult{}
 			return
 		}
-		resultCh <- beefRefreshResult{beef: fetched, source: source, subjectProven: true, stored: true}
+		if stored {
+			result = beefRefreshResult{beef: fetched, source: source, subjectProven: true, stored: true}
+		}
 	}()
 
 	select {
@@ -166,14 +172,52 @@ func (s *Server) fetchedBEEFSPVVerified(ctx context.Context, beef []byte) error 
 	return nil
 }
 
+// cacheBEEF serializes cache writes and preserves an existing subject proof.
+func (s *Server) cacheBEEF(beef []byte) (stored bool, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			stored = false
+			err = fmt.Errorf("cache BEEF panicked: %v", recovered)
+		}
+	}()
+	tx, err := safeParseBEEF(beef)
+	if err != nil {
+		return false, err
+	}
+	s.proofRefreshMu.Lock()
+	defer s.proofRefreshMu.Unlock()
+	if tx.MerklePath == nil {
+		if cached, getErr := s.proofStore.GetBEEF(tx.TxID().String()); getErr == nil {
+			cachedTx, parseErr := safeParseBEEF(cached)
+			if parseErr == nil && cachedTx.MerklePath != nil {
+				return false, nil
+			}
+		}
+	}
+	if _, err := s.proofStore.StoreBEEF(beef); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func safeParseBEEF(beef []byte) (tx *transaction.Transaction, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			tx = nil
+			err = fmt.Errorf("BEEF parse panicked: %v", recovered)
+		}
+	}()
+	return transaction.NewTransactionFromBEEF(beef)
+}
+
 // beefSubjectProven identifies whether the subject transaction (rather than an
 // ancestor) has a merkle path in the envelope.
 func beefSubjectProven(beef []byte) bool {
-	tx, err := transaction.NewTransactionFromBEEF(beef)
+	tx, err := safeParseBEEF(beef)
 	return err == nil && tx.MerklePath != nil
 }
 
 func beefSubjectMatches(beef []byte, txid string) bool {
-	tx, err := transaction.NewTransactionFromBEEF(beef)
+	tx, err := safeParseBEEF(beef)
 	return err == nil && tx.TxID().String() == strings.ToLower(txid)
 }

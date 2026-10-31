@@ -172,9 +172,22 @@ func (s *Server) handleAcknowledgeMessage(w http.ResponseWriter, r *http.Request
 		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGE_ID", "Message IDs must be an array of at most 1000 non-empty strings.")
 		return
 	}
+	uniqueIDs := make([]string, 0, len(req.MessageIDs))
+	seenIDs := make(map[string]struct{}, len(req.MessageIDs))
+	for _, id := range req.MessageIDs {
+		if id == "" || len(id) > 256 {
+			writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGE_ID", "Message IDs must be non-empty and at most 256 bytes.")
+			return
+		}
+		if _, seen := seenIDs[id]; seen {
+			continue
+		}
+		seenIDs[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
 	recipient := s.scopedRecipient(caller, req.Recipient)
 
-	n, err := s.msgStore.Acknowledge(recipient, req.MessageIDs)
+	n, err := s.msgStore.Acknowledge(recipient, uniqueIDs)
 	if err != nil {
 		writeMessagingError(w, err, http.StatusInternalServerError)
 		return

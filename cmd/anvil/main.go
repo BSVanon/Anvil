@@ -596,6 +596,7 @@ func main() {
 				}
 			}(),
 		})
+		gossipMgr.SetMsgStore(msgStore)
 		defer gossipMgr.Stop()
 
 		// Connect to seed peers (auto-reconnect on disconnect, 30s retry)
@@ -896,7 +897,6 @@ func main() {
 
 	if gossipMgr != nil { // SSE notifications from mesh
 		gossipMgr.SetOnEnvelopeHook(srv.NotifyEnvelope)
-		gossipMgr.SetMsgStore(msgStore) // enable cross-node message forwarding
 
 		// Periodic demand decay (halve counters every 5 min)
 		go func() {

@@ -22,6 +22,9 @@ const (
 )
 
 var (
+	ListResponseMaxMessages  = 10000
+	ListResponseMaxBodyBytes = 32 << 20
+
 	ErrInvalidRecipient    = errors.New("invalid recipient public key")
 	ErrInvalidSender       = errors.New("invalid sender public key")
 	ErrInvalidMessageID    = errors.New("invalid message ID")
@@ -135,21 +138,18 @@ func (s *Store) Send(msg *Message, originNode string) (string, error) {
 	}
 	msg.MessageID = id
 	record := &StoredMessage{Message: *msg, AttestedBy: "local", ReceivedAt: s.now().Unix()}
-	if err := s.insert(record, true); err != nil {
+	inserted, err := s.insertAndNotify(record)
+	if err != nil {
 		return "", err
 	}
-	s.notify(record)
+	if !inserted {
+		return "", errors.New("message ID already exists")
+	}
 	return id, nil
 }
 
 func (s *Store) Deliver(msg *Message, attestedBy string) (bool, error) {
-	if msg == nil || msg.MessageID == "" {
-		return false, errors.New("messageID required")
-	}
-	if err := validateDeliveryEnvelope(msg); err != nil {
-		return false, err
-	}
-	if err := validateMessage(msg, false); err != nil {
+	if err := ValidateForwardMessage(msg); err != nil {
 		return false, err
 	}
 	stored := *msg
@@ -158,12 +158,7 @@ func (s *Store) Deliver(msg *Message, attestedBy string) (bool, error) {
 	record := &StoredMessage{
 		Message: stored, AttestedBy: strings.ToLower(attestedBy), ReceivedAt: s.now().Unix(),
 	}
-	inserted, err := s.insertIfAbsent(record, true)
-	if err != nil || !inserted {
-		return inserted, err
-	}
-	s.notify(record)
-	return true, nil
+	return s.insertAndNotify(record)
 }
 
 func (s *Store) List(recipient, messageBox string) ([]*StoredMessage, error) {
@@ -179,6 +174,7 @@ func (s *Store) ListN(recipient, messageBox string, limit int) ([]*StoredMessage
 		return nil, err
 	}
 	results := make([]*StoredMessage, 0)
+	bodyBytes := 0
 	iter := s.db.NewIterator(util.BytesPrefix(primaryPrefix(recipient, messageBox)), nil)
 	defer iter.Release()
 	for iter.Next() {
@@ -189,7 +185,13 @@ func (s *Store) ListN(recipient, messageBox string, limit int) ([]*StoredMessage
 		if err != nil || record.Recipient != recipient || record.MessageBox != messageBox {
 			continue
 		}
+		// The body budget bounds every page; the message cap applies when no limit is given.
+		if len(results) > 0 && ((limit == 0 && len(results) >= ListResponseMaxMessages) ||
+			bodyBytes+len(record.Body) > ListResponseMaxBodyBytes) {
+			break
+		}
 		results = append(results, record)
+		bodyBytes += len(record.Body)
 		if limit > 0 && len(results) >= limit {
 			break
 		}
@@ -303,14 +305,22 @@ func validateMessageBox(box string) error {
 	if len(box) > MaxMessageBoxBytes {
 		return ErrMessageBoxTooLarge
 	}
+	for i := range box {
+		if box[i] < 0x20 || box[i] == 0x7f {
+			return ErrInvalidMessageBox
+		}
+	}
 	return nil
 }
 
 func validateDeliveryEnvelope(msg *Message) error {
+	if msg == nil {
+		return errors.New("message required")
+	}
 	if _, err := parseCompressedKey(msg.Sender); err != nil {
 		return ErrInvalidSender
 	}
-	if len(msg.MessageID) > 128 {
+	if msg.MessageID == "" || len(msg.MessageID) > 128 {
 		return ErrInvalidMessageID
 	}
 	for i := 0; i < len(msg.MessageID); i++ {
@@ -319,6 +329,14 @@ func validateDeliveryEnvelope(msg *Message) error {
 		}
 	}
 	return nil
+}
+
+// ValidateForwardMessage validates an incoming gossip message without storing it.
+func ValidateForwardMessage(msg *Message) error {
+	if err := validateDeliveryEnvelope(msg); err != nil {
+		return err
+	}
+	return validateMessage(msg, false)
 }
 
 func normalizeRecipient(recipient string) (string, error) {
@@ -350,6 +368,21 @@ func decodeRecord(data []byte) (*StoredMessage, error) {
 		return nil, err
 	}
 	return &StoredMessage{Message: record.Message, AttestedBy: record.AttestedBy, ReceivedAt: record.ReceivedAt}, nil
+}
+
+func (s *Store) insertAndNotify(record *StoredMessage) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if _, err := s.db.Get(indexKey(record.Recipient, record.MessageID), nil); err == nil {
+		return false, nil
+	} else if !errors.Is(err, leveldb.ErrNotFound) {
+		return false, fmt.Errorf("read message index: %w", err)
+	}
+	if err := s.insertLocked(record, true); err != nil {
+		return false, err
+	}
+	s.notify(record)
+	return true, nil
 }
 
 func (s *Store) notify(record *StoredMessage) {

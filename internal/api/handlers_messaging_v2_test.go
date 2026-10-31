@@ -113,6 +113,10 @@ func TestMessageHTTPValidationAndEmptyList(t *testing.T) {
 	if response.Code != http.StatusBadRequest || body["code"] != "ERR_MESSAGEBOX_TOO_LARGE" {
 		t.Fatalf("box validation = %d, %v", response.Code, body)
 	}
+	response, body = callMessageHandler(t, srv.handleListMessages, map[string]string{"recipient": nodeHex, "messageBox": "bad\nbox"})
+	if response.Code != http.StatusBadRequest || body["code"] != "ERR_INVALID_MESSAGEBOX" {
+		t.Fatalf("box character validation = %d, %v", response.Code, body)
+	}
 	ids := make([]string, 1001)
 	response, body = callMessageHandler(t, srv.handleAcknowledgeMessage, map[string]any{"recipient": nodeHex, "messageIds": ids})
 	if response.Code != http.StatusBadRequest || body["code"] != "ERR_INVALID_MESSAGE_ID" {
@@ -125,6 +129,64 @@ func TestMessageHTTPValidationAndEmptyList(t *testing.T) {
 	messages, ok := body["messages"].([]any)
 	if !ok || len(messages) != 0 {
 		t.Fatalf("messages should encode as []: %s", response.Body.String())
+	}
+}
+
+func TestMessageHTTPDefaultListBudgetAndExplicitLimit(t *testing.T) {
+	previousMessages, previousBytes := messaging.ListResponseMaxMessages, messaging.ListResponseMaxBodyBytes
+	messaging.ListResponseMaxMessages, messaging.ListResponseMaxBodyBytes = 2, 1<<20
+	t.Cleanup(func() {
+		messaging.ListResponseMaxMessages, messaging.ListResponseMaxBodyBytes = previousMessages, previousBytes
+	})
+	srv, nodeHex := messageHandlerServer(t, messaging.Options{})
+	for _, body := range []string{"first", "second", "third"} {
+		if _, err := srv.msgStore.Send(&messaging.Message{
+			Sender: nodeHex, Recipient: nodeHex, MessageBox: "box", Body: body,
+		}, nodeHex); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response, body := callMessageHandler(t, srv.handleListMessages, map[string]any{
+		"recipient": nodeHex, "messageBox": "box",
+	})
+	if messages, _ := body["messages"].([]any); response.Code != http.StatusOK || len(messages) != 2 {
+		t.Fatalf("default-budget list = %d, %v", response.Code, body)
+	}
+	response, body = callMessageHandler(t, srv.handleListMessages, map[string]any{
+		"recipient": nodeHex, "messageBox": "box", "limit": 3,
+	})
+	if messages, _ := body["messages"].([]any); response.Code != http.StatusOK || len(messages) != 3 {
+		t.Fatalf("explicit-limit list = %d, %v", response.Code, body)
+	}
+}
+
+func TestMessageHTTPAcknowledgementValidationDedupAndIdempotence(t *testing.T) {
+	srv, nodeHex := messageHandlerServer(t, messaging.Options{})
+	id, err := srv.msgStore.Send(&messaging.Message{
+		Sender: nodeHex, Recipient: nodeHex, MessageBox: "box", Body: "body",
+	}, nodeHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{"", strings.Repeat("x", 257)} {
+		response, body := callMessageHandler(t, srv.handleAcknowledgeMessage, map[string]any{
+			"recipient": nodeHex, "messageIds": []string{invalid},
+		})
+		if response.Code != http.StatusBadRequest || body["code"] != "ERR_INVALID_MESSAGE_ID" {
+			t.Fatalf("ack ID validation = %d, %v", response.Code, body)
+		}
+	}
+	response, body := callMessageHandler(t, srv.handleAcknowledgeMessage, map[string]any{
+		"recipient": nodeHex, "messageIds": []string{id, id},
+	})
+	if response.Code != http.StatusOK || body["acknowledged"] != float64(1) {
+		t.Fatalf("deduplicated ack = %d, %v", response.Code, body)
+	}
+	response, body = callMessageHandler(t, srv.handleAcknowledgeMessage, map[string]any{
+		"recipient": nodeHex, "messageIds": []string{"does-not-exist"},
+	})
+	if response.Code != http.StatusOK || body["acknowledged"] != float64(0) {
+		t.Fatalf("idempotent unmatched ack = %d, %v", response.Code, body)
 	}
 }
 

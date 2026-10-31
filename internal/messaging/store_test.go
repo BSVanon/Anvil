@@ -102,12 +102,85 @@ func TestSendValidationAndMessageID(t *testing.T) {
 		{Message{Sender: sender, Recipient: "02bad", MessageBox: "x", Body: "x"}, ErrInvalidRecipient},
 		{Message{Sender: sender, Recipient: recipient, Body: "x"}, ErrInvalidMessageBox},
 		{Message{Sender: sender, Recipient: recipient, MessageBox: strings.Repeat("x", 129), Body: "x"}, ErrMessageBoxTooLarge},
+		{Message{Sender: sender, Recipient: recipient, MessageBox: "bad\nbox", Body: "x"}, ErrInvalidMessageBox},
 		{Message{Sender: sender, Recipient: recipient, MessageBox: "x"}, ErrInvalidMessageBody},
 		{Message{Sender: sender, Recipient: recipient, MessageBox: "x", Body: strings.Repeat("x", MaxMessageBodyBytes+1)}, ErrMessageBodyTooLarge},
 	} {
 		if _, err := s.Send(&tc.msg, origin); err != tc.want {
 			t.Errorf("Send error = %v, want %v", err, tc.want)
 		}
+	}
+}
+
+func TestListDefaultResponseBudgetAndExplicitLimit(t *testing.T) {
+	previousMessages, previousBytes := ListResponseMaxMessages, ListResponseMaxBodyBytes
+	t.Cleanup(func() {
+		ListResponseMaxMessages, ListResponseMaxBodyBytes = previousMessages, previousBytes
+	})
+	s := testStore(t, Options{})
+	sender, recipient, origin := testIdentity(t), testIdentity(t), testIdentity(t)
+	for _, body := range []string{"aaa", "bbb", "ccc"} {
+		sendTest(t, s, sender, recipient, origin, "box", body)
+	}
+
+	ListResponseMaxMessages, ListResponseMaxBodyBytes = 2, 100
+	if got, err := s.List(recipient, "box"); err != nil || len(got) != 2 {
+		t.Fatalf("message-budget list = %d, %v", len(got), err)
+	}
+	ListResponseMaxMessages, ListResponseMaxBodyBytes = 10, 5
+	if got, err := s.ListN(recipient, "box", 0); err != nil || len(got) != 1 || got[0].Body != "aaa" {
+		t.Fatalf("byte-budget list = %+v, %v", got, err)
+	}
+	ListResponseMaxBodyBytes = 1
+	if got, err := s.List(recipient, "box"); err != nil || len(got) != 1 {
+		t.Fatalf("at-least-one list = %d, %v", len(got), err)
+	}
+	if got, err := s.ListN(recipient, "box", 3); err != nil || len(got) != 1 {
+		t.Fatalf("explicit-limit byte-budget list = %d, %v", len(got), err)
+	}
+	ListResponseMaxMessages, ListResponseMaxBodyBytes = 2, 100
+	if got, err := s.ListN(recipient, "box", 3); err != nil || len(got) != 3 {
+		t.Fatalf("explicit-limit list = %d, %v", len(got), err)
+	}
+}
+
+func TestMessageBoxControlBytesRejectedOnListAndDeliver(t *testing.T) {
+	s := testStore(t, Options{})
+	sender, recipient := testIdentity(t), testIdentity(t)
+	for _, box := range []string{"bad\x00box", "bad\x1fbox", "bad\x7fbox"} {
+		if _, err := s.List(recipient, box); !errors.Is(err, ErrInvalidMessageBox) {
+			t.Errorf("List(%q) error = %v", box, err)
+		}
+		msg := &Message{MessageID: "legacy", Sender: sender, Recipient: recipient, MessageBox: box, Body: "body"}
+		if _, err := s.Deliver(msg, "sender"); !errors.Is(err, ErrInvalidMessageBox) {
+			t.Errorf("Deliver(%q) error = %v", box, err)
+		}
+	}
+}
+
+func TestNotificationsFollowPersistedArrivalOrderUnderWriteLock(t *testing.T) {
+	s := testStore(t, Options{})
+	sender, recipient, origin := testIdentity(t), testIdentity(t), testIdentity(t)
+	var notified []string
+	s.SetOnStoredMessage(func(msg *StoredMessage) {
+		if s.writeMu.TryLock() {
+			s.writeMu.Unlock()
+			t.Error("notification ran after write lock was released")
+		}
+		notified = append(notified, msg.MessageID)
+	})
+	first := sendTest(t, s, sender, recipient, origin, "box", "first")
+	second := &Message{MessageID: "legacy", Sender: sender, Recipient: recipient, MessageBox: "box", Body: "second"}
+	if inserted, err := s.Deliver(second, "sender"); err != nil || !inserted {
+		t.Fatalf("Deliver = %v, %v", inserted, err)
+	}
+	stored, err := s.List(recipient, "box")
+	if err != nil || len(stored) != 2 || len(notified) != 2 {
+		t.Fatalf("stored/notified = %d/%d, %v", len(stored), len(notified), err)
+	}
+	if notified[0] != first || notified[1] != second.MessageID ||
+		stored[0].MessageID != notified[0] || stored[1].MessageID != notified[1] {
+		t.Fatalf("persisted=%q,%q notified=%q", stored[0].MessageID, stored[1].MessageID, notified)
 	}
 }
 

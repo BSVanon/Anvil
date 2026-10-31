@@ -50,6 +50,54 @@ func TestForwardForgedThenLegitimateSameID(t *testing.T) {
 	}
 }
 
+func TestForwardLegacyDigestReframeDoesNotMarkSeen(t *testing.T) {
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	legitimate := &messaging.Message{
+		MessageID: "1000000", Sender: sender, Recipient: recipient,
+		MessageBox: "inbox", Body: "part1\npart2", Timestamp: 1700000000,
+	}
+	digest := messageDigest(legitimate)
+	signature, err := senderKey.Sign(digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	legitimateForward := MsgForwardPayload{Message: *legitimate, Signature: hex.EncodeToString(signature.Serialize())}
+	reframed := legitimateForward
+	reframed.Message.MessageBox = "inbox\npart1"
+	reframed.Message.Body = "part2"
+	if !verifyForwardSignature(&reframed) {
+		t.Fatal("test setup: legacy newline reframe must preserve the digest")
+	}
+
+	store, err := messaging.NewStore(t.TempDir(), messaging.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
+	mgr.SetMsgStore(store)
+	reframedRaw, _ := json.Marshal(reframed)
+	if err := mgr.onMsgForward("relay", reframedRaw); err != nil {
+		t.Fatal(err)
+	}
+	dedupKey := "msg:" + legitimate.MessageID
+	mgr.seenMu.Lock()
+	_, markedSeen := mgr.seen[dedupKey]
+	mgr.seenMu.Unlock()
+	if markedSeen {
+		t.Fatal("invalid reframed forward was marked seen")
+	}
+	legitimateRaw, _ := json.Marshal(legitimateForward)
+	if err := mgr.onMsgForward("relay", legitimateRaw); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.List(recipient, "inbox")
+	if err != nil || len(got) != 1 || got[0].Body != legitimate.Body {
+		t.Fatalf("legitimate forward after reframe = %+v, %v", got, err)
+	}
+}
+
 func TestForwardRejectsV2BindingTamperAndAcceptsLegacy(t *testing.T) {
 	base, fwd, originKey := v2Forward(t)
 	for name, mutate := range map[string]func(*MsgForwardPayload){

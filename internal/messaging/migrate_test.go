@@ -169,6 +169,39 @@ func TestMigrationLeavesUndecodableV1RecordAndSucceeds(t *testing.T) {
 	}
 }
 
+func TestMigrationLeavesControlCharacterBoxUnservable(t *testing.T) {
+	path := t.TempDir()
+	recipient := testIdentity(t)
+	msg := Message{
+		MessageID: "control-box", Sender: "sender", Recipient: recipient,
+		MessageBox: "inbox\nforged", Body: "body", Timestamp: 30,
+	}
+	raw, _ := json.Marshal(msg)
+	key := []byte("msg:" + recipient + ":" + msg.MessageID)
+	db, err := leveldb.OpenFile(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Put(key, raw, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewStore(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Count() != 0 {
+		t.Fatalf("unservable record count = %d", s.Count())
+	}
+	if present, err := s.db.Has(key, nil); err != nil || !present {
+		t.Fatalf("control-box v1 record present=%v err=%v", present, err)
+	}
+}
+
 func TestMigrationClampsNonPositiveTimestampToNow(t *testing.T) {
 	path := t.TempDir()
 	recipient := testIdentity(t)

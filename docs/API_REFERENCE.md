@@ -89,9 +89,17 @@ Response:
 ```
 
 Entries are returned in local arrival order. `senderAttestedBy` is one of
-`"local"` (created by this node), an origin node's compressed public key,
-`"sender"` (legacy sender-attested delivery), or `"unknown"` (migrated legacy
-record). An empty box returns `"messages":[]`.
+`"local"` (created by this node), an origin node's compressed public key (that
+node attested the claimed sender after authenticating the submission),
+`"sender"` (only this value means a legacy sender-signed forward), or
+`"unknown"` (migrated legacy record). An origin-node attestation is not an
+end-to-end sender signature. An empty box returns `"messages":[]`.
+
+A positive `limit` is capped at 100. When `limit` is omitted, `null`, or zero,
+one call returns at most 10,000 messages. Every call, with or without `limit`,
+returns at most 32 MiB of total body bytes, so a page can hold fewer messages
+than `limit` (at least one message is returned when the box is non-empty).
+Acknowledge the returned IDs and list again to drain any remainder.
 
 For BRC-31 callers the recipient is always the caller's identity. With the
 operator token, an omitted recipient defaults to the node identity.
@@ -107,14 +115,18 @@ operator token, an omitted recipient defaults to the node identity.
 
 Response: `{"status": "success", "acknowledged": 2}`
 
+Each ID must be 1–256 bytes. Duplicate IDs are acknowledged once. If none of
+the valid IDs match stored messages, the idempotent response remains HTTP 200
+with `"acknowledged":0` (an intentional divergence from the canonical server).
+
 ### Message validation, quotas, and errors
 
 - `recipient` must be a valid 33-byte compressed secp256k1 public key encoded
   as 66 hex characters.
-- `messageBox` is required and is 1–128 bytes. Message bodies are required and
-  are limited to 1 MiB.
-- An acknowledgement accepts at most 1,000 message ID strings. A list `limit`
-  must be a non-negative integer and is capped at 100.
+- `messageBox` is required and is 1–128 bytes; bytes below `0x20` and byte
+  `0x7f` are rejected. Message bodies are required and are limited to 1 MiB.
+- An acknowledgement accepts at most 1,000 message ID strings, each 1–256
+  bytes. A list `limit` must be a non-negative integer and is capped at 100.
 - Per sender/recipient storage defaults to 1,000 messages and 64 MiB. The
   node-wide defaults are 1,000,000 messages and 2 GiB. Per-inbox limits are
   disabled by default.
@@ -128,7 +140,8 @@ Coded failures use this shape:
 | HTTP | Code | Meaning |
 |------|------|---------|
 | 400 | `ERR_INVALID_RECIPIENT_KEY` | Recipient is not a compressed secp256k1 key |
-| 400 | `ERR_INVALID_MESSAGEBOX` | Message box is empty |
+| 400 | `ERR_INVALID_MESSAGEBOX` | Message box is empty or contains a forbidden control byte |
+| 400 | `ERR_INVALID_MESSAGE_ID` | An acknowledgement ID is empty or exceeds 256 bytes |
 | 400 | `ERR_MESSAGEBOX_TOO_LARGE` | Message box exceeds 128 bytes |
 | 429 | `ERR_SENDER_QUOTA_EXCEEDED` | Sender/recipient pair quota is full |
 | 429 | `ERR_INBOX_QUOTA_EXCEEDED` | Configured recipient inbox quota is full |

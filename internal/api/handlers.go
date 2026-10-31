@@ -13,7 +13,6 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/spv"
-	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 // --- BEEF ---
@@ -30,7 +29,7 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 	source := spv.BEEFSourceCached
 	beefBytes, err := s.proofStore.GetBEEF(txid)
 	if err == nil {
-		cachedTx, parseErr := transaction.NewTransactionFromBEEF(beefBytes)
+		cachedTx, parseErr := safeParseBEEF(beefBytes)
 		subjectProven := parseErr == nil && cachedTx.MerklePath != nil
 		if !subjectProven {
 			beefBytes, source, subjectProven = s.refreshCachedBEEF(txid, beefBytes)
@@ -59,7 +58,7 @@ func (s *Server) handleGetBEEF(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 4. Cache for future requests
-		if _, storeErr := s.proofStore.StoreBEEF(fetched); storeErr != nil {
+		if _, storeErr := s.cacheBEEF(fetched); storeErr != nil {
 			s.logger.Warn("failed to cache fetched BEEF", "txid", txid, "error", storeErr)
 			// Non-fatal — still serve the response
 		}
@@ -194,7 +193,8 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if result.Confidence == spv.ConfidenceSPVVerified || result.Confidence == spv.ConfidencePartiallyVerified {
-		if _, err := s.proofStore.StoreBEEF(beefBytes); err != nil {
+		// A skipped write still means a copy is cached: an existing proven one is kept.
+		if _, err := s.cacheBEEF(beefBytes); err != nil {
 			s.logger.Error("failed to store BEEF", "txid", result.TxID, "error", err)
 		} else {
 			resp.Stored = true
@@ -214,7 +214,7 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request) {
 			// out as extended format — the input ancestry travels with it and ARC
 			// needn't fetch parents (avoids ARC's "460 Missing input scripts" on a
 			// 0-conf parent). The BEEF validated above, so this parse is safe.
-			tx, perr := transaction.NewTransactionFromBEEF(beefBytes)
+			tx, perr := safeParseBEEF(beefBytes)
 			if perr != nil {
 				arcStatus.Error = fmt.Sprintf("parse tx for ARC: %v", perr)
 			} else {
