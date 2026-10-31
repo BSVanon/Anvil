@@ -75,15 +75,18 @@ type Manager struct {
 	// per-peer gossip rate limiting (loose defaults: 30/s burst 100)
 	peerRates  map[string]*peerRate
 	peerRateMu sync.Mutex
-	ratePerSec float64
-	rateBurst  int
+
+	// unstoredRelay budgets relays of forwards this node could not store.
+	unstoredRelay unstoredRelayBucket
+	ratePerSec    float64
+	rateBurst     int
 
 	// slash tracking
 	slashTracker *slashTracker
 
 	// topics to request catch-up for on peer connect
-	catchUpTopics  []string
-	catchUpRounds  map[string]int // tracks pagination rounds per "peer:topic" key
+	catchUpTopics []string
+	catchUpRounds map[string]int // tracks pagination rounds per "peer:topic" key
 
 	// local pubkeys used for SHIP re-announce filtering
 	localPubkeys map[string]struct{}
@@ -165,9 +168,9 @@ type ManagerConfig struct {
 	RateBurst int
 	// TxMempool enables mesh TX relay. When set, the manager announces
 	// txids to peers and responds to tx requests from the local mempool.
-	TxMempool    Mempool
+	TxMempool Mempool
 	// OnTx is called when a new transaction is received via the mesh.
-	OnTx         OnTxCallback
+	OnTx OnTxCallback
 }
 
 // NewManager creates a gossip manager backed by go-sdk auth.Peer.

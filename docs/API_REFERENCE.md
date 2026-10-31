@@ -399,7 +399,9 @@ source.onmessage = (e) => console.log(JSON.parse(e.data));
 ```
 
 Each message arrives as a `data:` event with a monotonic `id:` field.
-On reconnect, use `Last-Event-ID` + `POST /listMessages` to backfill.
+SSE pushes are asynchronous and best-effort; under overload, a push can be
+dropped. `POST /listMessages` is authoritative. On reconnect, use
+`Last-Event-ID` + `POST /listMessages` to backfill.
 
 ## v3.4 messaging configuration
 

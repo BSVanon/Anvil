@@ -1,10 +1,13 @@
 package gossip
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 
@@ -230,5 +233,164 @@ func TestForward_LegacySenderSignedStillVerifies(t *testing.T) {
 
 	if !verifyForwardSignature(&fwd) {
 		t.Fatal("legacy sender-signed forward must still verify")
+	}
+}
+
+func legacyForward(t *testing.T, senderKey *ec.PrivateKey, msg *messaging.Message) MsgForwardPayload {
+	t.Helper()
+	digest := messageDigest(msg)
+	sig, err := senderKey.Sign(digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return MsgForwardPayload{Message: *msg, Signature: hex.EncodeToString(sig.Serialize())}
+}
+
+func observeForwardRelays(t *testing.T, manager *Manager) *int {
+	t.Helper()
+	count := new(int)
+	previous := relayForwardTestHook
+	relayForwardTestHook = func(got *Manager, _ string, _ MsgForwardPayload) {
+		if got == manager {
+			*count++
+		}
+	}
+	t.Cleanup(func() { relayForwardTestHook = previous })
+	return count
+}
+
+func TestMsgForwardRateLimitRunsBeforeSignatureVerification(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mgr := NewManager(ManagerConfig{Logger: logger, RatePerSec: 0.000001, RateBurst: 1})
+	relays := observeForwardRelays(t, mgr)
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	first := sampleMsg(sender, recipient)
+	first.MessageID = "rate-1"
+	raw, _ := json.Marshal(legacyForward(t, senderKey, first))
+	if err := mgr.onMsgForward("limited-peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	second := sampleMsg(sender, recipient)
+	second.MessageID = "rate-2"
+	invalid := MsgForwardPayload{Message: *second, Signature: "00"}
+	raw, _ = json.Marshal(invalid)
+	if err := mgr.onMsgForward("limited-peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	if *relays != 1 {
+		t.Fatalf("relays = %d, want only the first forward", *relays)
+	}
+	if got := logs.String(); !strings.Contains(got, "peer rate-limited") || strings.Contains(got, "signature invalid") {
+		t.Fatalf("rate-limit/signature logs = %q", got)
+	}
+}
+
+func TestMsgForwardDuplicateMissingFromSeenIsNotRelayed(t *testing.T) {
+	store, err := messaging.NewStore(t.TempDir(), messaging.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
+	mgr.SetMsgStore(store)
+	relays := observeForwardRelays(t, mgr)
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	msg := sampleMsg(sender, recipient)
+	msg.MessageID = "duplicate-after-eviction"
+	raw, _ := json.Marshal(legacyForward(t, senderKey, msg))
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	mgr.seenMu.Lock()
+	clear(mgr.seen)
+	mgr.seenMu.Unlock()
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	if *relays != 1 || store.Count() != 1 {
+		t.Fatalf("duplicate outcome: relays=%d stored=%d", *relays, store.Count())
+	}
+}
+
+func TestMsgForwardQuotaRejectedRelayUsesManagerBudget(t *testing.T) {
+	store, err := messaging.NewStore(t.TempDir(), messaging.Options{MaxPairMessages: 1, MaxStoreMessages: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	seed := sampleMsg(sender, recipient)
+	seed.MessageID = "stored-first"
+	if ok, err := store.Deliver(seed, "sender"); err != nil || !ok {
+		t.Fatalf("seed deliver = %v, %v", ok, err)
+	}
+	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
+	mgr.SetMsgStore(store)
+	relays := observeForwardRelays(t, mgr)
+	bucket := relayBucketFor(mgr)
+	bucket.mu.Lock()
+	bucket.tokens = 1
+	bucket.lastRefill = time.Now().Add(time.Hour)
+	bucket.mu.Unlock()
+	for i, peer := range []string{"peer-a", "peer-b"} {
+		msg := sampleMsg(sender, recipient)
+		msg.MessageID = "quota-" + string(rune('1'+i))
+		raw, _ := json.Marshal(legacyForward(t, senderKey, msg))
+		if err := mgr.onMsgForward(peer, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if *relays != 1 {
+		t.Fatalf("quota-rejected relays = %d, want one allowed and one budget drop", *relays)
+	}
+}
+
+func TestMsgForwardNewlyStoredIsRelayed(t *testing.T) {
+	store, err := messaging.NewStore(t.TempDir(), messaging.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
+	mgr.SetMsgStore(store)
+	relays := observeForwardRelays(t, mgr)
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	msg := sampleMsg(sender, recipient)
+	msg.MessageID = "newly-stored"
+	raw, _ := json.Marshal(legacyForward(t, senderKey, msg))
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	if *relays != 1 || store.Count() != 1 {
+		t.Fatalf("new forward outcome: relays=%d stored=%d", *relays, store.Count())
+	}
+}
+
+func TestMsgForwardNonQuotaStoreErrorIsNotRelayed(t *testing.T) {
+	store, err := messaging.NewStore(t.TempDir(), messaging.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
+	mgr.SetMsgStore(store)
+	relays := observeForwardRelays(t, mgr)
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	msg := sampleMsg(sender, recipient)
+	msg.MessageID = "closed-store"
+	raw, _ := json.Marshal(legacyForward(t, senderKey, msg))
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	if *relays != 0 {
+		t.Fatalf("non-quota store error relays = %d", *relays)
 	}
 }

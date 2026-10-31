@@ -78,10 +78,12 @@ type Store struct {
 	seq     uint64
 	now     func() time.Time
 
-	callbackMu      sync.RWMutex
-	onMessage       func(*Message)
-	onStoredMessage func(*StoredMessage)
-	onListIterate   func()
+	notifier   *notificationDispatcher
+	closed     bool
+	closeDone  chan struct{}
+	closeError error
+
+	onListIterate func()
 }
 
 func NewStore(path string, opts Options) (*Store, error) {
@@ -98,26 +100,9 @@ func NewStore(path string, opts Options) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	s.startNotificationDispatcher()
 	return s, nil
 }
-
-// SetOnMessage is retained for the existing API constructor.
-func (s *Store) SetOnMessage(fn func(*Message)) {
-	s.callbackMu.Lock()
-	s.onMessage = fn
-	s.onStoredMessage = nil
-	s.callbackMu.Unlock()
-}
-
-// SetOnStoredMessage preserves sender attestation in notifications.
-func (s *Store) SetOnStoredMessage(fn func(*StoredMessage)) {
-	s.callbackMu.Lock()
-	s.onStoredMessage = fn
-	s.onMessage = nil
-	s.callbackMu.Unlock()
-}
-
-func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) Send(msg *Message, originNode string) (string, error) {
 	if err := validateMessage(msg, false); err != nil {
@@ -368,32 +353,4 @@ func decodeRecord(data []byte) (*StoredMessage, error) {
 		return nil, err
 	}
 	return &StoredMessage{Message: record.Message, AttestedBy: record.AttestedBy, ReceivedAt: record.ReceivedAt}, nil
-}
-
-func (s *Store) insertAndNotify(record *StoredMessage) (bool, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if _, err := s.db.Get(indexKey(record.Recipient, record.MessageID), nil); err == nil {
-		return false, nil
-	} else if !errors.Is(err, leveldb.ErrNotFound) {
-		return false, fmt.Errorf("read message index: %w", err)
-	}
-	if err := s.insertLocked(record, true); err != nil {
-		return false, err
-	}
-	s.notify(record)
-	return true, nil
-}
-
-func (s *Store) notify(record *StoredMessage) {
-	s.callbackMu.RLock()
-	storedFn, legacyFn := s.onStoredMessage, s.onMessage
-	s.callbackMu.RUnlock()
-	view := *record
-	if storedFn != nil {
-		storedFn(&view)
-	} else if legacyFn != nil {
-		msg := record.Message
-		legacyFn(&msg)
-	}
 }

@@ -1,6 +1,7 @@
 package messaging
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -197,5 +198,116 @@ func TestMigrationFiftyThousandRecords(t *testing.T) {
 	}
 	if countPrefix(t, s.db, prefixV1) != 0 || countPrefix(t, s.db, prefixMigration) != 0 {
 		t.Fatal("migration left v1 or migration-index keys")
+	}
+}
+
+func TestMigrationPassOneSkipsUnservableRecordsBeforeIndexing(t *testing.T) {
+	path := t.TempDir()
+	recipient := testIdentity(t)
+	db, err := leveldb.OpenFile(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type fixture struct {
+		message  Message
+		servable bool
+	}
+	fixtures := []fixture{
+		{message: Message{MessageID: "normal-1", Body: "one"}, servable: true},
+		{message: Message{MessageID: "normal-2", Body: "two"}, servable: true},
+		{message: Message{MessageID: strings.Repeat("a", 300), Body: "oversized-id"}},
+		{message: Message{MessageID: strings.Repeat("b", 64<<10), Body: "huge-id"}},
+		{message: Message{MessageID: "huge-body", Body: strings.Repeat("c", 2<<20)}},
+	}
+	invalid := make(map[string][]byte)
+	for i, item := range fixtures {
+		msg := item.message
+		msg.Sender, msg.Recipient, msg.MessageBox, msg.Timestamp = "sender", recipient, "box", int64(i+1)
+		raw, marshalErr := json.Marshal(msg)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		key := []byte("msg:" + recipient + ":" + msg.MessageID)
+		if err := db.Put(key, raw, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !item.servable {
+			invalid[string(key)] = append([]byte(nil), raw...)
+		}
+	}
+
+	s := &Store{db: db, now: time.Now}
+	counts := migrationCounts{}
+	migrationPass1TestHook = func(_ int) error {
+		iter := db.NewIterator(util.BytesPrefix(prefixMigration), nil)
+		defer iter.Release()
+		for iter.Next() {
+			if _, found := invalid[string(iter.Value())]; found {
+				t.Error("pass one indexed an unservable v1 record")
+			}
+		}
+		return iter.Error()
+	}
+	t.Cleanup(func() { migrationPass1TestHook = nil })
+	if err := s.buildMigrationIndex(&counts); err != nil {
+		t.Fatal(err)
+	}
+	migrationPass1TestHook = nil
+	if counts.unservable != 3 || counts.undecodable != 0 {
+		t.Fatalf("pass-one counts = %+v, want unservable=3", counts)
+	}
+	if got := countPrefix(t, db, prefixMigration); got != 2 {
+		t.Fatalf("pass-one migration keys = %d, want 2", got)
+	}
+	if err := s.moveMigrationIndex(&counts); err != nil {
+		t.Fatal(err)
+	}
+	if counts.inserted != 2 || counts.unservable != 3 || counts.undecodable != 0 {
+		t.Fatalf("final migration counts = %+v", counts)
+	}
+	for key, want := range invalid {
+		got, err := db.Get([]byte(key), nil)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("unservable v1 record changed: value bytes=%d want=%d err=%v", len(got), len(want), err)
+		}
+	}
+	if got := countPrefix(t, db, prefixMigration); got != 0 {
+		t.Fatalf("migration keys remaining = %d", got)
+	}
+	msgs, err := s.List(recipient, "box")
+	if err != nil || len(msgs) != 2 {
+		t.Fatalf("normal migrated messages = %d, %v", len(msgs), err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMigrationPassOneFlushesByAccumulatedBytes(t *testing.T) {
+	path := t.TempDir()
+	recipient := testIdentity(t)
+	writeV1Messages(t, path, recipient, 8)
+	previousBytes := migrationIndexBatchBytes
+	migrationIndexBatchBytes = 1
+	flushes := 0
+	migrationPass1TestHook = func(_ int) error {
+		flushes++
+		return nil
+	}
+	t.Cleanup(func() {
+		migrationIndexBatchBytes = previousBytes
+		migrationPass1TestHook = nil
+	})
+	s, err := NewStore(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	migrationPass1TestHook = nil
+	if flushes != 8 {
+		t.Fatalf("pass-one flushes = %d, want 8", flushes)
+	}
+	if s.Count() != 8 || countPrefix(t, s.db, prefixV1) != 0 || countPrefix(t, s.db, prefixMigration) != 0 {
+		t.Fatalf("migration state: stored=%d v1=%d mg=%d", s.Count(), countPrefix(t, s.db, prefixV1), countPrefix(t, s.db, prefixMigration))
 	}
 }

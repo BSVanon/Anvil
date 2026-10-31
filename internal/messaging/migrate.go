@@ -18,9 +18,24 @@ import (
 const migrationIndexBatchSize = 1000
 
 var (
-	migrationPass1TestHook func(indexed int) error
-	migrationTestHook      func(inserted int) error
+	migrationIndexBatchBytes = 4 << 20
+	migrationPass1TestHook   func(indexed int) error
+	migrationTestHook        func(inserted int) error
 )
+
+type migrationRecordClass uint8
+
+const (
+	migrationRecordServable migrationRecordClass = iota
+	migrationRecordUndecodable
+	migrationRecordUnservable
+)
+
+type migrationRecord struct {
+	metadata  v1Metadata
+	message   Message
+	recipient string
+}
 
 type migrationCounts struct {
 	inserted    int
@@ -72,6 +87,7 @@ func (s *Store) buildMigrationIndex(counts *migrationCounts) error {
 	defer iter.Release()
 	batch := new(leveldb.Batch)
 	batched := 0
+	batchedBytes := 0
 	indexed := 0
 	flush := func() error {
 		if batched == 0 {
@@ -83,21 +99,24 @@ func (s *Store) buildMigrationIndex(counts *migrationCounts) error {
 		indexed += batched
 		batch.Reset()
 		batched = 0
+		batchedBytes = 0
 		if migrationPass1TestHook != nil {
 			return migrationPass1TestHook(indexed)
 		}
 		return nil
 	}
 	for iter.Next() {
-		metadata, err := decodeV1Metadata(iter.Key(), iter.Value())
-		if err != nil {
-			counts.undecodable++
+		record, class := classifyV1Record(iter.Key(), iter.Value())
+		if class != migrationRecordServable {
+			countMigrationSkip(counts, class)
 			continue
 		}
 		original := append([]byte(nil), iter.Key()...)
-		batch.Put(migrationIndexKey(metadata.Timestamp, metadata.MessageID, original), original)
+		indexKey := migrationIndexKey(record.metadata.Timestamp, record.metadata.MessageID, original)
+		batch.Put(indexKey, original)
 		batched++
-		if batched == migrationIndexBatchSize {
+		batchedBytes += len(indexKey) + len(original)
+		if batched >= migrationIndexBatchSize || batchedBytes >= migrationIndexBatchBytes {
 			if err := flush(); err != nil {
 				return err
 			}
@@ -126,34 +145,18 @@ func (s *Store) moveMigrationIndex(counts *migrationCounts) error {
 		if err != nil {
 			return fmt.Errorf("read v1 message: %w", err)
 		}
-		metadata, err := decodeV1Metadata(v1Key, raw)
-		if err != nil {
-			counts.undecodable++
+		recordData, class := classifyV1Record(v1Key, raw)
+		if class != migrationRecordServable {
+			countMigrationSkip(counts, class)
 			if err := s.deleteMigrationKey(migrationKey); err != nil {
 				return err
 			}
 			continue
 		}
-		var msg Message
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			counts.undecodable++
-			if err := s.deleteMigrationKey(migrationKey); err != nil {
-				return err
-			}
-			continue
-		}
-		recipient, err := normalizeRecipient(metadata.Recipient)
-		if err != nil || validateMessageBox(msg.MessageBox) != nil ||
-			!validMigratedMessageID(metadata.MessageID) || validateMessage(&msg, true) != nil {
-			counts.unservable++
-			if err := s.deleteMigrationKey(migrationKey); err != nil {
-				return err
-			}
-			continue
-		}
-		msg.Timestamp = metadata.Timestamp
-		msg.MessageID = metadata.MessageID
-		msg.Recipient = recipient
+		msg := recordData.message
+		msg.Timestamp = recordData.metadata.Timestamp
+		msg.MessageID = recordData.metadata.MessageID
+		msg.Recipient = recordData.recipient
 		if _, err := parseCompressedKey(msg.Sender); err == nil {
 			msg.Sender = strings.ToLower(msg.Sender)
 		}
@@ -192,6 +195,32 @@ func (s *Store) moveMigrationIndex(counts *migrationCounts) error {
 		return fmt.Errorf("iterate migration index: %w", err)
 	}
 	return nil
+}
+
+func classifyV1Record(key, raw []byte) (migrationRecord, migrationRecordClass) {
+	var record migrationRecord
+	metadata, err := decodeV1Metadata(key, raw)
+	if err != nil {
+		return record, migrationRecordUndecodable
+	}
+	var msg Message
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return record, migrationRecordUndecodable
+	}
+	recipient, err := normalizeRecipient(metadata.Recipient)
+	if err != nil || validateMessageBox(msg.MessageBox) != nil ||
+		!validMigratedMessageID(metadata.MessageID) || validateMessage(&msg, true) != nil {
+		return record, migrationRecordUnservable
+	}
+	return migrationRecord{metadata: metadata, message: msg, recipient: recipient}, migrationRecordServable
+}
+
+func countMigrationSkip(counts *migrationCounts, class migrationRecordClass) {
+	if class == migrationRecordUndecodable {
+		counts.undecodable++
+	} else if class == migrationRecordUnservable {
+		counts.unservable++
+	}
 }
 
 func validMigratedMessageID(messageID string) bool {

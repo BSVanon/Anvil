@@ -158,32 +158,6 @@ func TestMessageBoxControlBytesRejectedOnListAndDeliver(t *testing.T) {
 	}
 }
 
-func TestNotificationsFollowPersistedArrivalOrderUnderWriteLock(t *testing.T) {
-	s := testStore(t, Options{})
-	sender, recipient, origin := testIdentity(t), testIdentity(t), testIdentity(t)
-	var notified []string
-	s.SetOnStoredMessage(func(msg *StoredMessage) {
-		if s.writeMu.TryLock() {
-			s.writeMu.Unlock()
-			t.Error("notification ran after write lock was released")
-		}
-		notified = append(notified, msg.MessageID)
-	})
-	first := sendTest(t, s, sender, recipient, origin, "box", "first")
-	second := &Message{MessageID: "legacy", Sender: sender, Recipient: recipient, MessageBox: "box", Body: "second"}
-	if inserted, err := s.Deliver(second, "sender"); err != nil || !inserted {
-		t.Fatalf("Deliver = %v, %v", inserted, err)
-	}
-	stored, err := s.List(recipient, "box")
-	if err != nil || len(stored) != 2 || len(notified) != 2 {
-		t.Fatalf("stored/notified = %d/%d, %v", len(stored), len(notified), err)
-	}
-	if notified[0] != first || notified[1] != second.MessageID ||
-		stored[0].MessageID != notified[0] || stored[1].MessageID != notified[1] {
-		t.Fatalf("persisted=%q,%q notified=%q", stored[0].MessageID, stored[1].MessageID, notified)
-	}
-}
-
 func TestExpiryUsesReceivedAtNotFutureTimestamp(t *testing.T) {
 	s := testStore(t, Options{TTLSeconds: 10})
 	sender, recipient := testIdentity(t), testIdentity(t)

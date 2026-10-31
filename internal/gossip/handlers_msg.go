@@ -207,6 +207,10 @@ func (m *Manager) ForwardSignedMessage(msg *messaging.Message, sigHex string) {
 // Only stores the message if the recipient is hosted on this node.
 // Verifies sender signature before accepting.
 func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
+	if !m.allowPeerMessage(senderPKHex) {
+		m.logger.Debug("peer rate-limited, dropping message forward", "peer", truncate(senderPKHex))
+		return nil
+	}
 	var fwd MsgForwardPayload
 	if err := json.Unmarshal(raw, &fwd); err != nil {
 		return nil
@@ -273,9 +277,12 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	}
 	m.seenMu.Unlock()
 
-	// Store using Deliver (preserves original MessageID) — only if we
-	// have a message store. Every node stores forwarded messages so the
-	// recipient can query any node they're connected to.
+	relay := m.msgStore == nil
+	// Store using Deliver (preserves original MessageID) when a message store is
+	// available. Copies on non-home nodes are never acknowledged, so an
+	// intermediate node's pair quota can fill for a busy pair. Relaying
+	// quota-rejected forwards keeps multi-hop delivery to the recipient's home
+	// node, and the manager-wide unstored-relay budget bounds amplification.
 	if m.msgStore != nil {
 		attestedBy := "sender"
 		if fwd.OriginNode != "" {
@@ -284,30 +291,20 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 		if ok, err := m.msgStore.Deliver(msg, attestedBy); err != nil {
 			if errors.Is(err, messaging.ErrPairQuota) || errors.Is(err, messaging.ErrInboxQuota) || errors.Is(err, messaging.ErrStoreFull) {
 				m.logMessageQuotaDrop(err)
+				relay = m.allowUnstoredRelay()
 			} else {
 				m.logger.Debug("forwarded message store failed", "error", err)
 			}
 		} else if ok {
+			relay = true
 			m.logger.Debug("forwarded message delivered",
 				"id", msg.MessageID, "recipient", msg.Recipient)
 		}
 	}
 
-	// Forward to other peers (flood-fill with dedup).
-	payload, err := Encode(MsgForward, fwd)
-	if err != nil {
-		return nil
+	if relay {
+		m.relayMessageForward(senderPKHex, fwd)
 	}
-	m.mu.RLock()
-	for pkHex, peer := range m.peers {
-		if pkHex == senderPKHex {
-			continue
-		}
-		if peer.Peer != nil {
-			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
-		}
-	}
-	m.mu.RUnlock()
 
 	return nil
 }
