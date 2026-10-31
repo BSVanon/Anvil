@@ -36,3 +36,16 @@ func TestMessageIDBindingAndLegacyShape(t *testing.T) {
 		t.Fatal("legacy decimal ID classified as v2")
 	}
 }
+
+func TestMessageIDSeparatesMessageBoxAndBody(t *testing.T) {
+	origin := testIdentity(t)
+	base := Message{Sender: testIdentity(t), Recipient: testIdentity(t), Timestamp: 1700000000}
+	first := base
+	first.MessageBox, first.Body = "a\nb", "c"
+	second := base
+	second.MessageBox, second.Body = "a", "b\nc"
+	nonce := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	if firstID, secondID := deriveMessageID(&first, origin, nonce), deriveMessageID(&second, origin, nonce); firstID == secondID {
+		t.Fatalf("ambiguous message box/body split produced the same ID %q", firstID)
+	}
+}

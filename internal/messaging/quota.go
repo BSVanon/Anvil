@@ -214,6 +214,7 @@ func (s *Store) deletePrimaryLocked(primary []byte) (bool, error) {
 	} else if err := putCounter(batch, inboxKey, inbox); err != nil {
 		return false, err
 	}
+	// Keep qn: at zero while deleting empty pair/inbox counters so Count can identify an initialized store.
 	if err := putCounter(batch, keyNodeCounter, node); err != nil {
 		return false, err
 	}

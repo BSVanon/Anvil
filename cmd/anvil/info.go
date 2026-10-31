@@ -78,6 +78,9 @@ func writeInfo(w io.Writer, identity, address, authToken string, jsonOut, showSe
 }
 
 func redactedSecret(secret string, show bool) string {
+	if secret == "" {
+		return "(none)"
+	}
 	if show {
 		return secret
 	}

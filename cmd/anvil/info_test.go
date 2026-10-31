@@ -34,6 +34,16 @@ func TestInfoRedactsTokenUnlessShowSecrets(t *testing.T) {
 	}
 }
 
+func TestInfoPrintsNoneForEmptyToken(t *testing.T) {
+	for _, jsonOut := range []bool{false, true} {
+		var out bytes.Buffer
+		writeInfo(&out, "identity", "address", "", jsonOut, false)
+		if !bytes.Contains(out.Bytes(), []byte("(none)")) {
+			t.Fatalf("empty token output = %q, want (none)", out.String())
+		}
+	}
+}
+
 func TestLoadEnvFilePathDerivation(t *testing.T) {
 	// Create a temp dir with a fake env file
 	dir := t.TempDir()

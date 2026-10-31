@@ -54,16 +54,16 @@ func TestMigrationOrderingIdempotenceAndDataPreservation(t *testing.T) {
 			t.Fatalf("message %d = %+v, want %s/unknown", i, msgs[i], want)
 		}
 	}
-	if s.Count() != 4 {
-		t.Fatalf("invalid/long-box migrated record was lost: count=%d", s.Count())
+	if s.Count() != 3 {
+		t.Fatalf("servable migrated record count = %d, want 3", s.Count())
 	}
 	checkCounterInvariant(t, s)
 	if raw, err := s.db.Get(keyMetaSchema, nil); err != nil || string(raw) != "2" {
 		t.Fatalf("schema = %q, %v", raw, err)
 	}
 	iter := s.db.NewIterator(util.BytesPrefix(prefixV1), nil)
-	if iter.Next() {
-		t.Fatal("v1 keys remain after migration")
+	if !iter.Next() || string(iter.Key()) != "msg:not-a-public-key:invalid" {
+		t.Fatalf("unservable v1 key = %q, want invalid record left in place", iter.Key())
 	}
 	iter.Release()
 	if err := s.Close(); err != nil {
@@ -75,7 +75,7 @@ func TestMigrationOrderingIdempotenceAndDataPreservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if s.Count() != 4 {
+	if s.Count() != 3 {
 		t.Fatalf("idempotent reopen count = %d", s.Count())
 	}
 	checkCounterInvariant(t, s)
@@ -101,11 +101,11 @@ func TestMigrationRecoversAfterInterruptedInsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if s.Count() != 4 {
+	if s.Count() != 3 {
 		t.Fatalf("recovered count = %d", s.Count())
 	}
 	checkCounterInvariant(t, s)
-	for _, id := range []string{"alpha", "999999", "1000000", "invalid"} {
+	for _, id := range []string{"alpha", "999999", "1000000"} {
 		var found bool
 		iter := s.db.NewIterator(util.BytesPrefix(prefixPrimary), nil)
 		for iter.Next() {
@@ -141,8 +141,8 @@ func TestMigrationLeavesUndecodableV1RecordAndSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Count() != 4 {
-		t.Fatalf("good records migrated = %d, want 4", s.Count())
+	if s.Count() != 3 {
+		t.Fatalf("good records migrated = %d, want 3", s.Count())
 	}
 	if raw, err := s.db.Get(badKey, nil); err != nil || string(raw) != `{"messageId":` {
 		t.Fatalf("bad v1 record = %q, %v", raw, err)
@@ -156,8 +156,8 @@ func TestMigrationLeavesUndecodableV1RecordAndSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if s.Count() != 4 {
-		t.Fatalf("second open count = %d, want 4", s.Count())
+	if s.Count() != 3 {
+		t.Fatalf("second open count = %d, want 3", s.Count())
 	}
 	if ok, err := s.db.Has(badKey, nil); err != nil || !ok {
 		t.Fatalf("bad v1 record missing after second open: present=%v err=%v", ok, err)

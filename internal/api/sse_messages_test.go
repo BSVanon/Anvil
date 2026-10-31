@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/messaging"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
 // TestMessageHubFanout verifies new messages are delivered to all subscribers
@@ -144,6 +146,37 @@ func TestMessageHubStoredViewCarriesAttestation(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"senderAttestedBy":"origin"`) || strings.Contains(string(raw), "receivedAt") {
 		t.Fatalf("stored SSE view = %s", raw)
+	}
+}
+
+func TestNewServerMessageStoreWiringPreservesAttestation(t *testing.T) {
+	store, err := messaging.NewStore(t.TempDir(), messaging.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	newIdentity := func() string {
+		key, err := ec.NewPrivateKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(key.PubKey().Compressed())
+	}
+	sender, recipient, origin := newIdentity(), newIdentity(), newIdentity()
+	srv := NewServer(ServerConfig{MsgStore: store})
+	updates := make(chan *messaging.StoredMessage, 1)
+	defer srv.msgHub.subscribe(recipient, "box", updates)()
+
+	if _, err := store.Send(&messaging.Message{Sender: sender, Recipient: recipient, MessageBox: "box", Body: "body"}, origin); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msg := <-updates:
+		if msg.AttestedBy != "local" {
+			t.Fatalf("sender attestation = %q, want local", msg.AttestedBy)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SSE subscriber did not receive store notification")
 	}
 }
 

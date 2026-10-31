@@ -78,6 +78,7 @@ type Server struct {
 	proofFetcher      beefFetcher
 	proofRefreshMu    sync.Mutex
 	proofRefreshes    map[string]time.Time
+	proofRefreshSlots chan struct{}
 	msgStore          *messaging.Store
 	signingKey        *ec.PrivateKey // node identity key for signing envelopes
 	healthChecks      []HealthCheck  // registered subsystem health checks
@@ -223,6 +224,7 @@ func NewServer(cfg ServerConfig) *Server {
 		watcher:           cfg.Watcher,
 		proofFetcher:      cfg.ProofFetcher,
 		proofRefreshes:    make(map[string]time.Time),
+		proofRefreshSlots: make(chan struct{}, 32),
 		msgStore:          cfg.MsgStore,
 		signingKey:        cfg.SigningKey,
 		customCaps:        cfg.CustomCapabilities,
@@ -233,9 +235,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	// Wire message store notifications to SSE hub.
 	if s.msgStore != nil {
-		s.msgStore.SetOnMessage(func(msg *messaging.Message) {
-			s.msgHub.notify(msg)
-		})
+		s.msgStore.SetOnStoredMessage(s.NotifyMessage)
 	}
 	s.routes()
 	return s
@@ -879,7 +879,7 @@ func (s *Server) NotifyEnvelope(env *envelope.Envelope) {
 }
 
 // NotifyMessage pushes a message to SSE subscribers on its recipient+messageBox.
-// Called by the gossip onMessage callback for mesh-forwarded messages.
+// Called by the message store for local sends and mesh deliveries.
 func (s *Server) NotifyMessage(msg *messaging.StoredMessage) {
 	s.msgHub.notifyStored(msg)
 }

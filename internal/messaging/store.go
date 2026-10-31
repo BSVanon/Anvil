@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,7 @@ import (
 const (
 	MaxMessageBoxBytes  = 128
 	MaxMessageBodyBytes = 1 << 20
-	expiryChunkSize     = 10000
+	expiryChunkSize     = 1000
 )
 
 var (
@@ -225,6 +226,12 @@ func (s *Store) Acknowledge(recipient string, ids []string) (int, error) {
 func (s *Store) ExpireOld() int {
 	cutoff := s.now().Unix() - s.opts.TTLSeconds
 	expired := 0
+	deletionErrors := 0
+	defer func() {
+		if deletionErrors > 0 {
+			log.Printf("messagebox store expiry: %d deletion errors", deletionErrors)
+		}
+	}()
 	for {
 		expiryKeys, primaries := s.expiredKeys(cutoff, expiryChunkSize)
 		if len(expiryKeys) == 0 {
@@ -235,6 +242,7 @@ func (s *Store) ExpireOld() int {
 		for i, primary := range primaries {
 			ok, err := s.deletePrimaryLocked(primary)
 			if err != nil {
+				deletionErrors++
 				continue
 			}
 			if ok {
@@ -244,8 +252,10 @@ func (s *Store) ExpireOld() int {
 			}
 			batch := new(leveldb.Batch)
 			batch.Delete(expiryKeys[i])
-			if s.db.Write(batch, nil) == nil {
+			if err := s.db.Write(batch, nil); err == nil {
 				processed++
+			} else {
+				deletionErrors++
 			}
 		}
 		s.writeMu.Unlock()

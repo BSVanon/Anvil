@@ -56,6 +56,7 @@ func (s *Store) migrate() error {
 	})
 	now := s.now().Unix()
 	inserted := 0
+	unservable := 0
 	deleteKeys := make([][]byte, 0, len(records))
 	for i := range records {
 		raw, getErr := s.db.Get(records[i].key, nil)
@@ -70,9 +71,14 @@ func (s *Store) migrate() error {
 			undecodable++
 			continue
 		}
+		recipient, err := normalizeRecipient(records[i].recipient)
+		if err != nil || len(msg.MessageBox) == 0 || len(msg.MessageBox) > MaxMessageBoxBytes {
+			unservable++
+			continue
+		}
 		msg.Timestamp = records[i].timestamp
 		msg.MessageID = records[i].messageID
-		msg.Recipient = strings.ToLower(records[i].recipient)
+		msg.Recipient = recipient
 		idx := indexKey(msg.Recipient, msg.MessageID)
 		primary, getErr := s.db.Get(idx, nil)
 		if getErr == nil {
@@ -122,8 +128,8 @@ func (s *Store) migrate() error {
 	if err := s.db.Put(keyMetaSchema, []byte("2"), nil); err != nil {
 		return fmt.Errorf("write message schema: %w", err)
 	}
-	log.Printf("messagebox store migrated: %d messages in %s (%d undecodable v1 records left in place)",
-		len(deleteKeys), time.Since(started).Round(time.Millisecond), undecodable)
+	log.Printf("messagebox store migrated: %d messages in %s (%d undecodable, %d unservable v1 records left in place)",
+		len(deleteKeys), time.Since(started).Round(time.Millisecond), undecodable, unservable)
 	return nil
 }
 

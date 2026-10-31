@@ -56,15 +56,31 @@ func (s *Server) reserveProofRefresh(txid string) bool {
 	return true
 }
 
+func (s *Server) releaseProofRefreshReservation(txid string) {
+	s.proofRefreshMu.Lock()
+	delete(s.proofRefreshes, txid)
+	s.proofRefreshMu.Unlock()
+}
+
 // refreshCachedBEEF waits only briefly for an upgrade. The worker has a
 // detached deadline so client cancellation cannot abort a cache refresh.
 func (s *Server) refreshCachedBEEF(txid string, cached []byte) ([]byte, string, bool) {
-	if s.proofFetcher == nil || !s.reserveProofRefresh(txid) {
+	if s.proofFetcher == nil || s.proofRefreshSlots == nil {
+		return cached, spv.BEEFSourceCached, false
+	}
+	if !s.reserveProofRefresh(txid) {
+		return cached, spv.BEEFSourceCached, false
+	}
+	select {
+	case s.proofRefreshSlots <- struct{}{}:
+	default:
+		s.releaseProofRefreshReservation(txid)
 		return cached, spv.BEEFSourceCached, false
 	}
 
 	resultCh := make(chan beefRefreshResult, 1)
 	go func() {
+		defer func() { <-s.proofRefreshSlots }()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 

@@ -889,7 +889,6 @@ func main() {
 		},
 		CustomCapabilities: cfg.Capabilities.Custom,
 	})
-	msgStore.SetOnStoredMessage(srv.NotifyMessage)
 
 	if nodeWallet != nil {
 		nodeWallet.RegisterRoutes(srv.Mux(), srv.RequireAuth)

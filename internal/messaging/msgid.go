@@ -44,7 +44,8 @@ func VerifyMessageID(msg *Message, originNode string) bool {
 func deriveMessageID(msg *Message, originNode string, nonce []byte) string {
 	nonceHex := hex.EncodeToString(nonce)
 	canonical := messageIDDomain + originNode + "\n" + msg.Sender + "\n" +
-		msg.Recipient + "\n" + msg.MessageBox + "\n" + msg.Body + "\n" +
+		msg.Recipient + "\n" + strconv.Itoa(len(msg.MessageBox)) + ":" + msg.MessageBox + "\n" +
+		strconv.Itoa(len(msg.Body)) + ":" + msg.Body + "\n" +
 		strconv.FormatInt(msg.Timestamp, 10) + "\n" + nonceHex
 	h := sha256.Sum256([]byte(canonical))
 	return nonceHex + hex.EncodeToString(h[:24])

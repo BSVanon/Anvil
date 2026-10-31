@@ -86,9 +86,13 @@ func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 }
 
 func makeRefreshBEEFs(t *testing.T, srv *Server, addValidHeader bool) (string, []byte, []byte) {
+	return makeRefreshBEEFsWithSatoshis(t, srv, addValidHeader, 1000)
+}
+
+func makeRefreshBEEFsWithSatoshis(t *testing.T, srv *Server, addValidHeader bool, satoshis uint64) (string, []byte, []byte) {
 	t.Helper()
 	tx := transaction.NewTransaction()
-	tx.AddOutput(&transaction.TransactionOutput{Satoshis: 1000, LockingScript: mustDecodeScript(t, "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac")})
+	tx.AddOutput(&transaction.TransactionOutput{Satoshis: satoshis, LockingScript: mustDecodeScript(t, "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac")})
 	plain, err := transaction.NewBeefFromTransaction(tx)
 	if err != nil {
 		t.Fatal(err)
@@ -230,6 +234,60 @@ func TestGetBEEFSlowRefreshServesCachedCopyThenStoresProvenBEEF(t *testing.T) {
 	})
 	if fetcher.calls.Load() != 1 {
 		t.Fatalf("fetch calls = %d, want 1", fetcher.calls.Load())
+	}
+}
+
+func TestGetBEEFRefreshCapServesDifferentCachedCopy(t *testing.T) {
+	shortenProofRefreshWait(t, 10*time.Millisecond)
+	srv := testServer(t)
+	srv.proofRefreshSlots = make(chan struct{}, 1)
+	txidA, unprovenA, provenA := makeRefreshBEEFsWithSatoshis(t, srv, true, 1000)
+	txidB, unprovenB, _ := makeRefreshBEEFsWithSatoshis(t, srv, false, 1001)
+	if txidA == txidB {
+		t.Fatal("test transactions must have distinct IDs")
+	}
+	if _, err := srv.proofStore.StoreBEEF(unprovenA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.proofStore.StoreBEEF(unprovenB); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &delayedBEEFFetcher{beef: provenA, source: spv.BEEFSourceWoC, delay: 100 * time.Millisecond, done: make(chan struct{})}
+	srv.proofFetcher = fetcher
+
+	srv.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/tx/"+txidA+"/beef", nil))
+	eventually(t, time.Second, func() bool { return fetcher.calls.Load() == 1 })
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/tx/"+txidB+"/beef", nil))
+	if w.Code != http.StatusOK || w.Header().Get("X-BEEF-Subject-Proven") != "false" {
+		t.Fatalf("expected cached unproven response, got %d %q", w.Code, w.Header().Get("X-BEEF-Subject-Proven"))
+	}
+	if fetcher.calls.Load() != 1 {
+		t.Fatalf("fetch calls = %d, want 1", fetcher.calls.Load())
+	}
+	srv.proofRefreshMu.Lock()
+	_, reserved := srv.proofRefreshes[txidB]
+	srv.proofRefreshMu.Unlock()
+	if reserved {
+		t.Fatal("cap-rejected refresh left its reservation in place")
+	}
+	select {
+	case <-fetcher.done:
+	case <-time.After(time.Second):
+		t.Fatal("slow fetch did not finish")
+	}
+}
+
+func TestRefreshCachedBEEFWithoutNewServerSkipsNilSemaphore(t *testing.T) {
+	fetcher := &staticBEEFFetcher{}
+	srv := &Server{proofFetcher: fetcher}
+	cached := []byte("cached")
+	got, source, proven := srv.refreshCachedBEEF("txid", cached)
+	if string(got) != string(cached) || source != spv.BEEFSourceCached || proven {
+		t.Fatalf("nil semaphore result = %q, %q, %v", got, source, proven)
+	}
+	if fetcher.calls != 0 {
+		t.Fatalf("fetch calls = %d, want 0", fetcher.calls)
 	}
 }
 
