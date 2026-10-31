@@ -13,16 +13,17 @@ import (
 const MaxMessageIDBytes = 256
 
 var (
-	prefixPrimary   = []byte("m2:")
-	prefixIndex     = []byte("mi:")
-	prefixExpiry    = []byte("ex:")
-	prefixV1        = []byte("msg:")
-	prefixMigration = []byte("mg:")
-	prefixPair      = []byte("qp:")
-	prefixInbox     = []byte("qr:")
-	keyNodeCounter  = []byte("qn:")
-	keyMetaSeq      = []byte("meta:seq")
-	keyMetaSchema   = []byte("meta:schema")
+	prefixPrimary    = []byte("m2:")
+	prefixIndex      = []byte("mi:")
+	prefixExpiry     = []byte("ex:")
+	prefixV1         = []byte("msg:")
+	prefixMigration  = []byte("mg:")
+	prefixPair       = []byte("qp:")
+	prefixInbox      = []byte("qr:")
+	keyNodeCounter   = []byte("qn:")
+	keyMetaSeq       = []byte("meta:seq")
+	keyMetaSchema    = []byte("meta:schema")
+	keyMetaMigrating = []byte("meta:migrating")
 )
 
 func primaryPrefix(recipient, box string) []byte {

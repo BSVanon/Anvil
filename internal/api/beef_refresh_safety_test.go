@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,37 @@ import (
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/syndtr/goleveldb/leveldb"
 )
+
+func TestRefreshReservationNeverEvictsLiveEntryAtCapacity(t *testing.T) {
+	srv := testServer(t)
+	fetcher := &staticBEEFFetcher{}
+	srv.proofFetcher = fetcher
+	srv.proofRefreshSlots = make(chan struct{}, 1)
+
+	liveAt := time.Now()
+	for i := 0; i < maxProofRefreshes; i++ {
+		srv.proofRefreshes[fmt.Sprintf("live-%d", i)] = liveAt
+	}
+
+	cached := []byte("cached")
+	got, source, proven := srv.refreshCachedBEEF("new", cached)
+	if string(got) != string(cached) || source != spv.BEEFSourceCached || proven {
+		t.Fatalf("full live-map refresh = %q, %q, %v", got, source, proven)
+	}
+	if fetcher.calls != 0 {
+		t.Fatalf("fetch calls = %d, want 0", fetcher.calls)
+	}
+	if srv.reserveProofRefresh("live-0") {
+		t.Fatal("existing live reservation was not throttled")
+	}
+
+	for txid := range srv.proofRefreshes {
+		srv.proofRefreshes[txid] = liveAt.Add(-proofRefreshInterval - time.Second)
+	}
+	if !srv.reserveProofRefresh("after-expiry") {
+		t.Fatal("reservation after expiry was rejected")
+	}
+}
 
 type panickingBEEFFetcher struct{ calls int }
 

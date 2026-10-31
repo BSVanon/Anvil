@@ -28,8 +28,8 @@ type beefRefreshResult struct {
 }
 
 // reserveProofRefresh grants one refresh attempt per transaction per interval.
-// It first reclaims expired reservations; if all entries are live, it evicts
-// the oldest one because this map is only an anti-stampede optimization.
+// It first reclaims expired reservations. If all entries are live, the new
+// attempt is rejected so a live reservation can never be evicted early.
 func (s *Server) reserveProofRefresh(txid string) bool {
 	now := time.Now()
 	s.proofRefreshMu.Lock()
@@ -44,14 +44,7 @@ func (s *Server) reserveProofRefresh(txid string) bool {
 			}
 		}
 		if len(s.proofRefreshes) >= maxProofRefreshes {
-			var oldestID string
-			var oldest time.Time
-			for id, attempted := range s.proofRefreshes {
-				if oldestID == "" || attempted.Before(oldest) {
-					oldestID, oldest = id, attempted
-				}
-			}
-			delete(s.proofRefreshes, oldestID)
+			return false
 		}
 	}
 	s.proofRefreshes[txid] = now

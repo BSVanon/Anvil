@@ -151,9 +151,12 @@ Malformed JSON request bodies and authentication failures retain the simpler
 |------|------|---------|
 | 400 | `ERR_INVALID_RECIPIENT_KEY` | Recipient is not a compressed secp256k1 key |
 | 400 | `ERR_INVALID_MESSAGEBOX` | Message box is empty or contains a forbidden control byte |
+| 400 | `ERR_MESSAGEBOX_TOO_LARGE` | Message box exceeds 128 bytes |
+| 400 | `ERR_INVALID_MESSAGE_BODY` | Message body is invalid or missing |
+| 413 | `ERR_MESSAGE_BODY_TOO_LARGE` | Message body exceeds 1,048,576 bytes |
+| 400 | `ERR_INVALID_LIMIT` | `limit` is not a non-negative integer |
 | 400 | `ERR_MESSAGE_ID_REQUIRED` | `messageIds` is missing, null, or an empty array |
 | 400 | `ERR_INVALID_MESSAGE_ID` | `messageIds` has the wrong type, or an ID is empty, whitespace-only, or exceeds 256 bytes |
-| 400 | `ERR_MESSAGEBOX_TOO_LARGE` | Message box exceeds 128 bytes |
 | 429 | `ERR_SENDER_QUOTA_EXCEEDED` | Sender/recipient pair quota is full |
 | 429 | `ERR_INBOX_QUOTA_EXCEEDED` | Configured recipient inbox quota is full |
 | 429 | `ERR_NODE_STORE_FULL` | Node-wide message store quota is full |

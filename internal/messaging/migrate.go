@@ -58,12 +58,22 @@ func (s *Store) migrate() error {
 	if err != nil && !errors.Is(err, leveldb.ErrNotFound) {
 		return fmt.Errorf("read message schema: %w", err)
 	}
-	resuming, err := s.hasMigrationIndex()
+	markerPresent, err := s.db.Has(keyMetaMigrating, nil)
+	if err != nil {
+		return fmt.Errorf("read migration marker: %w", err)
+	}
+	hasMigrationIndex, err := s.hasMigrationIndex()
 	if err != nil {
 		return err
 	}
+	resuming := markerPresent || hasMigrationIndex
 	if resuming {
 		log.Printf("messagebox store migration resuming after an interruption")
+	}
+	if !markerPresent {
+		if err := s.db.Put(keyMetaMigrating, []byte("1"), nil); err != nil {
+			return fmt.Errorf("write migration marker: %w", err)
+		}
 	}
 
 	started := time.Now()
@@ -81,8 +91,11 @@ func (s *Store) migrate() error {
 	if remaining {
 		return errors.New("migration index was not fully processed")
 	}
-	if err := s.db.Put(keyMetaSchema, []byte("2"), nil); err != nil {
-		return fmt.Errorf("write message schema: %w", err)
+	batch := new(leveldb.Batch)
+	batch.Put(keyMetaSchema, []byte("2"))
+	batch.Delete(keyMetaMigrating)
+	if err := s.db.Write(batch, nil); err != nil {
+		return fmt.Errorf("complete message migration: %w", err)
 	}
 	log.Printf("messagebox store migrated: %d messages in %s this run (%d undecodable, %d unservable, %d duplicate v1 records left in place)",
 		counts.inserted, time.Since(started).Round(time.Millisecond), counts.undecodable, counts.unservable, counts.duplicate)

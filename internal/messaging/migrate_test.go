@@ -1,9 +1,11 @@
 package messaging
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,44 @@ import (
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
+
+func TestMigrationMarkerResumesAfterFinalMove(t *testing.T) {
+	path := t.TempDir()
+	db, err := leveldb.OpenFile(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Put(keyMetaMigrating, []byte("1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	previousOutput, previousFlags := log.Writer(), log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
+
+	s, err := NewStore(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if !strings.Contains(logs.String(), "messagebox store migration resuming after an interruption") {
+		t.Fatalf("migration log = %q", logs.String())
+	}
+	if schema, err := s.db.Get(keyMetaSchema, nil); err != nil || string(schema) != "2" {
+		t.Fatalf("schema = %q, %v", schema, err)
+	}
+	if present, err := s.db.Has(keyMetaMigrating, nil); err != nil || present {
+		t.Fatalf("migration marker present=%v err=%v", present, err)
+	}
+}
 
 func writeV1Fixture(t *testing.T, path, recipient string) {
 	t.Helper()
