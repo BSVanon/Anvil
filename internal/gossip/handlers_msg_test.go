@@ -125,7 +125,7 @@ func TestForwardRejectsUncompressedOriginNodeWithoutMarkingSeen(t *testing.T) {
 	}
 	dedupKey := "msg:" + msg.MessageID
 	mgr.seenMu.Lock()
-	_, seen := mgr.seen[dedupKey]
+	_, seen := mgr.msgSeen[dedupKey]
 	mgr.seenMu.Unlock()
 	if seen || store.Count() != 0 {
 		t.Fatalf("uncompressed origin was accepted: seen=%v stored=%d", seen, store.Count())
@@ -287,7 +287,7 @@ func TestMsgForwardRateLimitRunsBeforeSignatureVerification(t *testing.T) {
 	}
 }
 
-func TestMsgForwardDuplicateMissingFromSeenIsNotRelayed(t *testing.T) {
+func TestMsgForwardDuplicateMissingFromMsgSeenIsNotRelayed(t *testing.T) {
 	store, err := messaging.NewStore(t.TempDir(), messaging.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -305,7 +305,7 @@ func TestMsgForwardDuplicateMissingFromSeenIsNotRelayed(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr.seenMu.Lock()
-	clear(mgr.seen)
+	clear(mgr.msgSeen)
 	mgr.seenMu.Unlock()
 	if err := mgr.onMsgForward("peer", raw); err != nil {
 		t.Fatal(err)

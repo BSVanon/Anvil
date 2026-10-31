@@ -29,6 +29,10 @@ func writeMessagingError(w http.ResponseWriter, err error) bool {
 		return true
 	case errors.Is(err, messaging.ErrInvalidRecipient):
 		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_RECIPIENT_KEY", "Recipient must be a valid compressed secp256k1 public key.")
+	case errors.Is(err, messaging.ErrInvalidSender):
+		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_SENDER", "Sender must be a valid compressed secp256k1 public key.")
+	case errors.Is(err, messaging.ErrInvalidMessageID):
+		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGE_ID", "Invalid message ID.")
 	case errors.Is(err, messaging.ErrInvalidMessageBox):
 		writeCodedError(w, http.StatusBadRequest, "ERR_INVALID_MESSAGEBOX", "Invalid message box.")
 	case errors.Is(err, messaging.ErrMessageBoxTooLarge):

@@ -60,9 +60,10 @@ type Manager struct {
 
 	// dedup: envelope hashes we've already seen
 	seen    map[string]struct{}
+	msgSeen map[string]struct{}
 	seenMu  sync.Mutex
 	maxSeen int
-	// seenOwners maps a message seen entry to the in-flight forward that set it (guarded by seenMu).
+	// seenOwners maps a msgSeen entry to the in-flight forward that set it (guarded by seenMu).
 	seenOwners map[string]*forwardSeenOwner
 
 	// callback for new envelopes from the mesh
@@ -193,6 +194,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		interests:      make(map[string][]string),
 		localInterests: cfg.LocalInterests,
 		seen:           make(map[string]struct{}),
+		msgSeen:        make(map[string]struct{}),
 		maxSeen:        maxSeen,
 		onEnvelope:     cfg.OnEnvelope,
 		overlayDir:     cfg.OverlayDir,

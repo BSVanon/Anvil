@@ -78,7 +78,7 @@ func TestForwardAcceptsCanonicalMessageIDLimitBeforeDedup(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr.seenMu.Lock()
-	_, seen := mgr.seen["msg:"+rejected.MessageID]
+	_, seen := mgr.msgSeen["msg:"+rejected.MessageID]
 	mgr.seenMu.Unlock()
 	if seen || store.Count() != 1 {
 		t.Fatalf("257-byte ID was accepted: seen=%v stored=%d", seen, store.Count())
@@ -118,7 +118,7 @@ func TestForwardLegacyDigestReframeDoesNotMarkSeen(t *testing.T) {
 	}
 	dedupKey := "msg:" + legitimate.MessageID
 	mgr.seenMu.Lock()
-	_, markedSeen := mgr.seen[dedupKey]
+	_, markedSeen := mgr.msgSeen[dedupKey]
 	mgr.seenMu.Unlock()
 	if markedSeen {
 		t.Fatal("invalid reframed forward was marked seen")

@@ -48,7 +48,9 @@ func (s *Store) startNotificationDispatcher() {
 	go s.dispatchNotifications()
 }
 
-// SetOnMessage is retained for the existing API constructor.
+// SetOnMessage is retained for the existing API constructor. Callbacks run on a
+// single dispatcher goroutine and must not block; Close waits at most 5 seconds
+// for them.
 func (s *Store) SetOnMessage(fn func(*Message)) {
 	s.notifier.callbackMu.Lock()
 	s.notifier.onMessage = fn
@@ -56,7 +58,9 @@ func (s *Store) SetOnMessage(fn func(*Message)) {
 	s.notifier.callbackMu.Unlock()
 }
 
-// SetOnStoredMessage preserves sender attestation in notifications.
+// SetOnStoredMessage preserves sender attestation in notifications. Callbacks run
+// on a single dispatcher goroutine and must not block; Close waits at most 5
+// seconds for them.
 func (s *Store) SetOnStoredMessage(fn func(*StoredMessage)) {
 	s.notifier.callbackMu.Lock()
 	s.notifier.onStored = fn

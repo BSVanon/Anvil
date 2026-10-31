@@ -41,6 +41,31 @@ func callMessageHandler(t *testing.T, handler http.HandlerFunc, payload any) (*h
 	return recorder, body
 }
 
+func TestWriteMessagingErrorForwardValidationMappings(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "sender", err: messaging.ErrInvalidSender, code: "ERR_INVALID_SENDER"},
+		{name: "message ID", err: messaging.ErrInvalidMessageID, code: "ERR_INVALID_MESSAGE_ID"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			if internal := writeMessagingError(response, tc.err); internal {
+				t.Fatal("validation error was classified as internal")
+			}
+			var body map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusBadRequest || body["code"] != tc.code {
+				t.Fatalf("mapping = %d, %v", response.Code, body)
+			}
+		})
+	}
+}
+
 func TestMessageHTTPPairQuotaAndOtherRecipient(t *testing.T) {
 	srv, _ := messageHandlerServer(t, messaging.Options{MaxPairMessages: 1, MaxStoreMessages: 10})
 	_, recipientA, _ := newKeyWallet(t)
@@ -158,6 +183,26 @@ func TestMessageHTTPWithoutNodeIdentityAndMalformedOrigin(t *testing.T) {
 	})
 	if response.Code != http.StatusInternalServerError || body["code"] != "ERR_INTERNAL" || body["description"] != "An internal error has occurred." {
 		t.Fatalf("malformed origin = %d, %v", response.Code, body)
+	}
+}
+
+func TestMessageHTTPOmittedRecipientWithoutNodeIdentity(t *testing.T) {
+	srv, _ := messageHandlerServer(t, messaging.Options{})
+	srv.identityPub = ""
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+		payload any
+	}{
+		{name: "list", handler: srv.handleListMessages, payload: map[string]string{"messageBox": "box"}},
+		{name: "acknowledge", handler: srv.handleAcknowledgeMessage, payload: map[string]any{"messageIds": []string{"id"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response, body := callMessageHandler(t, tc.handler, tc.payload)
+			if response.Code != http.StatusBadRequest || body["code"] != "ERR_INVALID_RECIPIENT_KEY" {
+				t.Fatalf("missing recipient = %d, %v", response.Code, body)
+			}
+		})
 	}
 }
 

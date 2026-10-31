@@ -37,7 +37,7 @@ func TestMsgForwardTransientStoreErrorCanBeRetried(t *testing.T) {
 	}
 	dedup := "msg:" + msg.MessageID
 	mgr.seenMu.Lock()
-	_, seen := mgr.seen[dedup]
+	_, seen := mgr.msgSeen[dedup]
 	mgr.seenMu.Unlock()
 	if seen {
 		t.Fatal("failed forward remained in the seen map")
@@ -70,13 +70,13 @@ func TestFinishForwardSeenDoesNotClearNewerEntry(t *testing.T) {
 	oldOwner := &forwardSeenOwner{}
 	newOwner := &forwardSeenOwner{}
 	mgr.seenMu.Lock()
-	mgr.seen[dedup] = struct{}{}
+	mgr.msgSeen[dedup] = struct{}{}
 	mgr.seenOwners = map[string]*forwardSeenOwner{dedup: newOwner}
 	mgr.seenMu.Unlock()
 
 	mgr.finishForwardSeen(dedup, oldOwner, true)
 	mgr.seenMu.Lock()
-	_, seen := mgr.seen[dedup]
+	_, seen := mgr.msgSeen[dedup]
 	mgr.seenMu.Unlock()
 	if !seen {
 		t.Fatal("older failed delivery cleared a newer seen entry")
@@ -89,4 +89,107 @@ func TestFinishForwardSeenDoesNotClearNewerEntry(t *testing.T) {
 	if owned {
 		t.Fatal("finished forward left its seen owner entry behind")
 	}
+}
+
+func TestEnvelopeSeenEvictionDoesNotRemoveInFlightForward(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Logger: slog.Default(), MaxSeen: 2})
+	dedup := "msg:in-flight"
+	mgr.seenMu.Lock()
+	mgr.msgSeen[dedup] = struct{}{}
+	mgr.seenOwners = map[string]*forwardSeenOwner{dedup: {}}
+	mgr.seenMu.Unlock()
+
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`{"type":"data","topic":"one","payload":"{}","timestamp":1}`),
+		json.RawMessage(`{"type":"data","topic":"two","payload":"{}","timestamp":2}`),
+		json.RawMessage(`{"type":"data","topic":"three","payload":"{}","timestamp":3}`),
+	} {
+		if err := mgr.onData("envelope-peer", raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mgr.seenMu.Lock()
+	_, seen := mgr.msgSeen[dedup]
+	_, owned := mgr.seenOwners[dedup]
+	mgr.seenMu.Unlock()
+	if !seen || !owned {
+		t.Fatalf("envelope eviction removed in-flight forward: seen=%v owned=%v", seen, owned)
+	}
+}
+
+func TestMsgSeenEvictionSkipsOwnedEntries(t *testing.T) {
+	t.Run("reclaims unowned entry", func(t *testing.T) {
+		mgr := NewManager(ManagerConfig{Logger: slog.Default(), MaxSeen: 2})
+		ownedKey := "msg:owned"
+		unownedKey := "msg:unowned"
+		mgr.seenMu.Lock()
+		mgr.msgSeen[ownedKey] = struct{}{}
+		mgr.msgSeen[unownedKey] = struct{}{}
+		mgr.seenOwners = map[string]*forwardSeenOwner{ownedKey: {}}
+		mgr.seenMu.Unlock()
+
+		senderKey, sender := newID(t)
+		_, recipient := newID(t)
+		msg := sampleMsg(sender, recipient)
+		msg.MessageID = "new"
+		raw, _ := json.Marshal(legacyForward(t, senderKey, msg))
+		if err := mgr.onMsgForward("peer", raw); err != nil {
+			t.Fatal(err)
+		}
+
+		mgr.seenMu.Lock()
+		_, ownedSeen := mgr.msgSeen[ownedKey]
+		_, unownedSeen := mgr.msgSeen[unownedKey]
+		_, newSeen := mgr.msgSeen["msg:new"]
+		gotLen := len(mgr.msgSeen)
+		mgr.seenMu.Unlock()
+		if !ownedSeen || unownedSeen || !newSeen || gotLen != 2 {
+			t.Fatalf("msgSeen after eviction: owned=%v unowned=%v new=%v len=%d", ownedSeen, unownedSeen, newSeen, gotLen)
+		}
+	})
+
+	t.Run("admits when every entry is owned", func(t *testing.T) {
+		mgr := NewManager(ManagerConfig{Logger: slog.Default(), MaxSeen: 2})
+		firstKey := "msg:first-owned"
+		secondKey := "msg:second-owned"
+		firstOwner := &forwardSeenOwner{}
+		secondOwner := &forwardSeenOwner{}
+		mgr.seenMu.Lock()
+		mgr.msgSeen[firstKey] = struct{}{}
+		mgr.msgSeen[secondKey] = struct{}{}
+		mgr.seenOwners = map[string]*forwardSeenOwner{
+			firstKey:  firstOwner,
+			secondKey: secondOwner,
+		}
+		mgr.seenMu.Unlock()
+
+		senderKey, sender := newID(t)
+		_, recipient := newID(t)
+		msg := sampleMsg(sender, recipient)
+		msg.MessageID = "overflow"
+		raw, _ := json.Marshal(legacyForward(t, senderKey, msg))
+		if err := mgr.onMsgForward("peer", raw); err != nil {
+			t.Fatal(err)
+		}
+
+		mgr.seenMu.Lock()
+		_, firstSeen := mgr.msgSeen[firstKey]
+		_, secondSeen := mgr.msgSeen[secondKey]
+		_, newSeen := mgr.msgSeen["msg:overflow"]
+		gotLen := len(mgr.msgSeen)
+		mgr.seenMu.Unlock()
+		if !firstSeen || !secondSeen || !newSeen || gotLen != 3 {
+			t.Fatalf("msgSeen owned admission: first=%v second=%v new=%v len=%d", firstSeen, secondSeen, newSeen, gotLen)
+		}
+
+		mgr.finishForwardSeen(firstKey, firstOwner, false)
+		mgr.finishForwardSeen(secondKey, secondOwner, false)
+		mgr.seenMu.Lock()
+		gotLen = len(mgr.msgSeen)
+		mgr.seenMu.Unlock()
+		if gotLen > mgr.maxSeen {
+			t.Fatalf("msgSeen remained over capacity after owners finished: len=%d cap=%d", gotLen, mgr.maxSeen)
+		}
+	})
 }

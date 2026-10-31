@@ -209,6 +209,7 @@ func (m *Manager) ForwardSignedMessage(msg *messaging.Message, sigHex string) {
 // Only stores the message if the recipient is hosted on this node.
 // Verifies sender signature before accepting.
 func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
+	// Forwards deliberately share the per-peer gossip bucket with envelopes.
 	if !m.allowPeerMessage(senderPKHex) {
 		m.logger.Debug("peer rate-limited, dropping message forward", "peer", truncate(senderPKHex))
 		return nil
@@ -232,7 +233,7 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	// Invalid forwards must never be able to suppress a later legitimate one.
 	dedup := "msg:" + msg.MessageID
 	m.seenMu.Lock()
-	if _, seen := m.seen[dedup]; seen {
+	if _, seen := m.msgSeen[dedup]; seen {
 		m.seenMu.Unlock()
 		return nil
 	}
@@ -259,29 +260,27 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	// Mark seen only after both the unchanged forward signature and the v2 ID
 	// binding have verified. Re-check while holding the lock for concurrent peers.
 	m.seenMu.Lock()
-	if _, seen := m.seen[dedup]; seen {
+	if _, seen := m.msgSeen[dedup]; seen {
 		m.seenMu.Unlock()
 		return nil
 	}
-	m.seen[dedup] = struct{}{}
-	seenOwner := &forwardSeenOwner{}
 	if m.seenOwners == nil {
 		m.seenOwners = make(map[string]*forwardSeenOwner)
 	}
-	m.seenOwners[dedup] = seenOwner
-	if len(m.seen) >= m.maxSeen {
-		removed := 0
-		for key := range m.seen {
-			if key == dedup {
+	if len(m.msgSeen) >= m.maxSeen {
+		for key := range m.msgSeen {
+			if m.seenOwners[key] != nil {
 				continue
 			}
-			delete(m.seen, key)
-			removed++
-			if removed >= m.maxSeen/2 {
+			delete(m.msgSeen, key)
+			if len(m.msgSeen) < m.maxSeen {
 				break
 			}
 		}
 	}
+	m.msgSeen[dedup] = struct{}{}
+	seenOwner := &forwardSeenOwner{}
+	m.seenOwners[dedup] = seenOwner
 	m.seenMu.Unlock()
 
 	relay := m.msgStore == nil
@@ -326,9 +325,20 @@ func (m *Manager) finishForwardSeen(dedup string, owner *forwardSeenOwner, clear
 		return
 	}
 	if clearSeen {
-		delete(m.seen, dedup)
+		delete(m.msgSeen, dedup)
 	}
 	delete(m.seenOwners, dedup)
+	if len(m.msgSeen) > m.maxSeen {
+		for key := range m.msgSeen {
+			if key == dedup || m.seenOwners[key] != nil {
+				continue
+			}
+			delete(m.msgSeen, key)
+			if len(m.msgSeen) <= m.maxSeen {
+				break
+			}
+		}
+	}
 }
 
 func (m *Manager) logMessageQuotaDrop(err error) {
