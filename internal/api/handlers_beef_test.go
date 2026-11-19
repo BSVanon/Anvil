@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +22,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv-blockchain/go-sdk/util"
 	"github.com/libsv/go-p2p/chaincfg/chainhash"
 	"github.com/libsv/go-p2p/wire"
 )
@@ -782,4 +785,92 @@ func mustDecodeScript(t *testing.T, h string) *bsvscript.Script {
 	}
 	s := bsvscript.Script(b)
 	return &s
+}
+
+// beefEntriesV2 writes a V2 BEEF of bumps and already-encoded entries, in
+// order -- the hand-rolled construction beefnorm's own tests use
+// (TestParse_RefusesATxidHeldTwice), needed here because go-sdk's structured
+// transaction.Beef type cannot represent two entries naming the same txid:
+// its Transactions field is a map, so building one through the SDK always
+// collapses a duplicate before it ever reaches beefnorm.
+func beefEntriesV2(bumps []*transaction.MerklePath, es ...[]byte) []byte {
+	b := binary.LittleEndian.AppendUint32(nil, transaction.BEEF_V2)
+	b = append(b, util.VarInt(len(bumps)).Bytes()...)
+	for _, p := range bumps {
+		b = append(b, p.Bytes()...)
+	}
+	b = append(b, util.VarInt(len(es)).Bytes()...)
+	for _, e := range es {
+		b = append(b, e...)
+	}
+	return b
+}
+
+// beefRawEntry is a V2 BEEF entry holding tx's raw bytes with no BUMP index.
+func beefRawEntry(tx *transaction.Transaction) []byte { return append([]byte{0}, tx.Bytes()...) }
+
+// beefAtomic wraps inner (a V2 BEEF) in an Atomic BEEF header naming subject,
+// unchecked, as ts-sdk's toBinaryAtomic does. go-sdk's NewTransactionFromBEEF
+// (what ProofStore.StoreBEEF parses with) refuses a bare V2 BEEF outright
+// ("use NewBeefFromBytes..."), so a stored BEEF needs this wrapper to be
+// realistic.
+func beefAtomic(subject *transaction.Transaction, inner []byte) []byte {
+	out := binary.LittleEndian.AppendUint32(nil, transaction.ATOMIC_BEEF)
+	out = append(out, subject.TxID()[:]...)
+	return append(out, inner...)
+}
+
+// TestGetBEEFRefusedStoredBEEFServesEmptyConfidence: an old Atomic BEEF whose
+// inner V2 BEEF holds one txid twice. go-sdk's own, more lenient reader
+// (transaction.NewTransactionFromBEEF, what ProofStore.StoreBEEF parses with
+// to find the storage key) collapses the duplicate into one map entry and
+// accepts it without complaint, so this node could have stored it;
+// beefnorm's stricter normalizer (what Validator.ValidateBEEF revalidates
+// with) refuses it, the same shape TestParse_RefusesATxidHeldTwice
+// (internal/beefnorm) proves is refused. Getting it back from
+// GET /tx/{txid}/beef must not report "confidence":"invalid": that word
+// means a FRESH submission is refused right now, not that an already-served
+// historical payment was bad (cold review round 4's NITs, C4.3,
+// handlers_beef.go:85-100).
+func TestGetBEEFRefusedStoredBEEFServesEmptyConfidence(t *testing.T) {
+	srv := testServer(t)
+
+	tx := transaction.NewTransaction()
+	tx.AddOutput(&transaction.TransactionOutput{
+		Satoshis:      1500,
+		LockingScript: mustDecodeScript(t, "76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac"),
+	})
+	refused := beefAtomic(tx, beefEntriesV2(nil, beefRawEntry(tx), beefRawEntry(tx)))
+
+	// Pin down exactly what is being tested before going through HTTP: the
+	// normalizer refuses this BEEF, and Confidence stays ConfidenceInvalid
+	// (unchanged for every other caller) while Refused is the new signal.
+	result, err := srv.validator.ValidateBEEF(context.Background(), refused)
+	if err != nil {
+		t.Fatalf("ValidateBEEF returned an error (should be nil, state lives in Result): %v", err)
+	}
+	if !result.Refused || result.Confidence != spv.ConfidenceInvalid {
+		t.Fatalf("got Refused=%v Confidence=%q, want Refused=true and Confidence=%q unchanged",
+			result.Refused, result.Confidence, spv.ConfidenceInvalid)
+	}
+
+	txid, err := srv.proofStore.StoreBEEF(refused)
+	if err != nil {
+		t.Fatalf("go-sdk's lenient parse (ProofStore.StoreBEEF) refused a BEEF it should accept: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/tx/"+txid+"/beef", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a cached BEEF even when its revalidation is refused, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if conf, present := resp["confidence"]; present {
+		t.Fatalf(`confidence = %v, want the field omitted: a refused revalidation must not read back as "invalid"`, conf)
+	}
 }

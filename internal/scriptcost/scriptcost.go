@@ -34,6 +34,27 @@ func Instructions(s []byte, limit int) (n int, copies bool) {
 	return n, copies
 }
 
+// EndsMalformed reports whether s, read the way the interpreter's node-exact
+// parse reads it (see Instructions), ends in an undecodable instruction: a
+// push whose length field or data runs past the end of s. This is the same
+// condition go-sdk's unexported isMalformed() flags on the last element of a
+// parseNodeExact result, so a true here means the interpreter would make a
+// signature opcode's subScriptForChecksig re-decode this script joined with
+// whatever locking script it spends (script/interpreter/thread.go:1135-1140)
+// -- the trigger routeguard refuses before any script runs. An OP_RETURN,
+// top-level or not, never ends the walk: a malformed tail reachable only past
+// one is still found, matching parseNodeExact and unlike Chunks.
+func EndsMalformed(s []byte) bool {
+	for i := 0; i < len(s); {
+		size, ok := pushSize(s, i)
+		if !ok {
+			return true
+		}
+		i += size
+	}
+	return false
+}
+
 // Chunks counts the chunks script.Chunks decodes s into, up to limit+1. It
 // reads s as script.DecodeScript does: an OP_RETURN outside every conditional
 // block is the last chunk, holding the rest of s, and a truncated push ends

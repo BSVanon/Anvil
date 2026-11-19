@@ -91,21 +91,29 @@ func (h *Handlers) submitBEEF(w http.ResponseWriter, r *http.Request, topics []s
 // writeGuardError answers a request the guard refused, or whose submit failed
 // before the engine saw it: 503 with Retry-After when the node is busy, 408
 // when the body was too slow, 400 with beefscan.Code for a BEEF over a cap,
-// 400 for a BEEF the guard does not accept (routeguard.ErrMalformed), 422
-// with routeguard.ValidationBudgetCode for scripts over the verification
-// budget, and otherwise the status the route answered before the guard, with
-// prefix before the message. The five guard-imposed cases (busy, slow body,
-// too complex, refused, validation budget) are rate-limit logged via
-// refusallog so an operator or the canary watching this node can see
-// refusals sent straight to its port without every one of a flood becoming
-// its own log line; the deadline-exceeded and default cases are ordinary
-// request outcomes, not the guard protecting the node, so they are not
-// logged here.
+// 400 for a BEEF the guard does not accept (routeguard.ErrMalformed), 400 with
+// routeguard.MalformedScriptCode for an unlocking script ending in an
+// undecodable instruction (routeguard.ErrMalformedScript, cold review round 4
+// B1), 422 with routeguard.ValidationBudgetCode for scripts over the
+// verification budget, and otherwise the status the route answered before the
+// guard, with prefix before the message. The six guard-imposed cases (busy,
+// slow body, too complex, refused, malformed script, validation budget) are
+// rate-limit logged via refusallog so an operator or the canary watching this
+// node can see refusals sent straight to its port without every one of a
+// flood becoming its own log line; so is the default case, under
+// ReasonOtherGuardError, since it is still the guard refusing a submit before
+// the engine saw it, just for a reason none of the named Reasons cover (cold
+// review round 4's NITs: this branch was unlogged). The deadline-exceeded
+// case is an ordinary request outcome, not the guard protecting the node, so
+// it is not logged here.
 func writeGuardError(w http.ResponseWriter, r *http.Request, err error, prefix string) {
 	switch {
 	case errors.Is(err, routeguard.ErrTooComplex):
 		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonTooComplex)
 		writeJSON(w, http.StatusBadRequest, errorEnvelope{Status: "error", Code: beefscan.Code, Message: prefix + err.Error()})
+	case errors.Is(err, routeguard.ErrMalformedScript):
+		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonMalformedScript)
+		writeJSON(w, http.StatusBadRequest, errorEnvelope{Status: "error", Code: routeguard.MalformedScriptCode, Message: prefix + err.Error()})
 	case errors.Is(err, routeguard.ErrMalformed):
 		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonRefusedBEEF)
 		writeError(w, http.StatusBadRequest, prefix+err.Error())
@@ -122,6 +130,7 @@ func writeGuardError(w http.ResponseWriter, r *http.Request, err error, prefix s
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, submitErrorStatus(err), prefix+err.Error())
 	default:
+		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonOtherGuardError)
 		writeError(w, http.StatusBadRequest, prefix+err.Error())
 	}
 }

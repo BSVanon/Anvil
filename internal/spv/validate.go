@@ -31,6 +31,21 @@ type Result struct {
 	TxID       string `json:"txid,omitempty"`
 	Confidence string `json:"confidence"`
 	Message    string `json:"message,omitempty"`
+	// Refused is true only when beefnorm.Parse structurally parsed beef (with
+	// go-sdk's own, more lenient reader) but refused it under a stricter rule
+	// go-sdk's reader does not enforce -- a txid held twice, a spent output
+	// named only in extended format, disagreeing block proofs, and so on; see
+	// beefnorm.ErrRefused. Confidence is still ConfidenceInvalid in this
+	// case, deliberately unchanged, since every existing caller
+	// (beef_refresh.go, handlers_broadcast.go, wallet.go) correctly gates a
+	// FRESH submission's acceptance on Confidence == ConfidenceInvalid, and a
+	// freshly-submitted BEEF refused this way really is being refused now.
+	// Refused exists only for a caller re-validating a BEEF already stored
+	// earlier (handlers_beef.go's serveBEEF) to tell that case apart from a
+	// structurally-invalid one: a stricter rule added after the BEEF was
+	// accepted and stored must not retroactively brand an old, already-served
+	// payment "invalid" to a client reading it back.
+	Refused bool `json:"-"`
 	// BEEF is what a caller stores or relays once the result is valid: the
 	// BEEF validated, as beefnorm.BEEF.Bytes gives it, which is the bytes
 	// received when they held nothing to drop and were already in canonical
@@ -107,6 +122,7 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 			result.Message, reason = fmt.Sprintf("%s: %v", beefscan.Code, err), "too_complex"
 		case errors.Is(err, beefnorm.ErrRefused):
 			result.Message, reason = fmt.Sprintf("refused BEEF: %v", err), "refused"
+			result.Refused = true
 		case errors.Is(err, beefnorm.ErrNoSubject):
 			result.Message, reason = fmt.Sprintf("parse transaction from BEEF: %v", err), "parse_transaction"
 		default:

@@ -33,7 +33,11 @@
 // than that many answers decoded. Every POST to a /submit endpoint is one
 // exchange of at most SubmitTimeout, and its STEAK reply is read up to
 // MaxSteakBytes, validated, and handed on re-encoded, so go-sdk decodes
-// exactly what was checked.
+// exactly what was checked. Every reply to a GASP node fetch
+// (/requestForeignGASPNode) is read in full, up to MaxResponseBytes -- the
+// cap this traffic already had -- and refused if its transaction has an
+// unlocking script the B1 reparse bug (cold review round 4) could reach, and
+// otherwise handed on unchanged (see checkGASPNode).
 package netguard
 
 import (
@@ -121,6 +125,9 @@ func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if resp.StatusCode == http.StatusOK && isLookup(req) {
 		return g.checkLookup(req, resp)
+	}
+	if resp.StatusCode == http.StatusOK && isGASPNode(req) {
+		return g.checkGASPNode(resp)
 	}
 	if resp.ContentLength > g.maxBytes {
 		_ = resp.Body.Close()

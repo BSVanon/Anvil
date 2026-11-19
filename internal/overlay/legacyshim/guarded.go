@@ -114,14 +114,21 @@ func (s *Shim) runSubmit(ctx context.Context, g *guardedSubmit, beefBytes []byte
 // writeLegacyGuardError answers, in the legacy {"error": msg} envelope, a
 // request the guard refused or whose BEEF failed before the engine saw it:
 // 503 with Retry-After when the node is busy, 408 when the body was too slow,
-// 400 with beefscan.Code for a BEEF over a cap, 400 for a BEEF the guard does
-// not accept (routeguard.ErrMalformed), 422 with
-// routeguard.ValidationBudgetCode for scripts over the verification budget,
-// and otherwise the status the engine's own error got before the guard. The
-// five guard-imposed cases are rate-limit logged via refusallog, as the
-// canonical route's writeGuardError does; the default case is an ordinary
-// submit outcome, not the guard protecting the node, so it is not logged
-// here.
+// 400 with beefscan.Code for a BEEF over a cap, 400 with
+// routeguard.MalformedScriptCode for an unlocking script ending in an
+// undecodable instruction (routeguard.ErrMalformedScript, cold review round 4
+// B1), 400 for a BEEF the guard does not accept (routeguard.ErrMalformed),
+// 422 with routeguard.ValidationBudgetCode for scripts over the verification
+// budget, and otherwise the status the engine's own error got before the
+// guard. The six named guard-imposed cases are rate-limit logged via
+// refusallog, as the canonical route's writeGuardError does; a
+// context.DeadlineExceeded (preVerify's own deadline, not r's) is carved out
+// unlogged, matching writeGuardError, since outlasting a verification
+// deadline is an ordinary outcome, not the guard refusing a flood; the true
+// default -- any other error reaching here -- is logged under
+// ReasonOtherGuardError, since it is still the guard (or preVerify ahead of
+// the engine) refusing a submit, just for a reason none of the named Reasons
+// cover (cold review round 4's NITs: this branch was unlogged).
 func writeLegacyGuardError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, routeguard.ErrBusy):
@@ -134,13 +141,19 @@ func writeLegacyGuardError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, routeguard.ErrTooComplex):
 		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonTooComplex)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": beefscan.Code})
+	case errors.Is(err, routeguard.ErrMalformedScript):
+		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonMalformedScript)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": routeguard.MalformedScriptCode})
 	case errors.Is(err, routeguard.ErrMalformed):
 		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonRefusedBEEF)
 		writeLegacyError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, routeguard.ErrValidationBudget):
 		refusallog.Log(r, http.StatusUnprocessableEntity, refusallog.ReasonValidationBudget)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error(), "code": routeguard.ValidationBudgetCode})
+	case errors.Is(err, context.DeadlineExceeded):
+		writeLegacyError(w, statusForSubmitError(err), err.Error())
 	default:
+		refusallog.Log(r, statusForSubmitError(err), refusallog.ReasonOtherGuardError)
 		writeLegacyError(w, statusForSubmitError(err), err.Error())
 	}
 }

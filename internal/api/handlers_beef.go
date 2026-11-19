@@ -82,10 +82,17 @@ func serveBEEF(w http.ResponseWriter, r *http.Request, txid string, beefBytes []
 		return
 	}
 
+	// confidence stays "" (omitted below) when validator is nil, the call
+	// errors, or result.Refused: a BEEF this node already stored and now
+	// re-validates under a stricter rule than it was accepted under
+	// (beefnorm.ErrRefused, spv.Result.Refused) must not come back as
+	// "confidence":"invalid" -- that word means a fresh submission is being
+	// refused right now, not that an already-served historical payment was
+	// bad (cold review round 4's NITs, C4.3).
 	confidence := ""
 	if validator != nil {
 		result, err := validator.ValidateBEEF(r.Context(), beefBytes)
-		if err == nil {
+		if err == nil && !result.Refused {
 			confidence = result.Confidence
 		}
 	}

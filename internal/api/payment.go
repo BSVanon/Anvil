@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/refusallog"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 )
 
@@ -260,7 +261,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		if bsvPayment != "" && proofHeader == "" {
 			receipt, err := pg.verifyDirectPayment(bsvPayment, payees)
 			if err != nil {
-				writeError(w, paymentRejectionStatus(err), "direct payment rejected: "+err.Error())
+				writeError(w, paymentRejectionStatus(r, err), "direct payment rejected: "+err.Error())
 				return
 			}
 			receiptJSON, _ := json.Marshal(receipt)
@@ -272,7 +273,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 
 		receipt, err := pg.verifyProof(r, proofHeader)
 		if err != nil {
-			writeError(w, paymentRejectionStatus(err), "payment rejected: "+err.Error())
+			writeError(w, paymentRejectionStatus(r, err), "payment rejected: "+err.Error())
 			return
 		}
 
@@ -297,6 +298,7 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 	}
 	place, wait, ok := pg.reservePending()
 	if !ok {
+		refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonPendingCapExceeded)
 		writeUnavailable(w, wait, "too many payment challenges pending, retry later")
 		return
 	}
@@ -312,6 +314,7 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		var spent *mintBudgetError
 		if errors.As(err, &spent) {
+			refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonMintBudgetExceeded)
 			writeUnavailable(w, spent.retryAfter, "no payment nonce available: the node's nonce budget is spent, retry later")
 			return
 		}

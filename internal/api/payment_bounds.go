@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/refusallog"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/script/interpreter"
 	"github.com/bsv-blockchain/go-sdk/script/interpreter/scriptflag"
@@ -92,9 +93,15 @@ func checkPaymentHeaderSize(name, value string) error {
 }
 
 // paymentRejectionStatus is the HTTP status for a rejected payment: 431 for a
-// header refused by its size, 402 for everything else.
-func paymentRejectionStatus(err error) int {
+// header refused by its size, logged via refusallog (rate-limited, with r's
+// remote address) so an operator or the canary watching this node can see a
+// flood of oversized headers without one log line per request -- the 431
+// case cold review round 4's NITs flagged as unlogged -- and 402 for
+// everything else, an ordinary payment-protocol outcome rather than the node
+// protecting itself, so left unlogged here as before.
+func paymentRejectionStatus(r *http.Request, err error) int {
 	if errors.Is(err, errPaymentHeaderTooLarge) {
+		refusallog.Log(r, http.StatusRequestHeaderFieldsTooLarge, refusallog.ReasonPaymentHeaderTooLarge)
 		return http.StatusRequestHeaderFieldsTooLarge
 	}
 	return http.StatusPaymentRequired

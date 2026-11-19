@@ -34,9 +34,27 @@ import (
 // at most (defs/change_basket.go) it is 464 bytes and 47 sats, and with 3
 // inputs as well 760 bytes and 76 sats. So the worst hour costs 130 nonce sats
 // and 2,990 sats of fees for typical transactions, or 9,880 sats of fees at
-// 76 sats each. A free node mints only for topics an app prices, and a
-// charging node's pool absorbs a burst of up to its size before the budget
-// applies.
+// 76 sats each. A free node mints only for topics an app prices.
+//
+// A charging node's UTXONoncePool does NOT absorb a burst of up to its own
+// size (its poolSize, 100 by default): every mint that fills or refills the
+// pool spends from this same budget (nonce_pool.go's replenish and its
+// on-demand mint both go through withMintBudget), and filling a pool from
+// empty to 100 is itself budget-paced -- the first mintBurst (10) are
+// immediate, the remaining 90 trickle in at mintsPerMinute (2), about 45
+// minutes, so the pool cannot be relied on to be holding anywhere near 100
+// pre-minted nonces unless it has been that idle. The real ceiling a burst
+// can rely on is poolSize/4 (25, nonce_pool.go:62's replenish trigger -- the
+// level the design assumes a refill is already under way by) plus mintBurst
+// (10, this budget's own rested one-shot allowance, wherever it is spent
+// from: replenish's loop, the on-demand path once the pool is empty, or
+// both): about 35, checked against a frozen clock, which a tight burst
+// effectively is against this budget's 30 s interval -- a rested mintBudget
+// grants exactly mintBurst mints before every further take() fails, and
+// take() is serialized by the budget's own mutex regardless of which caller
+// reaches it. A pool caught fuller than its 25 design floor, from unusually
+// long idle time beforehand, can briefly absorb more; that is a bonus the
+// design does not rely on, not a guarantee.
 const (
 	mintBurst      = 10
 	mintsPerMinute = 2

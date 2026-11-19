@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/BSVanon/Anvil/internal/beefnorm"
+	"github.com/BSVanon/Anvil/internal/scriptcost"
 	"github.com/BSVanon/Anvil/internal/scriptguard"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/script/interpreter/scriptflag"
@@ -19,9 +20,37 @@ import (
 // block (spv/script_flags.go:11-13).
 const unminedHeight uint32 = math.MaxUint32
 
+// MalformedScriptCode is ErrMalformedScript's coded 400, following the
+// naming style of beefscan.Code and ValidationBudgetCode.
+const MalformedScriptCode = "ERR_MALFORMED_SCRIPT"
+
+// ErrMalformedScript marks an unlocking script checkScripts refuses because
+// its node-exact parse (scriptcost.EndsMalformed) ends in an undecodable
+// instruction. This is a policy refusal, not a consensus rule: under
+// Chronicle, go-sdk v1.7.7 lets a signature opcode that executes directly
+// inside such an unlocking script re-decode it joined with the spent locking
+// script (reparseJoined, script/interpreter/thread.go:1123-1162), so a
+// locking script that is one large push becomes one ParsedOpcode per byte --
+// a heap bomb with no login and no cost to the sender (cold review round 4,
+// B1). The go-sdk comment at thread.go:1129-1134 notes bitcoin-sv decodes the
+// same joined bytes, so such a script can be valid under Chronicle when the
+// malformed tail follows a top-level OP_RETURN; no honest wallet emits one,
+// and before Chronicle the push-only rule already refused it (it sits beside
+// SV Node's other non-standard refusals). Refusing unconditionally, for every
+// input spv.Verify would run scripts for and regardless of opcode or
+// transaction version, is a superset of go-sdk's narrower trigger (a
+// signature opcode, Chronicle, and the raw unlocking script specifically):
+// DefaultOpcodeParser{nodeExact: true}, the parser the trigger actually uses,
+// is unexported, so EndsMalformed is scriptcost's own equivalent decode,
+// built from go-sdk's public opcode constants and checked byte for byte
+// against go-sdk's own decoder in scriptcost's tests.
+var ErrMalformedScript = errors.New("unlocking script ends in an undecodable instruction")
+
 // checkScripts runs scriptguard.Check on every input spv.Verify will
 // execute, with the flags verifyTx executes it under (spv/verify.go:534-550),
-// before any of them runs. It returns an error wrapping ErrTooComplex for the
+// before any of them runs. It returns an error wrapping ErrMalformedScript
+// for the first input whose unlocking script ends in an undecodable
+// instruction (see ErrMalformedScript), one wrapping ErrTooComplex for the
 // first input Check refuses, ctx's error when ctx ends first, and otherwise
 // nil, whether or not the scripts would then pass.
 func checkScripts(ctx context.Context, g beefnorm.Graph, tracker chaintracker.ChainTracker) error {
@@ -34,6 +63,9 @@ func checkScripts(ctx context.Context, g beefnorm.Graph, tracker chaintracker.Ch
 			prevout := beefnorm.SpentOutput(in)
 			if prevout == nil {
 				continue // verifyTx fails before any script of tx runs
+			}
+			if in.UnlockingScript != nil && scriptcost.EndsMalformed(*in.UnlockingScript) {
+				return fmt.Errorf("%w: input %d of %s", ErrMalformedScript, vin, tx.TxID())
 			}
 			flags := heights.BlockValidationFlags(coinHeight(g, in, prevout, heights), unminedHeight)
 			err := scriptguard.Check(ctx, tx, vin, prevout, flags)

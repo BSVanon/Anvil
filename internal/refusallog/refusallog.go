@@ -73,6 +73,27 @@ const (
 	// routeguard. Kept distinct so the two routes' volumes are told apart.
 	// Wired at internal/api/handlers_broadcast.go's handleBroadcast.
 	ReasonBroadcastTooComplex Reason = "broadcast_too_complex"
+	// ReasonMalformedScript is routeguard.ErrMalformedScript
+	// (routeguard.MalformedScriptCode): an unlocking script whose node-exact
+	// parse ends in an undecodable instruction, the B1 reparse-heap-bomb
+	// trigger. 400. Wired at v3engine.writeGuardError and
+	// legacyshim.writeLegacyGuardError.
+	ReasonMalformedScript Reason = "malformed_script"
+	// ReasonOtherGuardError is any routeguard-surfaced error that reaches the
+	// default branch of writeGuardError or writeLegacyGuardError: a submit
+	// refused before the engine saw it, for a reason none of the other
+	// Reasons name. Logging it closes the gap cold review round 4's NITs
+	// flagged -- that branch was previously unlogged -- without widening the
+	// closed Reason vocabulary for every future case there.
+	ReasonOtherGuardError Reason = "other_guard_error"
+	// ReasonPendingCapExceeded is the x402 pending-challenge cap's 503
+	// (PaymentGate.reservePending): too many challenges are outstanding.
+	// Wired at internal/api/payment.go's issueChallengeForPayees.
+	ReasonPendingCapExceeded Reason = "pending_cap_exceeded"
+	// ReasonMintBudgetExceeded is the x402 nonce mint budget's 503
+	// (*mintBudgetError): the process-wide wallet-mint token bucket is
+	// spent. Wired at internal/api/payment.go's issueChallengeForPayees.
+	ReasonMintBudgetExceeded Reason = "mint_budget_exceeded"
 )
 
 // overflowReason is the shared entry for any Reason beyond maxReasons
