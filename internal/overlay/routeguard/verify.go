@@ -73,15 +73,19 @@ type Submit struct {
 //  3. An input whose spent output only the extended format supplies is
 //     refused (ErrMalformed): spv.Verify would run its scripts against an
 //     amount and a script that are the client's word alone.
-//  4. scriptWeight prices the scripts (ErrTooComplex past MaxScriptOps), and
+//  4. scanMalformedScripts refuses an unlocking script whose node-exact parse
+//     ends in an undecodable instruction (ErrMalformedScript). It runs no
+//     script and needs no slot, so it runs before either of the next two
+//     steps takes one (cold review round 4 cycle 6 NIT, "slot order").
+//  5. scriptWeight prices the scripts (ErrTooComplex past MaxScriptOps), and
 //     the ticket returns what ReadBody reserved for them beyond that.
-//  5. A submit whose scripts may write new stack elements takes the
+//  6. A submit whose scripts may write new stack elements takes the
 //     execution slot.
-//  6. The ticket takes a CPU slot.
-//  7. checkScripts refuses, within ctx and at most VerifyBudget, a BEEF one
+//  7. The ticket takes a CPU slot.
+//  8. checkScripts refuses, within ctx and at most VerifyBudget, a BEEF one
 //     of whose inputs would run an opcode over scriptguard's cost cap
 //     (ErrTooComplex).
-//  8. spv.Verify runs with ctx and the rest of that budget: ErrValidationBudget
+//  9. spv.Verify runs with ctx and the rest of that budget: ErrValidationBudget
 //     when the budget runs out, ctx's error when the client goes away, and
 //     otherwise exactly the error engine.Submit would return. A nil tracker
 //     skips this step (tests of fake engines). After a verification in the
@@ -109,6 +113,9 @@ func (t *Ticket) PreVerify(ctx context.Context, tracker chaintracker.ChainTracke
 		return nil, err
 	}
 	g := n.Graph()
+	if err := scanMalformedScripts(g); err != nil {
+		return nil, err
+	}
 	weight, copies, err := scriptWeight(n.Tx, g.Unmined)
 	if err != nil {
 		return nil, err

@@ -96,16 +96,22 @@ func (h *Handlers) submitBEEF(w http.ResponseWriter, r *http.Request, topics []s
 // undecodable instruction (routeguard.ErrMalformedScript, cold review round 4
 // B1), 422 with routeguard.ValidationBudgetCode for scripts over the
 // verification budget, and otherwise the status the route answered before the
-// guard, with prefix before the message. The six guard-imposed cases (busy,
-// slow body, too complex, refused, malformed script, validation budget) are
-// rate-limit logged via refusallog so an operator or the canary watching this
-// node can see refusals sent straight to its port without every one of a
-// flood becoming its own log line; so is the default case, under
-// ReasonOtherGuardError, since it is still the guard refusing a submit before
-// the engine saw it, just for a reason none of the named Reasons cover (cold
-// review round 4's NITs: this branch was unlogged). The deadline-exceeded
-// case is an ordinary request outcome, not the guard protecting the node, so
-// it is not logged here.
+// guard, with prefix before the message -- the default case's status is
+// unchanged by the classification below, always 400 here. The six
+// guard-imposed cases (busy, slow body, too complex, refused, malformed
+// script, validation budget) are rate-limit logged via refusallog so an
+// operator or the canary watching this node can see refusals sent straight to
+// its port without every one of a flood becoming its own log line; so is the
+// default case, under ReasonInvalidTransaction for engine.ErrInvalidTransaction
+// or engine.ErrInvalidBeef (PreVerify's own fallback for scripts that simply
+// did not verify, or a BEEF with no subject) and ReasonOtherGuardError for
+// anything else reaching here, since both are still the guard refusing a
+// submit before the engine saw it, just for reasons the other named Reasons
+// do not cover (cold review round 4's NITs: this branch was unlogged; cold
+// review round 4 cycle 6's NITs: it was logged but not split from a flood of
+// genuinely invalid transactions). The deadline-exceeded case is an ordinary
+// request outcome, not the guard protecting the node, so it is not logged
+// here.
 func writeGuardError(w http.ResponseWriter, r *http.Request, err error, prefix string) {
 	switch {
 	case errors.Is(err, routeguard.ErrTooComplex):
@@ -130,7 +136,19 @@ func writeGuardError(w http.ResponseWriter, r *http.Request, err error, prefix s
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, submitErrorStatus(err), prefix+err.Error())
 	default:
-		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonOtherGuardError)
+		refusallog.Log(r, http.StatusBadRequest, invalidTransactionReason(err))
 		writeError(w, http.StatusBadRequest, prefix+err.Error())
 	}
+}
+
+// invalidTransactionReason is ReasonInvalidTransaction for
+// engine.ErrInvalidTransaction or engine.ErrInvalidBeef, and
+// ReasonOtherGuardError for every other error writeGuardError's default
+// branch logs (cold review round 4 cycle 6 NIT). It changes no status code:
+// callers still answer 400 either way.
+func invalidTransactionReason(err error) refusallog.Reason {
+	if errors.Is(err, engine.ErrInvalidTransaction) || errors.Is(err, engine.ErrInvalidBeef) {
+		return refusallog.ReasonInvalidTransaction
+	}
+	return refusallog.ReasonOtherGuardError
 }

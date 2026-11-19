@@ -2,8 +2,10 @@ package v3engine
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/refusallog"
+	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/script"
 )
 
@@ -70,4 +73,41 @@ func TestSubmit_LogsARefusedBEEF(t *testing.T) {
 		t.Fatalf("submit: %d %s, want 400", code, resp)
 	}
 	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonRefusedBEEF, "/submit")
+}
+
+// TestWriteGuardError_ClassifiesInvalidTransaction: writeGuardError's default
+// branch used to log every otherwise-unnamed error, including a genuinely
+// invalid transaction (engine.ErrInvalidTransaction or engine.ErrInvalidBeef)
+// under the same ReasonOtherGuardError as any other unclassified guard
+// failure (cold review round 4 cycle 6 NIT). It now logs those two under
+// their own ReasonInvalidTransaction, while every other default-branch error
+// still logs under ReasonOtherGuardError -- and the status code either way is
+// still the unchanged flat 400.
+func TestWriteGuardError_ClassifiesInvalidTransaction(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/submit", nil)
+	r.RemoteAddr = "127.0.0.1:9"
+
+	logs := watchRefusals(t)
+	w := httptest.NewRecorder()
+	writeGuardError(w, r, engine.ErrInvalidTransaction, "submit failed: ")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("ErrInvalidTransaction: status = %d, want 400 (unchanged by the reason classification)", w.Code)
+	}
+	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonInvalidTransaction, "/submit")
+
+	logs = watchRefusals(t)
+	w = httptest.NewRecorder()
+	writeGuardError(w, r, engine.ErrInvalidBeef, "submit failed: ")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("ErrInvalidBeef: status = %d, want 400", w.Code)
+	}
+	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonInvalidTransaction, "/submit")
+
+	logs = watchRefusals(t)
+	w = httptest.NewRecorder()
+	writeGuardError(w, r, errors.New("some other guard failure"), "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("other error: status = %d, want 400", w.Code)
+	}
+	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonOtherGuardError, "/submit")
 }

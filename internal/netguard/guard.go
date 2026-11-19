@@ -35,9 +35,12 @@
 // MaxSteakBytes, validated, and handed on re-encoded, so go-sdk decodes
 // exactly what was checked. Every reply to a GASP node fetch
 // (/requestForeignGASPNode) is read in full, up to MaxResponseBytes -- the
-// cap this traffic already had -- and refused if its transaction has an
-// unlocking script the B1 reparse bug (cold review round 4) could reach, and
-// otherwise handed on unchanged (see checkGASPNode).
+// cap this traffic already had -- under a read deadline and minimum rate,
+// decoded exactly as go-overlay-services' own doNodeRequest decodes it, and
+// refused if it does not decode that way or if its transaction has an
+// unlocking script the B1 reparse bug (cold review round 4) could reach; a
+// clear reply is handed on re-encoded from the node checked (see
+// checkGASPNode).
 package netguard
 
 import (

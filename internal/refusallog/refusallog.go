@@ -59,12 +59,12 @@ const (
 	// without going through writeLegacyGuardError.
 	ReasonBodyRejected Reason = "body_rejected"
 
-	// ReasonPaymentHeaderTooLarge is not wired by this package. The x402
-	// payment gate (internal/api/payment_bounds.go's
-	// errPaymentHeaderTooLarge, surfaced through paymentRejectionStatus)
-	// answers 431 when an X402-Proof or X-BSV-Payment header is over its
-	// size limit. That file belongs to a lane this package does not touch;
-	// the constant exists so that lane's call site and this package's other
+	// ReasonPaymentHeaderTooLarge is the x402 payment gate's 431: an
+	// X402-Proof or X-BSV-Payment header over its size limit
+	// (internal/api/payment_bounds.go's errPaymentHeaderTooLarge). Wired at
+	// payment_bounds.go's paymentRejectionStatus, called from payment.go's
+	// two rejection sites. That lane is outside this package's own guard
+	// errors; the constant lets its call site and this package's other
 	// callers share one vocabulary.
 	ReasonPaymentHeaderTooLarge Reason = "payment_header_too_large"
 	// ReasonBroadcastTooComplex is POST /broadcast's refusal of a BEEF
@@ -79,12 +79,24 @@ const (
 	// trigger. 400. Wired at v3engine.writeGuardError and
 	// legacyshim.writeLegacyGuardError.
 	ReasonMalformedScript Reason = "malformed_script"
+	// ReasonInvalidTransaction is engine.ErrInvalidTransaction or
+	// engine.ErrInvalidBeef reaching the default branch of writeGuardError
+	// or writeLegacyGuardError: PreVerify's own scripts-did-not-verify
+	// fallback, or a BEEF with no subject transaction, neither one the guard
+	// refusing for a resource reason. Carved out of ReasonOtherGuardError
+	// (cold review round 4 cycle 6 NIT) so a flood of genuinely invalid
+	// transactions is told apart, in the log, from the guard's own limits
+	// kicking in; the status each route answers is unchanged (legacy keeps
+	// mapping these through statusForSubmitError, canonical keeps its flat
+	// 400 default) -- only the logged reason changes.
+	ReasonInvalidTransaction Reason = "invalid_transaction"
 	// ReasonOtherGuardError is any routeguard-surfaced error that reaches the
-	// default branch of writeGuardError or writeLegacyGuardError: a submit
-	// refused before the engine saw it, for a reason none of the other
-	// Reasons name. Logging it closes the gap cold review round 4's NITs
-	// flagged -- that branch was previously unlogged -- without widening the
-	// closed Reason vocabulary for every future case there.
+	// default branch of writeGuardError or writeLegacyGuardError, other than
+	// ReasonInvalidTransaction: a submit refused before the engine saw it,
+	// for a reason none of the other Reasons name. Logging it closes the gap
+	// cold review round 4's NITs flagged -- that branch was previously
+	// unlogged -- without widening the closed Reason vocabulary for every
+	// future case there.
 	ReasonOtherGuardError Reason = "other_guard_error"
 	// ReasonPendingCapExceeded is the x402 pending-challenge cap's 503
 	// (PaymentGate.reservePending): too many challenges are outstanding.

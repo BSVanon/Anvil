@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -247,3 +248,50 @@ func TestRead_PassesOtherReadErrors(t *testing.T) {
 type errReader struct{ err error }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// blockingBody declares a length but never delivers a byte, blocking until
+// closed, so a test can measure what a declared Content-Length alone costs
+// before any byte of the body has arrived.
+type blockingBody struct{ closed chan struct{} }
+
+func (b *blockingBody) Read([]byte) (int, error) {
+	<-b.closed
+	return 0, errors.New("read on a closed body")
+}
+
+func (b *blockingBody) Close() error {
+	select {
+	case <-b.closed:
+	default:
+		close(b.closed)
+	}
+	return nil
+}
+
+// TestReadKnown_DoesNotPreallocateTheDeclaredLength: a declared length of 64
+// MiB -- netguard's own cap on a GASP node reply -- from a body that never
+// sends a byte, cut short at its timeout, costs the process nowhere near 64
+// MiB of heap. Before this fix, readKnown allocated the full declared
+// length up front (make([]byte, n)), so a peer could make this cost real
+// heap for every reply it merely declared and never had to send (cold
+// review round 4 cycle 6, RISK 1).
+func TestReadKnown_DoesNotPreallocateTheDeclaredLength(t *testing.T) {
+	const declared = 64 << 20
+	body := &blockingBody{closed: make(chan struct{})}
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	_, err := Read(body, declared, Limits{Max: declared, Timeout: 50 * time.Millisecond})
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("want ErrTimeout, got %v", err)
+	}
+
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	grew := int64(after.HeapInuse) - int64(before.HeapInuse)
+	const tooMuch = 8 << 20 // far under the 64 MiB declared, generous over any small initial buffer
+	if grew > tooMuch {
+		t.Fatalf("heap grew by %d bytes for a body that sent nothing of its declared %d bytes, want under %d", grew, declared, tooMuch)
+	}
+}

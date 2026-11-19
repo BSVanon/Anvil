@@ -77,6 +77,22 @@ func gaspNodeReply(t *testing.T, rawTx []byte) []byte {
 	return body
 }
 
+// gaspNodeReplyWithProof is gaspNodeReply with a non-empty Proof: the shape
+// RISK 4 (cold review round 4 cycle 6) named, where spv.Verify accepts a
+// transaction a merkle path proves mined without ever running its scripts,
+// so gaspNodeMalformed must not check one. proof need not be a real merkle
+// path: gaspNodeMalformed only ever reads whether it is empty, the same as
+// doNodeRequest's own caller does before it is parsed (gasp-storage.go's
+// AppendToGraph and FindNeededInputs, which run after RequestNode returns).
+func gaspNodeReplyWithProof(t *testing.T, rawTx []byte, proof string) []byte {
+	t.Helper()
+	body, err := json.Marshal(&gasp.Node{GraphID: gaspOutpoint, RawTx: hex.EncodeToString(rawTx), OutputIndex: 0, Proof: &proof})
+	if err != nil {
+		t.Fatalf("marshal gasp.Node: %v", err)
+	}
+	return body
+}
+
 // TestGuard_RefusesMalformedGASPNodeReply: a hostile SHIP-advertised peer's
 // /requestForeignGASPNode reply carrying the B1 shape is refused through
 // http.DefaultClient before go-overlay-services' own
@@ -112,5 +128,57 @@ func TestGuard_PassesHonestGASPNodeReply(t *testing.T) {
 		RequestNode(context.Background(), nil, gaspOutpoint, false)
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("guarded RequestNode differs: err %v\n got  %+v\n want %+v", err, got, want)
+	}
+}
+
+// TestGuard_RefusesEveryTrailingByteVariant is cold review round 4 cycle 6's
+// B1 reproduction, adapted into a permanent regression: checkGASPNode used to
+// decode a reply with json.Unmarshal, which fails on anything after the JSON
+// object, so it handed every one of these variants on unchecked (fail open),
+// while go-overlay-services' own json.Decoder.Decode reads only the first
+// value and accepts every one of them, embedded malformed script included.
+// Decoding the same way (decodeGASPNode) closes the gap: every variant below
+// carries the B1 shape and must be refused, exactly as the plain control
+// already was.
+func TestGuard_RefusesEveryTrailingByteVariant(t *testing.T) {
+	good := gaspNodeReply(t, malformedReparseTx(t))
+	cases := map[string][]byte{
+		"plain (control)":        good,
+		"trailing byte":          append(append([]byte{}, good...), 'x'),
+		"trailing second object": append(append([]byte{}, good...), []byte(`{}`)...),
+		"trailing close bracket": append(append([]byte{}, good...), ']'),
+		"trailing NUL":           append(append([]byte{}, good...), 0x00),
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			url, hits := serveAnswer(t, "application/json", body, false)
+			_, err := engine.NewOverlayGASPRemote(url, "tm_test", http.DefaultClient, 8).
+				RequestNode(context.Background(), nil, gaspOutpoint, false)
+			if err == nil || !strings.Contains(err.Error(), "netguard: refused a GASP node reply") ||
+				!strings.Contains(err.Error(), "undecodable instruction") {
+				t.Fatalf("%s: want the guard to refuse it, got: %v", name, err)
+			}
+			if got := hits.Load(); got != 1 {
+				t.Fatalf("%s: expected one request to the peer, got %d", name, got)
+			}
+		})
+	}
+}
+
+// TestGuard_PassesProvenGASPNodeEvenWithAMalformedScript: a node that
+// carries a Proof is handed on even though its transaction's unlocking
+// script ends in an undecodable instruction -- the exact shape
+// TestGuard_RefusesMalformedGASPNodeReply proves refused on its own, here
+// paired with a Proof (cold review round 4 cycle 6, RISK 4). spv.Verify
+// never runs the scripts of a transaction a merkle path proves mined, so
+// refusing this would refuse a shape go-sdk's own verification can never
+// reach.
+func TestGuard_PassesProvenGASPNodeEvenWithAMalformedScript(t *testing.T) {
+	url, _ := serveAnswer(t, "application/json", gaspNodeReplyWithProof(t, malformedReparseTx(t), "not a real merkle path, just non-empty"), false)
+
+	_, err := engine.NewOverlayGASPRemote(url, "tm_test", http.DefaultClient, 8).
+		RequestNode(context.Background(), nil, gaspOutpoint, false)
+	if err != nil {
+		t.Fatalf("a proven node must be handed on even with a malformed script, got: %v", err)
 	}
 }

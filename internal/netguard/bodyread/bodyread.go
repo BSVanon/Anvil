@@ -112,7 +112,11 @@ const initialBuffer = 4 << 10
 // Read reads body to its end under l and closes it exactly once: from a
 // timer, to cut a stalled read short, or else on return. contentLength is
 // the declared length, or -1 when unknown. A declared length over l.Max fails
-// before anything is read; a known length is read into one exact allocation.
+// before anything is read; a known length grows into its declared size the
+// same way an unknown one grows into the cap (see readKnown, readUnknown),
+// rather than committing one allocation of the full declared length before a
+// byte has arrived -- a peer that declares a large Content-Length and sends
+// little, or nothing, would otherwise cost this much heap for free.
 func Read(body io.ReadCloser, contentLength int64, l Limits) ([]byte, error) {
 	r := &reader{body: body, limits: l, start: time.Now()}
 	defer r.close()
@@ -174,11 +178,22 @@ func (r *reader) failed(err error) error {
 	return err
 }
 
+// readKnown reads exactly n bytes, grown from a small initial allocation up
+// to n, doubling as bytes arrive (the same growth readUnknown uses, bounded
+// above by n instead of by Max+1): a body that declares n but sends less, or
+// nothing, before it is cut short never cost more than what it actually
+// delivered.
 func (r *reader) readKnown(n int64) ([]byte, error) {
-	buf := make([]byte, n)
+	buf := make([]byte, 0, min(n, initialBuffer))
 	for have := int64(0); have < n; {
-		k, err := r.body.Read(buf[have:])
-		have += int64(k)
+		if int64(len(buf)) == int64(cap(buf)) {
+			grown := make([]byte, len(buf), min(2*int64(cap(buf)), n))
+			copy(grown, buf)
+			buf = grown
+		}
+		k, err := r.body.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+k]
+		have = int64(len(buf))
 		r.got(have)
 		if err == io.EOF && have < n {
 			return nil, r.failed(io.ErrUnexpectedEOF)

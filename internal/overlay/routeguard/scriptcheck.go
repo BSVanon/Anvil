@@ -46,13 +46,36 @@ const MalformedScriptCode = "ERR_MALFORMED_SCRIPT"
 // against go-sdk's own decoder in scriptcost's tests.
 var ErrMalformedScript = errors.New("unlocking script ends in an undecodable instruction")
 
+// scanMalformedScripts refuses the first input among g.Unmined whose
+// unlocking script's node-exact parse (scriptcost.EndsMalformed) ends in an
+// undecodable instruction (see ErrMalformedScript). It runs no script and
+// allocates nothing, so PreVerify calls it before taking the execution or
+// CPU slot: a flood of this one shape then costs the guard nothing beyond
+// parsing the BEEF, instead of queuing behind, or taking, the slots
+// legitimate verification work needs (cold review round 4 cycle 6 NIT,
+// "slot order" -- this check used to run inside checkScripts, after both
+// slots were already taken).
+func scanMalformedScripts(g beefnorm.Graph) error {
+	for _, tx := range g.Unmined {
+		for vin, in := range tx.Inputs {
+			if beefnorm.SpentOutput(in) == nil {
+				continue // verifyTx fails before any script of tx runs
+			}
+			if in.UnlockingScript != nil && scriptcost.EndsMalformed(*in.UnlockingScript) {
+				return fmt.Errorf("%w: input %d of %s", ErrMalformedScript, vin, tx.TxID())
+			}
+		}
+	}
+	return nil
+}
+
 // checkScripts runs scriptguard.Check on every input spv.Verify will
 // execute, with the flags verifyTx executes it under (spv/verify.go:534-550),
-// before any of them runs. It returns an error wrapping ErrMalformedScript
-// for the first input whose unlocking script ends in an undecodable
-// instruction (see ErrMalformedScript), one wrapping ErrTooComplex for the
-// first input Check refuses, ctx's error when ctx ends first, and otherwise
-// nil, whether or not the scripts would then pass.
+// before any of them runs. scanMalformedScripts must already have cleared g
+// by the time this runs (PreVerify calls it first, before any slot is
+// taken); this does not repeat that check. It returns an error wrapping
+// ErrTooComplex for the first input Check refuses, ctx's error when ctx ends
+// first, and otherwise nil, whether or not the scripts would then pass.
 func checkScripts(ctx context.Context, g beefnorm.Graph, tracker chaintracker.ChainTracker) error {
 	heights := scriptflag.MainNetActivationHeights
 	if p, ok := tracker.(spv.ActivationHeightsProvider); ok {
@@ -63,9 +86,6 @@ func checkScripts(ctx context.Context, g beefnorm.Graph, tracker chaintracker.Ch
 			prevout := beefnorm.SpentOutput(in)
 			if prevout == nil {
 				continue // verifyTx fails before any script of tx runs
-			}
-			if in.UnlockingScript != nil && scriptcost.EndsMalformed(*in.UnlockingScript) {
-				return fmt.Errorf("%w: input %d of %s", ErrMalformedScript, vin, tx.TxID())
 			}
 			flags := heights.BlockValidationFlags(coinHeight(g, in, prevout, heights), unminedHeight)
 			err := scriptguard.Check(ctx, tx, vin, prevout, flags)

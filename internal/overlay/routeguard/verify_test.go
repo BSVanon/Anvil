@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"testing"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/overlay/overlaytest"
 	"github.com/bsv-blockchain/go-sdk/script"
@@ -80,6 +81,35 @@ func TestPreVerify_ScriptsThatWriteTakeTheOneExecutionSlot(t *testing.T) {
 	}
 	next.Done()
 	first.Done()
+}
+
+// TestPreVerify_RefusesAMalformedScriptBeforeAnySlot: cold review round 4
+// cycle 6's "slot order" NIT -- the malformed-script scan ran inside
+// checkScripts, after both the execution and CPU slots were taken -- fixed
+// by scanMalformedScripts, called before either is taken. With the guard's
+// one CPU slot held by another submit, a malformed submit is still refused
+// with ErrMalformedScript at once: it never waits out the guard's Wait for a
+// slot, and never gets ErrBusy instead.
+func TestPreVerify_RefusesAMalformedScriptBeforeAnySlot(t *testing.T) {
+	g := New(1<<30, 1, 4, testWait)
+	holder := spendBEEF(t, script.Script{script.Op1, script.OpNOP}) // takes the one CPU slot, no execution slot
+	_, held, err := preVerified(t, g, holder)
+	if err != nil {
+		t.Fatalf("occupying the one CPU slot: %v", err)
+	}
+	defer held.Done()
+
+	beef := overlaytest.MalformedReparseBEEF(t, 1000, 1, overlaytest.CheckSig)
+	start := time.Now()
+	tk, _, err := preVerified(t, g, beef)
+	took := time.Since(start)
+	if !errors.Is(err, ErrMalformedScript) {
+		t.Fatalf("a malformed submit while the one CPU slot is held: %v, want ErrMalformedScript", err)
+	}
+	tk.Close()
+	if took > testWait/2 {
+		t.Errorf("refused after %v, want at once, before any slot wait (got as far as the guard's Wait, %v)", took, testWait)
+	}
 }
 
 // collections is how many garbage collections the process has run.
