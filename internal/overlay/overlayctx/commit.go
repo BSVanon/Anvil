@@ -16,8 +16,9 @@
 // The handler registers a notifier and acks success only once EVERY submitted
 // topic has signaled, so a 200 always means the whole submit is durably
 // committed — never a partial commit. Best-effort cross-node propagation (which
-// the go-sdk topic facilitator runs on its own un-cancellable ~30s-per-peer
-// timeout) then finishes in the background. The engine in between is a
+// the go-sdk topic facilitator runs without the caller's context, each POST
+// to another host bounded by netguard.SubmitTimeout, 15 s) then finishes in
+// the background. The engine in between is a
 // transparent pass-through; non-submit callers (GASP sync, internalize) register
 // no notifier and the signals are no-ops.
 package overlayctx

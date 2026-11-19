@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/beefscan"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/chaintracker"
 )
@@ -77,6 +78,18 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 			Message:    "empty BEEF input",
 		}
 		v.recordResult(result, "empty_input")
+		return result, nil
+	}
+
+	// Price the structure before go-sdk parses it: its parse, Verify and
+	// serializations are superlinear in some shapes and take no context.
+	if err := beefscan.Check(beef); err != nil {
+		result := &Result{
+			Valid:      false,
+			Confidence: ConfidenceInvalid,
+			Message:    fmt.Sprintf("%s: %v", beefscan.Code, err),
+		}
+		v.recordResult(result, "too_complex")
 		return result, nil
 	}
 
@@ -263,7 +276,7 @@ func safeNewBeefFromBytes(beef []byte) (b *transaction.Beef, err error) {
 			err = fmt.Errorf("BEEF parse panicked: %v", r)
 		}
 	}()
-	return transaction.NewBeefFromBytes(beef)
+	return newBeefFromBytes(beef)
 }
 
 // safeNewTransactionFromBEEF is the panic-guarded counterpart for extracting the
@@ -275,5 +288,14 @@ func safeNewTransactionFromBEEF(beef []byte) (tx *transaction.Transaction, err e
 			err = fmt.Errorf("transaction parse panicked: %v", r)
 		}
 	}()
-	return transaction.NewTransactionFromBEEF(beef)
+	return newTransactionFromBEEF(beef)
 }
+
+// The parsers the two wrappers guard. go-sdk v1.7.7 bounds the reads that
+// panicked in v1.2.x, and beefscan.Check refuses the malformed shapes first,
+// so no known input reaches either recover now; they are variables so a test
+// can make them panic.
+var (
+	newBeefFromBytes       = transaction.NewBeefFromBytes
+	newTransactionFromBEEF = transaction.NewTransactionFromBEEF
+)

@@ -17,16 +17,16 @@ import (
 
 // expensiveScriptBEEF returns a valid-looking V1 BEEF whose verification is
 // pure CPU: the tip spends an unmined output whose locking script pushes 1 MiB
-// and then runs OP_DUP OP_SHA256 OP_DROP over it 20,000 times. Each round
-// copies and hashes the 1 MiB element, so spv.Verify runs for about 8.6 s on
-// a 1.1 MB body.
+// and then runs OP_DUP OP_SHA256 OP_DROP over it costlyRounds (16,000) times.
+// Each round copies and hashes the 1 MiB element, so spv.Verify runs for
+// about 6.9 s on a 1.1 MB body (measured without -race).
 func expensiveScriptBEEF(t *testing.T) []byte {
 	t.Helper()
 	lock := &script.Script{}
 	if err := lock.AppendPushData(bytes.Repeat([]byte{0x01}, 1<<20)); err != nil {
 		t.Fatalf("AppendPushData: %v", err)
 	}
-	for i := 0; i < 20_000; i++ {
+	for i := 0; i < costlyRounds; i++ {
 		_ = lock.AppendOpcodes(script.OpDUP, script.OpSHA256, script.OpDROP)
 	}
 	costly := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: lock, Satoshis: 1})

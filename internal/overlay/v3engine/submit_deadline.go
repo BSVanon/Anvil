@@ -7,17 +7,22 @@ import (
 	"time"
 )
 
-// DefaultSubmitTimeout bounds one POST /submit when Handlers.SubmitTimeout is
-// unset. It is the legacy /overlay/submit shim's cap (legacyshim's
-// submitBackgroundCap), so both submit routes give up at the same point. It
-// exceeds the 30 s each go-sdk propagation lookup is allowed, and fits within
-// the 60 s a typical reverse proxy waits, so a caller sees this node's 504.
+// DefaultSubmitTimeout bounds the engine's part of one POST /submit when
+// Handlers.SubmitTimeout is unset: verification, admission, commit and the
+// start of propagation. It is the legacy /overlay/submit shim's cap
+// (legacyshim's submitBackgroundCap), so both submit routes give up at the
+// same point, and it exceeds the 30 s each go-sdk propagation lookup is
+// allowed. It is not the whole request: a submit that reaches propagation
+// answers 200 once propagation's POSTs to other hosts end, each within
+// netguard.SubmitTimeout (15 s), so a submit can take up to 45 + 15 = 60 s
+// (measured 59.5 s, netguard's TestSubmitChain_WorstCase), which a reverse
+// proxy that waits exactly 60 s may cut first.
 //
 // The cap matters because /submit runs spv.Verify on a client's BEEF with no
-// login, and script cost grows with the BEEF: a 1.1 MB BEEF of 20,000
-// OP_DUP OP_SHA256 OP_DROP over a 1 MiB push runs for about 8.6 s, and a
-// 64 MiB body for hours. go-sdk v1.7.7's interpreter checks the context
-// before every opcode, so the deadline stops the CPU as well as the request.
+// login, and script cost grows with the BEEF. The guard's own verification
+// stops a submit's scripts at routeguard.VerifyBudget (5 s) before the engine
+// sees them; go-sdk v1.7.7's interpreter checks the context before every
+// opcode, so the deadline stops the CPU as well as the request.
 const DefaultSubmitTimeout = 45 * time.Second
 
 func (h *Handlers) submitTimeout() time.Duration {
@@ -27,12 +32,17 @@ func (h *Handlers) submitTimeout() time.Duration {
 	return h.SubmitTimeout
 }
 
-// submitContext returns the context POST /submit runs engine.Submit under,
-// as the legacy shim builds it: detached from the client connection, so a
-// disconnect cannot abort a half-finished commit, and capped, so no submit
-// outlives the cap.
-func (h *Handlers) submitContext(r *http.Request) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(r.Context()), h.submitTimeout())
+// submitContext returns the context POST /submit runs the engine under, as
+// the legacy shim builds it: detached from the client connection, so a
+// disconnect cannot abort a half-finished commit, and ending at deadline, the
+// submit's cap. The cap stops verification, Anvil topic admission and the
+// start of propagation; a commit already under way runs to completion, and
+// the route then answers 200 (v3engine's detached storage and lookup views).
+// Propagation's own POSTs to other hosts ignore the context and are bounded
+// by netguard.SubmitTimeout instead, so a submit can outlast the cap by up to
+// 15 s (see DefaultSubmitTimeout).
+func (h *Handlers) submitContext(r *http.Request, deadline time.Time) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(context.WithoutCancel(r.Context()), deadline)
 }
 
 // submitErrorStatus maps an engine.Submit error to the canonical route's

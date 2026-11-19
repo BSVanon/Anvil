@@ -57,7 +57,9 @@ func Costliest(t testing.TB, c *Canary, n int) []*Reply {
 // the guard refuses it only for as long as that cap is in place, and each is
 // sized so that letting it through costs far more than the caps allow. No
 // reply is past MaxLookupOutputs in JSON: MaxJSONDecodeCost prices an output
-// at no less than 592 bytes, so it admits no more than about 3,500.
+// at no less than 592 bytes, so it admits no more than about 3,500. Nor is one
+// past MaxAnswerBEEFBytes in JSON: a JSON reply carries its BEEFs in base64,
+// so MaxLookupResponseBytes holds 1.5 MiB of them at most, under the cap.
 func PastTheCaps(t testing.TB, c *Canary) []*Reply {
 	t.Helper()
 	ad := func(name string) *transaction.Transaction { return slapAd(c.Host(name)) }
@@ -87,12 +89,9 @@ func PastTheCaps(t testing.TB, c *Canary) []*Reply {
 	out = append(out, jsonReply("past-json-cost", ad("past-json-cost"), nil,
 		[]piece{{[]byte("["), 1}, {[]byte(`{"":0},`), objects}, {[]byte(`{"":0}]`), 1}}))
 
-	// Two outputs of a transaction with a 600 KB output.
-	bigBEEF := beefOf(pushTx(4, 600_000))
-	out = append(out, jsonReply("past-json-beef", ad("past-json-beef"), [][]byte{bigBEEF, bigBEEF}, nil))
-
-	// An output whose BEEF is nearly 1 MiB of empty transactions.
-	filler := fillerBEEF(int((peerhygiene.MaxAnswerBEEFBytes-4096)/11), pushTx(5, 0))
+	// An output whose BEEF is some 1.2 MiB of empty transactions, which in
+	// base64 fits MaxJSONDecodeCost.
+	filler := fillerBEEF(int(peerhygiene.MaxJSONDecodeCost*3/5/11), pushTx(5, 0))
 	out = append(out, jsonReply("past-json-parse-cost", ad("past-json-parse-cost"), [][]byte{filler}, nil))
 	return out
 }

@@ -489,20 +489,20 @@ func (s *Storage) hydrate(out *engine.Output, includeBEEF bool) error {
 	return nil
 }
 
-// safeNewBeefFromBytes wraps go-sdk's NewBeefFromBytes, which can PANIC (not
-// merely return an error) on a malformed or truncated BEEF blob — it trusts an
-// embedded transaction count and indexes out of range (observed in the field:
-// "index out of range [210] with length 1"). A single corrupt stored blob must
-// not crash an entire lookup, so we recover and surface it as an ordinary error
-// the caller can skip.
+// safeNewBeefFromBytes parses a stored blob so that one corrupt blob cannot
+// crash a whole lookup: a panic becomes an error the caller skips. go-sdk
+// v1.2.x panicked on an out-of-range BUMP index ("index out of range [210]
+// with length 1", seen in the field); v1.7.7 returns an error, and no known
+// input reaches the recover now, so the parser is a variable a test replaces.
+var newBeefFromBytes = transaction.NewBeefFromBytes
+
 func safeNewBeefFromBytes(blob []byte) (beef *transaction.Beef, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			beef = nil
-			err = fmt.Errorf("BEEF parse panicked: %v", r)
+			beef, err = nil, fmt.Errorf("BEEF parse panicked: %v", r)
 		}
 	}()
-	return transaction.NewBeefFromBytes(blob)
+	return newBeefFromBytes(blob)
 }
 
 // storableBeefBytes serialises a BEEF for on-disk storage in a form go-sdk can

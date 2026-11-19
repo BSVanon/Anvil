@@ -3,9 +3,9 @@ package v3engine
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 
+	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/gasp"
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -52,11 +52,11 @@ func (h *Handlers) RequestSyncResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "X-BSV-Topic header required")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody()))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+	t, body, ok := h.readJSON(w, r, routeguard.GASPRoute)
+	if !ok {
 		return
 	}
+	defer t.Close()
 	var req gasp.InitialRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -102,11 +102,11 @@ func (h *Handlers) RequestForeignGASPNode(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "X-BSV-Topic header required")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody()))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+	t, body, ok := h.readJSON(w, r, routeguard.GASPRoute)
+	if !ok {
 		return
 	}
+	defer t.Close()
 	var req gasp.NodeRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())

@@ -149,6 +149,7 @@ type PaymentGate struct {
 type pendingChallenge struct {
 	challenge *X402Challenge
 	payees    []Payee
+	attempts  int // proofs counted against this challenge, guarded by PaymentGate.mu (payment_bounds.go)
 }
 
 // PaymentGateConfig configures the 402 payment gate.
@@ -246,7 +247,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		if bsvPayment != "" && proofHeader == "" {
 			receipt, err := pg.verifyDirectPayment(bsvPayment, payees)
 			if err != nil {
-				writeError(w, http.StatusPaymentRequired, "direct payment rejected: "+err.Error())
+				writeError(w, paymentRejectionStatus(err), "direct payment rejected: "+err.Error())
 				return
 			}
 			receiptJSON, _ := json.Marshal(receipt)
@@ -258,7 +259,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 
 		receipt, err := pg.verifyProof(r, proofHeader)
 		if err != nil {
-			writeError(w, http.StatusPaymentRequired, "payment rejected: "+err.Error())
+			writeError(w, paymentRejectionStatus(err), "payment rejected: "+err.Error())
 			return
 		}
 

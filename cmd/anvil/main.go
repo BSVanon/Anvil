@@ -1047,12 +1047,17 @@ func buildSyncConfiguration(eng *engine.Engine) map[string]engine.SyncConfigurat
 // advertisement state changes infrequently (operator topic config
 // edits), so a tight loop would just churn the wallet. Default 1800s
 // (30 min) preserved from v3.0.0; configurable via
-// cfg.Overlay.AdvertiseIntervalSecs.
+// cfg.Overlay.AdvertiseIntervalSecs. Each run is contained: the submit
+// it makes propagates through go-sdk code that trusts what peers send,
+// so a panic there is logged and the loop goes on.
 func runSyncAdvertisements(ctx context.Context, eng *engine.Engine, logger *slog.Logger, intervalSecs int) {
 	if intervalSecs <= 0 {
 		intervalSecs = 1800
 	}
-	if err := eng.SyncAdvertisements(ctx); err != nil {
+	run := func() error {
+		return netguard.Contain(logger, "SyncAdvertisements", func() error { return eng.SyncAdvertisements(ctx) })
+	}
+	if err := run(); err != nil {
 		logger.Error("initial SyncAdvertisements failed", "error", err)
 	}
 	logger.Info("SyncAdvertisements loop started", "interval_secs", intervalSecs)
@@ -1063,7 +1068,7 @@ func runSyncAdvertisements(ctx context.Context, eng *engine.Engine, logger *slog
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := eng.SyncAdvertisements(ctx); err != nil {
+			if err := run(); err != nil {
 				logger.Error("SyncAdvertisements failed", "error", err)
 			}
 		}
@@ -1080,12 +1085,17 @@ func runSyncAdvertisements(ctx context.Context, eng *engine.Engine, logger *slog
 // default to 1800s (30 min) — cuts bandwidth ~6x without meaningfully
 // degrading freshness, since topic admissions aren't high-rate. 0 or
 // unset → default 1800. Operators wanting tighter discovery can dial
-// down; aim for 60s as a practical floor.
+// down; aim for 60s as a practical floor. Each run is contained, as in
+// runSyncAdvertisements: its SHIP lookups and peer fetches run go-sdk
+// code that trusts what peers send.
 func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger, intervalSecs int, tracker *gaspstatus.Tracker) {
 	if intervalSecs <= 0 {
 		intervalSecs = 1800
 	}
-	if err := eng.StartGASPSync(ctx); err != nil {
+	run := func() error {
+		return netguard.Contain(logger, "StartGASPSync", func() error { return eng.StartGASPSync(ctx) })
+	}
+	if err := run(); err != nil {
 		logger.Error("initial StartGASPSync failed", "error", err)
 	} else if tracker != nil {
 		tracker.RecordSuccess()
@@ -1098,7 +1108,7 @@ func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger, i
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := eng.StartGASPSync(ctx); err != nil {
+			if err := run(); err != nil {
 				logger.Error("StartGASPSync failed", "error", err)
 			} else if tracker != nil {
 				tracker.RecordSuccess()

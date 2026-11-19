@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/BSVanon/Anvil/internal/netguard/bodyread"
 )
 
 // TestAcquireLookupSlot_WaitsAndReleasesOnce: no more than LookupSlots slots
@@ -99,10 +101,12 @@ func (b *gatedBody) Close() error {
 	return nil
 }
 
-// TestBoundedFacilitator_DecodesUnderOneSlot: the facilitator reads and
-// decodes a reply under one slot, its own, or, through a transport that
-// already took one for the exchange (the netguard transport on
-// http.DefaultClient), under that one alone, and returns it once done.
+// TestBoundedFacilitator_DecodesUnderOneSlot: through a plain client the
+// facilitator reads a reply under one of bodyread's read permits and no
+// slot, so a slow peer holds a permit, never a slot, and decodes it under a
+// slot of its own; through a transport that already took a slot for the
+// exchange (the netguard transport on http.DefaultClient) it reads and
+// decodes under that slot alone. Either way it returns what it took.
 func TestBoundedFacilitator_DecodesUnderOneSlot(t *testing.T) {
 	for _, claim := range []bool{false, true} {
 		tr := newGatedTransport(claim)
@@ -116,15 +120,20 @@ func TestBoundedFacilitator_DecodesUnderOneSlot(t *testing.T) {
 		case err := <-done:
 			t.Fatalf("transport slot %v: the lookup returned before reading: %v", claim, err)
 		}
-		if n := len(lookupSlots); n != 1 {
-			t.Errorf("transport slot %v: while the reply is read, %d slots are held, want 1", claim, n)
+		wantSlots, wantPermits := 0, 1
+		if claim {
+			wantSlots, wantPermits = 1, 0
+		}
+		if n, p := len(lookupSlots), bodyread.Lookups.InUse(); n != wantSlots || p != wantPermits {
+			t.Errorf("transport slot %v: while the reply is read, %d slots and %d read permits are held, want %d and %d",
+				claim, n, p, wantSlots, wantPermits)
 		}
 		close(tr.gate)
 		if err := <-done; err != nil {
 			t.Fatalf("transport slot %v: lookup: %v", claim, err)
 		}
-		if n := len(lookupSlots); n != 0 {
-			t.Errorf("transport slot %v: after the lookup, %d slots are held, want 0", claim, n)
+		if n, p := len(lookupSlots), bodyread.Lookups.InUse(); n != 0 || p != 0 {
+			t.Errorf("transport slot %v: after the lookup, %d slots and %d read permits are held, want 0", claim, n, p)
 		}
 	}
 }

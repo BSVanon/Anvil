@@ -47,6 +47,19 @@ func TestSafeNewBeefFromBytes_RejectsBadBumpIndex(t *testing.T) {
 	}
 }
 
+// TestSafeNewBeefFromBytes_RecoversAPanic: a parser panic, which no known
+// input causes in go-sdk v1.7.7, comes back as an error and a nil BEEF
+// instead of crashing the lookup.
+func TestSafeNewBeefFromBytes_RecoversAPanic(t *testing.T) {
+	orig := newBeefFromBytes
+	t.Cleanup(func() { newBeefFromBytes = orig })
+	newBeefFromBytes = func([]byte) (*transaction.Beef, error) { panic("NewBeefFromBytes bug") }
+	beef, err := safeNewBeefFromBytes([]byte{0x01})
+	if beef != nil || err == nil || !strings.Contains(err.Error(), "BEEF parse panicked: NewBeefFromBytes bug") {
+		t.Fatalf("want the panic as an error and a nil BEEF, got %v, %v", beef, err)
+	}
+}
+
 // TestSafeNewBeefFromBytes_ErrorsOnGarbage confirms ordinary malformed input
 // (not panic-inducing) still returns an error and never panics.
 func TestSafeNewBeefFromBytes_ErrorsOnGarbage(t *testing.T) {

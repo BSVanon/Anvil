@@ -317,7 +317,9 @@ func TestLookupHandler_AggregationBinary(t *testing.T) {
 	lookupReq, _ := http.NewRequest(http.MethodPost, url+"/lookup", bytes.NewReader(q))
 	lookupReq.Header.Set("Content-Type", "application/json")
 	lookupReq.Header.Set("x-aggregation", "yes")
-	resp, err := http.DefaultClient.Do(lookupReq)
+	// A client of its own: this package's tests install netguard, which
+	// re-encodes a binary answer read through http.DefaultClient as JSON.
+	resp, err := (&http.Client{}).Do(lookupReq)
 	if err != nil {
 		t.Fatalf("POST /lookup with x-aggregation: %v", err)
 	}

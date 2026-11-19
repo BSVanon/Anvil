@@ -24,7 +24,6 @@ func TestValidateLookupAnswer_RefusesEachReplyPastItsCap(t *testing.T) {
 		"past-answer-beef":     {"binary lookup: re-serialized " + answerBEEF, ""},
 		"past-body":            {"peerhygiene: lookup response exceeds size cap: ", fmt.Sprintf("body is over %d bytes", peerhygiene.MaxLookupResponseBytes)},
 		"past-json-cost":       {"lookup: decoding the JSON answer could cost ", fmt.Sprintf(" bytes, over the %d-byte cap", peerhygiene.MaxJSONDecodeCost)},
-		"past-json-beef":       {"lookup: the outputs' " + answerBEEF, ""},
 		"past-json-parse-cost": {"lookup: parsing output 1's BEEF could cost ", parseCost},
 	}
 	past := hostiletest.PastTheCaps(t, canary)

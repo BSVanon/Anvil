@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"strconv"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/overlay/gaspstatus"
+	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
@@ -23,13 +23,17 @@ import (
 // existing api.Server mounts these under the canonical route group in
 // W-5 phase B.
 //
-// MaxBodyBytes caps the request body length to prevent unbounded
-// memory growth on submit (BEEF bodies can be large but should never
-// be unbounded). Zero means "default" which is 64 MiB — enough for
-// reasonable UHRP payloads plus headroom.
+// MaxBodyBytes, when positive, lowers every route's body cap to it. Zero
+// keeps routeguard's caps: routeguard.MaxBEEFBody for /submit and
+// routeguard.MaxJSONBody for the JSON routes.
 type Handlers struct {
 	Engine       *engine.Engine
 	MaxBodyBytes int64
+
+	// Guard bounds the heap, verification CPU and connection time the
+	// routes may take. Nil uses routeguard.Default, which every overlay
+	// route in the process shares.
+	Guard *routeguard.Guard
 
 	// SubmitTimeout caps each POST /submit; past it the route answers 504.
 	// Zero or less uses DefaultSubmitTimeout (see submit_deadline.go).
@@ -45,18 +49,9 @@ type Handlers struct {
 	SyncStatus func() gaspstatus.Snapshot
 }
 
-const defaultMaxBodyBytes = 64 << 20 // 64 MiB
-
 // NewHandlers wraps an engine with default settings.
 func NewHandlers(eng *engine.Engine) *Handlers {
 	return &Handlers{Engine: eng}
-}
-
-func (h *Handlers) maxBody() int64 {
-	if h.MaxBodyBytes <= 0 {
-		return defaultMaxBodyBytes
-	}
-	return h.MaxBodyBytes
 }
 
 // writeSyncHeaders stamps the GASP federation-sync readiness headers on a
@@ -95,7 +90,9 @@ func (h *Handlers) writeSyncHeaders(w http.ResponseWriter) {
 //   - Response: 200 + STEAK JSON on success; 400 with a canonical
 //     error envelope `{status:"error",message:string}` otherwise
 //     (vector overlay.submit.7 + overlay.lookup.10), or 504 with the
-//     same envelope when the submit outlasts SubmitTimeout.
+//     same envelope when SubmitTimeout cuts the engine short before
+//     propagation; a submit that reaches propagation answers 200, up
+//     to 15 s past it (see DefaultSubmitTimeout).
 func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
@@ -114,33 +111,7 @@ func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "x-topics required")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody()))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
-		return
-	}
-	if len(body) == 0 {
-		writeError(w, http.StatusBadRequest, "empty body (BEEF required)")
-		return
-	}
-	beefBytes, offChain, err := splitOffChainValues(body, r.Header.Get("x-includes-off-chain-values"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid off-chain values prefix: "+err.Error())
-		return
-	}
-	tagged := overlay.TaggedBEEF{
-		Beef:           beefBytes,
-		Topics:         topics,
-		OffChainValues: offChain,
-	}
-	ctx, cancel := h.submitContext(r)
-	defer cancel()
-	steak, err := h.Engine.Submit(ctx, tagged, engine.SubmitModeCurrent, nil)
-	if err != nil {
-		writeError(w, submitErrorStatus(err), "submit failed: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, canonicalSteak(steak))
+	h.submitBEEF(w, r, topics)
 }
 
 // topicAdmittance is one topic's entry in the canonical STEAK wire form:
@@ -220,11 +191,11 @@ func (h *Handlers) Lookup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody()))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+	t, body, ok := h.readJSON(w, r, routeguard.LookupRoute)
+	if !ok {
 		return
 	}
+	defer t.Close()
 	var raw struct {
 		Service string          `json:"service"`
 		Query   json.RawMessage `json:"query"`

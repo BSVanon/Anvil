@@ -129,6 +129,11 @@ type Config struct {
 	// the federation Advertiser separately.
 	SHIPStorage *federation.SHIPStorage
 	SLAPStorage *federation.SLAPStorage
+
+	// storageOverride, when non-nil, stands in for Storage beneath the
+	// engine's detached view of storage (see detached.go). Tests set it to put
+	// a fault-injecting store between that view and the real one.
+	storageOverride engine.Storage
 }
 
 // New constructs an engine.Engine wired with Anvil's four canonical
@@ -234,8 +239,17 @@ func New(cfg *Config) (*engine.Engine, error) {
 	// so the node flags its own indexing errors (e.g. the V1-BEEF parse bug an
 	// external dev had to report twice) instead of only logging them. Reassigning
 	// existing map keys during range is safe (no keys added/removed).
+	// detachedLookup goes outside it so that no notification the engine makes
+	// can be cancelled part-way through a commit (detached.go).
 	for name, svc := range lookupServices {
-		lookupServices[name] = countingLookup{LookupService: svc, reg: health.Default}
+		lookupServices[name] = detachedLookup{inner: countingLookup{LookupService: svc, reg: health.Default}}
+	}
+
+	// The engine sees storage through detachedStorage, so a submit deadline
+	// cannot stop a commit part-way (detached.go).
+	var store engine.Storage = cfg.Storage
+	if cfg.storageOverride != nil {
+		store = cfg.storageOverride
 	}
 
 	// headers.Store satisfies chaintracker.ChainTracker directly
@@ -244,7 +258,7 @@ func New(cfg *Config) (*engine.Engine, error) {
 	eng := engine.NewEngine(&engine.Config{
 		Managers:          managers,
 		LookupServices:    lookupServices,
-		Storage:           cfg.Storage,
+		Storage:           detachedStorage{inner: store},
 		ChainTracker:      cfg.HeadersStore,
 		HostingURL:        cfg.HostingURL,
 		Advertiser:        cfg.Advertiser,

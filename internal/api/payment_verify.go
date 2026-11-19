@@ -12,12 +12,16 @@ import (
 	"time"
 
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
-	"github.com/bsv-blockchain/go-sdk/script/interpreter"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 // verifyProof validates a payment proof against the x402 spec.
-func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Receipt, error) {
+func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (receipt *X402Receipt, err error) {
+	// Step 0: Refuse an oversized header before decoding it (payment_bounds.go).
+	if err := checkPaymentHeaderSize(HeaderX402Proof, proofHeader); err != nil {
+		return nil, err
+	}
+
 	// Step 1: Decode proof from base64url
 	proofJSON, err := base64.RawURLEncoding.DecodeString(proofHeader)
 	if err != nil {
@@ -80,6 +84,15 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 		pg.mu.Unlock()
 		return nil, fmt.Errorf("challenge expired")
 	}
+
+	// Step 4b: Count this proof against the challenge (payment_bounds.go). The
+	// checks above are cheap; the steps below decode the transaction and run
+	// the nonce input's scripts. The challenge is removed once a proof passes
+	// or its last attempt fails.
+	if err := pg.reserveProofAttempt(proof.ChallengeSHA256, pending); err != nil {
+		return nil, err
+	}
+	defer func() { pg.endProofAttempt(proof.ChallengeSHA256, pending, err == nil) }()
 
 	// Step 5: Decode transaction
 	txBytes, err := base64.StdEncoding.DecodeString(proof.Payment.RawTxB64)
@@ -166,11 +179,7 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (*X402Re
 		}
 	}
 
-	// Clean up the used challenge (one-time use)
-	pg.mu.Lock()
-	delete(pg.pendingChallenges, proof.ChallengeSHA256)
-	pg.mu.Unlock()
-
+	// The deferred endProofAttempt removes the used challenge (one-time use).
 	return &X402Receipt{
 		TxID:      txid,
 		Satoshis:  totalPaid,
@@ -207,21 +216,21 @@ func verifyNonceInputSignature(tx *transaction.Transaction, nonce *NonceUTXO) er
 	if input.UnlockingScript == nil || len(*input.UnlockingScript) == 0 {
 		return fmt.Errorf("nonce input has no unlocking script")
 	}
+	// Refuse anything that cannot be a P2PKH spend before the interpreter
+	// sees it (payment_bounds.go).
+	if err := checkNonceUnlockingScript(&lockingScript, input.UnlockingScript); err != nil {
+		return err
+	}
 
-	// Run the script interpreter: unlocking + locking script
+	// Run the script interpreter: unlocking + locking script, under the
+	// flags and deadline in payment_bounds.go.
 	if nonce.Satoshis < 0 {
 		return fmt.Errorf("nonce UTXO has negative satoshis: %d", nonce.Satoshis)
 	}
-	engine := interpreter.NewEngine()
-	err = engine.Execute(
-		interpreter.WithTx(tx, inputIdx, &transaction.TransactionOutput{
-			LockingScript: &lockingScript,
-			Satoshis:      uint64(nonce.Satoshis), // #nosec G115 // guarded by < 0 check above
-		}),
-		interpreter.WithForkID(),
-		interpreter.WithAfterGenesis(),
-		interpreter.WithScripts(&lockingScript, input.UnlockingScript),
-	)
+	err = runNonceScripts(tx, inputIdx, &transaction.TransactionOutput{
+		LockingScript: &lockingScript,
+		Satoshis:      uint64(nonce.Satoshis), // #nosec G115 // guarded by < 0 check above
+	})
 	if err != nil {
 		return fmt.Errorf("script execution failed: %w", err)
 	}
@@ -234,6 +243,10 @@ func verifyNonceInputSignature(tx *transaction.Transaction, nonce *NonceUTXO) er
 // declared payees. No challenge-nonce binding — simpler but less
 // replay-resistant than the full x402 challenge-proof flow.
 func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee) (*X402Receipt, error) {
+	// Refuse an oversized header before decoding it (payment_bounds.go).
+	if err := checkPaymentHeaderSize(HeaderBSVPayment, paymentHeader); err != nil {
+		return nil, err
+	}
 	paymentHeader = strings.TrimSpace(paymentHeader)
 	if paymentHeader == "" {
 		return nil, fmt.Errorf("empty payment header")

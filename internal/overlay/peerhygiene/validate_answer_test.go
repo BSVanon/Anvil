@@ -178,3 +178,30 @@ func TestValidateLookupAnswer_ParsePanicBecomesError(t *testing.T) {
 		t.Fatalf("expected the NewTransactionFromBEEF panic as an error, got: %v", err)
 	}
 }
+
+// TestValidateLookupAnswer_CapsTheChunksOfAnOutputsScript: an answer naming
+// an output whose locking script decodes to more than MaxOutputScriptChunks
+// chunks is refused, in either format, before go-sdk decodes that script as
+// an advertisement; one at the cap passes.
+func TestValidateLookupAnswer_CapsTheChunksOfAnOutputsScript(t *testing.T) {
+	for _, n := range []int{MaxOutputScriptChunks, MaxOutputScriptChunks + 1} {
+		lock := script.Script(bytes.Repeat([]byte{script.OpNOP}, n))
+		tx := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: &lock, Satoshis: 1})
+		beef := txBEEF(t, tx)
+		for name, reply := range map[string]struct {
+			contentType string
+			body        []byte
+		}{
+			"binary": {octetStream, encodeBinaryAnswer(t, beef, binaryEntry{tx: tx})},
+			"JSON":   {"application/json", jsonAnswer(t, &lookup.OutputListItem{Beef: beef})},
+		} {
+			err := ValidateLookupAnswer(reply.contentType, reply.body)
+			if n <= MaxOutputScriptChunks && err != nil {
+				t.Errorf("%s, %d chunks: %v", name, n, err)
+			}
+			if n > MaxOutputScriptChunks && (err == nil || !strings.Contains(err.Error(), "output 0's locking script decodes to over")) {
+				t.Errorf("%s, %d chunks: want the chunk cap, got %v", name, n, err)
+			}
+		}
+	}
+}

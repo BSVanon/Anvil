@@ -18,31 +18,34 @@
 // Those readers trust what they read. go-sdk's lookup facilitator reads the
 // whole body and sizes allocations from counts inside it, so a 9-byte reply is
 // a fatal out-of-memory error and a 43-byte one a panic in the resolver's
-// goroutine, where nothing can recover it. The GASP remote decodes a JSON
-// stream that need never end.
+// goroutine, where nothing can recover it. Its broadcast facilitator decodes a
+// /submit reply into a STEAK whose nil entries the Broadcaster then
+// dereferences (topic/broadcaster.go:177-178), so a 4-byte "null" is a panic.
+// The GASP remote decodes a JSON stream that need never end.
 //
 // Install wraps DefaultClient's transport. Every response body is then capped
-// at MaxResponseBytes, and every reply to an overlay lookup is read in full,
-// up to peerhygiene.MaxLookupResponseBytes, and handed on only once
-// peerhygiene.ValidateLookupAnswer accepts it. A lookup reply is read,
-// validated and decoded under one of peerhygiene.LookupSlots decoding slots,
-// shared with peerhygiene.BoundedFacilitator, so however many hosts answer at
-// once, no more than that many answers are being decoded.
+// at MaxResponseBytes. Every reply to an overlay lookup is read in full, up to
+// peerhygiene.MaxLookupResponseBytes, under one of bodyread.LookupPermits read
+// permits, and only then validated and decoded under one of
+// peerhygiene.LookupSlots decoding slots, shared with
+// peerhygiene.BoundedFacilitator: however many hosts answer at once, and
+// however slowly, no more than that many replies are being read and no more
+// than that many answers decoded. Every POST to a /submit endpoint is one
+// exchange of at most SubmitTimeout, and its STEAK reply is read up to
+// MaxSteakBytes, validated, and handed on re-encoded, so go-sdk decodes
+// exactly what was checked.
 package netguard
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/netguard/bodyread"
 	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 )
 
@@ -53,8 +56,7 @@ import (
 // far smaller. A GASP /requestSyncResponse lists about 110 bytes per UTXO, so
 // 64 MiB holds some 600,000 UTXOs of one topic. A /requestForeignGASPNode
 // carries one transaction in hex with its proof, so 64 MiB covers transactions
-// up to 32 MiB. A /submit STEAK is a few hundred bytes. Lookup replies have
-// their own, smaller cap.
+// up to 32 MiB. Lookup and /submit replies have their own, smaller caps.
 const MaxResponseBytes int64 = 64 << 20
 
 // ErrResponseTooLarge is returned, from RoundTrip or from a body Read, for a
@@ -82,6 +84,10 @@ func Install() {
 			maxBytes:       MaxResponseBytes,
 			maxLookupBytes: peerhygiene.MaxLookupResponseBytes,
 			readTimeout:    peerhygiene.LookupReadTimeout,
+			minRate:        bodyread.MinReadRate,
+			grace:          bodyread.ReadGrace,
+			maxSteakBytes:  MaxSteakBytes,
+			submitTimeout:  SubmitTimeout,
 		}
 	})
 }
@@ -91,13 +97,21 @@ type guard struct {
 	base           http.RoundTripper
 	maxBytes       int64
 	maxLookupBytes int64
-	readTimeout    time.Duration // how long reading a lookup reply may hold its slot
+	readTimeout    time.Duration // how long reading one lookup reply may take
+	minRate        int64         // bytes/s a lookup or STEAK reply must keep up after grace; zero for no floor
+	grace          time.Duration
+	maxSteakBytes  int64         // zero or less uses MaxSteakBytes
+	submitTimeout  time.Duration // one /submit exchange; zero or less uses SubmitTimeout
 }
 
 // RoundTrip sends req through the base transport and bounds the response. A
 // 101 Switching Protocols response and the reply to a HEAD request have no
-// body to bound and pass through untouched.
+// body to bound and pass through untouched; a /submit exchange is bounded as
+// a whole by roundTripSubmit.
 func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {
+	if isSubmit(req) {
+		return g.roundTripSubmit(req)
+	}
 	resp, err := g.base.RoundTrip(req)
 	if err != nil || resp == nil {
 		return resp, err
@@ -116,17 +130,24 @@ func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// origin is the request that started req's exchange: req itself, or, for a
+// redirect's follow-up, the first request of the chain. The client hands the
+// final response to the caller whatever URL and method fetched it, so every
+// hop is judged by the origin.
+func origin(req *http.Request) *http.Request {
+	for req.Response != nil && req.Response.Request != nil {
+		req = req.Response.Request
+	}
+	return req
+}
+
 // isLookup reports whether req belongs to an overlay lookup: a POST to a URL
 // that the lookup facilitators build as host + "/lookup", which they mark with
 // X-Aggregation. The URL is matched as a whole string, because a hostile
 // advertised host such as "https://h/x?" puts "/lookup" in the query, not the
-// path. A redirect's follow-up request is judged by the request that started
-// the exchange, since the client hands the final response to the facilitator
-// whatever URL and method fetched it.
+// path. A redirect's follow-up request is judged by its origin.
 func isLookup(req *http.Request) bool {
-	for req.Response != nil && req.Response.Request != nil {
-		req = req.Response.Request
-	}
+	req = origin(req)
 	if req.Method != http.MethodPost {
 		return false
 	}
@@ -135,97 +156,21 @@ func isLookup(req *http.Request) bool {
 		strings.HasSuffix(req.URL.String(), "/lookup")
 }
 
-// checkLookup takes a decoding slot, reads a lookup reply in full, up to
-// maxLookupBytes, and hands it on only if peerhygiene.ValidateLookupAnswer
-// accepts it, as a fresh body of the same bytes that keeps the slot until it is
-// closed. go-sdk's facilitator closes the body only after decoding the answer,
-// so the slot covers its decoding too. Otherwise the slot is returned, the
-// original body is closed and RoundTrip fails, so go-sdk's facilitator never
-// parses the reply.
-func (g *guard) checkLookup(req *http.Request, resp *http.Response) (*http.Response, error) {
-	release, err := peerhygiene.AcquireLookupSlot(req.Context())
-	if err != nil {
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("netguard: %w", err)
+// isSubmit reports whether req belongs to an overlay submit, by the rules
+// isLookup uses: a POST to a URL that go-sdk's broadcast facilitator builds
+// as host + "/submit", which it marks with X-Topics, judged by its origin. A
+// lookup is never a submit.
+func isSubmit(req *http.Request) bool {
+	if isLookup(req) {
+		return false
 	}
-	peerhygiene.MarkLookupSlotHeld(req.Context())
-	body, err := readLookupBody(resp, g.maxLookupBytes, g.readTimeout)
-	if err == nil {
-		if verr := peerhygiene.ValidateLookupAnswer(resp.Header.Get("Content-Type"), body); verr != nil {
-			err = fmt.Errorf("netguard: rejected lookup answer: %w", verr)
-		}
+	req = origin(req)
+	if req.Method != http.MethodPost {
+		return false
 	}
-	if err != nil {
-		release()
-		return nil, err
-	}
-	resp.Body = newSlotBody(body, release)
-	resp.ContentLength = int64(len(body))
-	if resp.Header == nil {
-		resp.Header = make(http.Header)
-	}
-	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-	resp.TransferEncoding = nil
-	return resp, nil
-}
-
-// readLookupBody reads resp's whole body, failing once it passes max bytes or
-// once timeout has passed, and always closes it, exactly once: from the timer,
-// to cut a stalled read short, or else on return. The two never close it at
-// the same time.
-func readLookupBody(resp *http.Response, max int64, timeout time.Duration) ([]byte, error) {
-	var closeOnce sync.Once
-	closeBody := func() { closeOnce.Do(func() { _ = resp.Body.Close() }) }
-	defer closeBody()
-	if resp.ContentLength > max {
-		return nil, fmt.Errorf("%w: lookup Content-Length %d is over %d bytes", ErrResponseTooLarge, resp.ContentLength, max)
-	}
-	var timedOut atomic.Bool
-	timer := time.AfterFunc(timeout, func() {
-		timedOut.Store(true)
-		closeBody()
-	})
-	defer timer.Stop()
-	var body []byte
-	var err error
-	if resp.ContentLength >= 0 {
-		// The length is known: one exact allocation instead of io.ReadAll's
-		// growing copies. The transport ends the body at Content-Length.
-		body = make([]byte, resp.ContentLength)
-		_, err = io.ReadFull(resp.Body, body)
-	} else {
-		body, err = io.ReadAll(io.LimitReader(resp.Body, max+1))
-	}
-	if err != nil {
-		if timedOut.Load() {
-			return nil, fmt.Errorf("netguard: lookup answer not read within %v", timeout)
-		}
-		return nil, fmt.Errorf("netguard: reading lookup answer: %w", err)
-	}
-	if int64(len(body)) > max {
-		return nil, fmt.Errorf("%w: lookup body is over %d bytes", ErrResponseTooLarge, max)
-	}
-	return body, nil
-}
-
-// slotBody is a validated lookup answer handed on to the caller. It holds the
-// answer's decoding slot until Close, however often Close is called. A body
-// dropped without Close returns the slot once the garbage collector finds it
-// unreachable.
-type slotBody struct {
-	*bytes.Reader
-	release func()
-}
-
-func newSlotBody(b []byte, release func()) *slotBody {
-	body := &slotBody{Reader: bytes.NewReader(b), release: release}
-	runtime.AddCleanup(body, func(release func()) { release() }, release)
-	return body
-}
-
-func (b *slotBody) Close() error {
-	b.release()
-	return nil
+	return req.Header.Get("X-Topics") != "" ||
+		strings.HasSuffix(req.URL.Path, "/submit") ||
+		strings.HasSuffix(req.URL.String(), "/submit")
 }
 
 // cappedBody passes a response body through until more than max bytes would

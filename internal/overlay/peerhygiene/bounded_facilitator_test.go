@@ -306,12 +306,12 @@ func TestBoundedFacilitator_NullJSONOutputRejected(t *testing.T) {
 }
 
 // TestBoundedFacilitator_ExpansionBudgetBoundsReserialization: outpoints
-// naming every transaction of a 30-transaction chain, each with a 4 KiB
+// naming every transaction of a 30-transaction chain, each with an 8 KiB
 // output, make each output carry the chain up to it: about 15 times the
-// reply's 124 KiB in total, past MaxAnswerBEEFBytes. Naming only the first 20
+// reply's 248 KiB in total, past MaxAnswerBEEFBytes. Naming only the first 20
 // stays within it.
 func TestBoundedFacilitator_ExpansionBudgetBoundsReserialization(t *testing.T) {
-	txs := dataChainTxs(t, 30, 4<<10)
+	txs := dataChainTxs(t, 30, 8<<10)
 	entries := make([]binaryEntry, len(txs))
 	for i, tx := range txs {
 		entries[i] = binaryEntry{tx: tx}

@@ -48,6 +48,23 @@ type Reply struct {
 
 func (r *Reply) add(lit []byte, times int64) { r.pieces = append(r.pieces, piece{lit, times}) }
 
+// Literal is a JSON reply whose body is b.
+func Literal(name string, b []byte) *Reply {
+	r := &Reply{Name: name, ContentType: "application/json"}
+	r.add(b, 1)
+	return r
+}
+
+// Repeated is a JSON reply whose body is head, then piece times times, then
+// tail, streamed without ever being held whole.
+func Repeated(name string, head, piece []byte, times int64, tail []byte) *Reply {
+	r := &Reply{Name: name, ContentType: "application/json"}
+	r.add(head, 1)
+	r.add(piece, times)
+	r.add(tail, 1)
+	return r
+}
+
 // Len is the body's length in bytes.
 func (r *Reply) Len() int64 {
 	var n int64

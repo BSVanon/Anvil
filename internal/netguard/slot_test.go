@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/netguard/bodyread"
 	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 )
 
@@ -85,9 +86,13 @@ func TestGuard_HoldsTheSlotUntilTheBodyIsClosed(t *testing.T) {
 	}
 }
 
+// heldPermits is how many lookup read permits are taken.
+func heldPermits() int { return bodyread.Lookups.InUse() }
+
 // TestGuard_ReturnsTheSlotOfARefusedReply: whatever stops the guard handing a
-// reply on returns its slot: a reply the validator refuses, a declared or a
-// streamed length over the cap, or a body cut off part way.
+// reply on returns its slot and its read permit: a reply the validator
+// refuses, a declared or a streamed length over the cap, or a body cut off
+// part way.
 func TestGuard_ReturnsTheSlotOfARefusedReply(t *testing.T) {
 	cut := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Length", "1000")
@@ -116,15 +121,19 @@ func TestGuard_ReturnsTheSlotOfARefusedReply(t *testing.T) {
 			if n := heldSlots(t); n != 0 {
 				t.Fatalf("after the refusal (%v), %d slots are held, want 0", err, n)
 			}
+			if n := heldPermits(); n != 0 {
+				t.Fatalf("after the refusal (%v), %d read permits are held, want 0", err, n)
+			}
 		})
 	}
 }
 
 func first(url string, _ any) string { return url }
 
-// TestGuard_GivesUpWhenNoSlotFrees: while every slot is held, a reply waits
-// for one only as long as its request's context lasts, then fails with
-// ErrNoLookupSlot, which hygiene does not count against the host.
+// TestGuard_GivesUpWhenNoSlotFrees: while every slot is held, a reply, read
+// in full, waits for one only as long as its request's context lasts, then
+// fails with ErrNoLookupSlot, which hygiene does not count against the host,
+// and gives its read permit back.
 func TestGuard_GivesUpWhenNoSlotFrees(t *testing.T) {
 	url, _ := serveAnswer(t, "application/json", []byte(`{"type":"freeform","result":"ok"}`), false)
 	all := takeSlots(t, peerhygiene.LookupSlots, true)
@@ -139,6 +148,9 @@ func TestGuard_GivesUpWhenNoSlotFrees(t *testing.T) {
 	}
 	if !errors.Is(err, peerhygiene.ErrNoLookupSlot) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want ErrNoLookupSlot wrapping the deadline, got: %v", err)
+	}
+	if n := heldPermits(); n != 0 {
+		t.Fatalf("after giving up, %d read permits are held, want 0", n)
 	}
 }
 
@@ -187,6 +199,9 @@ func TestGuard_ReadTimeoutReturnsTheSlot(t *testing.T) {
 	}
 	if n := heldSlots(t); n != 0 {
 		t.Fatalf("after the read timeout, %d slots are held, want 0", n)
+	}
+	if n := heldPermits(); n != 0 {
+		t.Fatalf("after the read timeout, %d read permits are held, want 0", n)
 	}
 }
 

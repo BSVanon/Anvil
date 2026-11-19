@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/netguard/bodyread"
 	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 )
 
@@ -62,6 +63,11 @@ func TestInstall_GuardsTheExistingClientOnce(t *testing.T) {
 		g.readTimeout != peerhygiene.LookupReadTimeout {
 		t.Fatalf("guard misconfigured: base %T, maxBytes %d, maxLookupBytes %d, readTimeout %v",
 			g.base, g.maxBytes, g.maxLookupBytes, g.readTimeout)
+	}
+	if g.minRate != bodyread.MinReadRate || g.grace != bodyread.ReadGrace || g.maxSteakBytes != MaxSteakBytes ||
+		g.submitTimeout != SubmitTimeout {
+		t.Fatalf("guard misconfigured: minRate %d, grace %v, maxSteakBytes %d, submitTimeout %v",
+			g.minRate, g.grace, g.maxSteakBytes, g.submitTimeout)
 	}
 	if _, ok := http.DefaultTransport.(*http.Transport); !ok {
 		t.Fatalf("http.DefaultTransport must stay unwrapped, got %T", http.DefaultTransport)

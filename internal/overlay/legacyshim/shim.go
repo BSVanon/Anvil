@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
@@ -61,9 +62,16 @@ type Shim struct {
 	// boot code may override for custom deployments.
 	ServiceTopics map[string][]string
 
-	// MaxBodyBytes caps request body size on the legacy routes. Zero ⇒
-	// default (64 MiB), matching the canonical Submit limit.
+	// MaxBodyBytes, when positive, lowers the legacy routes' body caps to
+	// it. Zero keeps routeguard's caps, the canonical routes' own:
+	// routeguard.MaxBEEFBody for /overlay/submit and routeguard.MaxJSONBody
+	// for /overlay/query.
 	MaxBodyBytes int64
+
+	// Guard bounds the heap, verification CPU and connection time the
+	// routes may take. Nil uses routeguard.Default, which every overlay
+	// route in the process shares.
+	Guard *routeguard.Guard
 
 	// SyncStatus, when set, makes /overlay/query emit X-Overlay-* readiness
 	// headers describing how current + complete this node's federation-synced
@@ -95,14 +103,3 @@ type OverlaySyncStatus struct {
 // means "not a relevant script" — the shim treats that as "no metadata
 // available" and omits the field rather than failing the whole query.
 type ScriptParser func(scriptBytes []byte) (json.RawMessage, error)
-
-const defaultMaxBodyBytes = 64 << 20 // 64 MiB
-
-// maxBody returns the configured request body cap, falling back to the
-// default.
-func (s *Shim) maxBody() int64 {
-	if s.MaxBodyBytes <= 0 {
-		return defaultMaxBodyBytes
-	}
-	return s.MaxBodyBytes
-}

@@ -1,0 +1,260 @@
+package api
+
+import (
+	"bytes"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/BSVanon/Anvil/internal/envelope"
+	"github.com/BSVanon/Anvil/internal/txrelay"
+	"github.com/bsv-blockchain/go-sdk/chainhash"
+	bsvscript "github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction"
+)
+
+// paddedPayment pays 200 sats to payeeScriptHex and carries pad bytes in an
+// OP_FALSE OP_RETURN output. It spends nonce when nonce is not nil.
+func paddedPayment(t *testing.T, nonce *NonceUTXO, payeeScriptHex string, pad int) *transaction.Transaction {
+	t.Helper()
+	src, vout := chainhash.DoubleHashH([]byte("padded payment")), uint32(0)
+	if nonce != nil {
+		h, err := chainhash.NewHashFromHex(nonce.TxID)
+		if err != nil {
+			t.Fatalf("nonce txid: %v", err)
+		}
+		src, vout = *h, uint32(nonce.Vout)
+	}
+	tx := transaction.NewTransaction()
+	tx.AddInput(&transaction.TransactionInput{SourceTXID: &src, SourceTxOutIndex: vout, SequenceNumber: 0xffffffff})
+	payee, err := bsvscript.NewFromHex(payeeScriptHex)
+	if err != nil {
+		t.Fatalf("payee script: %v", err)
+	}
+	tx.AddOutput(&transaction.TransactionOutput{Satoshis: 200, LockingScript: payee})
+	data := &bsvscript.Script{bsvscript.OpFALSE, bsvscript.OpRETURN}
+	_ = data.AppendPushData(make([]byte, pad))
+	tx.AddOutput(&transaction.TransactionOutput{LockingScript: data})
+	return tx
+}
+
+// serveGateMeasured is serveGate that also reports the bytes allocated while
+// the request was served.
+func serveGateMeasured(pg *PaymentGate, header, value string) (*httptest.ResponseRecorder, uint64) {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	w := serveGate(pg, http.MethodGet, "/status", header, value)
+	runtime.ReadMemStats(&after)
+	return w, after.TotalAlloc - before.TotalAlloc
+}
+
+// A payment header over maxPaymentHeaderBytes is refused with 431 before it
+// is decoded, even when its content would pay; one at the cap is decoded.
+func TestPaymentHeaderSizeCap(t *testing.T) {
+	pg := testGate(t, 100)
+	payee := testPayeeScript(t)
+	proof := func(pad int) string {
+		ch := gateChallenge(t, pg, "/status")
+		return proofForTx(t, ch, paddedPayment(t, ch.NonceUTXO, payee, pad))
+	}
+	direct := func(pad int) string { return hex.EncodeToString(paddedPayment(t, nil, payee, pad).Bytes()) }
+	atCap := strings.Repeat("ab", maxPaymentHeaderBytes/2)
+	cases := []struct {
+		name, header, value string
+		wantCode            int
+	}{
+		{"proof under the cap pays", HeaderX402Proof, proof(128 << 10), http.StatusOK},
+		{"proof over the cap", HeaderX402Proof, proof(160 << 10), http.StatusRequestHeaderFieldsTooLarge},
+		{"direct payment under the cap pays", HeaderBSVPayment, direct(120 << 10), http.StatusOK},
+		{"direct payment over the cap", HeaderBSVPayment, direct(140 << 10), http.StatusRequestHeaderFieldsTooLarge},
+		{"direct payment at the cap is decoded", HeaderBSVPayment, atCap, http.StatusPaymentRequired},
+		{"direct payment one byte over the cap", HeaderBSVPayment, atCap + "a", http.StatusRequestHeaderFieldsTooLarge},
+	}
+	for _, tc := range cases {
+		w, alloc := serveGateMeasured(pg, tc.header, tc.value)
+		if w.Code != tc.wantCode {
+			t.Fatalf("%s (%d bytes): got %d %s, want %d", tc.name, len(tc.value), w.Code, w.Body.String(), tc.wantCode)
+		}
+		if tc.wantCode == http.StatusRequestHeaderFieldsTooLarge && alloc > 64<<10 {
+			t.Fatalf("%s: refusing a %d-byte header allocated %d bytes, want under 64 KiB (no decode)", tc.name, len(tc.value), alloc)
+		}
+		t.Logf("%s: %d-byte header, status %d, %d bytes allocated", tc.name, len(tc.value), w.Code, alloc)
+	}
+}
+
+// A challenge verifies at most maxProofAttempts proofs; after that, even a
+// proof that pays is refused.
+func TestX402ProofAttemptsSpendChallenge(t *testing.T) {
+	pg := testGate(t, 100)
+	ch := gateChallenge(t, pg, "/status")
+	wrongPayee := buildProof(t, ch, 200, "76a914000000000000000000000000000000000000000088ac")
+	for i := 1; i <= maxProofAttempts; i++ {
+		if w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, wrongPayee); w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "no output pays") {
+			t.Fatalf("failed proof %d: got %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	good := buildProof(t, ch, 200, testPayeeScript(t))
+	if w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, good); w.Code != http.StatusPaymentRequired {
+		t.Fatalf("paying proof after %d failures: got %d %s, want 402", maxProofAttempts, w.Code, w.Body.String())
+	}
+	pg.mu.Lock()
+	pending := len(pg.pendingChallenges)
+	pg.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("%d challenges still pending, want the spent one removed", pending)
+	}
+}
+
+// An honest client whose proof fails twice for a reason it cannot control,
+// here ARC answering 503, pays on its third try with the same proof.
+func TestX402RetryAfterTransientARCFailure(t *testing.T) {
+	var calls atomic.Int32
+	arc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) <= 2 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"txid":"00","txStatus":"SEEN_ON_NETWORK"}`))
+	}))
+	t.Cleanup(arc.Close)
+	payee := testPayeeScript(t)
+	pg := NewPaymentGate(PaymentGateConfig{PriceSats: 100, PayeeScriptHex: payee, NonceProvider: &DevNonceProvider{},
+		RequireMempool: true, ARCClient: txrelay.NewARCClient(arc.URL, "")})
+	ch := gateChallenge(t, pg, "/status")
+	proof := buildProof(t, ch, 200, payee)
+	for i := 1; i <= 2; i++ {
+		if w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, proof); w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "ARC broadcast failed") {
+			t.Fatalf("try %d: got %d %s, want 402 from ARC", i, w.Code, w.Body.String())
+		}
+	}
+	if w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, proof); w.Code != http.StatusOK {
+		t.Fatalf("third try: got %d %s, want 200", w.Code, w.Body.String())
+	}
+}
+
+// Proofs refused by the request binding do not count, so a caller who sends
+// a challenge's proof with a different request cannot use up its attempts.
+func TestX402UnboundProofsDoNotCountAgainstChallenge(t *testing.T) {
+	pg := testGate(t, 100)
+	ch := gateChallenge(t, pg, "/status")
+	good := buildProof(t, ch, 200, testPayeeScript(t))
+	next := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/status", nil)
+		req.Host = "localhost"
+		req.Header.Set("Accept", "text/xml")
+		req.Header.Set(HeaderX402Proof, good)
+		w := httptest.NewRecorder()
+		pg.Middleware(next)(w, req)
+		if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "does not match live request") {
+			t.Fatalf("unbound proof %d: got %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	if w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, good); w.Code != http.StatusOK {
+		t.Fatalf("bound proof after 10 unbound ones: got %d %s, want 200", w.Code, w.Body.String())
+	}
+}
+
+// Concurrent proofs for one challenge are counted when they start, so only
+// maxProofAttempts of them reach the expensive steps. Here they wait on a
+// blocked ARC while every other sender is refused.
+func TestX402ConcurrentProofsCappedPerChallenge(t *testing.T) {
+	release := make(chan struct{})
+	var arcCalls atomic.Int32
+	arc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arcCalls.Add(1)
+		<-release
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(arc.Close)
+	var once sync.Once
+	releaseARC := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(releaseARC)
+	payee := testPayeeScript(t)
+	pg := NewPaymentGate(PaymentGateConfig{PriceSats: 100, PayeeScriptHex: payee, NonceProvider: &DevNonceProvider{},
+		RequireMempool: true, ARCClient: txrelay.NewARCClient(arc.URL, "")})
+	ch := gateChallenge(t, pg, "/status")
+	proof := buildProof(t, ch, 200, payee)
+
+	const senders = 10
+	results := make(chan *httptest.ResponseRecorder, senders)
+	for i := 0; i < senders; i++ {
+		go func() { results <- serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, proof) }()
+	}
+	deadline := time.After(10 * time.Second)
+	for refused := 0; refused < senders-maxProofAttempts; refused++ {
+		select {
+		case w := <-results:
+			if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "challenge spent") {
+				t.Fatalf("sender past the budget: got %d %s, want 402 challenge spent", w.Code, w.Body.String())
+			}
+		case <-deadline:
+			t.Fatalf("%d of %d senders refused after 10s; %d proofs reached ARC", refused, senders-maxProofAttempts, arcCalls.Load())
+		}
+	}
+	releaseARC()
+	for i := 0; i < maxProofAttempts; i++ {
+		if w := <-results; w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "ARC broadcast failed") {
+			t.Fatalf("counted proof: got %d %s, want 402 from ARC", w.Code, w.Body.String())
+		}
+	}
+	if n := arcCalls.Load(); n != maxProofAttempts {
+		t.Fatalf("%d proofs reached ARC, want %d", n, maxProofAttempts)
+	}
+}
+
+// Reachability on a node configured like the live ones: no node price and
+// the default app payment models on (internal/config/config.go). An
+// unauthenticated caller publishes a topic that declares a price, and its
+// payment headers then reach the transaction parse and the nonce script
+// check.
+func TestX402ReachableOnFreeNodeThroughPublishedTopic(t *testing.T) {
+	srv := testServer(t)
+	srv.paymentGate = NewPaymentGate(PaymentGateConfig{
+		NonceProvider:    &keyNonceProvider{key: mustKey(t)},
+		Resolver:         NewTopicMonetizationResolver(srv.envelopeStore),
+		AllowPassthrough: true,
+		AllowSplit:       true,
+		MaxAppPriceSats:  10000,
+	})
+	srv.mux = http.NewServeMux()
+	srv.routes()
+	send := func(method, target, header, value string, body []byte) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, target, bytes.NewReader(body))
+		req.Host = "localhost"
+		if header != "" {
+			req.Header.Set(header, value)
+		}
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	env := &envelope.Envelope{Type: "data", Topic: "probe:priced", Payload: `{"probe":true}`, Durable: true, Timestamp: time.Now().Unix(),
+		Monetization: &envelope.Monetization{Model: envelope.MonetizationPassthrough, PayeeLockingScriptHex: appPayeeScript(), PriceSats: 1}}
+	env.Sign(mustKey(t))
+	body, err := env.Marshal()
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	if w := send(http.MethodPost, "/data", "", "", body); w.Code != http.StatusOK {
+		t.Fatalf("unauthenticated POST /data: got %d %s", w.Code, w.Body.String())
+	}
+
+	const target = "/data?topic=probe:priced"
+	if w := send(http.MethodGet, target, HeaderBSVPayment, "00", nil); w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "invalid transaction in payment header") {
+		t.Fatalf("X-Bsv-Payment: got %d %s, want 402 from the transaction parse", w.Code, w.Body.String())
+	}
+	ch := getChallenge(t, srv, http.MethodGet, target)
+	proof := proofForTx(t, ch, nonceSpend(t, ch.NonceUTXO, nil, 1, 1, appPayeeScript(), fourKBBomb()))
+	if w := send(http.MethodGet, target, HeaderX402Proof, proof, nil); w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "nonce input signature invalid") {
+		t.Fatalf("X402-Proof: got %d %s, want 402 from the nonce script check", w.Code, w.Body.String())
+	}
+}

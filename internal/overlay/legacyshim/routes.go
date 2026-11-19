@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,9 +11,9 @@ import (
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
-	"github.com/bsv-blockchain/go-sdk/transaction"
 
 	"github.com/BSVanon/Anvil/internal/overlay/overlayctx"
+	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 )
 
 // --- legacy wire types (kept structurally identical to the existing
@@ -154,11 +152,16 @@ func (s *Shim) optionsOK(w http.ResponseWriter, r *http.Request) {}
 // callers parse the error field directly. This is the cost of Lens 2 =
 // 2c indefinite compat.
 func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBody()))
-	if err != nil {
-		writeLegacyError(w, http.StatusBadRequest, "failed to read body")
+	t, body, ok := s.readGuarded(w, r, routeguard.BEEFRoute, false)
+	if !ok {
 		return
 	}
+	launched := false // once true, the engine goroutine owns the ticket
+	defer func() {
+		if !launched {
+			t.Close()
+		}
+	}()
 
 	var beefBytes []byte
 	var topicList []string
@@ -190,19 +193,30 @@ func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 		writeLegacyError(w, http.StatusBadRequest, "no topics specified")
 		return
 	}
+	deadline := time.Now().Add(submitBackgroundCap)
+	g, err := s.preVerify(r, deadline, t, beefBytes, topicList)
+	if err != nil {
+		if r.Context().Err() == nil {
+			writeLegacyGuardError(w, err)
+		}
+		return
+	}
 
 	// The engine's Submit performs local admission + per-topic durable commit and
 	// THEN runs best-effort cross-node SHIP/SLAP propagation synchronously. That
 	// propagation cannot be bounded by our context: the go-sdk topic facilitator
-	// ignores the caller context and uses its own ~30s-per-peer background
-	// timeout (overlay/topic/facilitator.go:35). So a slow or dead federation
-	// peer used to hang /overlay/submit until that 30s elapsed and the upstream
-	// surfaced a 500 — even though the order was already committed locally and
+	// ignores the caller context (overlay/topic/facilitator.go:35), and each of
+	// its POSTs to another host is bounded only by netguard.SubmitTimeout, 15 s
+	// for the whole exchange. So a slow or dead federation peer used to hang
+	// /overlay/submit until its timeout elapsed and the upstream surfaced a
+	// 500 — even though the order was already committed locally and
 	// discoverable on this node.
 	//
 	// We run Submit on a goroutine whose context is (a) detached from the client
 	// connection — a disconnect can't abort a half-finished commit — and (b)
-	// capped so it can't outlive the upstream peer timeout. The engine commits
+	// capped at submitBackgroundCap, which ends verification, admission and the
+	// start of propagation; propagation already under way can keep the
+	// goroutine up to 15 s past the cap. The engine commits
 	// topics ONE AT A TIME (commitAdmittedOutputs loops Topics); the storage layer
 	// fires a per-topic notifier (overlayctx) as each topic becomes durable —
 	// freshly via InsertAppliedTransaction, or already-durable (a re-submit) via
@@ -213,7 +227,7 @@ func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 	// topic's commit fails (or the tx is rejected before commit), that topic never
 	// signals, coverage never completes, and the engine's error arrives via `done`
 	// and is surfaced.
-	bgCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), submitBackgroundCap)
+	bgCtx, cancel := context.WithDeadline(context.WithoutCancel(r.Context()), deadline)
 
 	// Distinct topics we must see durably committed before acking. A buffered
 	// channel sized to the submit means the engine goroutine never blocks
@@ -230,12 +244,10 @@ func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 
 	steakReady := make(chan overlay.Steak, 1)
 	done := make(chan submitOutcome, 1)
+	launched = true
 	go func() {
 		defer cancel()
-		steak, err := s.Engine.Submit(bgCtx, overlay.TaggedBEEF{
-			Beef:   beefBytes,
-			Topics: topicList,
-		}, engine.SubmitModeCurrent, func(st *overlay.Steak) {
+		done <- s.runSubmit(bgCtx, g, beefBytes, topicList, func(st *overlay.Steak) {
 			// Fires after admission identifies outputs for all topics, before the
 			// commit loop. The steak map is fully built and stable here; snapshot
 			// it (race-free, pre-commit) so we have admittance instructions to
@@ -250,7 +262,6 @@ func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		})
-		done <- submitOutcome{steak: steak, err: err}
 	}()
 
 	respond := func(out submitOutcome) {
@@ -296,8 +307,12 @@ func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// submitBackgroundCap bounds the detached submit goroutine so it cannot outlive
-// the upstream per-peer propagation timeout (go-sdk facilitator, ~30s) and leak.
+// submitBackgroundCap bounds the detached submit goroutine's engine work:
+// verification, admission, commit and the start of propagation. The route
+// answers by then (504 at the cap). Propagation's POSTs ignore the context,
+// so the goroutine can run up to netguard.SubmitTimeout (15 s) past the cap,
+// 60 s after the request at most (measured 59.5 s, netguard's
+// TestSubmitChain_WorstCase), and then ends.
 const submitBackgroundCap = 45 * time.Second
 
 // submitOutcome is the result of a background engine.Submit.
@@ -425,11 +440,11 @@ func (s *Shim) Query(w http.ResponseWriter, r *http.Request) {
 	// caller's answer and the node's sync-state are bound atomically.
 	s.writeSyncHeaders(w)
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBody()))
-	if err != nil {
-		writeLegacyError(w, http.StatusBadRequest, "failed to read body")
+	t, body, ok := s.readGuarded(w, r, routeguard.LookupRoute, true)
+	if !ok {
 		return
 	}
+	defer t.Close()
 	var q legacyLookupQuestion
 	if err := json.Unmarshal(body, &q); err != nil {
 		writeLegacyError(w, http.StatusBadRequest, "invalid query: "+err.Error())
@@ -455,120 +470,6 @@ func (s *Shim) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, legacy)
-}
-
-// canonicalToLegacyAnswer reshapes a canonical LookupAnswer into the
-// legacy form. For output-list answers it parses each BEEF, extracts
-// the per-output script, and asks the service-specific ScriptParser to
-// recover the Metadata blob legacy callers expect.
-//
-// Errors during per-output reconstruction are *logged as missing
-// metadata* (we just omit the field) rather than failing the whole
-// query, because failing would be a worse UX than returning the
-// outpoint without its rich metadata. Callers can detect the missing-
-// metadata case by the absent JSON field.
-func (s *Shim) canonicalToLegacyAnswer(
-	ctx context.Context,
-	service string,
-	answer *lookup.LookupAnswer,
-) (*legacyLookupAnswer, error) {
-	if answer == nil {
-		return &legacyLookupAnswer{Type: "output-list"}, nil
-	}
-
-	switch answer.Type {
-	case lookup.AnswerTypeFreeform:
-		return &legacyLookupAnswer{
-			Type:   "freeform",
-			Result: answer.Result,
-		}, nil
-
-	case lookup.AnswerTypeOutputList, lookup.AnswerTypeFormula:
-		out := &legacyLookupAnswer{Type: "output-list"}
-		parser := s.Parsers[service]
-		out.Outputs = make([]legacyAdmittedOutput, 0, len(answer.Outputs))
-		for _, item := range answer.Outputs {
-			if item == nil || len(item.Beef) == 0 {
-				continue
-			}
-			legacy, err := s.reconstructLegacyOutput(ctx, service, parser, item)
-			if err != nil {
-				// Skip this output but don't fail the whole answer.
-				continue
-			}
-			out.Outputs = append(out.Outputs, legacy)
-		}
-		return out, nil
-
-	default:
-		return nil, fmt.Errorf("legacyshim: unsupported answer type %q", answer.Type)
-	}
-}
-
-// reconstructLegacyOutput parses an OutputListItem's BEEF, locates the
-// admitted output at OutputIndex, and assembles the legacy
-// AdmittedOutput record. Metadata is recovered by invoking the
-// per-service ScriptParser; an unknown service or a parser that
-// returns (nil, nil) yields an output record with no metadata field
-// rather than an error.
-func (s *Shim) reconstructLegacyOutput(
-	ctx context.Context,
-	service string,
-	parser ScriptParser,
-	item *lookup.OutputListItem,
-) (legacyAdmittedOutput, error) {
-	if err := ctx.Err(); err != nil {
-		return legacyAdmittedOutput{}, err
-	}
-	tx, err := transaction.NewTransactionFromBEEF(item.Beef)
-	if err != nil {
-		return legacyAdmittedOutput{}, fmt.Errorf("parse output beef: %w", err)
-	}
-	if int(item.OutputIndex) >= len(tx.Outputs) {
-		return legacyAdmittedOutput{}, fmt.Errorf("OutputIndex %d out of range (tx has %d outputs)", item.OutputIndex, len(tx.Outputs))
-	}
-	out := tx.Outputs[item.OutputIndex]
-	if out == nil {
-		return legacyAdmittedOutput{}, errors.New("nil output at OutputIndex")
-	}
-	var scriptBytes []byte
-	if out.LockingScript != nil {
-		scriptBytes = out.LockingScript.Bytes()
-	}
-
-	legacy := legacyAdmittedOutput{
-		Txid:         tx.TxID().String(),
-		Vout:         int(item.OutputIndex),
-		Topic:        serviceToTopic(service),
-		OutputScript: scriptBytes,
-		Satoshis:     out.Satoshis,
-	}
-
-	if parser != nil {
-		if meta, err := parser(scriptBytes); err == nil && meta != nil {
-			legacy.Metadata = meta
-		}
-	}
-	return legacy, nil
-}
-
-// serviceToTopic maps a canonical lookup-service name to the topic it
-// indexes. Used to populate AdmittedOutput.Topic in the legacy
-// response. Falls back to the service name when there's no known
-// mapping (rare; only the 4 Anvil services are wired today).
-func serviceToTopic(service string) string {
-	switch service {
-	case "ls_uhrp":
-		return "tm_uhrp"
-	case "ls_dex_swap":
-		return "tm_dex_swap"
-	case "ls_ordlock_listings":
-		return "tm_ordlock_listings"
-	case "ls_ordlock_buy_vaults":
-		return "tm_ordlock_buy_vaults"
-	default:
-		return service
-	}
 }
 
 // --- GET /overlay/topics + /overlay/services -----------------------------

@@ -19,9 +19,10 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"sync"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/netguard/bodyread"
+	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/util"
@@ -31,6 +32,10 @@ import (
 // binary answer: a 32-byte txid plus a 1-byte outputIndex varint and a 1-byte
 // contextLen varint.
 const minBinaryOutpointBytes = 32 + 1 + 1
+
+// binaryContentType marks the aggregated binary answer format. The
+// facilitators match it exactly.
+const binaryContentType = "application/octet-stream"
 
 // LookupReadTimeout bounds how long reading one reply may hold a decoding
 // slot, so a peer that trickles its reply cannot keep the slot. It is
@@ -89,40 +94,53 @@ func (f *BoundedFacilitator) Lookup(ctx context.Context, url string, question *l
 	if err != nil {
 		return nil, err
 	}
-	// The body is closed once: on return, or by the read timer below, never
-	// by both at the same time.
-	var closeOnce sync.Once
-	closeBody := func() { closeOnce.Do(func() { _ = resp.Body.Close() }) }
-	defer closeBody()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, &util.HTTPError{StatusCode: resp.StatusCode, Err: errors.New("lookup failed")}
-	}
-
-	// Through http.DefaultClient the netguard transport has taken a slot for
-	// this exchange already, and the deferred Close returns it. Otherwise the
-	// answer is read and decoded under a slot taken here.
-	if !claim.held.Load() {
-		release, err := AcquireLookupSlot(ctx)
-		if err != nil {
-			return nil, err
-		}
-		defer release()
-		timer := time.AfterFunc(LookupReadTimeout, closeBody)
-		defer timer.Stop()
-	}
-
 	maxBytes := f.maxBytes()
-	if resp.ContentLength > maxBytes {
+	switch {
+	case resp.StatusCode != http.StatusOK:
+		_ = resp.Body.Close()
+		return nil, &util.HTTPError{StatusCode: resp.StatusCode, Err: errors.New("lookup failed")}
+	case resp.ContentLength > maxBytes:
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("%w: Content-Length %d is over %d bytes", ErrLookupResponseTooLarge, resp.ContentLength, maxBytes)
+	case claim.held.Load():
+		// Through http.DefaultClient the netguard transport has read and
+		// checked the answer already, under its own read permit and then a
+		// slot, which Close returns.
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+		if int64(len(body)) > maxBytes {
+			return nil, fmt.Errorf("%w: body is over %d bytes", ErrLookupResponseTooLarge, maxBytes)
+		}
+		return decodeLookupAnswer(resp.Header.Get("Content-Type"), body)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	// Otherwise the answer is read first, under one of the process-wide read
+	// permits and within its time and rate limits, and only then decoded
+	// under a slot taken here, so a peer that sends its reply slowly holds a
+	// permit, of which there are many, never a slot.
+	releaseRead, err := bodyread.Lookups.Acquire(ctx)
 	if err != nil {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("%w: %w", ErrNoLookupSlot, err)
+	}
+	body, err := bodyread.Read(resp.Body, resp.ContentLength, bodyread.Limits{
+		Max: maxBytes, Timeout: LookupReadTimeout, MinRate: bodyread.MinReadRate, Grace: bodyread.ReadGrace,
+	})
+	if err != nil {
+		releaseRead()
+		if errors.Is(err, bodyread.ErrTooLarge) {
+			return nil, fmt.Errorf("%w: body is over %d bytes", ErrLookupResponseTooLarge, maxBytes)
+		}
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
-	if int64(len(body)) > maxBytes {
-		return nil, fmt.Errorf("%w: body is over %d bytes", ErrLookupResponseTooLarge, maxBytes)
+	release, err := AcquireLookupSlot(ctx)
+	releaseRead()
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 	return decodeLookupAnswer(resp.Header.Get("Content-Type"), body)
 }
 
@@ -144,7 +162,7 @@ func decodeLookupAnswer(contentType string, body []byte) (answer *lookup.LookupA
 			err = fmt.Errorf("lookup: decoding answer panicked: %v", r)
 		}
 	}()
-	if contentType == "application/octet-stream" {
+	if contentType == binaryContentType {
 		return parseBinaryLookupAnswer(body)
 	}
 	if cost := jsonCost(body); cost > MaxJSONDecodeCost {
@@ -251,26 +269,40 @@ func parseBinaryLookupAnswer(data []byte) (*lookup.LookupAnswer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("binary lookup: parsing BEEF: %w", err)
 	}
+	splitProofs(beef)
 
+	type rebuilt struct {
+		beef      []byte
+		parseWork uint64
+	}
 	outputs := make([]*lookup.OutputListItem, 0, len(metas))
-	serialized := make(map[string][]byte, len(metas))
+	serialized := make(map[string]rebuilt, len(metas))
+	budget := &combineBudget{max: MaxAnswerCombineWork}
 	var expanded int64
 	for _, m := range metas {
-		txBeef, ok := serialized[m.txid]
+		out, ok := serialized[m.txid]
 		if !ok {
-			tx := beef.FindTransaction(m.txid)
+			txid, err := chainhash.NewHashFromHex(m.txid)
+			if err != nil {
+				return nil, fmt.Errorf("binary lookup: txid %s: %w", m.txid, err)
+			}
+			tx := beef.FindTransactionByHash(txid)
 			if tx == nil {
 				return nil, fmt.Errorf("binary lookup: txid %s not found in BEEF", m.txid)
 			}
-			if txBeef, err = tx.BEEF(); err != nil {
+			if out.beef, out.parseWork, err = outputBEEF(tx, *txid, budget); err != nil {
 				return nil, fmt.Errorf("binary lookup: re-serializing BEEF for txid %s: %w", m.txid, err)
 			}
-			serialized[m.txid] = txBeef
+			serialized[m.txid] = out
 		}
-		if expanded += int64(len(txBeef)); expanded > MaxAnswerBEEFBytes {
+		if expanded += int64(len(out.beef)); expanded > MaxAnswerBEEFBytes {
 			return nil, fmt.Errorf("binary lookup: re-serialized BEEF exceeds capacity of %d bytes", MaxAnswerBEEFBytes)
 		}
-		outputs = append(outputs, &lookup.OutputListItem{Beef: txBeef, OutputIndex: m.outputIndex})
+		// Every output is parsed again downstream, repeats included.
+		if err := budget.charge(out.parseWork); err != nil {
+			return nil, fmt.Errorf("binary lookup: %w", err)
+		}
+		outputs = append(outputs, &lookup.OutputListItem{Beef: out.beef, OutputIndex: m.outputIndex})
 	}
 	return &lookup.LookupAnswer{Type: lookup.AnswerTypeOutputList, Outputs: outputs}, nil
 }

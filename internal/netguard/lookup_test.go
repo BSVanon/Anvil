@@ -140,7 +140,7 @@ func noPanic(t *testing.T, what string, f func() error) (err error) {
 func TestGuard_StockLookupStackSurvivesHostileAnswers(t *testing.T) {
 	ctx := context.Background()
 	bigTx, bigBEEF := spendingTx(t, bytes.Repeat([]byte{0xAB}, 600<<10))
-	repeats := []*transaction.Transaction{bigTx, bigTx} // 2 x 600 KiB > the 1 MiB expansion budget
+	repeats := []*transaction.Transaction{bigTx, bigTx, bigTx, bigTx} // 4 x 600 KiB > peerhygiene.MaxAnswerBEEFBytes
 	_, smallBEEF := spendingTx(t, []byte("x"))
 
 	for _, h := range []struct {
@@ -155,7 +155,7 @@ func TestGuard_StockLookupStackSurvivesHostileAnswers(t *testing.T) {
 		{"streamed over the 2 MiB lookup cap", "application/json", freeformOfSize(int(peerhygiene.MaxLookupResponseBytes) + 1), true, "lookup body is over 2097152 bytes"},
 		{"declared over the 2 MiB lookup cap", "application/json", freeformOfSize(int(peerhygiene.MaxLookupResponseBytes) + 1), false, "lookup Content-Length 2097153 is over 2097152 bytes"},
 		{"null output", "application/json", []byte(`{"type":"output-list","outputs":[null]}`), false, "lookup: output 0 of the answer is null"},
-		{"repeated-outpoint expansion", octetStream, binaryAnswer(t, bigBEEF, repeats, 0), false, "re-serialized BEEF exceeds capacity of 1048576 bytes"},
+		{"repeated-outpoint expansion", octetStream, binaryAnswer(t, bigBEEF, repeats, 0), false, "re-serialized BEEF exceeds capacity of " + strconv.FormatInt(peerhygiene.MaxAnswerBEEFBytes, 10) + " bytes"},
 		{"output index past the outputs", "application/json", jsonOutputList(t, smallBEEF, 5), false, "output index 5 is past the transaction's 1 outputs"},
 	} {
 		t.Run(h.name, func(t *testing.T) {
@@ -260,11 +260,13 @@ func postLookup(t *testing.T, client *http.Client, url string) rawReply {
 	return rawReply{resp.StatusCode, resp.Header.Get("Content-Type"), resp.ContentLength, body}
 }
 
-// TestGuard_PassesHonestLookupAnswersUnchanged: honest binary and JSON
-// answers come through http.DefaultClient byte for byte as through an
-// unguarded client, with a Content-Length that matches, decode to the same
-// answer in the stock facilitator, and satisfy a stock resolver.
-func TestGuard_PassesHonestLookupAnswersUnchanged(t *testing.T) {
+// TestGuard_PassesHonestLookupAnswers: honest JSON answers come through
+// http.DefaultClient byte for byte as through an unguarded client, and binary
+// ones as the equivalent JSON answer peerhygiene.PrepareLookupAnswer builds,
+// each output with its own BEEF; either way with a Content-Length that
+// matches, decoding to the same answer in the stock facilitator, and
+// satisfying a stock resolver.
+func TestGuard_PassesHonestLookupAnswers(t *testing.T) {
 	ctx := context.Background()
 	lock := script.Script{script.OpTRUE}
 	parent := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: &lock, Satoshis: 1000})
@@ -299,13 +301,20 @@ func TestGuard_PassesHonestLookupAnswersUnchanged(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			url, _ := serveAnswer(t, tc.contentType, tc.body, tc.chunked)
 			guarded, plain := postLookup(t, http.DefaultClient, url), postLookup(t, &http.Client{}, url)
-			if guarded.status != plain.status || guarded.contentType != plain.contentType ||
-				!bytes.Equal(guarded.body, tc.body) || !bytes.Equal(plain.body, tc.body) {
+			wantType, wantBody := tc.contentType, tc.body
+			if tc.contentType == octetStream {
+				var err error
+				if wantType, wantBody, err = peerhygiene.PrepareLookupAnswer(tc.contentType, tc.body); err != nil || wantType != "application/json" {
+					t.Fatalf("PrepareLookupAnswer: %q, %v", wantType, err)
+				}
+			}
+			if guarded.status != plain.status || guarded.contentType != wantType || plain.contentType != tc.contentType ||
+				!bytes.Equal(guarded.body, wantBody) || !bytes.Equal(plain.body, tc.body) {
 				t.Fatalf("reply changed: guarded %d %q %d bytes, unguarded %d %q %d bytes, served %d bytes",
 					guarded.status, guarded.contentType, len(guarded.body), plain.status, plain.contentType, len(plain.body), len(tc.body))
 			}
-			if guarded.contentLength != int64(len(tc.body)) {
-				t.Fatalf("guarded Content-Length %d, want %d", guarded.contentLength, len(tc.body))
+			if guarded.contentLength != int64(len(wantBody)) {
+				t.Fatalf("guarded Content-Length %d, want %d", guarded.contentLength, len(wantBody))
 			}
 
 			want, err := (&lookup.HTTPSOverlayLookupFacilitator{Client: &http.Client{}}).Lookup(ctx, url, slapQuestion)

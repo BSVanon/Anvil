@@ -2,9 +2,10 @@ package v3engine
 
 import (
 	"encoding/json"
-	"io"
+	"math/bits"
 	"net/http"
 
+	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
@@ -43,11 +44,11 @@ func (h *Handlers) ArcIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody()))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+	t, body, ok := h.readJSON(w, r, routeguard.ArcIngestRoute)
+	if !ok {
 		return
 	}
+	defer t.Close()
 	var req arcIngestRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid arc-ingest body: "+err.Error())
@@ -79,6 +80,10 @@ func (h *Handlers) ArcIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "blockHeight mismatch between body and merklePath")
 		return
 	}
+	if proof, err = fullHeight(proof, txid); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid merklePath: "+err.Error())
+		return
+	}
 	if err := h.Engine.HandleNewMerkleProof(r.Context(), txid, proof); err != nil {
 		// Upstream silently no-ops if the tx isn't known to this
 		// overlay (engine.go:1517), so any non-nil err here is a real
@@ -88,4 +93,26 @@ func (h *Handlers) ArcIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, arcIngestSuccess{Status: "success"})
+}
+
+// fullHeight returns proof, or, when proof is a compound path that declares
+// fewer levels than its level-0 offsets need (a single-level path holding a
+// whole block's leaves, which go-sdk and ts-sdk accept), the equivalent path
+// for txid alone with every level, which MerklePath.Extract checks has the
+// same root. The engine stores the proof for txid's outputs and later
+// combines it with other proofs of the same block, and go-sdk v1.7.7 panics
+// when it combines a taller path into a shorter one of the same root
+// (beefscan.Shape.MixedLevels).
+func fullHeight(proof *transaction.MerklePath, txid *chainhash.Hash) (*transaction.MerklePath, error) {
+	if len(proof.Path) == 0 {
+		return proof, nil
+	}
+	need := 0
+	for _, leaf := range proof.Path[0] {
+		need = max(need, bits.Len64(leaf.Offset))
+	}
+	if need <= len(proof.Path) {
+		return proof, nil
+	}
+	return proof.Extract([]*chainhash.Hash{txid})
 }
