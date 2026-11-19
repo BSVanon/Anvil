@@ -94,7 +94,8 @@ func (s *Server) refreshCachedBEEF(txid string, cached []byte) ([]byte, string, 
 		if !beefSubjectMatches(fetched, txid) {
 			return
 		}
-		if err := s.fetchedBEEFSPVVerified(ctx, fetched); err != nil {
+		fetched, err = s.fetchedBEEFSPVVerified(ctx, fetched)
+		if err != nil {
 			return
 		}
 		if !beefSubjectProven(fetched) {
@@ -120,23 +121,26 @@ func (s *Server) refreshCachedBEEF(txid string, cached []byte) ([]byte, string, 
 	return cached, spv.BEEFSourceCached, false
 }
 
-// fetchedBEEFVerified applies the cache-miss validation policy. A nil
-// validator is retained for the existing test/degraded configuration behavior;
-// otherwise only a non-invalid local validation result may be served or stored.
-func (s *Server) fetchedBEEFVerified(ctx context.Context, beef []byte) error {
+// fetchedBEEFVerified applies the cache-miss validation policy and returns
+// the BEEF to serve and store: the one validated, normalized
+// (spv.Result.BEEF). A nil validator is retained for the existing
+// test/degraded configuration behavior, and returns beef as fetched;
+// otherwise only a non-invalid local validation result may be served or
+// stored.
+func (s *Server) fetchedBEEFVerified(ctx context.Context, beef []byte) ([]byte, error) {
 	if s.validator == nil {
-		return nil
+		return beef, nil
 	}
 	result, err := s.validator.ValidateBEEF(ctx, beef)
 	if err != nil {
 		s.logger.Warn("fetched BEEF validation error", "error", err)
-		return err
+		return nil, err
 	}
 	if result.Confidence == spv.ConfidenceInvalid {
 		s.logger.Warn("fetched BEEF invalid confidence", "message", result.Message)
-		return errBEEFInvalidConfidence
+		return nil, errBEEFInvalidConfidence
 	}
-	return nil
+	return result.BEEF, nil
 }
 
 func beefValidationErrorMessage(err error) string {
@@ -148,21 +152,22 @@ func beefValidationErrorMessage(err error) string {
 
 // fetchedBEEFSPVVerified is deliberately stricter than the cache-miss policy:
 // an old unproven cache entry is only upgraded after a fully locally verified
-// proof is available.
-func (s *Server) fetchedBEEFSPVVerified(ctx context.Context, beef []byte) error {
+// proof is available. Like fetchedBEEFVerified, it returns the BEEF
+// validated, normalized.
+func (s *Server) fetchedBEEFSPVVerified(ctx context.Context, beef []byte) ([]byte, error) {
 	if s.validator == nil {
-		return errBEEFInvalidConfidence
+		return nil, errBEEFInvalidConfidence
 	}
 	result, err := s.validator.ValidateBEEF(ctx, beef)
 	if err != nil {
 		s.logger.Warn("refreshed BEEF validation error", "error", err)
-		return err
+		return nil, err
 	}
 	if result.Confidence != spv.ConfidenceSPVVerified {
 		s.logger.Warn("refreshed BEEF was not SPV verified", "confidence", result.Confidence, "message", result.Message)
-		return errBEEFInvalidConfidence
+		return nil, errBEEFInvalidConfidence
 	}
-	return nil
+	return result.BEEF, nil
 }
 
 // cacheBEEF serializes cache writes and preserves an existing subject proof.

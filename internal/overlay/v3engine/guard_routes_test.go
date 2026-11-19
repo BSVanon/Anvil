@@ -18,6 +18,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/overlay/overlaytest"
 	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
+	"github.com/BSVanon/Anvil/internal/refusallog"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/spv"
@@ -90,8 +91,11 @@ func smallUHRP(t *testing.T, i int) []byte {
 
 // TestGuard_MaxSizeSubmitsStayWithinTheBudget: 64 concurrent submits of the
 // largest body the route accepts keep the heap within routeguard.MemoryBudget.
-// Those the budget cannot hold are answered 503 with Retry-After at about
-// routeguard.Wait, before their bodies are sent; the rest are served.
+// Each is sent 100 Continue by the first read of its body; those the
+// big-body slot and the budget cannot hold are then answered 503 with
+// Retry-After at about routeguard.Wait, the rest of their bodies unread, and
+// get that answer rather than a reset though they are still sending; the
+// rest are served.
 func TestGuard_MaxSizeSubmitsStayWithinTheBudget(t *testing.T) {
 	eng, _ := newTestEngine(t)
 	url := guardedServer(t, eng, freshGuard(routeguard.CPUSlots))
@@ -232,6 +236,7 @@ func TestGuard_ScriptsOverTheVerifyBudgetAnswer422(t *testing.T) {
 		t.Fatalf("the fixture verified in %v (ok=%v, err=%v); it must take longer than %v", time.Since(start), ok, err, routeguard.VerifyBudget+2*time.Second)
 	}
 	url := guardedServer(t, eng, freshGuard(routeguard.CPUSlots))
+	logs := watchRefusals(t)
 	code, raw, elapsed, err := submitTo(context.Background(), url, beef)
 	if err != nil {
 		t.Fatal(err)
@@ -243,6 +248,7 @@ func TestGuard_ScriptsOverTheVerifyBudgetAnswer422(t *testing.T) {
 	if elapsed > routeguard.VerifyBudget+2*time.Second {
 		t.Fatalf("refused after %v, want about %v", elapsed, routeguard.VerifyBudget)
 	}
+	logs.assertLogged(t, http.StatusUnprocessableEntity, refusallog.ReasonValidationBudget, "/submit")
 }
 
 // TestGuard_DisconnectEndsTheVerification: a client that goes away while its
@@ -278,10 +284,12 @@ func TestGuard_ScriptOverTheInstructionCapAnswers400(t *testing.T) {
 	wide, _ := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: &out}).BEEF()
 	eng, _ := newTestEngine(t)
 	url := guardedServer(t, eng, freshGuard(routeguard.CPUSlots))
+	logs := watchRefusals(t)
 	for name, body := range map[string][]byte{"verified input": beef, "output": wide} {
 		code, raw, _, err := submitTo(context.Background(), url, body)
 		if err != nil || code != http.StatusBadRequest || !strings.Contains(string(raw), `"code":"`+beefscan.Code+`"`) {
 			t.Errorf("%s over the cap: %d %v %s", name, code, err, raw)
 		}
 	}
+	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonTooComplex, "/submit")
 }

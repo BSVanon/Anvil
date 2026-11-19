@@ -92,9 +92,9 @@ func TestSubmitHandler_DeadlineStopsExpensiveScript(t *testing.T) {
 }
 
 // TestSubmitHandler_DefaultDeadlineIsTheShims: an unset SubmitTimeout uses
-// DefaultSubmitTimeout, the legacy /overlay/submit shim's 45 s.
+// DefaultSubmitTimeout, the legacy /overlay/submit shim's 30 s.
 func TestSubmitHandler_DefaultDeadlineIsTheShims(t *testing.T) {
-	if got := (&Handlers{}).submitTimeout(); got != 45*time.Second {
-		t.Fatalf("default submit deadline is %v, want 45s", got)
+	if got := (&Handlers{}).submitTimeout(); got != 30*time.Second {
+		t.Fatalf("default submit deadline is %v, want 30s", got)
 	}
 }

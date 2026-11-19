@@ -21,12 +21,16 @@ const (
 	MaxJSONBody int64 = 1 << 20
 )
 
-// What go-sdk's parse of a BEEF can hold beyond BEEFExpansion. ParseBeef
-// keeps hundreds of bytes for each ten-byte element of a BEEF dense with
-// empty transactions, one-leaf BUMPs and the like: at most 44.3 times the
-// body at 116 bytes, 17.9 at 1 MiB and 6.5 at 8 MiB, and never more than
-// 3.04 times the body plus 29.6 MB, for every shape beefscan.Default accepts
-// (beefscan's calibration).
+// What the parse of a BEEF can hold beyond BEEFExpansion. go-sdk's
+// NewBeefFromBytes, which beefnorm.Parse runs as ParseBeef ran it, keeps
+// hundreds of bytes for each ten-byte element of a BEEF dense with empty
+// transactions, one-leaf BUMPs and the like: at most 44.3 times the body at
+// 116 bytes, 17.9 at 1 MiB and 6.5 at 8 MiB, and never more than 3.04 times
+// the body plus 29.6 MB, for every shape beefscan.Default accepts (beefscan's
+// calibration, made with ParseBeef). beefnorm's canonical proofs come on top
+// of it: duplicate marks over 255 levels, the costliest shape, held 27.8 MB
+// for a 0.7 MB body, the canonical copy included, where the body reserves
+// over 42 MB (beefscan.Default's Leaves).
 const (
 	parseFactor    int64 = 50
 	parseFloor     int64 = 64 << 10

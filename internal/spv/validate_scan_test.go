@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BSVanon/Anvil/internal/beefnorm"
 	"github.com/BSVanon/Anvil/internal/beefscan"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
@@ -54,24 +55,18 @@ func TestValidateBEEFRefusesTooComplexBeforeParsing(t *testing.T) {
 	}
 }
 
-// TestValidateBEEFRecoversParserPanics: a panic in either go-sdk parser,
-// which no known input causes now, makes a BEEF that passes the scan invalid
-// instead of crashing the request.
+// TestValidateBEEFRecoversParserPanics: a panic in the parse, which no known
+// input causes now, makes a BEEF that passes the scan invalid instead of
+// crashing the request.
 func TestValidateBEEFRecoversParserPanics(t *testing.T) {
-	origBeef, origTx := newBeefFromBytes, newTransactionFromBEEF
-	t.Cleanup(func() { newBeefFromBytes, newTransactionFromBEEF = origBeef, origTx })
+	orig := parseBEEF
+	t.Cleanup(func() { parseBEEF = orig })
 	body := buildTestBEEFWithBUMP(t)
 	v := NewValidator(&gullibleTracker{})
 
-	newBeefFromBytes = func([]byte) (*transaction.Beef, error) { panic("NewBeefFromBytes bug") }
+	parseBEEF = func([]byte) (*beefnorm.BEEF, error) { panic("parse bug") }
 	res, err := v.ValidateBEEF(context.Background(), body)
-	if err != nil || res.Valid || res.Confidence != ConfidenceInvalid || !strings.Contains(res.Message, "BEEF parse panicked: NewBeefFromBytes bug") {
-		t.Fatalf("NewBeefFromBytes panicking: %+v, %v", res, err)
-	}
-	newBeefFromBytes = origBeef
-	newTransactionFromBEEF = func([]byte) (*transaction.Transaction, error) { panic("NewTransactionFromBEEF bug") }
-	res, err = v.ValidateBEEF(context.Background(), body)
-	if err != nil || res.Valid || res.Confidence != ConfidenceInvalid || !strings.Contains(res.Message, "transaction parse panicked: NewTransactionFromBEEF bug") {
-		t.Fatalf("NewTransactionFromBEEF panicking: %+v, %v", res, err)
+	if err != nil || res.Valid || res.Confidence != ConfidenceInvalid || !strings.Contains(res.Message, "BEEF parse panicked: parse bug") {
+		t.Fatalf("the parse panicking: %+v, %v", res, err)
 	}
 }

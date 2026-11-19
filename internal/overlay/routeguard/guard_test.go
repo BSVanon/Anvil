@@ -3,8 +3,13 @@ package routeguard
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 const testWait = 100 * time.Millisecond
@@ -72,30 +77,91 @@ func TestTicket_ContextEndsTheWait(t *testing.T) {
 	b.Close()
 }
 
-// TestBegin_JSONSlotsRefuseAtOnce: once JSONSlots tickets are open, one more
-// is ErrBusy without waiting; closing one frees its slot.
-func TestBegin_JSONSlotsRefuseAtOnce(t *testing.T) {
+// readSmallBody reads a two-byte body through tk's ReadBody, as a route's
+// handler does, with no connection behind it.
+func readSmallBody(tk *Ticket) error {
+	r := httptest.NewRequest(http.MethodPost, "/lookup", strings.NewReader(`{}`))
+	_, err := tk.ReadBody(httptest.NewRecorder(), r, Route{MaxBody: 1 << 10, Expansion: 1, ReadTimeout: time.Second})
+	return err
+}
+
+// TestBegin_ReadPermitsRefuseAtOnce: every ticket begins with a read permit,
+// JSON route or not; once every permit is out, one more Begin is ErrBusy
+// without waiting. ReadBody returns its ticket's permit once the body is in,
+// and Close returns the permit of a ticket that never read one.
+func TestBegin_ReadPermitsRefuseAtOnce(t *testing.T) {
 	g := New(1000, 1, 2, time.Minute)
-	a, err := g.Begin(true)
+	g.read = semaphore.NewWeighted(2)
+	a, err := g.Begin(false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.Begin(true); err != nil {
+	b, err := g.Begin(true)
+	if err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if _, err := g.Begin(true); !errors.Is(err, ErrBusy) {
-		t.Fatalf("third JSON ticket of 2: %v, want ErrBusy", err)
+	for _, jsonRoute := range []bool{true, false} {
+		if _, err := g.Begin(jsonRoute); !errors.Is(err, ErrBusy) {
+			t.Fatalf("a third ticket of 2 read permits (JSON route %v): %v, want ErrBusy", jsonRoute, err)
+		}
 	}
 	if waited := time.Since(start); waited > time.Second {
 		t.Fatalf("refused after %v, want at once", waited)
 	}
-	if _, err := g.Begin(false); err != nil {
-		t.Fatalf("a BEEF ticket takes no JSON slot: %v", err)
+	if err := readSmallBody(b); err != nil {
+		t.Fatal(err)
+	}
+	c, err := g.Begin(false)
+	if err != nil {
+		t.Fatalf("a ticket whose body is in still holds its read permit: %v", err)
 	}
 	a.Close()
 	if _, err := g.Begin(true); err != nil {
 		t.Fatalf("after Close: %v", err)
+	}
+	b.Close()
+	c.Close()
+}
+
+// TestReadBody_TakesAJSONSlotOnceTheBodyIsIn: a JSON route's ticket takes no
+// JSON slot when it begins, so requests still waiting for their bodies hold
+// none; it takes one without waiting once its body is in and holds it until
+// it closes. With every slot taken, the next JSON body is refused with
+// ErrBusy at once after it is read, and a BEEF route's ticket takes no slot.
+func TestReadBody_TakesAJSONSlotOnceTheBodyIsIn(t *testing.T) {
+	g := New(1000, 1, 2, time.Minute)
+	var tickets []*Ticket
+	for i := range 3 {
+		tk, err := g.Begin(true)
+		if err != nil {
+			t.Fatalf("JSON ticket %d of 3 with 2 JSON slots: %v", i, err)
+		}
+		tickets = append(tickets, tk)
+	}
+	for _, tk := range tickets[:2] {
+		if err := readSmallBody(tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Now()
+	if err := readSmallBody(tickets[2]); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a third JSON body with both slots taken: %v, want ErrBusy", err)
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("refused after %v, want at once", waited)
+	}
+	beef, _ := g.Begin(false)
+	if err := readSmallBody(beef); err != nil {
+		t.Fatalf("a BEEF ticket with every JSON slot taken: %v", err)
+	}
+	tickets[0].Close()
+	again, _ := g.Begin(true)
+	if err := readSmallBody(again); err != nil {
+		t.Fatalf("a JSON body once a slot was returned: %v", err)
+	}
+	for _, tk := range append(tickets, beef, again) {
+		tk.Close()
 	}
 }
 

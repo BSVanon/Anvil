@@ -37,7 +37,7 @@ const commitDeadline = 500 * time.Millisecond
 // Each case holds one commit step until the deadline has expired, under the
 // context the legacy /overlay/submit shim builds: detached from the client,
 // capped by a timeout, carrying the per-topic commit notifier. The shim's own
-// handler is not driven here because its 45 s cap is a constant in routes.go.
+// handler is not driven here because its 30 s cap is a constant in routes.go.
 // The submit must finish the commit in both topics, return the STEAK and
 // signal both topics committed; the propagation that runs after the commit,
 // under the expired context, must reach no tracker; and a resubmit must take

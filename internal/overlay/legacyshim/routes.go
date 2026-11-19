@@ -193,11 +193,17 @@ func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 		writeLegacyError(w, http.StatusBadRequest, "no topics specified")
 		return
 	}
+	distinctTopics, err := dedupTopics(topicList)
+	if err != nil {
+		writeLegacyError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	topicList = distinctTopics
 	deadline := time.Now().Add(submitBackgroundCap)
 	g, err := s.preVerify(r, deadline, t, beefBytes, topicList)
 	if err != nil {
 		if r.Context().Err() == nil {
-			writeLegacyGuardError(w, err)
+			writeLegacyGuardError(w, r, err)
 		}
 		return
 	}
@@ -311,9 +317,13 @@ func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 // verification, admission, commit and the start of propagation. The route
 // answers by then (504 at the cap). Propagation's POSTs ignore the context,
 // so the goroutine can run up to netguard.SubmitTimeout (15 s) past the cap,
-// 60 s after the request at most (measured 59.5 s, netguard's
-// TestSubmitChain_WorstCase), and then ends.
-const submitBackgroundCap = 45 * time.Second
+// 45 s after the request at most (measured 44.5 s, TestSubmitChain_WorstCase
+// in this package), under nginx's default 60 s proxy_read_timeout
+// (deploy/nginx-anvil.conf) — the prior 45 + 15 = 60 s cap left no margin
+// below that default (review finding S8). Kept equal to
+// v3engine.DefaultSubmitTimeout so both submit routes give up at the same
+// point.
+const submitBackgroundCap = 30 * time.Second
 
 // submitOutcome is the result of a background engine.Submit.
 type submitOutcome struct {

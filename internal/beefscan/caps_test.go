@@ -33,10 +33,8 @@ var boundaries = []boundary{
 	{"outputs", 250000, 250000, outputsShape, true, func(s Shape) uint64 { return uint64(s.Outputs) }},
 	{"BUMPs", 10000, 10000, bumpsShape, true, func(s Shape) uint64 { return uint64(s.BUMPs) }},
 	{"leaves", 200000, 200000, leavesShape, true, func(s Shape) uint64 { return uint64(s.Leaves) }},
-	// (60+1) * 16,385 = 999,485; (61+1) * 16,385 = 1,015,870.
-	{"combine cost", 1000000, 60, combineShape, true, func(s Shape) uint64 { return s.CombineCost }},
-	// 1,414^2 = 1,999,396; 1,415^2 = 2,002,225.
-	{"root cost", 2000000, 1414, rootShape, true, func(s Shape) uint64 { return s.RootCost }},
+	// 1,195^2 * 21 = 29,988,525; 1,196^2 * 21 = 30,038,736.
+	{"proof cost", 30000000, 1195, sameBlockFanIn, true, func(s Shape) uint64 { return s.ProofCost }},
 	// 7,071 * 14,141 = 99,991,011; 7,072 * 14,143 = 100,019,296.
 	{"chain cost", 100000000, 7070, func(v2 bool, n int) []byte { return chainShape(v2, n, 0) }, true, func(s Shape) uint64 { return s.ChainCost }},
 	// 1,000 * 10,000 = 10,000,000; 1,001 * 10,000 = 10,010,000.
@@ -93,7 +91,8 @@ func TestCapBoundaries(t *testing.T) {
 }
 
 // TestWorstAcceptedShapesAreFast times the accepted shapes that sit at two
-// caps at once, or that measured slower per unit than a boundary family.
+// caps at once, and the red team's same-block BUMPs, which only the one an
+// entry names now reaches beefnorm's extraction.
 func TestWorstAcceptedShapesAreFast(t *testing.T) {
 	if raceEnabled {
 		t.Skip("timing bounds do not hold under the race detector")
@@ -101,7 +100,7 @@ func TestWorstAcceptedShapesAreFast(t *testing.T) {
 	shapes := map[string]func(v2 bool) []byte{
 		"10,000 unproven empty transactions (transactions and chain caps)": func(v2 bool) []byte { return emptyTxs(v2, 10000) },
 		"chain of 3,014 with 9 more inputs each (chain cap)":               func(v2 bool) []byte { return chainShape(v2, 3014, 9) },
-		"100 txids each over 20,000 leaves (root cap)":                     func(v2 bool) []byte { return wideRoot(v2, 100, 20000) },
+		"3,000 proofs of one block, one named":                             func(bool) []byte { return sameBlockBUMPs(3000) },
 	}
 	for name, build := range shapes {
 		for _, v2 := range []bool{false, true} {
@@ -117,44 +116,25 @@ func TestWorstAcceptedShapesAreFast(t *testing.T) {
 	}
 }
 
-// wideRoot is a one-level BUMP of n leaves whose first t are flagged as
-// txids, named by one parent: root cost t*n.
-func wideRoot(v2 bool, t, n int) []byte {
-	level := make([]leaf, n)
-	for i := range level {
-		level[i] = leaf{offset: uint64(i), hash: node(16, uint64(i))}
-		if i < t {
-			level[i].flags = 2
-		}
-	}
-	entries, _ := fanIn(1, func(int) int { return 0 })
-	return beefBytes(v2, [][]byte{bump(block, [][]leaf{level})}, entries)
-}
-
 // hostile are the shapes the red-team review found, and the other blowups
-// the costs model, each well past one cap. Unrefused, smaller instances of
-// the cost shapes already take one go-sdk call 0.17 to 3.1 s
-// (TestCalibrateCaps), and these larger ones grow quadratically from there;
-// at the expansion TestCalibrateHeap measures for each element at 4 MiB, the
-// 64 MiB shapes would hold 0.28 GB (inputs) to 1.48 GB (duplicate leaves).
+// the costs model, each well past one cap. The proof costs here are 2.8 to
+// 690 times the cap, where beefnorm's extraction and the verifications took
+// up to 0.1 s (beefnorm's TestCalibrateProofCost), and they grow
+// quadratically; the chain and find costs are 1.3 and 4.9 times caps where
+// one go-sdk call took 0.44 and 0.17 s (TestCalibrateCaps, v3.4.0); at the
+// expansion TestCalibrateHeap measures for each element at 4 MiB, the 64 MiB
+// shapes would hold 0.28 GB (inputs) to 1.48 GB (duplicate leaves).
 var hostile = []struct {
 	name, limit string
 	build       func() []byte
 }{
-	{"red team: same-height BUMPs, a proof of one block per parent, V1", "combine cost", func() []byte { return sameBlockFanIn(false, 3000) }},
-	{"red team: same-height BUMPs, a proof of one block per parent, V2", "combine cost", func() []byte { return sameBlockFanIn(true, 3000) }},
-	{"red team: same-height BUMPs, a proof of one block each, one named, V2", "combine cost", func() []byte { return sameBlockBUMPs(3000) }},
-	{"red team: transactions sharing one wide BUMP, V1", "combine cost", func() []byte { return combineShape(false, 1000) }},
-	{"transactions sharing one wide BUMP, Atomic", "combine cost", func() []byte {
-		entries, subject := fanIn(1000, func(int) int { return 0 })
-		return atomicBEEF(subject, beefBytes(false, [][]byte{compoundBUMP(block, combineLeaves, 0, 1)}, entries))
-	}},
-	{"transactions sharing one BUMP of 200,000 leaves, V1", "combine cost", func() []byte {
+	{"red team: same-height BUMPs, a proof of one block per parent, V1", "proof cost", func() []byte { return sameBlockFanIn(false, 3000) }},
+	{"red team: same-height BUMPs, a proof of one block per parent, V2", "proof cost", func() []byte { return sameBlockFanIn(true, 3000) }},
+	{"transactions sharing one BUMP of 200,000 leaves, V1", "proof cost", func() []byte {
 		entries, _ := fanIn(5000, func(int) int { return 0 })
 		return beefBytes(false, [][]byte{compoundBUMP(block, 200000, 0, 1)}, entries)
 	}},
-	{"transactions sharing the tallest duplicate path, V1", "combine cost", func() []byte { return tallPathFanIn(9000) }},
-	{"every leaf of a wide BUMP a txid", "root cost", func() []byte { return rootShape(true, 4096) }},
+	{"transactions sharing the tallest duplicate path, V1", "proof cost", func() []byte { return tallPathFanIn(9000) }},
 	{"a long unproven chain with wide inputs", "chain cost", func() []byte { return chainShape(true, 9000, 9) }},
 	{"an Atomic proof search over every BUMP", "find cost", func() []byte { return findShape(7000, findBUMPs) }},
 	{"reviewer: 64 MiB V2 BEEF of empty transactions", "transactions", func() []byte { return hugeEmptyTxs(64 << 20) }},

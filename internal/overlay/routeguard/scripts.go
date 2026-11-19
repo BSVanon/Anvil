@@ -3,6 +3,7 @@ package routeguard
 import (
 	"fmt"
 
+	"github.com/BSVanon/Anvil/internal/beefnorm"
 	"github.com/BSVanon/Anvil/internal/scriptcost"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -62,25 +63,21 @@ func scriptHeadroom(n int64) int64 {
 // hold beyond its BEEF's own expansion, and whether a verified script may
 // write new stack elements, which only the execution slot may run; or an
 // error wrapping ErrTooComplex when one of its scripts is over MaxScriptOps.
-// It walks the transactions spv.Verify runs scripts for: tx and every
-// ancestor in the BEEF that has no merkle path.
-func scriptWeight(tx *transaction.Transaction) (weight int64, copies bool, err error) {
+// unmined are the transactions spv.Verify runs scripts for, tx among them
+// (beefnorm.Graph). Each input is priced with the output spv.Verify runs it
+// against (beefnorm.SpentOutput), whichever way the BEEF supplies it; an
+// input with none fails verifyTx before any script of its transaction runs
+// (spv/verify.go:504-508), so it costs nothing to price.
+func scriptWeight(tx *transaction.Transaction, unmined []*transaction.Transaction) (weight int64, copies bool, err error) {
 	var maxOps, maxChunks int
-	seen := map[*transaction.Transaction]bool{tx: true}
-	queue := []*transaction.Transaction{tx}
-	for len(queue) > 0 {
-		t := queue[0]
-		queue = queue[1:]
-		if t != tx && t.MerklePath != nil {
-			continue
-		}
+	for _, t := range unmined {
 		for vin, in := range t.Inputs {
-			src := in.SourceTransaction
-			if src == nil || int(in.SourceTxOutIndex) >= len(src.Outputs) {
-				continue // spv.Verify fails here before it parses anything
+			prevout := beefnorm.SpentOutput(in)
+			if prevout == nil {
+				continue
 			}
 			ops := 0
-			for _, s := range [2]*script.Script{in.UnlockingScript, src.Outputs[in.SourceTxOutIndex].LockingScript} {
+			for _, s := range [2]*script.Script{in.UnlockingScript, prevout.LockingScript} {
 				if s == nil {
 					continue
 				}
@@ -91,10 +88,6 @@ func scriptWeight(tx *transaction.Transaction) (weight int64, copies bool, err e
 				return 0, false, fmt.Errorf("%w: input %d of %s has over %d script instructions", ErrTooComplex, vin, t.TxID(), MaxScriptOps)
 			}
 			maxOps = max(maxOps, ops)
-			if !seen[src] {
-				seen[src] = true
-				queue = append(queue, src)
-			}
 		}
 	}
 	for vout, out := range tx.Outputs {

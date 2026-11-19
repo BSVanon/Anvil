@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
@@ -19,7 +20,7 @@ func scaled(l Limits, div int) Limits {
 	d := uint64(div) //nolint:gosec // a small positive constant
 	return Limits{
 		Txs: l.Txs / div, Inputs: l.Inputs / div, Outputs: l.Outputs / div, BUMPs: l.BUMPs / div, Leaves: l.Leaves / div,
-		CombineCost: l.CombineCost / d, RootCost: l.RootCost / d, ChainCost: l.ChainCost / d, FindCost: l.FindCost / d,
+		ProofCost: l.ProofCost / d, ChainCost: l.ChainCost / d, FindCost: l.FindCost / d,
 	}
 }
 
@@ -59,8 +60,8 @@ func TestLegitimateFixturesPass(t *testing.T) {
 
 // fanInV1 is three proven parents sharing one four-leaf proof and a subject
 // spending them: BUMPs 1, leaves 4, transactions 4, inputs 3, outputs 4,
-// combine cost (3+1-1)*4 + 1*4 = 16, root cost 1*4, chain cost 4*(4+3) = 28,
-// find cost 1*1.
+// proof cost 3^2 * (3+1) = 36 (three levels, and offset 5 needs three), chain
+// cost 4*(4+3) = 28, find cost 1*1.
 func fanInV1() []byte {
 	entries, _ := fanIn(3, func(int) int { return 0 })
 	return beefBytes(false, [][]byte{proofBUMP(block, 3, 4, node(9, 9), 1)}, entries)
@@ -109,26 +110,31 @@ func TestScan(t *testing.T) {
 		{"a BUMP count past the bytes left", overclaim(true), Shape{Version: transaction.BEEF_V2}},
 		{"a transaction count past the bytes left", overclaim(false), Shape{Version: transaction.BEEF_V2}},
 		{"V1 fan-in on one shared proof", fanInV1(), Shape{Version: transaction.BEEF_V1, BUMPs: 1, Leaves: 4, Txs: 4, Inputs: 3, Outputs: 4,
-			CombineCost: 16, RootCost: 4, ChainCost: 28, FindCost: 1}},
+			ProofCost: 36, ChainCost: 28, FindCost: 1}},
 		{"Atomic V2 with a bare txid", atomicBEEF(id, beefBytes(true, [][]byte{proofBUMP(block, 3, 4, id, 1)},
 			[]entry{{txidOnly: &bare}, {raw: parent, bump: 0}, spender(id)})),
-			// combine (1+1-1)*4 + 1*4; root 1*4; chain 2*(2+1); find 1*1.
+			// proof 1^2 * (3+1); chain 2*(2+1); find 1*1.
 			Shape{Version: transaction.BEEF_V2, Atomic: true, BUMPs: 1, Leaves: 4, Txs: 3, Inputs: 1, Outputs: 2,
-				CombineCost: 8, RootCost: 4, ChainCost: 6, FindCost: 1}},
+				ProofCost: 4, ChainCost: 6, FindCost: 1}},
 		{"heights group by their low 32 bits", beefBytes(true, [][]byte{pair(7, true, 1), pair(7+1<<32, false, 2), pair(8, false, 3)},
 			[]entry{{raw: parent, bump: 0}, {raw: other, bump: 2}, {raw: spends, bump: -1}}),
-			// height 7: (1+2-1)*4; height 8: (1+1-1)*2; one unproven entry: 1*4. Root: 1*4.
+			// proof: one reference at height 7, one at 8, each 1^2 * (1+1).
 			Shape{Version: transaction.BEEF_V2, BUMPs: 3, Leaves: 6, Txs: 3, Inputs: 2, Outputs: 3,
-				CombineCost: 14, RootCost: 4, ChainCost: 15, FindCost: 3}},
+				ProofCost: 4, ChainCost: 15, FindCost: 3}},
+		{"a path shorter than its offsets need", beefBytes(true, [][]byte{bump(9, [][]leaf{{{1 << 10, 2, node(4, 0)}, {1<<10 + 1, 0, node(4, 1)}}})},
+			[]entry{{raw: parent, bump: 0}}),
+			// proof: one reference to a path that declares 1 level, whose
+			// widest offset, 1,025, needs 11: 1^2 * (11+1).
+			Shape{Version: transaction.BEEF_V2, BUMPs: 1, Leaves: 2, Txs: 1, Outputs: 1, ProofCost: 12, ChainCost: 1}},
 		{"an extended-format transaction", beefBytes(true, nil, []entry{{raw: efTx([]outpoint{{txid: id}, {txid: bare}}, 25, []int{25, 0, 1}), bump: -1}}),
 			Shape{Version: transaction.BEEF_V2, Txs: 1, Inputs: 2, Outputs: 3, ChainCost: 3}},
 		{"an empty transaction", beefBytes(false, nil, []entry{{raw: emptyTx(1), bump: -1}}),
 			Shape{Version: transaction.BEEF_V1, Txs: 1, ChainCost: 1}},
 		{"as many BUMPs as are tracked", oneLeafBUMPs(maxTrackedBUMPs),
-			Shape{Version: transaction.BEEF_V2, BUMPs: maxTrackedBUMPs, Leaves: maxTrackedBUMPs, Txs: 1, CombineCost: 1, ChainCost: 1}},
-		{"one BUMP more prices all as one height", oneLeafBUMPs(maxTrackedBUMPs + 1),
+			Shape{Version: transaction.BEEF_V2, BUMPs: maxTrackedBUMPs, Leaves: maxTrackedBUMPs, Txs: 1, ProofCost: 2, ChainCost: 1}},
+		{"one BUMP more prices all as one height of 255 levels", oneLeafBUMPs(maxTrackedBUMPs + 1),
 			Shape{Version: transaction.BEEF_V2, BUMPs: maxTrackedBUMPs + 1, Leaves: maxTrackedBUMPs + 1, Txs: 1,
-				CombineCost: (maxTrackedBUMPs + 1) * (maxTrackedBUMPs + 1), ChainCost: 1}},
+				ProofCost: 256, ChainCost: 1}},
 	}
 	for _, c := range cases {
 		if got := Scan(c.b); got != c.want {
@@ -221,7 +227,7 @@ func TestScanDoesNotAllocateFromCounts(t *testing.T) {
 		runtime.ReadMemStats(&before)
 		Scan(b)
 		runtime.ReadMemStats(&after)
-		table := 32 * min(n, maxTrackedBUMPs)
+		table := int(unsafe.Sizeof(bumpStat{})) * min(n, maxTrackedBUMPs)
 		if got := after.TotalAlloc - before.TotalAlloc; got > uint64(4*table) { //nolint:gosec // positive
 			t.Errorf("%d BUMPs: Scan allocated %d bytes, over 4 times the %d bytes of the entries tracked", n, got, table)
 		}
@@ -232,7 +238,7 @@ func TestScanDoesNotAllocateFromCounts(t *testing.T) {
 // refusal names that cap, with the value and the cap, and wraps
 // ErrTooComplex. Every value exactly at its cap passes.
 func TestCheckNamesEachLimit(t *testing.T) {
-	exact := Limits{Txs: 4, Inputs: 3, Outputs: 4, BUMPs: 1, Leaves: 4, CombineCost: 16, RootCost: 4, ChainCost: 28, FindCost: 1}
+	exact := Limits{Txs: 4, Inputs: 3, Outputs: 4, BUMPs: 1, Leaves: 4, ProofCost: 36, ChainCost: 28, FindCost: 1}
 	b := fanInV1()
 	if err := exact.Check(b); err != nil {
 		t.Fatalf("every value at its cap: %v", err)
@@ -246,8 +252,7 @@ func TestCheckNamesEachLimit(t *testing.T) {
 		{func(l *Limits) { l.Outputs-- }, "outputs 4 over the cap of 3"},
 		{func(l *Limits) { l.BUMPs-- }, "BUMPs 1 over the cap of 0"},
 		{func(l *Limits) { l.Leaves-- }, "leaves 4 over the cap of 3"},
-		{func(l *Limits) { l.CombineCost-- }, "combine cost 16 over the cap of 15"},
-		{func(l *Limits) { l.RootCost-- }, "root cost 4 over the cap of 3"},
+		{func(l *Limits) { l.ProofCost-- }, "proof cost 36 over the cap of 35"},
 		{func(l *Limits) { l.ChainCost-- }, "chain cost 28 over the cap of 27"},
 		{func(l *Limits) { l.FindCost-- }, "find cost 1 over the cap of 0"},
 		// The walk stops at the first output past the cap, not at the last.

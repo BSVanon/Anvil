@@ -1,30 +1,27 @@
 package beefscan
 
 import (
-	"cmp"
 	"encoding/binary"
 	"math/bits"
-	"slices"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 // maxTrackedBUMPs is how many BUMPs a walk groups by block height. Further
-// BUMPs are counted, but their heights are not kept, and CombineCost and
-// RootCost then fall back to treating every BUMP as one height, which can only
-// overstate them. Each tracked BUMP costs 32 bytes and the table's capacity
-// never passes this, so it never passes 2 MiB; it doubles only as BUMPs are
-// actually read, each at least 3 bytes of input. Any BUMPs cap at or below
-// this keeps the costs exact for every BEEF that cap admits; Default's is far
-// below it.
+// BUMPs are counted, but their heights are not kept, and ProofCost then falls
+// back to treating every BUMP as one height of the tallest path a BUMP can
+// declare, which can only overstate it. Each tracked BUMP costs 16 bytes and
+// the table's capacity never passes this, so it never passes 1 MiB; it
+// doubles only as BUMPs are actually read, each at least 3 bytes of input. Any
+// BUMPs cap at or below this keeps the costs exact for every BEEF that cap
+// admits; Default's is far below it.
 const maxTrackedBUMPs = 1 << 16
 
 // bumpStat is what one BUMP adds to the per-height costs.
 type bumpStat struct {
 	height uint32 // the parser keeps only the low 32 bits of the height varint
 	levels byte   // the tree height it declares
-	leaves uint64
-	txids  uint64 // level-0 leaves that carry a hash and the txid flag
+	need   byte   // the levels its widest level-0 offset needs: bits.Len64
 	refs   uint64 // transaction entries that name this BUMP by index
 }
 
@@ -48,11 +45,10 @@ type walker struct {
 	caps    Limits
 	over    *exceeded
 
-	bumps      []bumpStat // the first maxTrackedBUMPs BUMPs, in order
-	refs       uint64     // BUMP index references, tracked or not
-	unproven   uint64     // entries carrying a transaction but no BUMP index
-	txidOnly   uint64
-	txidLeaves uint64
+	bumps    []bumpStat // the first maxTrackedBUMPs BUMPs, in order
+	refs     uint64     // BUMP index references, tracked or not
+	unproven uint64     // entries carrying a transaction but no BUMP index
+	txidOnly uint64
 }
 
 // exceeded names the first cap a walk found passed.
@@ -184,27 +180,26 @@ func (w *walker) readBUMP() bool {
 		var n uint64
 		n, ok = w.count(2)
 		for i := uint64(0); ok && i < n; i++ {
+			var offset uint64
 			var flags byte
-			if _, ok = w.varint(); ok { // offset
+			if offset, ok = w.varint(); ok {
 				flags, ok = w.byte1()
 			}
 			if !ok {
 				break
 			}
+			if lv == 0 {
+				stat.need = max(stat.need, byte(bits.Len64(offset))) //nolint:gosec // at most 64
+			}
 			// The parser holds the leaf before it reads the hash.
-			stat.leaves++
 			if ok = w.add(&w.shape.Leaves, w.caps.Leaves, "leaves"); !ok {
 				break
 			}
 			if flags&1 == 0 {
-				if lv == 0 && flags&2 != 0 {
-					stat.txids++
-				}
 				ok = w.skip(32)
 			}
 		}
 	}
-	w.txidLeaves += stat.txids
 	if n := len(w.bumps); n < maxTrackedBUMPs {
 		if n == cap(w.bumps) { // double, but never past maxTrackedBUMPs
 			grown := make([]bumpStat, n, min(max(2*n, 16), maxTrackedBUMPs))
@@ -337,59 +332,4 @@ func (w *walker) readTx() bool {
 		}
 	}
 	return w.skip(4) // lock time
-}
-
-// costs derives the four costs; see Shape for what each bounds. CombineCost
-// and RootCost group the BUMPs by block height.
-func (w *walker) costs() {
-	s := &w.shape
-	bumps, leaves, inputs := uint64(s.BUMPs), uint64(s.Leaves), uint64(s.Inputs) //nolint:gosec // counts
-	withTx := uint64(s.Txs) - w.txidOnly                                         //nolint:gosec // a count
-	s.ChainCost = satMul(withTx, satAdd(withTx, inputs))
-	s.FindCost = satMul(w.unproven, bumps)
-	if s.BUMPs > len(w.bumps) {
-		// Heights were not all kept: price every BUMP as one height.
-		s.CombineCost = satAdd(satMul(w.refs+bumps-1, leaves), satMul(w.unproven, leaves))
-		s.RootCost = satMul(w.txidLeaves, leaves)
-		return
-	}
-	slices.SortFunc(w.bumps, func(a, b bumpStat) int { return cmp.Compare(a.height, b.height) })
-	var combine, root, widest uint64
-	for i := 0; i < len(w.bumps); {
-		var k, l, t uint64
-		mixed := false
-		j := i
-		for ; j < len(w.bumps) && w.bumps[j].height == w.bumps[i].height; j++ {
-			k += w.bumps[j].refs
-			l += w.bumps[j].leaves
-			t += w.bumps[j].txids
-			mixed = mixed || w.bumps[j].levels != w.bumps[i].levels
-		}
-		if mixed {
-			s.MixedLevels++
-		}
-		// j-i BUMPs share this height, so k+(j-i)-1 is at least zero.
-		combine = satAdd(combine, satMul(k+uint64(j-i)-1, l)) //nolint:gosec // j > i
-		root = satAdd(root, satMul(t, l))
-		widest = max(widest, l)
-		i = j
-	}
-	s.CombineCost = satAdd(combine, satMul(w.unproven, widest))
-	s.RootCost = root
-}
-
-func satAdd(a, b uint64) uint64 {
-	s, carry := bits.Add64(a, b, 0)
-	if carry != 0 {
-		return ^uint64(0)
-	}
-	return s
-}
-
-func satMul(a, b uint64) uint64 {
-	hi, lo := bits.Mul64(a, b)
-	if hi != 0 {
-		return ^uint64(0)
-	}
-	return lo
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/overlay/overlaytest"
 	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
+	"github.com/BSVanon/Anvil/internal/refusallog"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
@@ -62,13 +63,25 @@ func submitUHRP(t *testing.T, url string, beef []byte) (int, string) {
 	return code, raw
 }
 
+// readQuestion reads question through tk's ReadBody as /overlay/query does,
+// with no connection behind it, so a JSON route's ticket takes its JSON slot.
+func readQuestion(tk *routeguard.Ticket, question []byte) error {
+	r := httptest.NewRequest(http.MethodPost, "/overlay/query", bytes.NewReader(question))
+	_, err := tk.ReadBody(httptest.NewRecorder(), r, routeguard.LookupRoute)
+	return err
+}
+
 // assertIdle fails unless g has every byte and slot back: nothing a finished
-// request held is still held.
+// request held is still held. A JSON ticket takes its JSON slot once its body
+// is in, so the probe reads one.
 func assertIdle(t *testing.T, g *routeguard.Guard) {
 	t.Helper()
 	tk, err := g.Begin(true)
 	if err == nil {
-		err = tk.Reserve(context.Background(), testPool)
+		err = readQuestion(tk, []byte(`{}`))
+		if err == nil {
+			err = tk.Reserve(context.Background(), testPool-tk.Reserved())
+		}
 		if err == nil {
 			err = tk.EnterCPU(context.Background())
 		}
@@ -104,6 +117,7 @@ func spendLock(t *testing.T, lock *script.Script) []byte {
 func TestLegacySubmit_GuardRefusalsAreCoded(t *testing.T) {
 	g := routeguard.New(testPool, routeguard.CPUSlots, routeguard.JSONSlots, 500*time.Millisecond)
 	url := guardedShimServer(t, newWiredShim(t), g)
+	logs := watchRefusals(t)
 
 	nops := script.Script(append(bytes.Repeat([]byte{script.OpNOP}, routeguard.MaxScriptOps), script.OpTRUE))
 	code, raw := submitUHRP(t, url, spendLock(t, &nops))
@@ -134,11 +148,13 @@ func TestLegacySubmit_GuardRefusalsAreCoded(t *testing.T) {
 		t.Errorf("refused after %v, want about %v", elapsed, routeguard.VerifyBudget)
 	}
 	assertIdle(t, g)
+	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonTooComplex, "/overlay/submit")
+	logs.assertLogged(t, http.StatusUnprocessableEntity, refusallog.ReasonValidationBudget, "/overlay/submit")
 }
 
 // TestLegacyQuery_BusyWhenEveryJSONSlotIsTaken: with every JSON slot held,
-// /overlay/query answers 503 with Retry-After at once, without reading the
-// body, and serves again once a slot frees.
+// /overlay/query answers 503 with Retry-After at once once its body is in,
+// and serves again once a slot frees.
 func TestLegacyQuery_BusyWhenEveryJSONSlotIsTaken(t *testing.T) {
 	g := routeguard.New(testPool, routeguard.CPUSlots, 1, 500*time.Millisecond)
 	url := guardedShimServer(t, newWiredShim(t), g)
@@ -148,6 +164,10 @@ func TestLegacyQuery_BusyWhenEveryJSONSlotIsTaken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := readQuestion(held, question); err != nil {
+		t.Fatal(err)
+	}
+	logs := watchRefusals(t)
 	start := time.Now()
 	code, hdr, raw := legacyPost(t, url, "/overlay/query", "application/json", question, nil)
 	if code != http.StatusServiceUnavailable || hdr.Get("Retry-After") == "" {
@@ -161,6 +181,7 @@ func TestLegacyQuery_BusyWhenEveryJSONSlotIsTaken(t *testing.T) {
 		t.Errorf("with the slot free again: %d %s", code, raw)
 	}
 	assertIdle(t, g)
+	logs.assertLogged(t, http.StatusServiceUnavailable, refusallog.ReasonBusy, "/overlay/query")
 }
 
 // panickingEngine is an engine whose Submit panics, as go-sdk's broadcast

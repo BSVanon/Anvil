@@ -10,6 +10,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/beefscan"
 	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
+	"github.com/BSVanon/Anvil/internal/refusallog"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 )
@@ -18,21 +19,28 @@ import (
 // or the process-wide default the canonical routes share.
 func (s *Shim) guard() *routeguard.Guard { return routeguard.Or(s.Guard) }
 
-// readGuarded takes a ticket for route, a JSON slot too when jsonRoute, and
-// reads r's body. On failure it has answered the request and returns false;
-// on success the caller owns the ticket.
+// readGuarded takes a ticket for route and reads r's body; when jsonRoute,
+// the read takes the ticket's JSON slot once the body is in. On failure it
+// has answered the request and returns false; on success the caller owns the
+// ticket.
 func (s *Shim) readGuarded(w http.ResponseWriter, r *http.Request, route routeguard.Route, jsonRoute bool) (*routeguard.Ticket, []byte, bool) {
 	t, err := s.guard().Begin(jsonRoute)
 	if err != nil {
-		writeLegacyGuardError(w, err)
+		writeLegacyGuardError(w, r, err)
 		return nil, nil, false
 	}
 	body, err := t.ReadBody(w, r, route.WithMaxBody(s.MaxBodyBytes))
 	if err != nil {
 		t.Close()
 		if errors.Is(err, routeguard.ErrBusy) || errors.Is(err, routeguard.ErrReadTimeout) {
-			writeLegacyGuardError(w, err)
+			writeLegacyGuardError(w, r, err)
 		} else {
+			// Neither busy nor slow: an *http.MaxBytesError (body over its
+			// cap) or another read error ReadBody passed through as-is —
+			// still the guard refusing the body, just not through
+			// writeLegacyGuardError's envelope, so it is logged here
+			// directly under its own reason.
+			refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonBodyRejected)
 			writeLegacyError(w, http.StatusBadRequest, "failed to read body")
 		}
 		return nil, nil, false
@@ -48,9 +56,10 @@ type guardedSubmit struct {
 	sub *routeguard.Submit
 }
 
-// preVerify verifies the BEEF under the guard, as the canonical /submit does,
-// before the engine sees it, within routeguard.VerifyBudget, the client's
-// connection and deadline. On error the ticket is still the caller's.
+// preVerify normalizes and verifies the BEEF under the guard, as the
+// canonical /submit does, before the engine sees it, within
+// routeguard.VerifyBudget, the client's connection and deadline. On error
+// the ticket is still the caller's.
 func (s *Shim) preVerify(r *http.Request, deadline time.Time, t *routeguard.Ticket, beefBytes []byte, topics []string) (*guardedSubmit, error) {
 	eng, ok := s.Engine.(*engine.Engine)
 	if !ok {
@@ -73,10 +82,12 @@ func (s *Shim) preVerify(r *http.Request, deadline time.Time, t *routeguard.Tick
 var errSubmitPanicked = errors.New("internal error while submitting")
 
 // runSubmit runs the engine's submit on the detached goroutine and returns
-// its outcome. A panic anywhere below it, go-sdk's broadcast and lookup code
-// included, is logged with its stack and becomes a 500 for this submit, not
-// the end of the process. Once the engine returns, everything the submit held
-// from the guard is returned.
+// its outcome. A guarded submit hands the engine the normalized BEEF, and its
+// lookup services get it as an Atomic BEEF (routeguard.Submit.Atomic) rather
+// than beefBytes. A panic anywhere below it, go-sdk's broadcast and lookup
+// code included, is logged with its stack and becomes a 500 for this submit,
+// not the end of the process. Once the engine returns, everything the submit
+// held from the guard is returned.
 func (s *Shim) runSubmit(ctx context.Context, g *guardedSubmit, beefBytes []byte, topics []string, onSteakReady engine.OnSteakReady) (out submitOutcome) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -93,7 +104,7 @@ func (s *Shim) runSubmit(ctx context.Context, g *guardedSubmit, beefBytes []byte
 	var err error
 	if g.sub != nil {
 		eng := s.Engine.(*engine.Engine)
-		steak, err = eng.SubmitParsedBeef(ctx, g.sub.Beef, g.sub.Txid, topics, beefBytes, nil, engine.SubmitModeCurrent, g.sub.OnSteakReady(onSteakReady))
+		steak, err = eng.SubmitParsedBeef(ctx, g.sub.Beef, g.sub.Txid, topics, g.sub.Atomic, nil, engine.SubmitModeCurrent, g.sub.OnSteakReady(onSteakReady))
 	} else {
 		steak, err = s.Engine.Submit(ctx, overlay.TaggedBEEF{Beef: beefBytes, Topics: topics}, engine.SubmitModeCurrent, onSteakReady)
 	}
@@ -103,19 +114,31 @@ func (s *Shim) runSubmit(ctx context.Context, g *guardedSubmit, beefBytes []byte
 // writeLegacyGuardError answers, in the legacy {"error": msg} envelope, a
 // request the guard refused or whose BEEF failed before the engine saw it:
 // 503 with Retry-After when the node is busy, 408 when the body was too slow,
-// 400 with beefscan.Code for a BEEF over a cap, 422 with
+// 400 with beefscan.Code for a BEEF over a cap, 400 for a BEEF the guard does
+// not accept (routeguard.ErrMalformed), 422 with
 // routeguard.ValidationBudgetCode for scripts over the verification budget,
-// and otherwise the status the engine's own error got before the guard.
-func writeLegacyGuardError(w http.ResponseWriter, err error) {
+// and otherwise the status the engine's own error got before the guard. The
+// five guard-imposed cases are rate-limit logged via refusallog, as the
+// canonical route's writeGuardError does; the default case is an ordinary
+// submit outcome, not the guard protecting the node, so it is not logged
+// here.
+func writeLegacyGuardError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, routeguard.ErrBusy):
+		refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonBusy)
 		routeguard.SetRetryAfter(w)
 		writeLegacyError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, routeguard.ErrReadTimeout):
+		refusallog.Log(r, http.StatusRequestTimeout, refusallog.ReasonSlowBody)
 		writeLegacyError(w, http.StatusRequestTimeout, err.Error())
 	case errors.Is(err, routeguard.ErrTooComplex):
+		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonTooComplex)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": beefscan.Code})
+	case errors.Is(err, routeguard.ErrMalformed):
+		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonRefusedBEEF)
+		writeLegacyError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, routeguard.ErrValidationBudget):
+		refusallog.Log(r, http.StatusUnprocessableEntity, refusallog.ReasonValidationBudget)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error(), "code": routeguard.ValidationBudgetCode})
 	default:
 		writeLegacyError(w, statusForSubmitError(err), err.Error())

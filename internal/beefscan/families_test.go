@@ -15,12 +15,6 @@ import (
 // block is the height of every single-height shape.
 const block = 900000
 
-// combineLeaves is the width of combineShape's shared BUMP. At the combine
-// cap, widths from 4,097 to 32,769 leaves all took 0.63 to 0.69 s to parse as
-// V1; at 16,385 leaves every level has an unpaired node, which ComputeRoot
-// fills with a duplicate.
-const combineLeaves = 16385
-
 // findBUMPs is how many BUMPs findShape's proof search asks about each
 // unproven transaction at the find cap: the BUMPs cap.
 const findBUMPs = 10000
@@ -75,8 +69,7 @@ func outputsShape(v2 bool, n int) []byte {
 }
 
 // bumpsShape is n 19-leaf proofs at distinct heights, the first proving a
-// parent that a subject spends. MergeBeef scans every BUMP merged so far for
-// each one it merges.
+// parent that a subject spends.
 func bumpsShape(v2 bool, n int) []byte {
 	raw, id, _ := spent()
 	bumps := make([][]byte, n)
@@ -102,20 +95,6 @@ func leavesShape(v2 bool, n int) []byte {
 	return beefBytes(v2, [][]byte{bump(block, [][]leaf{level})}, []entry{{raw: raw, bump: 0}, spender(id)})
 }
 
-// combineShape is k parents sharing one one-level BUMP of combineLeaves
-// leaves, and a subject spending them all: combine cost (k+1)*combineLeaves.
-func combineShape(v2 bool, k int) []byte {
-	entries, _ := fanIn(k, func(int) int { return 0 })
-	return beefBytes(v2, [][]byte{compoundBUMP(block, combineLeaves, 0, 1)}, entries)
-}
-
-// rootShape is a one-level BUMP of n leaves, each flagged as a txid, that a
-// parent names: Verify computes n roots, each over n leaves.
-func rootShape(v2 bool, n int) []byte {
-	entries, _ := fanIn(1, func(int) int { return 0 })
-	return beefBytes(v2, [][]byte{compoundBUMP(block, n, 2, 1)}, entries)
-}
-
 // chainShape is a chain of n unproven transactions from a root whose BUMP
 // does not prove it, each spending the one before it and, extra times, the
 // root: Verify's validation passes walk every input still waiting.
@@ -137,9 +116,10 @@ func findShape(u, b int) []byte {
 	return atomicBEEF(subject, beefBytes(true, bumps, entries))
 }
 
-// sameBlockFanIn is the red-team review's shape: k parents, each with its own proof in one
-// block, and a subject spending them all. Combining them grows one path by
-// every proof in turn.
+// sameBlockFanIn is the red-team review's shape: k parents, each with its
+// own 20-level proof in one block, and a subject spending them all: proof
+// cost k^2 * 21. beefnorm extracts every proof and gathers them into the
+// block's one path.
 func sameBlockFanIn(v2 bool, k int) []byte {
 	txids := make([][32]byte, k)
 	offsets := make([]uint64, k)
@@ -157,8 +137,8 @@ func sameBlockFanIn(v2 bool, k int) []byte {
 }
 
 // sameBlockBUMPs is b proofs of one block, only the first naming an entry: a
-// proven parent that a subject spends. MergeBeef merges each of the other
-// proofs into the first, growing one path by every proof in turn.
+// proven parent that a subject spends. beefnorm drops the others without
+// reading them; v3.4.0's MergeBeef combined each into the first.
 func sameBlockBUMPs(b int) []byte {
 	raw, id, _ := spent()
 	txids := make([][32]byte, b)

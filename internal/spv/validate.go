@@ -2,10 +2,12 @@ package spv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/beefnorm"
 	"github.com/BSVanon/Anvil/internal/beefscan"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/chaintracker"
@@ -29,6 +31,11 @@ type Result struct {
 	TxID       string `json:"txid,omitempty"`
 	Confidence string `json:"confidence"`
 	Message    string `json:"message,omitempty"`
+	// BEEF is what a caller stores or relays once the result is valid: the
+	// BEEF validated, as beefnorm.BEEF.Bytes gives it, which is the bytes
+	// received when they held nothing to drop and were already in canonical
+	// form, and otherwise the kept BEEF in the format received.
+	BEEF []byte `json:"-"`
 }
 
 // Validator verifies BEEF-encoded transactions against a local header chain.
@@ -65,6 +72,13 @@ func NewValidator(tracker chaintracker.ChainTracker) *Validator {
 // the local header chain using go-sdk's Beef.Verify(). Returns a confidence
 // level based on the verification depth of the transaction ancestry.
 //
+// The BEEF is parsed only through beefnorm.Parse: beefscan prices its
+// structure first, the parse is linear, and what Verify checks, what the
+// confidence counts and what Result.BEEF holds is the subject and the
+// ancestry its verification reads, with one canonical BUMP per block.
+// Transactions outside that ancestry are dropped, not refused: see beefnorm
+// for that divergence from BRC-95.
+//
 // Confidence model (from architecture):
 //   - spv_verified: all ancestors have merkle proofs verified against local headers
 //   - partially_verified: some ancestors confirmed (SPV), some unconfirmed
@@ -81,54 +95,58 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 		return result, nil
 	}
 
-	// Price the structure before go-sdk parses it: its parse, Verify and
-	// serializations are superlinear in some shapes and take no context.
-	if err := beefscan.Check(beef); err != nil {
-		result := &Result{
-			Valid:      false,
-			Confidence: ConfidenceInvalid,
-			Message:    fmt.Sprintf("%s: %v", beefscan.Code, err),
+	n, err := safeParse(beef)
+	if err != nil {
+		result := &Result{Valid: false, Confidence: ConfidenceInvalid}
+		reason := "parse_beef"
+		switch {
+		case errors.Is(err, beefscan.ErrTooComplex):
+			// Priced before go-sdk parses it: its parse, Verify and
+			// serializations are superlinear in some shapes and take no
+			// context.
+			result.Message, reason = fmt.Sprintf("%s: %v", beefscan.Code, err), "too_complex"
+		case errors.Is(err, beefnorm.ErrRefused):
+			result.Message, reason = fmt.Sprintf("refused BEEF: %v", err), "refused"
+		case errors.Is(err, beefnorm.ErrNoSubject):
+			result.Message, reason = fmt.Sprintf("parse transaction from BEEF: %v", err), "parse_transaction"
+		default:
+			result.Message = fmt.Sprintf("parse BEEF: %v", err)
 		}
-		v.recordResult(result, "too_complex")
+		v.recordResult(result, reason)
 		return result, nil
 	}
-
-	// Parse the full Beef structure — go-sdk handles all BEEF versions.
-	// Panic-guarded: go-sdk's parser indexes/allocates from attacker-controlled
-	// length fields without bounds checks on some paths.
-	b, err := safeNewBeefFromBytes(beef)
-	if err != nil {
+	// Callers store and relay what this accepts with NewTransactionFromBEEF,
+	// which reads V1 and Atomic BEEFs only, so a V2 BEEF has always been
+	// refused here; inside an Atomic BEEF it is accepted.
+	if n.Format == transaction.BEEF_V2 {
 		result := &Result{
 			Valid:      false,
 			Confidence: ConfidenceInvalid,
-			Message:    fmt.Sprintf("parse BEEF: %v", err),
-		}
-		v.recordResult(result, "parse_beef")
-		return result, nil
-	}
-
-	// Parse the final transaction for its txid (same panic-guard rationale).
-	tx, err := safeNewTransactionFromBEEF(beef)
-	if err != nil {
-		result := &Result{
-			Valid:      false,
-			Confidence: ConfidenceInvalid,
-			Message:    fmt.Sprintf("parse transaction from BEEF: %v", err),
+			Message:    "parse transaction from BEEF: a V2 BEEF is accepted only inside an Atomic BEEF",
 		}
 		v.recordResult(result, "parse_transaction")
 		return result, nil
 	}
-	txid := tx.TxID().String()
+	normalized, err := n.Bytes()
+	if err != nil {
+		result := &Result{
+			Valid:      false,
+			Confidence: ConfidenceInvalid,
+			Message:    fmt.Sprintf("serialize BEEF: %v", err),
+		}
+		v.recordResult(result, "parse_beef")
+		return result, nil
+	}
+	txid := n.Subject.String()
 
-	totalBumps := len(b.BUMPs)
-
-	if totalBumps == 0 {
+	if len(n.Beef.BUMPs) == 0 {
 		// No merkle proofs at all — fully unconfirmed
 		result := &Result{
 			Valid:      true,
 			TxID:       txid,
 			Confidence: ConfidenceUnconfirmed,
 			Message:    "no merkle proofs in BEEF — fully unconfirmed ancestry",
+			BEEF:       normalized,
 		}
 		v.recordResult(result, "")
 		return result, nil
@@ -137,7 +155,7 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 	// Use go-sdk's Beef.Verify() — it walks all BUMPs, computes roots,
 	// and checks each against our ChainTracker. One call, no manual
 	// path walking.
-	valid, err := b.Verify(ctx, v.tracker, false)
+	valid, err := n.Beef.Verify(ctx, v.tracker, false)
 	if err != nil {
 		result := &Result{
 			Valid:      false,
@@ -160,16 +178,23 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 		return result, nil
 	}
 
-	// All BUMPs verified. Classify confidence by how much of the
-	// ancestry is proven.
-	totalTxs := len(b.Transactions)
-	if totalBumps >= totalTxs-1 {
-		// All ancestor txs have proofs (minus the top-level unconfirmed tx)
+	// All BUMPs verified. Classify confidence by how much of the kept
+	// ancestry is proven: beefnorm keeps one BUMP per block, so proofs are
+	// counted by the transactions they prove, not by BUMPs.
+	ancestors, proven := len(n.Beef.Transactions)-1, 0
+	for _, e := range n.Beef.Transactions {
+		if e.DataFormat == transaction.RawTxAndBumpIndex {
+			proven++
+		}
+	}
+	if proven >= ancestors {
+		// Every ancestor kept has a proof (or the subject has its own).
 		result := &Result{
 			Valid:      true,
 			TxID:       txid,
 			Confidence: ConfidenceSPVVerified,
-			Message:    fmt.Sprintf("all %d merkle proofs verified against local headers", totalBumps),
+			Message:    fmt.Sprintf("all %d merkle proofs verified against local headers", proven),
+			BEEF:       normalized,
 		}
 		v.recordResult(result, "")
 		return result, nil
@@ -180,7 +205,8 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 		Valid:      true,
 		TxID:       txid,
 		Confidence: ConfidencePartiallyVerified,
-		Message:    fmt.Sprintf("%d merkle proofs verified, %d ancestor txs unconfirmed", totalBumps, totalTxs-1-totalBumps),
+		Message:    fmt.Sprintf("%d merkle proofs verified, %d ancestor txs unconfirmed", proven, ancestors-proven),
+		BEEF:       normalized,
 	}
 	v.recordResult(result, "")
 	return result, nil
@@ -260,42 +286,25 @@ func confidenceMessage(confidence string, verified, total int) string {
 	}
 }
 
-// safeNewBeefFromBytes wraps transaction.NewBeefFromBytes with a panic recover.
-// go-sdk's BEEF parsers index and allocate from attacker-controlled length
-// fields without bounds checks on some paths: a body starting with the
-// AtomicBEEF marker 0x01010101 but shorter than 36 bytes panics with "slice
-// bounds out of range [36:...]", and an oversized varint count panics with
-// "makeslice: len out of range". This is the same fragility class as the
-// storage-layer guard added in v3.2.14. On the public /broadcast ingress path an
-// unguarded panic crashes the request goroutine and the TLS front returns 502;
-// the caller must instead get a clean ConfidenceInvalid.
-func safeNewBeefFromBytes(beef []byte) (b *transaction.Beef, err error) {
+// safeParse is beefnorm.Parse behind a panic recover. go-sdk's BEEF parsers
+// indexed and allocated from attacker-controlled length fields without bounds
+// checks on some paths before v1.7.7 (a body starting with the Atomic marker
+// but shorter than 36 bytes, an oversized varint count). On the public
+// /broadcast ingress path an unguarded panic crashes the request goroutine
+// and the TLS front returns 502; the caller must instead get a clean
+// ConfidenceInvalid. beefnorm recovers its own normalization's panics.
+func safeParse(beef []byte) (n *beefnorm.BEEF, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			b = nil
+			n = nil
 			err = fmt.Errorf("BEEF parse panicked: %v", r)
 		}
 	}()
-	return newBeefFromBytes(beef)
+	return parseBEEF(beef)
 }
 
-// safeNewTransactionFromBEEF is the panic-guarded counterpart for extracting the
-// subject transaction. Same rationale as safeNewBeefFromBytes.
-func safeNewTransactionFromBEEF(beef []byte) (tx *transaction.Transaction, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			tx = nil
-			err = fmt.Errorf("transaction parse panicked: %v", r)
-		}
-	}()
-	return newTransactionFromBEEF(beef)
-}
-
-// The parsers the two wrappers guard. go-sdk v1.7.7 bounds the reads that
-// panicked in v1.2.x, and beefscan.Check refuses the malformed shapes first,
-// so no known input reaches either recover now; they are variables so a test
-// can make them panic.
-var (
-	newBeefFromBytes       = transaction.NewBeefFromBytes
-	newTransactionFromBEEF = transaction.NewTransactionFromBEEF
-)
+// parseBEEF is the parse safeParse guards. go-sdk v1.7.7 bounds the reads
+// that panicked in v1.2.x, and beefscan refuses the malformed shapes first,
+// so no known input reaches the recover now; it is a variable so a test can
+// make it panic.
+var parseBEEF = beefnorm.Parse

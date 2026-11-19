@@ -1,21 +1,37 @@
 // Package routeguard bounds what the overlay routes that need no login can make
 // this node spend: heap, verification CPU and connection time.
 //
-// Every guarded request holds a Ticket from one process-wide Guard:
+// Every guarded request holds a Ticket from one process-wide Guard and takes
+// what it needs in this order:
 //
-//   - Heap. Before a request reads its body it reserves, from a weighted
-//     semaphore, all the heap its body may cost: the body's length (the cap,
-//     when the length is not declared) times the route's measured expansion,
-//     the route's fixed allowance and, for a BEEF, what parsing its scripts
-//     may cost (see Route.Reservation). Nothing is reserved later, so a
-//     request in flight never queues behind newer ones; what the request turns
-//     out not to need is returned as soon as that is known, and the rest when
-//     the request ends. A request that cannot reserve within Wait is answered
-//     503 with Retry-After, before it has sent its body if it asked for 100
-//     Continue.
-//   - Bodies over BigBody. Only one is in flight at a time, so senders of
-//     large bodies, slow ones included, cannot take the heap the routes' small
-//     requests need.
+//   - Read permits. Begin takes one of ReadPermits without waiting; when none
+//     is free the request is answered 503 at once. Until its body's first byte
+//     arrives a request holds nothing else, so connections that send only
+//     headers hold no heap, no big-body slot and no JSON slot. The permit is
+//     returned once the body is in.
+//   - Connection time. The body must start within bodyread.ReadGrace, then
+//     keep up bodyread.MinReadRate on average, the limits bodyread applies to
+//     the replies this node reads, and arrive within its route's ReadTimeout.
+//     The connection's read deadline, set through http.ResponseController and
+//     moved forward as bytes arrive, enforces them, and is cleared once the
+//     body is in, so the node's other routes, the SSE streams among them, keep
+//     the server's own timeouts. A body cut short is answered 408.
+//   - Bodies over BigBody. Once the first byte is in, a body that may pass
+//     BigBody takes the one big-body slot, so senders of large bodies, slow
+//     ones included, cannot take the heap the routes' small requests need.
+//   - Heap. Then the request reserves, from a weighted semaphore, all the heap
+//     its body may cost: the body's length (the cap, when the length is not
+//     declared) times the route's measured expansion, the route's fixed
+//     allowance and, for a BEEF, what parsing its scripts may cost (see
+//     Route.Reservation). Nothing is reserved later, so a request in flight
+//     never queues behind newer ones; what the request turns out not to need
+//     is returned as soon as that is known, and the rest when the request
+//     ends. A request that cannot reserve within Wait is answered 503 with
+//     Retry-After. An empty body reserves nothing: every guarded handler
+//     refuses one before any work its route's allowance pays for.
+//   - JSON requests. Once its body is in, a JSON-bodied request takes one of
+//     JSONSlots without waiting and holds it until it ends; one more is
+//     answered 503 at once.
 //   - Verification CPU. A submit takes one of CPUSlots slots, max(1,
 //     GOMAXPROCS/2), before it verifies, and keeps it until the engine reports
 //     the STEAK ready or returns. It waits at most Wait for one, then 503.
@@ -23,13 +39,13 @@
 //     also takes the one execution slot, which carries ExecAllowance of the
 //     budget, and the guard collects garbage before the engine verifies such
 //     a submit again and before it hands the slot on.
-//   - JSON requests. At most JSONSlots JSON-bodied requests are in flight at
-//     once; one more is answered 503 at once.
-//   - Connection time. A body must arrive within its route's ReadTimeout, set
-//     as the connection's read deadline through http.ResponseController and
-//     cleared once the body is in, so a slow sender is cut off and the node's
-//     other routes, the SSE streams among them, keep the server's own
-//     timeouts.
+//
+// A client that sends Expect: 100-continue gets its 100 Continue from the
+// first read of its body, before the guard decides the big-body slot and the
+// reservation. Such a client therefore starts sending before a 503 can refuse
+// it; the refusal arrives while its body is in flight, with Connection: close,
+// and the server closes the connection once the client has had time to read
+// it, as for a body over its cap.
 //
 // The budgets are constants, not configuration.
 package routeguard
@@ -43,6 +59,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/netguard/bodyread"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -64,8 +81,23 @@ const (
 	// RetryAfterSeconds is the Retry-After a 503 from the guard carries.
 	RetryAfterSeconds = 2
 
-	// JSONSlots caps the JSON-bodied requests in flight at once.
+	// JSONSlots caps the JSON-bodied requests in flight at once, counted from
+	// when their bodies are in.
 	JSONSlots = 64
+
+	// ReadPermits caps the requests reading their bodies at once. One waiting
+	// for its first byte holds no reservation, only its connection's buffers,
+	// its parsed headers and its goroutine: 13.1 to 14.1 KiB of live heap and
+	// 8.1 to 8.6 KiB of stack each, 5.3 to 5.7 MiB for 256, measured in new
+	// processes with short headers and both ends of each connection in the
+	// process (TestGuard_ReadPermitsBoundIdleConnections in v3engine; repeated
+	// in one process, with the server's pooled buffers reused, 2.4 to 2.8 KiB
+	// of heap each). It holds its permit for at most bodyread.ReadGrace unless
+	// it starts sending, and then it holds a reservation too, which the heap
+	// budget bounds. 256 is four times JSONSlots, so JSON requests reach their
+	// slots while 192 idle connections are open, and holding every permit
+	// takes 256 / 2 s = 128 new connections each second.
+	ReadPermits = 256
 
 	// BigBody is the body length past which a request takes the one big-body
 	// slot.
@@ -94,22 +126,31 @@ type Guard struct {
 	exec *semaphore.Weighted
 	cpu  *semaphore.Weighted
 	json *semaphore.Weighted
+	read *semaphore.Weighted
 	wait time.Duration
+
+	// The pace a body must keep: bodyread.ReadGrace and bodyread.MinReadRate
+	// (bytes a second), which the package's tests shorten.
+	grace   time.Duration
+	minRate int64
 }
 
 // New returns a Guard with its own budgets: pool bytes of heap that requests
-// may hold reserved at once, beside the execution slot's ExecAllowance, and
-// the given slot counts. Production code shares Default; tests use New for
-// budgets of their own.
+// may hold reserved at once, beside the execution slot's ExecAllowance, the
+// given slot counts and ReadPermits read permits. Production code shares
+// Default; tests use New for budgets of their own.
 func New(pool, cpuSlots, jsonSlots int64, wait time.Duration) *Guard {
 	return &Guard{
-		mem:  semaphore.NewWeighted(pool),
-		pool: pool,
-		big:  semaphore.NewWeighted(1),
-		exec: semaphore.NewWeighted(1),
-		cpu:  semaphore.NewWeighted(cpuSlots),
-		json: semaphore.NewWeighted(jsonSlots),
-		wait: wait,
+		mem:     semaphore.NewWeighted(pool),
+		pool:    pool,
+		big:     semaphore.NewWeighted(1),
+		exec:    semaphore.NewWeighted(1),
+		cpu:     semaphore.NewWeighted(cpuSlots),
+		json:    semaphore.NewWeighted(jsonSlots),
+		read:    semaphore.NewWeighted(ReadPermits),
+		wait:    wait,
+		grace:   bodyread.ReadGrace,
+		minRate: bodyread.MinReadRate,
 	}
 }
 
@@ -130,12 +171,13 @@ func Or(g *Guard) *Guard {
 // concurrent use; Close returns everything it holds and may be called more
 // than once.
 type Ticket struct {
-	g        *Guard
-	mu       sync.Mutex
-	mem      int64
-	headroom int64 // of mem: the script parse ReadBody reserved for a BEEF
-	held     [4]bool
-	closed   bool
+	g         *Guard
+	mu        sync.Mutex
+	mem       int64
+	headroom  int64 // of mem: the script parse ReadBody reserved for a BEEF
+	held      [5]bool
+	jsonRoute bool // ReadBody takes a JSON slot once the body is in
+	closed    bool
 }
 
 // The slots a ticket may hold, indexing Ticket.held.
@@ -144,22 +186,22 @@ const (
 	slotBig
 	slotExec
 	slotCPU
+	slotRead
 )
 
 func (g *Guard) slot(i int) *semaphore.Weighted {
-	return [...]*semaphore.Weighted{g.json, g.big, g.exec, g.cpu}[i]
+	return [...]*semaphore.Weighted{g.json, g.big, g.exec, g.cpu, g.read}[i]
 }
 
-// Begin starts a ticket. A JSON route's ticket takes a JSON slot, without
-// waiting: ErrBusy when all JSONSlots are taken.
+// Begin starts a ticket holding one of the guard's read permits, taken
+// without waiting: ErrBusy when all ReadPermits are taken. jsonRoute marks a
+// JSON route's ticket, whose ReadBody takes a JSON slot once the body is in.
 func (g *Guard) Begin(jsonRoute bool) (*Ticket, error) {
-	t := &Ticket{g: g}
-	if jsonRoute {
-		if !g.json.TryAcquire(1) {
-			return nil, ErrBusy
-		}
-		t.held[slotJSON] = true
+	if !g.read.TryAcquire(1) {
+		return nil, ErrBusy
 	}
+	t := &Ticket{g: g, jsonRoute: jsonRoute}
+	t.held[slotRead] = true
 	return t, nil
 }
 
@@ -229,6 +271,22 @@ func (t *Ticket) take(ctx context.Context, i int) error {
 	defer t.mu.Unlock()
 	if t.closed {
 		t.g.slot(i).Release(1)
+		return ErrBusy
+	}
+	t.held[i] = true
+	return nil
+}
+
+// tryTake takes slot i without waiting: ErrBusy when it is not free.
+func (t *Ticket) tryTake(i int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch {
+	case t.closed:
+		return ErrBusy
+	case t.held[i]:
+		return nil
+	case !t.g.slot(i).TryAcquire(1):
 		return ErrBusy
 	}
 	t.held[i] = true

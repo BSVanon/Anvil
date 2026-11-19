@@ -314,8 +314,10 @@ func (h *Handlers) preflight(w http.ResponseWriter, r *http.Request) {}
 // --- helpers ---------------------------------------------------------------
 
 // parseTopicsHeader decodes the x-topics request header (JSON array of
-// strings). Returns an empty slice on empty header, an error on
-// malformed JSON.
+// strings). Returns an empty slice on empty header, and an error on
+// malformed JSON or on more than maxDistinctTopics distinct names.
+// Duplicates are removed, keeping each name's first position, so the engine
+// and the rest of the route see each topic once.
 func parseTopicsHeader(raw string) ([]string, error) {
 	if raw == "" {
 		return nil, nil
@@ -324,7 +326,7 @@ func parseTopicsHeader(raw string) ([]string, error) {
 	if err := json.Unmarshal([]byte(raw), &topics); err != nil {
 		return nil, err
 	}
-	return topics, nil
+	return dedupTopics(topics)
 }
 
 // writeJSON writes the JSON-marshalled value with the given status. If

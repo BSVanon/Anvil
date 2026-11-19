@@ -40,15 +40,16 @@ func row(t *testing.T, name string, b []byte) {
 	s := Scan(b)
 	d := worstOf(b, 3)
 	peak := parseHeap(b)
-	t.Logf("%-52s %9d B | BUMPs %5d leaves %6d txs %5d in %6d out %6d | combine %7d root %7d chain %9d find %8d | %v | heap %.1f MB %.1fx | %v",
-		name, len(b), s.BUMPs, s.Leaves, s.Txs, s.Inputs, s.Outputs, s.CombineCost, s.RootCost, s.ChainCost, s.FindCost,
+	t.Logf("%-52s %9d B | BUMPs %5d leaves %6d txs %5d in %6d out %6d | proof %9d chain %9d find %8d | %v | heap %.1f MB %.1fx | %v",
+		name, len(b), s.BUMPs, s.Leaves, s.Txs, s.Inputs, s.Outputs, s.ProofCost, s.ChainCost, s.FindCost,
 		d, float64(peak)/1e6, float64(peak)/float64(len(b)), Check(b))
 }
 
-// TestCalibrateCaps times every go-sdk call, the slowest of three runs each,
-// and measures ParseBeef's peak heap, on the worst accepted shape of each cap,
-// the accepted shapes at two caps at once, and the legitimate fixtures.
-// Durations are in sdkOps order.
+// TestCalibrateCaps times the parse the routes run on untrusted bytes
+// (sdkOps), the slowest of three runs, and measures ParseBeef's peak heap, on
+// the worst accepted shape of each cap, the accepted shapes at two caps at
+// once, and the legitimate fixtures. beefnorm's calibration times the calls
+// on the normalized BEEF.
 func TestCalibrateCaps(t *testing.T) {
 	calibrating(t)
 	t.Logf("calls: %v", sdkOps)
@@ -60,22 +61,18 @@ func TestCalibrateCaps(t *testing.T) {
 	for _, v2 := range []bool{false, true} {
 		row(t, "10,000 unproven empty txs, "+version(v2), emptyTxs(v2, 10000))
 		row(t, "chain of 3,014 with 9 more inputs each, "+version(v2), chainShape(v2, 3014, 9))
-		row(t, "100 txids over 20,000 leaves, "+version(v2), wideRoot(v2, 100, 20000))
 	}
 	// Refused shapes, one run each, to show what the costs hold back; the
 	// larger instances in caps_test.go's hostile list cost more again.
 	for name, b := range map[string][]byte{
-		"refused: 1,000 same-block proofs, V1":        sameBlockFanIn(false, 1000),
-		"refused: 1,000 same-block proofs, one named": sameBlockBUMPs(1000),
-		"refused: 200 sharing a 16,385-leaf BUMP, V1": combineShape(false, 200),
-		"refused: 4,096 txids over 4,096 leaves":      rootShape(true, 4096),
+		"refused: 3,000 same-block proofs, V1":        sameBlockFanIn(false, 3000),
 		"refused: chain of 9,000, 9 more inputs each": chainShape(true, 9000, 9),
 		"refused: 7,000 unproven over 10,000 BUMPs":   findShape(7000, findBUMPs),
 		"refused: 9,000 sharing the tallest path, V1": tallPathFanIn(9000),
 	} {
 		s := Scan(b)
-		t.Logf("%-52s %9d B | combine %9d root %8d chain %9d find %8d | %v | %v", name, len(b),
-			s.CombineCost, s.RootCost, s.ChainCost, s.FindCost, timeOps(b), Check(b))
+		t.Logf("%-52s %9d B | proof %10d chain %9d find %8d | %v | %v", name, len(b),
+			s.ProofCost, s.ChainCost, s.FindCost, timeOps(b), Check(b))
 	}
 	fixtures := legitimate(t)
 	names := make([]string, 0, len(fixtures))

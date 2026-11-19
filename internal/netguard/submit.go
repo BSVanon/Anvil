@@ -19,12 +19,13 @@ import (
 // go-sdk's broadcast facilitator gives each host 30 s (topic/facilitator.go
 // MAX_SHIP_QUERY_TIMEOUT) on a context of its own, so the caller's context
 // never shortens it. go-overlay-services starts those sends once the submit's
-// SHIP lookup has answered, which the 45 s submit cap bounds, so a submit
-// that propagates ends within 45 + 15 = 60 s, the time a typical reverse
-// proxy waits, where with go-sdk's 30 s it took 75 s. An honest peer answers
-// once it has admitted the transaction; one that propagates before answering,
-// as Anvil's canonical /submit does, can take longer, and then only its
-// acknowledgement is lost: it already holds the transaction.
+// SHIP lookup has answered, which the 30 s submit cap bounds, so a submit
+// that propagates ends within 30 + 15 = 45 s, under nginx's default 60 s
+// proxy_read_timeout, where with go-sdk's 30 s per send instead of this 15 s
+// it took 60 s. An honest peer answers once it has admitted the transaction;
+// one that propagates before answering, as Anvil's canonical /submit does,
+// can take longer, and then only its acknowledgement is lost: it already
+// holds the transaction.
 const SubmitTimeout = 15 * time.Second
 
 // MaxSteakBytes caps the body of a /submit reply. A STEAK lists, for each

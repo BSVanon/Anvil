@@ -11,19 +11,29 @@ import (
 // Handlers.SubmitTimeout is unset: verification, admission, commit and the
 // start of propagation. It is the legacy /overlay/submit shim's cap
 // (legacyshim's submitBackgroundCap), so both submit routes give up at the
-// same point, and it exceeds the 30 s each go-sdk propagation lookup is
-// allowed. It is not the whole request: a submit that reaches propagation
+// same point. It is not the whole request: a submit that reaches propagation
 // answers 200 once propagation's POSTs to other hosts end, each within
-// netguard.SubmitTimeout (15 s), so a submit can take up to 45 + 15 = 60 s
-// (measured 59.5 s, netguard's TestSubmitChain_WorstCase), which a reverse
-// proxy that waits exactly 60 s may cut first.
+// netguard.SubmitTimeout (15 s), so a submit can take up to 30 + 15 = 45 s
+// (measured 44.5 s, legacyshim's TestSubmitChain_WorstCase, which drives both
+// submit routes through the same worst case), under nginx's default 60 s
+// proxy_read_timeout (deploy/nginx-anvil.conf) — the prior 45 + 15 = 60 s cap
+// left no margin below that default and could be cut by it mid-commit
+// (review finding S8).
+//
+// 30 s equals, rather than exceeds, each go-sdk propagation lookup's own
+// allowance (lookup.MAX_TRACKER_WAIT_TIME, topic.MAX_SHIP_QUERY_TIMEOUT, both
+// 30 s): a submit whose admission is itself slow leaves the SHIP/SLAP lookup
+// less than its full 30 s of this deadline, which can then end the submit
+// early with 504 instead of waiting out go-sdk's own cap. That is the
+// intended trade — a prompt, bounded failure instead of a request that can
+// outlast the proxy — not a hang.
 //
 // The cap matters because /submit runs spv.Verify on a client's BEEF with no
 // login, and script cost grows with the BEEF. The guard's own verification
 // stops a submit's scripts at routeguard.VerifyBudget (5 s) before the engine
 // sees them; go-sdk v1.7.7's interpreter checks the context before every
 // opcode, so the deadline stops the CPU as well as the request.
-const DefaultSubmitTimeout = 45 * time.Second
+const DefaultSubmitTimeout = 30 * time.Second
 
 func (h *Handlers) submitTimeout() time.Duration {
 	if h.SubmitTimeout <= 0 {

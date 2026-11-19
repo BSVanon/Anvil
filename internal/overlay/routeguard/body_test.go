@@ -22,22 +22,28 @@ type bodyResult struct {
 	held    int64 // the ticket's reservation once the body was read
 }
 
-// bodyServer serves POST /read through ReadBody for route on g, reporting
-// each result on the returned channel after lingering for linger, and GET
-// /stream, which writes a line every 100 ms until its request context ends or
-// it has written n lines.
+// bodyServer serves POST /read through ReadBody for route on g, answering a
+// refusal with BodyStatus's status and reporting each result on the returned
+// channel after lingering for linger, and GET /stream, which writes a line
+// every 100 ms until its request context ends or it has written n lines.
 func bodyServer(t *testing.T, g *Guard, route Route, n int, linger time.Duration) (*httptest.Server, chan bodyResult) {
 	t.Helper()
 	results := make(chan bodyResult, 16)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /read", func(w http.ResponseWriter, r *http.Request) {
-		tk, _ := g.Begin(false)
+		tk, err := g.Begin(false)
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			results <- bodyResult{err: err}
+			return
+		}
 		defer tk.Close()
 		start := time.Now()
 		body, err := tk.ReadBody(w, r, route)
 		res := bodyResult{body: body, err: err, elapsed: time.Since(start), held: tk.Reserved()}
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
+			code, _ := BodyStatus(err, "")
+			w.WriteHeader(code)
 			results <- res
 			return
 		}
@@ -161,10 +167,11 @@ func TestReadBody_DeadlineIsClearedOnceTheBodyIsIn(t *testing.T) {
 	}
 }
 
-// TestReadBody_ReservesBeforeReading: a body whose reservation cannot be met
-// is refused, ErrBusy at the guard's Wait, before its first byte is read, so
-// a client that waits for 100 Continue never sends it.
-func TestReadBody_ReservesBeforeReading(t *testing.T) {
+// TestReadBody_ReservesOnceTheBodyStarts: a body whose reservation cannot be
+// met is refused with ErrBusy at the guard's Wait once its first byte is in.
+// A client that waits for 100 Continue gets it from that first read, so it
+// has sent its body by the time the refusal comes.
+func TestReadBody_ReservesOnceTheBodyStarts(t *testing.T) {
 	g := New(3000, 1, 1, testWait)
 	holder, _ := g.Begin(false)
 	_ = holder.Reserve(t.Context(), 2000)
@@ -182,36 +189,36 @@ func TestReadBody_ReservesBeforeReading(t *testing.T) {
 	}
 	resp.Body.Close()
 	res := <-results
-	if !errors.Is(res.err, ErrBusy) {
-		t.Fatalf("ReadBody over the free heap: %v, want ErrBusy", res.err)
+	if !errors.Is(res.err, ErrBusy) || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("ReadBody over the free heap: %v, answered %d; want ErrBusy, 503", res.err, resp.StatusCode)
 	}
-	if counter.n != 0 {
-		t.Fatalf("the client sent %d body bytes the guard refused to read", counter.n)
+	if res.elapsed < testWait {
+		t.Fatalf("refused after %v, before the guard's Wait of %v", res.elapsed, testWait)
+	}
+	if counter.n != 200 {
+		t.Fatalf("the client sent %d of its 200 body bytes; the first read sends 100 Continue", counter.n)
 	}
 }
 
 // TestReadBody_UnknownLengthReservesTheCapThenShrinks: a chunked body
-// reserves for MaxBody before its first byte is read, so one that cannot have
-// that much is refused unread, and once it is in it holds only what its
-// length needs.
+// reserves for MaxBody once its first byte is in, so one that cannot have
+// that much is refused at the guard's Wait, and once it is in it holds only
+// what its length needs.
 func TestReadBody_UnknownLengthReservesTheCapThenShrinks(t *testing.T) {
 	route := Route{MaxBody: 64 << 10, Expansion: 4, Allowance: 100, ReadTimeout: 5 * time.Second}
 	g := New(route.Allowance+4*route.MaxBody, 1, 1, testWait)
 	srv, results := bodyServer(t, g, route, 0, 0)
-	post := func(n int) (bodyResult, int) {
-		counter := &countingReader{r: bytes.NewReader(make([]byte, n))}
-		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/read", io.NopCloser(counter))
+	post := func(n int) bodyResult {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/read", io.NopCloser(bytes.NewReader(make([]byte, n))))
 		req.ContentLength = -1
-		req.Header.Set("Expect", "100-continue")
-		client := &http.Client{Transport: &http.Transport{ExpectContinueTimeout: 10 * time.Second}}
-		resp, err := client.Do(req)
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
 		resp.Body.Close()
-		return <-results, counter.n
+		return <-results
 	}
-	res, _ := post(1000)
+	res := post(1000)
 	if res.err != nil || len(res.body) != 1000 {
 		t.Fatalf("a chunked body within the budget: %d bytes, %v", len(res.body), res.err)
 	}
@@ -223,12 +230,8 @@ func TestReadBody_UnknownLengthReservesTheCapThenShrinks(t *testing.T) {
 	if err := holder.Reserve(t.Context(), 1); err != nil {
 		t.Fatal(err)
 	}
-	res, sent := post(1000)
-	if !errors.Is(res.err, ErrBusy) {
-		t.Fatalf("a chunked body that cannot reserve for the cap: %v, want ErrBusy", res.err)
-	}
-	if sent != 0 {
-		t.Fatalf("the client sent %d body bytes the guard refused to read", sent)
+	if res = post(1000); !errors.Is(res.err, ErrBusy) || res.elapsed < testWait {
+		t.Fatalf("a chunked body that cannot reserve for the cap: %v after %v, want ErrBusy at the guard's Wait", res.err, res.elapsed)
 	}
 }
 

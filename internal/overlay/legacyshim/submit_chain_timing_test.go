@@ -29,10 +29,12 @@ const (
 	chainTopic = "tm_chain"
 	admitDelay = 15 * time.Second
 	// trackerDelay is how long the SLAP tracker takes to answer: just under
-	// the 30 s go-sdk allows a tracker query (lookup.MAX_TRACKER_WAIT_TIME)
-	// and the whole SHIP query (topic.MAX_SHIP_QUERY_TIMEOUT), and under the
-	// 30 s the 45 s submit cap leaves after admitDelay.
-	trackerDelay = 29500 * time.Millisecond
+	// the 15 s the 30 s submit cap leaves after admitDelay, and well inside
+	// the 30 s go-sdk itself allows a tracker query
+	// (lookup.MAX_TRACKER_WAIT_TIME) and the whole SHIP query
+	// (topic.MAX_SHIP_QUERY_TIMEOUT) — the submit cap, not go-sdk's own
+	// allowance, is what binds now that the cap is 30 s.
+	trackerDelay = 14500 * time.Millisecond
 	// chainSlack allows for the work between the stages.
 	chainSlack = 3 * time.Second
 	// chainWait is how long the measurement waits for the legacy route's
@@ -57,13 +59,15 @@ func (chainManager) GetMetaData() *overlay.MetaData { return &overlay.MetaData{N
 
 // TestSubmitChain_WorstCase measures how long each submit route takes when
 // every stage of its chain runs to its limit: admission takes 15 s; the SLAP
-// tracker the propagation asks for SHIP hosts answers at 29.5 s, inside
-// go-sdk's 30 s and the 45 s submit cap; and the one SHIP host it names
-// trickles its STEAK reply faster than the guard's rate floor, forever. The
-// canonical POST /submit answers once its propagation ends, so it must answer
-// by 45 s + netguard.SubmitTimeout; the legacy POST /overlay/submit answers at
-// commit, and its background propagation must end by the same bound. With
-// go-sdk's 30 s per send instead, both took 75 s.
+// tracker the propagation asks for SHIP hosts answers at 14.5 s, inside both
+// go-sdk's 30 s tracker allowance and the 15 s the 30 s submit cap leaves
+// after admitDelay; and the one SHIP host it names trickles its STEAK reply
+// faster than the guard's rate floor, forever. The canonical POST /submit
+// answers once its propagation ends, so it must answer by the submit cap
+// (30 s) plus netguard.SubmitTimeout (15 s), 45 s; the legacy POST
+// /overlay/submit answers at commit, and its background propagation must end
+// by the same bound. With go-sdk's 30 s per send instead of netguard's 15 s,
+// both took 60 s.
 //
 // It takes about a minute, so it runs only with ANVIL_MEASURE_SUBMIT_CHAIN
 // set.

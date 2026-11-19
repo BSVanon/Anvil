@@ -1,51 +1,33 @@
 package beefscan
 
 import (
-	"context"
+	"encoding/binary"
 	"runtime"
 	"runtime/debug"
 	"sync/atomic"
 	"time"
 
-	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
-// acceptAll is a chain tracker that accepts every root, so Beef.Verify does
-// all of its work.
-type acceptAll struct{}
-
-func (acceptAll) IsValidRootForHeight(context.Context, *chainhash.Hash, uint32) (bool, error) {
-	return true, nil
-}
-
-func (acceptAll) CurrentHeight(context.Context) (uint32, error) { return 1 << 30, nil }
-
-// sdkOps names the go-sdk calls that untrusted BEEF bytes reach in Anvil, in
-// the order timeOps runs them.
-var sdkOps = [...]string{"ParseBeef", "NewBeefFromBytes", "NewTransactionFromBEEF", "BEEF", "AtomicBEEF", "Verify", "MergeBeef"}
+// sdkOps names the go-sdk calls that untrusted BEEF bytes reach in Anvil
+// before beefnorm normalizes them, in the order timeOps runs them: the parse,
+// of an Atomic BEEF's inner bytes. What runs after (beefnorm's extraction of
+// the BUMPs its entries name, both verifications, AtomicBytes, the lookup
+// services' NewTransactionFromBEEF and the engine's Clone and Bytes) runs on
+// the normalized BEEF, and beefnorm's tests time it.
+var sdkOps = [...]string{"NewBeefFromBytes"}
 
 // opTimes holds one duration per entry of sdkOps.
 type opTimes [len(sdkOps)]time.Duration
 
-// timeOps times each of sdkOps on b. BEEF and AtomicBEEF run on the subject
-// ParseBeef returned, as Anvil serializes a parsed subject; Verify and
-// MergeBeef run on the Beef NewBeefFromBytes returned. A call with nothing to
-// run on, because a parse failed or found no subject, takes zero.
+// timeOps times each of sdkOps on b.
 func timeOps(b []byte) (d opTimes) {
-	var subject *transaction.Transaction
-	d[0] = elapsed(func() { _, subject, _, _ = transaction.ParseBeef(b) })
-	var parsed *transaction.Beef
-	d[1] = elapsed(func() { parsed, _ = transaction.NewBeefFromBytes(b) })
-	d[2] = elapsed(func() { _, _ = transaction.NewTransactionFromBEEF(b) })
-	if subject != nil {
-		d[3] = elapsed(func() { _, _ = subject.BEEF() })
-		d[4] = elapsed(func() { _, _ = subject.AtomicBEEF(false) })
+	inner := b
+	if len(b) >= 36 && binary.LittleEndian.Uint32(b) == transaction.ATOMIC_BEEF {
+		inner = b[36:]
 	}
-	if parsed != nil {
-		d[5] = elapsed(func() { _, _ = parsed.Verify(context.Background(), acceptAll{}, false) })
-		d[6] = elapsed(func() { _ = transaction.NewBeefV2().MergeBeef(parsed) })
-	}
+	d[0] = elapsed(func() { _, _ = transaction.NewBeefFromBytes(inner) })
 	return d
 }
 
@@ -133,7 +115,9 @@ func liveHeap(f func() any) (peak, kept uint64) {
 	return peak, kept
 }
 
-// parseHeap is ParseBeef's peak heap on b, in bytes.
+// parseHeap is ParseBeef's peak heap on b, in bytes: what v3.4.0 measured
+// the routes' parse with, and what routeguard's parse allowance cites. It
+// holds all that NewBeefFromBytes, which the routes now run, holds.
 func parseHeap(b []byte) uint64 {
 	peak, _ := liveHeap(func() any {
 		beef, tx, _, _ := transaction.ParseBeef(b)
