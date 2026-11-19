@@ -53,6 +53,9 @@ type Store struct {
 	tip     uint32
 	work    *big.Int // cumulative work of the active chain
 	skipPoW bool     // for testing only
+
+	tipFeed   *broadcaster[uint32]
+	reorgFeed *broadcaster[ReorgNotice]
 }
 
 // NewStore opens or creates a header store at the given path.
@@ -63,7 +66,7 @@ func NewStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("open header store: %w", err)
 	}
 
-	s := &Store{db: db, work: big.NewInt(0)}
+	s := &Store{db: db, work: big.NewInt(0), tipFeed: newBroadcaster[uint32](), reorgFeed: newBroadcaster[ReorgNotice]()}
 
 	// Load current tip
 	tipBytes, err := db.Get(keyTip, nil)
@@ -114,6 +117,16 @@ func (s *Store) Tip() uint32 {
 	defer s.mu.RUnlock()
 	return s.tip
 }
+
+// SubscribeTip registers ch to receive the new tip height after every
+// successful AddHeaders append or adopted ReorgTo. Non-blocking send: a slow
+// or absent subscriber is skipped, never stalling header sync. Returns an
+// unsubscribe function.
+func (s *Store) SubscribeTip(ch chan uint32) func() { return s.tipFeed.subscribe(ch) }
+
+// SubscribeReorg registers ch to receive a ReorgNotice each time ReorgTo
+// adopts a competing chain. Same non-blocking-send contract as SubscribeTip.
+func (s *Store) SubscribeReorg(ch chan ReorgNotice) func() { return s.reorgFeed.subscribe(ch) }
 
 // AddHeaders stores a batch of sequential headers starting at the given height.
 // Validates:
@@ -195,6 +208,7 @@ func (s *Store) AddHeaders(startHeight uint32, headers []*wire.BlockHeader) erro
 
 	s.tip = newTip
 	s.work = newWork
+	s.tipFeed.publish(newTip)
 	return nil
 }
 
@@ -333,6 +347,10 @@ func (s *Store) ReorgTo(headers []*wire.BlockHeader) (adopted bool, forkHeight u
 	// update tip + cumulative work — all in one batch. Deletes are queued
 	// before Puts, so any height present in both resolves to the new header.
 	batch := new(leveldb.Batch)
+	// Captured here, not reconstructed later: once this batch commits, these
+	// headers are gone from the store, so a ReorgNotice subscriber could
+	// never look them up afterward.
+	orphaned := make([]p2pwire.Hash, 0, s.tip-forkHeight)
 	for h := s.tip; h > forkHeight; h-- {
 		raw, err := s.db.Get(heightToKey(prefixHeader, h), nil)
 		if err != nil {
@@ -343,6 +361,7 @@ func (s *Store) ReorgTo(headers []*wire.BlockHeader) (adopted bool, forkHeight u
 			return false, forkHeight, fmt.Errorf("reorg: deserialize old header at %d: %w", h, err)
 		}
 		oldHash := hdr.BlockHash()
+		orphaned = append(orphaned, oldHash)
 		batch.Delete(heightToKey(prefixHeader, h))
 		batch.Delete(append(append([]byte{}, prefixHash...), oldHash[:]...))
 		batch.Delete(heightToKey(prefixMerkle, h))
@@ -379,6 +398,8 @@ func (s *Store) ReorgTo(headers []*wire.BlockHeader) (adopted bool, forkHeight u
 	}
 	s.tip = newTip
 	s.work = newWork
+	s.reorgFeed.publish(ReorgNotice{ForkHeight: forkHeight, NewTip: newTip, OrphanedHashes: orphaned})
+	s.tipFeed.publish(newTip)
 	return true, forkHeight, nil
 }
 

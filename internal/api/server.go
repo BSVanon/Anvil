@@ -39,6 +39,11 @@ type headerStore interface {
 	RangeHeaders(uint32, uint32) ([][]byte, uint32, error)
 	Tip() uint32
 	Work() *big.Int
+	// SubscribeTip/SubscribeReorg feed the chaintracks v2 SSE routes
+	// (handlers_chaintracks_v2_sse.go) from internal/headers.Store's
+	// broadcaster seam (feed.go).
+	SubscribeTip(chan uint32) func()
+	SubscribeReorg(chan headers.ReorgNotice) func()
 }
 
 type beefFetcher interface {
@@ -261,20 +266,29 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /findHeaderHexForHeight", s.openPublic(s.handleFindHeaderHexForHeight))
 	s.mux.HandleFunc("GET /findHeaderHexForBlockHash", s.openPublic(s.handleFindHeaderHexForBlockHash))
 	s.mux.HandleFunc("GET /getPresentHeight", s.openPublic(s.handleGetPresentHeight))
-	// Chaintracks v2: the canonical bsv-blockchain/go-chaintracks HTTP API
-	// (network/tip/header-by-height/header-by-hash/headers), a different wire
-	// shape from the v1 routes just above (see handlers_chaintracks_v2.go for
-	// the canonical source citations). Same openPublic treatment: CORS +
-	// rate-limit, no payment/token gate. v1 routes are unchanged.
+	// Chaintracks v2: the embeddable go-chaintracks route set
+	// (routes/fiber/routes.go) that an Arcade installation mounts at
+	// /chaintracks/v2 — the exact path Anvil uses — answering bare values
+	// (no {status,value} envelope), a different wire shape from the v1
+	// routes just above (see handlers_chaintracks_v2.go for the canonical
+	// source citations). Same openPublic treatment: CORS + rate-limit, no
+	// payment/token gate. v1 routes are unchanged.
 	s.mux.HandleFunc("GET /chaintracks/v2/network", s.openPublic(s.handleChaintracksV2Network))
 	s.mux.HandleFunc("GET /chaintracks/v2/tip", s.openPublic(s.handleChaintracksV2Tip))
-	// Not a canonical route (the canonical server has no /height at all) —
-	// added because bcommon's Arcade kind calls it; see
+	s.mux.HandleFunc("GET /chaintracks/v2/tip.bin", s.openPublic(s.handleChaintracksV2TipBinary))
+	s.mux.HandleFunc("GET /chaintracks/v2/tip/stream", s.openPublic(s.handleChaintracksV2TipStream))
+	s.mux.HandleFunc("GET /chaintracks/v2/reorg/stream", s.openPublic(s.handleChaintracksV2ReorgStream))
+	// Not a canonical route (the canonical route table has no /height at
+	// all) — added because bcommon's Arcade kind calls it; see
 	// handleChaintracksV2Height's doc comment.
 	s.mux.HandleFunc("GET /chaintracks/v2/height", s.openPublic(s.handleChaintracksV2Height))
+	// header/height/{height} and header/hash/{hash} also serve their own
+	// ".bin" shape — see handlers_chaintracks_v2.go's doc comments on why
+	// that isn't a separately-registered pattern.
 	s.mux.HandleFunc("GET /chaintracks/v2/header/height/{height}", s.openPublic(s.handleChaintracksV2HeaderByHeight))
 	s.mux.HandleFunc("GET /chaintracks/v2/header/hash/{hash}", s.openPublic(s.handleChaintracksV2HeaderByHash))
 	s.mux.HandleFunc("GET /chaintracks/v2/headers", s.openPublic(s.handleChaintracksV2Headers))
+	s.mux.HandleFunc("GET /chaintracks/v2/headers.bin", s.openPublic(s.handleChaintracksV2HeadersBinary))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
 	// Confirmation-count status: openPublic (free/portable) so SPV consumers can
 	// offload "did my tx confirm?" polling from external explorers onto any node.

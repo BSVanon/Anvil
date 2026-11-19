@@ -12,90 +12,113 @@ import (
 	"testing"
 )
 
-// Reuses testServer, testServerNoAuth, addServerTestChain (server_test.go)
-// and fetchChaintracks (handlers_chaintracks_test.go) — the same fixtures
-// and {status,value,...} envelope decoder the v1 shim's tests use.
+// fetchBareJSON issues a GET and decodes the body as plain (unwrapped) JSON
+// — the bare dialect every /chaintracks/v2 route answers, contrasting with
+// handlers_chaintracks_test.go's fetchChaintracks, which decodes the v1
+// shim's {status,value,...} envelope.
+func fetchBareJSON(t *testing.T, srv *Server, path string) (int, http.Header, map[string]interface{}) {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	var body map[string]interface{}
+	if w.Body.Len() > 0 {
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("%s: decode body: %v (raw: %s)", path, err, w.Body.String())
+		}
+	}
+	return w.Code, w.Header(), body
+}
+
+// fetchBareBytes issues a GET and returns the raw response body, for the
+// octet-stream routes (/headers and the .bin family).
+func fetchBareBytes(t *testing.T, srv *Server, path string) (int, http.Header, []byte) {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	return w.Code, w.Header(), w.Body.Bytes()
+}
 
 func TestChaintracksV2Network(t *testing.T) {
 	srv := testServer(t)
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/network")
-	if code != http.StatusOK || resp["status"] != "success" {
-		t.Fatalf("expected success, got %d %#v", code, resp)
+	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/network")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
 	}
-	if resp["value"] != "main" {
-		t.Fatalf("expected value=main, got %#v", resp["value"])
+	if body["network"] != "main" {
+		t.Fatalf("expected bare network=main, got %#v", body)
 	}
-	if _, ok := resp["code"]; ok {
-		t.Fatal("success envelope must omit code")
+	if _, ok := body["status"]; ok {
+		t.Fatal("bare dialect must not carry a status envelope")
 	}
-	if _, ok := resp["description"]; ok {
-		t.Fatal("success envelope must omit description")
+	if _, ok := body["value"]; ok {
+		t.Fatal("bare dialect must not carry a value envelope")
 	}
 }
 
 // TestChaintracksV2Height covers the bcommon Arcade-kind addition: a bare
-// {"height":N}, no {status,value} envelope.
+// {"height":N}, not a canonical route at all, plus the Cache-Control
+// canonical sets on it (routes/fiber/routes.go:313-316).
 func TestChaintracksV2Height(t *testing.T) {
 	srv := testServer(t)
 	addServerTestChain(t, srv, 7)
 
-	req := httptest.NewRequest("GET", "/chaintracks/v2/height", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatal(err)
+	code, hdr, body := fetchBareJSON(t, srv, "/chaintracks/v2/height")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
 	}
 	if body["height"].(float64) != 7 {
 		t.Fatalf("expected height 7, got %v", body["height"])
 	}
-	if _, ok := body["status"]; ok {
-		t.Fatal("the bare /height route must not carry a {status,value} envelope")
-	}
-	if _, ok := body["value"]; ok {
-		t.Fatal("the bare /height route must not carry a {status,value} envelope")
+	if got := hdr.Get("Cache-Control"); got != "public, max-age=60" {
+		t.Fatalf("Cache-Control = %q, want canonical's public, max-age=60", got)
 	}
 }
 
 func TestChaintracksV2TipGenesis(t *testing.T) {
 	srv := testServer(t)
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/tip")
-	if code != http.StatusOK || resp["status"] != "success" {
-		t.Fatalf("expected success, got %d %#v", code, resp)
+	code, hdr, body := fetchBareJSON(t, srv, "/chaintracks/v2/tip")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
 	}
-	val := resp["value"].(map[string]interface{})
-	if val["height"].(float64) != 0 {
-		t.Fatalf("expected genesis tip height 0, got %v", val["height"])
+	if body["height"].(float64) != 0 {
+		t.Fatalf("expected genesis tip height 0, got %v", body["height"])
 	}
 	genHash, err := srv.headerStore.HashAtHeight(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if val["hash"] != genHash.String() {
-		t.Fatalf("tip hash mismatch: got %v want %s", val["hash"], genHash.String())
+	if body["hash"] != genHash.String() {
+		t.Fatalf("tip hash mismatch: got %v want %s", body["hash"], genHash.String())
+	}
+	if got := hdr.Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want canonical's no-cache", got)
+	}
+	if got := hdr.Get("X-Block-Height"); got != "0" {
+		t.Fatalf("X-Block-Height = %q, want 0", got)
 	}
 }
 
 func TestChaintracksV2TipAfterChain(t *testing.T) {
 	srv := testServer(t)
 	addServerTestChain(t, srv, 5)
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/tip")
+	code, hdr, body := fetchBareJSON(t, srv, "/chaintracks/v2/tip")
 	if code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", code)
 	}
-	val := resp["value"].(map[string]interface{})
-	if val["height"].(float64) != 5 {
-		t.Fatalf("expected tip height 5, got %v", val["height"])
+	if body["height"].(float64) != 5 {
+		t.Fatalf("expected tip height 5, got %v", body["height"])
 	}
 	h5, err := srv.headerStore.HashAtHeight(5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if val["hash"] != h5.String() {
-		t.Fatalf("hash mismatch: got %v want %s", val["hash"], h5.String())
+	if body["hash"] != h5.String() {
+		t.Fatalf("hash mismatch: got %v want %s", body["hash"], h5.String())
+	}
+	if got := hdr.Get("X-Block-Height"); got != "5" {
+		t.Fatalf("X-Block-Height = %q, want 5", got)
 	}
 }
 
@@ -103,9 +126,12 @@ func TestChaintracksV2TipInternalError(t *testing.T) {
 	srv := testServer(t)
 	srv.headerStore.Close() // simulate a store outage
 
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/tip")
-	if code != http.StatusInternalServerError || resp["code"] != "ERR_INTERNAL" {
-		t.Fatalf("expected 500 ERR_INTERNAL on store failure, got %d %#v", code, resp)
+	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/tip")
+	if code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on store failure, got %d %#v", code, body)
+	}
+	if body["error"] == nil {
+		t.Fatal("expected a bare {\"error\":...} body")
 	}
 }
 
@@ -115,46 +141,45 @@ func TestChaintracksV2HeaderByHeightShape(t *testing.T) {
 	srv := testServer(t)
 	addServerTestChain(t, srv, 5)
 
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/header/height/1")
-	if code != http.StatusOK || resp["status"] != "success" {
-		t.Fatalf("expected success, got %d %#v", code, resp)
+	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/header/height/1")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
 	}
-	val := resp["value"].(map[string]interface{})
 
-	if val["height"].(float64) != 1 {
-		t.Fatalf("expected height 1, got %v", val["height"])
+	if body["height"].(float64) != 1 {
+		t.Fatalf("expected height 1, got %v", body["height"])
 	}
-	if val["version"].(float64) != 1 {
-		t.Fatalf("expected version 1, got %v", val["version"])
+	if body["version"].(float64) != 1 {
+		t.Fatalf("expected version 1, got %v", body["version"])
 	}
-	if val["bits"].(float64) != float64(0x1d00ffff) {
-		t.Fatalf("expected bits 0x1d00ffff, got %v", val["bits"])
+	if body["bits"].(float64) != float64(0x1d00ffff) {
+		t.Fatalf("expected bits 0x1d00ffff, got %v", body["bits"])
 	}
 	// addServerTestChain sets nonce = i; height 1 is built from i=0.
-	if val["nonce"].(float64) != 0 {
-		t.Fatalf("expected nonce 0, got %v", val["nonce"])
+	if body["nonce"].(float64) != 0 {
+		t.Fatalf("expected nonce 0, got %v", body["nonce"])
 	}
-	if val["time"].(float64) <= 0 {
-		t.Fatalf("expected positive time, got %v", val["time"])
+	if body["time"].(float64) <= 0 {
+		t.Fatalf("expected positive time, got %v", body["time"])
 	}
 
 	const wantMerkle = "abcdef0000000000000000000000000000000000000000000000000000000000"
-	if val["merkleRoot"] != wantMerkle {
-		t.Fatalf("merkleRoot byte order wrong: got %v want %s", val["merkleRoot"], wantMerkle)
+	if body["merkleRoot"] != wantMerkle {
+		t.Fatalf("merkleRoot byte order wrong: got %v want %s", body["merkleRoot"], wantMerkle)
 	}
 	genHash, err := srv.headerStore.HashAtHeight(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if val["previousHash"] != genHash.String() {
-		t.Fatalf("previousHash mismatch: got %v want %s", val["previousHash"], genHash.String())
+	if body["previousHash"] != genHash.String() {
+		t.Fatalf("previousHash mismatch: got %v want %s", body["previousHash"], genHash.String())
 	}
 	h1, err := srv.headerStore.HashAtHeight(1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if val["hash"] != h1.String() {
-		t.Fatalf("hash mismatch: got %v want %s", val["hash"], h1.String())
+	if body["hash"] != h1.String() {
+		t.Fatalf("hash mismatch: got %v want %s", body["hash"], h1.String())
 	}
 }
 
@@ -170,11 +195,10 @@ func TestChaintracksV2HeaderPoWFieldsReserializeToHash(t *testing.T) {
 	addServerTestChain(t, srv, 5)
 
 	for height := uint32(0); height <= 5; height++ {
-		_, resp := fetchChaintracks(t, srv, "/chaintracks/v2/header/height/"+strconv.FormatUint(uint64(height), 10))
-		val := resp["value"].(map[string]interface{})
-		got := reserializeAndHash(t, val)
-		if got != val["hash"] {
-			t.Fatalf("height %d: reserialized hash %s != served hash %v", height, got, val["hash"])
+		_, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/header/height/"+strconv.FormatUint(uint64(height), 10))
+		got := reserializeAndHash(t, body)
+		if got != body["hash"] {
+			t.Fatalf("height %d: reserialized hash %s != served hash %v", height, got, body["hash"])
 		}
 	}
 }
@@ -183,12 +207,12 @@ func TestChaintracksV2HeaderByHeightMissing(t *testing.T) {
 	srv := testServer(t)
 	addServerTestChain(t, srv, 3)
 
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/header/height/999")
-	if code != http.StatusNotFound || resp["code"] != "ERR_NOT_FOUND" {
-		t.Fatalf("expected 404 ERR_NOT_FOUND for above-tip height, got %d %#v", code, resp)
+	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/header/height/999")
+	if code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d %#v", code, body)
 	}
-	if _, ok := resp["value"]; ok {
-		t.Fatal("miss must not carry a value")
+	if body["error"] != "Header not found" {
+		t.Fatalf("expected canonical error text, got %#v", body)
 	}
 }
 
@@ -198,9 +222,9 @@ func TestChaintracksV2HeaderByHeightBadRequest(t *testing.T) {
 		"/chaintracks/v2/header/height/abc", // non-integer
 		"/chaintracks/v2/header/height/-1",  // negative
 	} {
-		code, resp := fetchChaintracks(t, srv, path)
-		if code != http.StatusBadRequest || resp["code"] != "ERR_INVALID_PARAMS" {
-			t.Fatalf("%s: expected 400 ERR_INVALID_PARAMS, got %d %#v", path, code, resp)
+		code, _, body := fetchBareJSON(t, srv, path)
+		if code != http.StatusBadRequest || body["error"] != "Invalid height parameter" {
+			t.Fatalf("%s: expected 400 with canonical error text, got %d %#v", path, code, body)
 		}
 	}
 }
@@ -208,13 +232,12 @@ func TestChaintracksV2HeaderByHeightBadRequest(t *testing.T) {
 func TestChaintracksV2HeaderByHashGenesis(t *testing.T) {
 	srv := testServer(t)
 	const genesis = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/header/hash/"+genesis)
-	if code != http.StatusOK || resp["status"] != "success" {
-		t.Fatalf("expected success, got %d %#v", code, resp)
+	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/header/hash/"+genesis)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
 	}
-	val := resp["value"].(map[string]interface{})
-	if val["height"].(float64) != 0 || val["hash"] != genesis {
-		t.Fatalf("unexpected genesis value: %#v", val)
+	if body["height"].(float64) != 0 || body["hash"] != genesis {
+		t.Fatalf("unexpected genesis value: %#v", body)
 	}
 }
 
@@ -225,158 +248,42 @@ func TestChaintracksV2HeaderByHashChainLinkage(t *testing.T) {
 	srv := testServer(t)
 	addServerTestChain(t, srv, 5)
 
-	_, r1 := fetchChaintracks(t, srv, "/chaintracks/v2/header/height/1")
-	_, r2 := fetchChaintracks(t, srv, "/chaintracks/v2/header/height/2")
-	h1 := r1["value"].(map[string]interface{})["hash"]
-	prev2 := r2["value"].(map[string]interface{})["previousHash"]
+	_, _, r1 := fetchBareJSON(t, srv, "/chaintracks/v2/header/height/1")
+	_, _, r2 := fetchBareJSON(t, srv, "/chaintracks/v2/header/height/2")
+	h1 := r1["hash"]
+	prev2 := r2["previousHash"]
 	if h1 != prev2 {
 		t.Fatalf("chain linkage broken in display space: hash(1)=%v prev(2)=%v", h1, prev2)
 	}
 
-	_, byHash := fetchChaintracks(t, srv, "/chaintracks/v2/header/hash/"+h1.(string))
-	if byHash["value"].(map[string]interface{})["height"].(float64) != 1 {
-		t.Fatalf("header/hash/%v: expected height 1, got %#v", h1, byHash["value"])
+	_, _, byHash := fetchBareJSON(t, srv, "/chaintracks/v2/header/hash/"+h1.(string))
+	if byHash["height"].(float64) != 1 {
+		t.Fatalf("header/hash/%v: expected height 1, got %#v", h1, byHash)
 	}
 }
 
 func TestChaintracksV2HeaderByHashMissing(t *testing.T) {
 	srv := testServer(t)
 	unknown := strings.Repeat("1", 64)
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/header/hash/"+unknown)
-	if code != http.StatusNotFound || resp["code"] != "ERR_NOT_FOUND" {
-		t.Fatalf("expected 404 ERR_NOT_FOUND for unknown hash, got %d %#v", code, resp)
+	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/header/hash/"+unknown)
+	if code != http.StatusNotFound || body["error"] != "Header not found" {
+		t.Fatalf("expected 404 with canonical error text, got %d %#v", code, body)
 	}
 }
 
 func TestChaintracksV2HeaderByHashBadRequest(t *testing.T) {
 	srv := testServer(t)
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/header/hash/bad")
-	if code != http.StatusBadRequest || resp["code"] != "ERR_INVALID_PARAMS" {
-		t.Fatalf("expected 400 ERR_INVALID_PARAMS for malformed hash, got %d %#v", code, resp)
+	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/header/hash/bad")
+	if code != http.StatusBadRequest || body["error"] != "Invalid hash parameter" {
+		t.Fatalf("expected 400 with canonical error text, got %d %#v", code, body)
 	}
 }
 
-func TestChaintracksV2HeadersRangeShape(t *testing.T) {
-	srv := testServer(t)
-	addServerTestChain(t, srv, 10)
+// The /headers range route tests, plus the public/CORS and payment-gate
+// sweeps, are in handlers_chaintracks_v2_headers_test.go (split out to keep
+// both files under the 400-line bespoke cap).
 
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/headers?height=2&count=3")
-	if code != http.StatusOK || resp["status"] != "success" {
-		t.Fatalf("expected success, got %d %#v", code, resp)
-	}
-	values := resp["value"].([]interface{})
-	if len(values) != 3 {
-		t.Fatalf("expected 3 headers, got %d", len(values))
-	}
-	for i, v := range values {
-		h := v.(map[string]interface{})
-		wantHeight := float64(2 + i)
-		if h["height"].(float64) != wantHeight {
-			t.Fatalf("header %d: expected height %v, got %v", i, wantHeight, h["height"])
-		}
-	}
-	// Chain-linkage within the range, same check as the single-header test.
-	h0 := values[0].(map[string]interface{})
-	h1 := values[1].(map[string]interface{})
-	if h0["hash"] != h1["previousHash"] {
-		t.Fatalf("range linkage broken: hash[0]=%v previousHash[1]=%v", h0["hash"], h1["previousHash"])
-	}
-}
-
-func TestChaintracksV2HeadersRangeExceedsTip(t *testing.T) {
-	srv := testServer(t)
-	addServerTestChain(t, srv, 5)
-
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/headers?height=3&count=10")
-	if code != http.StatusBadRequest || resp["code"] != "ERR_INVALID_PARAMS" {
-		t.Fatalf("expected 400 ERR_INVALID_PARAMS when range exceeds tip, got %d %#v", code, resp)
-	}
-}
-
-func TestChaintracksV2HeadersRangeExceedsCap(t *testing.T) {
-	srv := testServer(t)
-	addServerTestChain(t, srv, 5)
-
-	code, resp := fetchChaintracks(t, srv, "/chaintracks/v2/headers?height=0&count="+strconv.Itoa(MaxHeadersRange+1))
-	if code != http.StatusBadRequest || resp["code"] != "ERR_INVALID_PARAMS" {
-		t.Fatalf("expected 400 ERR_INVALID_PARAMS above MaxHeadersRange, got %d %#v", code, resp)
-	}
-}
-
-func TestChaintracksV2HeadersRangeBadRequest(t *testing.T) {
-	srv := testServer(t)
-	for _, path := range []string{
-		"/chaintracks/v2/headers",                  // missing both
-		"/chaintracks/v2/headers?height=0",         // missing count
-		"/chaintracks/v2/headers?height=0&count=0", // count must be >= 1
-		"/chaintracks/v2/headers?height=abc&count=1",
-	} {
-		code, resp := fetchChaintracks(t, srv, path)
-		if code != http.StatusBadRequest || resp["code"] != "ERR_INVALID_PARAMS" {
-			t.Fatalf("%s: expected 400 ERR_INVALID_PARAMS, got %d %#v", path, code, resp)
-		}
-	}
-}
-
-// TestChaintracksV2PublicAndCORS confirms every v2 route needs no auth token
-// and carries permissive CORS, mirroring the v1 shim's
-// TestChaintracksPublicAndCORS.
-func TestChaintracksV2PublicAndCORS(t *testing.T) {
-	srv := testServerNoAuth(t)
-	addServerTestChain(t, srv, 2)
-	paths := []string{
-		"/chaintracks/v2/network",
-		"/chaintracks/v2/height",
-		"/chaintracks/v2/tip",
-		"/chaintracks/v2/header/height/1",
-		"/chaintracks/v2/header/hash/000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
-		"/chaintracks/v2/headers?height=0&count=2",
-	}
-	for _, path := range paths {
-		req := httptest.NewRequest("GET", path, nil)
-		w := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("%s: expected 200 without auth, got %d", path, w.Code)
-		}
-		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-			t.Fatalf("%s: expected CORS *, got %q", path, got)
-		}
-	}
-}
-
-// TestChaintracksV2UnderPaymentGate proves openPublic keeps v2 routes off the
-// x402 payment gate on a node that charges for reads, mirroring the v1
-// shim's TestChaintracksPublicUnderPaymentGate.
-func TestChaintracksV2UnderPaymentGate(t *testing.T) {
-	srv := testServer(t)
-	addServerTestChain(t, srv, 3)
-	srv.paymentGate = NewPaymentGate(PaymentGateConfig{
-		PriceSats:      100,
-		PayeeScriptHex: testPayeeScript(t),
-		NonceProvider:  &DevNonceProvider{},
-	})
-	srv.mux = http.NewServeMux()
-	srv.routes()
-
-	// Sanity: a normal openRead path IS gated at this price.
-	req := httptest.NewRequest("GET", "/headers/tip", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusPaymentRequired {
-		t.Fatalf("/headers/tip: expected 402 under priced gate, got %d", w.Code)
-	}
-
-	for _, path := range []string{"/chaintracks/v2/network", "/chaintracks/v2/tip", "/chaintracks/v2/header/height/1"} {
-		code, resp := fetchChaintracks(t, srv, path)
-		if code != http.StatusOK || resp["status"] != "success" {
-			t.Fatalf("%s: expected 200 success under priced payment gate, got %d %#v", path, code, resp)
-		}
-	}
-}
-
-// --- local test helpers (kept separate from the v1 shim's fetchChaintracks,
-// which this file also reuses as-is) ---
+// --- local test helpers ---
 
 // reserializeAndHash reconstructs the 80-byte Bitcoin header from the 6
 // consensus fields of a chaintracks v2 header value and double-SHA256s it,
