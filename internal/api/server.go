@@ -261,6 +261,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /findHeaderHexForHeight", s.openPublic(s.handleFindHeaderHexForHeight))
 	s.mux.HandleFunc("GET /findHeaderHexForBlockHash", s.openPublic(s.handleFindHeaderHexForBlockHash))
 	s.mux.HandleFunc("GET /getPresentHeight", s.openPublic(s.handleGetPresentHeight))
+	// Chaintracks v2: the canonical bsv-blockchain/go-chaintracks HTTP API
+	// (network/tip/header-by-height/header-by-hash/headers), a different wire
+	// shape from the v1 routes just above (see handlers_chaintracks_v2.go for
+	// the canonical source citations). Same openPublic treatment: CORS +
+	// rate-limit, no payment/token gate. v1 routes are unchanged.
+	s.mux.HandleFunc("GET /chaintracks/v2/network", s.openPublic(s.handleChaintracksV2Network))
+	s.mux.HandleFunc("GET /chaintracks/v2/tip", s.openPublic(s.handleChaintracksV2Tip))
+	s.mux.HandleFunc("GET /chaintracks/v2/header/height/{height}", s.openPublic(s.handleChaintracksV2HeaderByHeight))
+	s.mux.HandleFunc("GET /chaintracks/v2/header/hash/{hash}", s.openPublic(s.handleChaintracksV2HeaderByHash))
+	s.mux.HandleFunc("GET /chaintracks/v2/headers", s.openPublic(s.handleChaintracksV2Headers))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
 	// Confirmation-count status: openPublic (free/portable) so SPV consumers can
 	// offload "did my tx confirm?" polling from external explorers onto any node.
