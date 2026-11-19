@@ -45,24 +45,43 @@ func verifyTxidMatch(rawHex string, txid string) error {
 // are kept from flooding the cache or a client response.
 const txidMismatchLogInterval = time.Minute
 
-var txidMismatchLog = struct {
+// txidMismatchLimiter holds the per-source rate-limit state. It is a
+// *Server field (see serve.go's Server.txidMismatchLimiter), not a package
+// global: a package global would let state leak between independent
+// *Server instances in different tests (or, in principle, different nodes
+// in the same process), so one test's warning could silently suppress
+// another's.
+type txidMismatchLimiter struct {
 	mu   sync.Mutex
 	last map[string]time.Time
-}{last: make(map[string]time.Time)}
+}
 
-// logTxidMismatch warns that source returned bytes which did not hash to
-// txid, at most once per source per txidMismatchLogInterval.
-func logTxidMismatch(source, txid string) {
+func newTxidMismatchLimiter() *txidMismatchLimiter {
+	return &txidMismatchLimiter{last: make(map[string]time.Time)}
+}
+
+// logTxidMismatch warns that source returned bytes which failed
+// verifyTxidMatch, at most once per source per txidMismatchLogInterval. err
+// is verifyTxidMatch's own return value, so the log line can distinguish a
+// hex-decode failure (malformed bytes) from a genuine hash mismatch
+// (wrapping errTxidMismatch) — two different failure modes that a single
+// generic message previously conflated.
+func (l *txidMismatchLimiter) logTxidMismatch(source, txid string, err error) {
 	now := time.Now()
-	txidMismatchLog.mu.Lock()
-	last, ok := txidMismatchLog.last[source]
+	l.mu.Lock()
+	last, ok := l.last[source]
 	logNow := !ok || now.Sub(last) >= txidMismatchLogInterval
 	if logNow {
-		txidMismatchLog.last[source] = now
+		l.last[source] = now
 	}
-	txidMismatchLog.mu.Unlock()
+	l.mu.Unlock()
 
-	if logNow {
-		slog.Warn("content: fetched tx bytes did not match requested txid", "source", source, "txid", txid)
+	if !logNow {
+		return
 	}
+	if errors.Is(err, errTxidMismatch) {
+		slog.Warn("content: fetched tx bytes did not hash to requested txid", "source", source, "txid", txid, "err", err)
+		return
+	}
+	slog.Warn("content: fetched tx bytes failed to decode", "source", source, "txid", txid, "err", err)
 }

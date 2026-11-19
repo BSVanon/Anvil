@@ -21,10 +21,11 @@ func (s *Server) fetchRawTx(txid string) (string, error) {
 	// Check block cache first (instant if block was previously bootstrapped)
 	if s.blockSource != nil {
 		if rawHex, ok := s.blockSource.LookupCachedTx(txid); ok {
-			if verr := verifyTxidMatch(rawHex, txid); verr == nil {
+			verr := verifyTxidMatch(rawHex, txid)
+			if verr == nil {
 				return rawHex, nil
 			}
-			logTxidMismatch("block_cache", txid)
+			s.txidMismatchLimiter.logTxidMismatch("block_cache", txid, verr)
 		}
 	}
 
@@ -32,10 +33,11 @@ func (s *Server) fetchRawTx(txid string) (string, error) {
 	if s.p2pSource != nil {
 		rawHex, err := s.p2pSource.FetchRawTx(txid)
 		if err == nil {
-			if verr := verifyTxidMatch(rawHex, txid); verr == nil {
+			verr := verifyTxidMatch(rawHex, txid)
+			if verr == nil {
 				return rawHex, nil
 			}
-			logTxidMismatch("p2p_tx", txid)
+			s.txidMismatchLimiter.logTxidMismatch("p2p_tx", txid, verr)
 		}
 	}
 
@@ -51,10 +53,11 @@ func (s *Server) fetchRawTx(txid string) (string, error) {
 		if blockHash != "" {
 			rawHex, err := s.blockSource.FetchTxFromBlock(txid, blockHash)
 			if err == nil {
-				if verr := verifyTxidMatch(rawHex, txid); verr == nil {
+				verr := verifyTxidMatch(rawHex, txid)
+				if verr == nil {
 					return rawHex, nil
 				}
-				logTxidMismatch("p2p_block", txid)
+				s.txidMismatchLimiter.logTxidMismatch("p2p_block", txid, verr)
 			}
 		}
 
@@ -184,10 +187,11 @@ func (s *Server) fetchRawTxFromWoC(txid string) (string, error) {
 			return "", err
 		}
 		rawHex := strings.TrimSpace(string(body))
-		if verr := verifyTxidMatch(rawHex, txid); verr == nil {
+		verr := verifyTxidMatch(rawHex, txid)
+		if verr == nil {
 			return rawHex, nil
 		}
-		logTxidMismatch("whatsonchain_hex", txid)
+		s.txidMismatchLimiter.logTxidMismatch("whatsonchain_hex", txid, verr)
 		// Bytes didn't hash to txid — fall through to the JSON endpoint
 		// below, same as a non-200 status would.
 	}
@@ -207,7 +211,7 @@ func (s *Server) fetchRawTxFromWoC(txid string) (string, error) {
 	}
 	rawHex := strings.TrimSpace(txData.Hex)
 	if verr := verifyTxidMatch(rawHex, txid); verr != nil {
-		logTxidMismatch("whatsonchain_json", txid)
+		s.txidMismatchLimiter.logTxidMismatch("whatsonchain_json", txid, verr)
 		return "", verr
 	}
 	return rawHex, nil

@@ -37,14 +37,15 @@ type BlockTxSource interface {
 
 // Server serves inscription content with a TTL cache (oldest-eviction when full).
 type Server struct {
-	wocURL       string
-	p2pSource    TxSource                // individual tx fetch via P2P
-	blockSource  BlockTxSource           // block-based tx fetch via P2P (fallback for large txs)
-	headerLookup func(height int) string // returns block hash for height
-	cache        map[string]*inscription
-	mu           sync.RWMutex
-	maxAge       time.Duration
-	client       *http.Client
+	wocURL              string
+	p2pSource           TxSource                // individual tx fetch via P2P
+	blockSource         BlockTxSource           // block-based tx fetch via P2P (fallback for large txs)
+	headerLookup        func(height int) string // returns block hash for height
+	cache               map[string]*inscription
+	mu                  sync.RWMutex
+	maxAge              time.Duration
+	client              *http.Client
+	txidMismatchLimiter *txidMismatchLimiter // per-Server rate limit state; see txid_verify.go
 }
 
 // NewServer creates a content server.
@@ -53,13 +54,14 @@ func NewServer(wocURL string, p2pSource TxSource, blockSource BlockTxSource, hea
 		wocURL = "https://api.whatsonchain.com/v1/bsv/main"
 	}
 	return &Server{
-		wocURL:       wocURL,
-		p2pSource:    p2pSource,
-		blockSource:  blockSource,
-		headerLookup: headerLookup,
-		cache:        make(map[string]*inscription),
-		maxAge:       24 * time.Hour,
-		client:       &http.Client{Timeout: 15 * time.Second},
+		wocURL:              wocURL,
+		p2pSource:           p2pSource,
+		blockSource:         blockSource,
+		headerLookup:        headerLookup,
+		cache:               make(map[string]*inscription),
+		maxAge:              24 * time.Hour,
+		client:              &http.Client{Timeout: 15 * time.Second},
+		txidMismatchLimiter: newTxidMismatchLimiter(),
 	}
 }
 
