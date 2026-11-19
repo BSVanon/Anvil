@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -39,8 +38,8 @@ type BlockTxSource interface {
 // Server serves inscription content with a TTL cache (oldest-eviction when full).
 type Server struct {
 	wocURL       string
-	p2pSource    TxSource      // individual tx fetch via P2P
-	blockSource  BlockTxSource // block-based tx fetch via P2P (fallback for large txs)
+	p2pSource    TxSource                // individual tx fetch via P2P
+	blockSource  BlockTxSource           // block-based tx fetch via P2P (fallback for large txs)
 	headerLookup func(height int) string // returns block hash for height
 	cache        map[string]*inscription
 	mu           sync.RWMutex
@@ -169,179 +168,9 @@ func serveInscription(w http.ResponseWriter, insc *inscription) {
 	_, _ = w.Write(insc.Data)
 }
 
-// fetchRawTx gets the raw transaction hex.
-// Tries: block cache → P2P individual tx → WoC API → P2P block fetch.
-func (s *Server) fetchRawTx(txid string) (string, error) {
-	// Check block cache first (instant if block was previously bootstrapped)
-	if s.blockSource != nil {
-		if rawHex, ok := s.blockSource.LookupCachedTx(txid); ok {
-			return rawHex, nil
-		}
-	}
-
-	// Try P2P individual tx
-	if s.p2pSource != nil {
-		rawHex, err := s.p2pSource.FetchRawTx(txid)
-		if err == nil {
-			return rawHex, nil
-		}
-	}
-
-	// Try WoC API
-	rawHex, err := s.fetchRawTxFromWoC(txid)
-	if err == nil {
-		return rawHex, nil
-	}
-
-	// Last resort: fetch from block via P2P
-	if s.blockSource != nil {
-		blockHash := s.findBlockHash(txid)
-		if blockHash != "" {
-			rawHex, err := s.blockSource.FetchTxFromBlock(txid, blockHash)
-			if err == nil {
-				return rawHex, nil
-			}
-		}
-
-		// If we have a cached block that might contain this tx (same-block siblings),
-		// the BlockTxFetcher's cache will handle it automatically on retry.
-	}
-
-	return "", fmt.Errorf("all sources failed for tx %s", txid)
-}
-
-// findBlockHash tries to determine which block contains a transaction.
-// Tries multiple WoC endpoints since large txs may not be indexed on all of them.
-func (s *Server) findBlockHash(txid string) string {
-	// Try 1: WoC tx status (works for normal txs)
-	if hash := s.tryWoCStatus(txid); hash != "" {
-		return hash
-	}
-
-	// Try 2: WoC TSC proof — the "target" field is the block hash
-	if hash := s.tryWoCProof(txid); hash != "" {
-		return hash
-	}
-
-	// Try 3: WoC confirmation endpoint
-	if hash := s.tryWoCConfirmation(txid); hash != "" {
-		return hash
-	}
-
-	return ""
-}
-
-func (s *Server) tryWoCStatus(txid string) string {
-	url := fmt.Sprintf("%s/tx/%s/status", s.wocURL, txid)
-	resp, err := s.client.Get(url)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-
-	var status struct {
-		BlockHeight int    `json:"block_height"`
-		BlockHash   string `json:"block_hash"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return ""
-	}
-	if status.BlockHash != "" {
-		return status.BlockHash
-	}
-	if status.BlockHeight > 0 && s.headerLookup != nil {
-		return s.headerLookup(status.BlockHeight)
-	}
-	return ""
-}
-
-func (s *Server) tryWoCProof(txid string) string {
-	url := fmt.Sprintf("%s/tx/%s/proof/tsc", s.wocURL, txid)
-	resp, err := s.client.Get(url)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-
-	// TSC proof can be an array or single object
-	var proofs []struct {
-		Target string `json:"target"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&proofs); err != nil {
-		return ""
-	}
-	if len(proofs) > 0 && proofs[0].Target != "" {
-		return proofs[0].Target
-	}
-	return ""
-}
-
-func (s *Server) tryWoCConfirmation(txid string) string {
-	// Try the basic tx endpoint which sometimes includes blockheight
-	url := fmt.Sprintf("%s/tx/%s", s.wocURL, txid)
-	resp, err := s.client.Get(url)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-
-	var tx struct {
-		BlockHeight int    `json:"blockheight"`
-		BlockHash   string `json:"blockhash"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tx); err != nil {
-		return ""
-	}
-	if tx.BlockHash != "" {
-		return tx.BlockHash
-	}
-	if tx.BlockHeight > 0 && s.headerLookup != nil {
-		return s.headerLookup(tx.BlockHeight)
-	}
-	return ""
-}
-
-// fetchRawTxFromWoC gets the raw transaction hex from WhatsOnChain API.
-func (s *Server) fetchRawTxFromWoC(txid string) (string, error) {
-	url := fmt.Sprintf("%s/tx/%s/hex", s.wocURL, txid)
-	resp, err := s.client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		// Try JSON endpoint as fallback
-		url2 := fmt.Sprintf("%s/tx/%s", s.wocURL, txid)
-		resp2, err := s.client.Get(url2)
-		if err != nil {
-			return "", fmt.Errorf("WoC returned %d", resp.StatusCode)
-		}
-		defer resp2.Body.Close()
-		var txData struct {
-			Hex string `json:"hex"`
-		}
-		if err := decodeWoCJSON(resp2.Body, &txData); err != nil {
-			return "", fmt.Errorf("decode tx: %w", err)
-		}
-		return txData.Hex, nil
-	}
-
-	body, err := readWoCBody(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(body)), nil
-}
+// fetchRawTx, findBlockHash, tryWoCStatus, tryWoCProof, tryWoCConfirmation
+// and fetchRawTxFromWoC — the remote-fetch logic ServeContent calls into —
+// live in fetch.go.
 
 // parseInscription extracts inscription data from a specific transaction output.
 // Parses the raw tx to find the exact output at voutStr, then checks for inscription data.

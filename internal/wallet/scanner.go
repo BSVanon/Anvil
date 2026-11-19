@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/txrelay"
@@ -164,6 +165,19 @@ func (s *Scanner) ScanAddress(ctx context.Context, address string) (*ScanResult,
 		if txParseErr != nil {
 			detail.Status = "error"
 			detail.Error = fmt.Sprintf("parse tx: %v", txParseErr)
+			result.Errors++
+			result.Details = append(result.Details, detail)
+			continue
+		}
+
+		// fetchRawTx trusts WhatsOnChain for the bytes themselves; verify
+		// here that what it returned really is utxo.TxHash before this scan
+		// spends anything against it. Everything below — the merkle proof
+		// fetch, the BEEF, the outpoint — is keyed off parsedTx.TxID(), so
+		// this one check also protects all of it.
+		if !fetchedTxMatches(parsedTx, utxo.TxHash) {
+			detail.Status = "error"
+			detail.Error = fmt.Sprintf("fetched tx hash %s does not match requested %s", parsedTx.TxID(), utxo.TxHash)
 			result.Errors++
 			result.Details = append(result.Details, detail)
 			continue
@@ -504,6 +518,14 @@ func reverseBytes(b []byte) {
 	}
 }
 
+// fetchedTxMatches reports whether tx's real TxID is requested, so a scan
+// never proceeds — fetching a merkle proof, building BEEF, or spending an
+// outpoint — against a transaction fetchRawTx returned under the wrong
+// txid.
+func fetchedTxMatches(tx *transaction.Transaction, requested string) bool {
+	return strings.EqualFold(tx.TxID().String(), requested)
+}
+
 // buildBEEFFromTx constructs Atomic BEEF from an already-parsed transaction
 // and a BRC-74 merkle path hex string.
 func buildBEEFFromTx(tx *transaction.Transaction, merklePathHex string) ([]byte, error) {
@@ -526,4 +548,3 @@ func buildBEEFFromTx(tx *transaction.Transaction, merklePathHex string) ([]byte,
 
 	return atomicBytes, nil
 }
-

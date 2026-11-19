@@ -3,6 +3,7 @@ package wallet
 import (
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bsv-blockchain/go-sdk/chainhash"
@@ -18,10 +19,10 @@ func TestTSCtoMerklePath(t *testing.T) {
 	// Real data from block 942218, tx index 27409
 	// Block merkle root: de284edf510f40832764758ae76180834ed5cb0e31611506f73f669b886d3a8c
 	const (
-		txidHex         = "3baeb8f45b270b2fe2c9c6c4d2eba73a5a7c8dc62ae60d0ecac5f96d882fc448"
-		blockHeight     = uint32(942218)
-		expectedRoot    = "de284edf510f40832764758ae76180834ed5cb0e31611506f73f669b886d3a8c"
-		tscIndex        = uint64(27409)
+		txidHex      = "3baeb8f45b270b2fe2c9c6c4d2eba73a5a7c8dc62ae60d0ecac5f96d882fc448"
+		blockHeight  = uint32(942218)
+		expectedRoot = "de284edf510f40832764758ae76180834ed5cb0e31611506f73f669b886d3a8c"
+		tscIndex     = uint64(27409)
 	)
 
 	tscNodes := []string{
@@ -203,6 +204,30 @@ func TestTSCNodeToElement_Duplicate(t *testing.T) {
 	elem := tscNodeToElement("*", 7)
 	if elem.Duplicate == nil || !*elem.Duplicate {
 		t.Fatal("expected duplicate flag")
+	}
+}
+
+// TestFetchedTxMatches verifies the guard ScanAddress runs on every fetched
+// transaction before trusting WhatsOnChain's bytes: a tx whose real TxID is
+// not the requested one must be rejected, case-insensitively.
+func TestFetchedTxMatches(t *testing.T) {
+	tx := &transaction.Transaction{LockTime: 1}
+	realTxid := tx.TxID().String()
+
+	if !fetchedTxMatches(tx, realTxid) {
+		t.Fatalf("expected a match against the tx's own real txid %s", realTxid)
+	}
+	if !fetchedTxMatches(tx, strings.ToUpper(realTxid)) {
+		t.Fatal("expected the match to be case-insensitive")
+	}
+
+	tx2 := &transaction.Transaction{LockTime: 2}
+	otherTxid := tx2.TxID().String()
+	if otherTxid == realTxid {
+		t.Fatal("test setup: expected two different transactions to hash differently")
+	}
+	if fetchedTxMatches(tx, otherTxid) {
+		t.Fatal("expected no match against a different transaction's txid")
 	}
 }
 

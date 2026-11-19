@@ -2,14 +2,24 @@ package content
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/bsv-blockchain/go-sdk/chainhash"
 )
 
 const testWoCTxid = "3f655413e56f0a353da881ea08de93bb735f279228f201d6804d4d17767cba44"
+
+// realTxid returns the double-SHA256, byte-reversed hash of raw — the same
+// value verifyTxidMatch computes — so tests can build a body and the txid
+// that genuinely matches it, instead of an arbitrary placeholder.
+func realTxid(raw []byte) string {
+	return chainhash.DoubleHashH(raw).String()
+}
 
 // newWoCStub serves hexBody (or 404 when hexBody is nil) on /tx/{txid}/hex and
 // jsonBody (or 404 when it is nil) on the /tx/{txid} JSON fallback, and
@@ -69,12 +79,21 @@ func TestFetchRawTxFromWoC_JSONFallbackCapped(t *testing.T) {
 }
 
 // TestFetchRawTxFromWoC_AtCapAccepted: a reply of exactly maxWoCTxHexBytes is
-// still served, so the cap only refuses what is over it.
+// still served, so the cap only refuses what is over it. The body must also
+// be the real preimage of the requested txid, now that fetchRawTxFromWoC
+// verifies every reply.
 func TestFetchRawTxFromWoC_AtCapAccepted(t *testing.T) {
-	s := newWoCStub(t, bytes.Repeat([]byte("a"), maxWoCTxHexBytes), nil)
-	got, err := s.fetchRawTxFromWoC(testWoCTxid)
+	raw := bytes.Repeat([]byte{0xaa}, maxWoCTxHexBytes/2)
+	hexBody := []byte(hex.EncodeToString(raw))
+	if len(hexBody) != maxWoCTxHexBytes {
+		t.Fatalf("test setup: hex body is %d bytes, want %d", len(hexBody), maxWoCTxHexBytes)
+	}
+	txid := realTxid(raw)
+
+	s := newWoCStub(t, hexBody, nil)
+	got, err := s.fetchRawTxFromWoC(txid)
 	if err != nil {
-		t.Fatalf("a reply at the cap must be accepted, got: %v", err)
+		t.Fatalf("a reply at the cap, matching the requested txid, must be accepted, got: %v", err)
 	}
 	if len(got) != maxWoCTxHexBytes {
 		t.Fatalf("expected %d hex chars, got %d", maxWoCTxHexBytes, len(got))
@@ -82,14 +101,56 @@ func TestFetchRawTxFromWoC_AtCapAccepted(t *testing.T) {
 }
 
 // TestFetchRawTxFromWoC_SmallRepliesUnchanged: ordinary replies on both paths
-// decode as before the cap (the /hex body is trimmed, the JSON hex returned).
+// decode as before the cap (the /hex body is trimmed, the JSON hex
+// returned), given each body's real matching txid.
 func TestFetchRawTxFromWoC_SmallRepliesUnchanged(t *testing.T) {
-	got, err := newWoCStub(t, []byte(" 0100beef\n"), nil).fetchRawTxFromWoC(testWoCTxid)
+	hexRaw := []byte{0x01, 0x00, 0xbe, 0xef}
+	got, err := newWoCStub(t, []byte(" 0100beef\n"), nil).fetchRawTxFromWoC(realTxid(hexRaw))
 	if err != nil || got != "0100beef" {
 		t.Fatalf("hex path: got %q, %v; want \"0100beef\"", got, err)
 	}
-	got, err = newWoCStub(t, nil, []byte(`{"txid":"x","hex":"0200beef"}`)).fetchRawTxFromWoC(testWoCTxid)
+
+	jsonRaw := []byte{0x02, 0x00, 0xbe, 0xef}
+	got, err = newWoCStub(t, nil, []byte(`{"txid":"x","hex":"0200beef"}`)).fetchRawTxFromWoC(realTxid(jsonRaw))
 	if err != nil || got != "0200beef" {
 		t.Fatalf("JSON fallback: got %q, %v; want \"0200beef\"", got, err)
+	}
+}
+
+// TestFetchRawTxFromWoC_HexMismatchRejected: a fake WhatsOnChain that
+// returns a different tx's bytes — on both the hex endpoint and its JSON
+// fallback — must never have those bytes served, and the final error must
+// say so. (TestFetchRawTxFromWoC_JSONFallbackOnHexMismatch below covers the
+// case where the JSON endpoint redeems a bad hex reply with correct bytes.)
+func TestFetchRawTxFromWoC_HexMismatchRejected(t *testing.T) {
+	wrongRaw := []byte{0xde, 0xad, 0xbe, 0xef}
+	requestedTxid := realTxid([]byte{0x00, 0x01, 0x02, 0x03}) // a different, real txid
+
+	s := newWoCStub(t, []byte(hex.EncodeToString(wrongRaw)), []byte(`{"hex":"deadbeef"}`))
+	got, err := s.fetchRawTxFromWoC(requestedTxid)
+	if got != "" {
+		t.Fatalf("mismatched bytes must never be returned, got %q", got)
+	}
+	if !errors.Is(err, errTxidMismatch) {
+		t.Fatalf("expected errTxidMismatch, got: %v", err)
+	}
+}
+
+// TestFetchRawTxFromWoC_JSONFallbackOnHexMismatch: when the hex endpoint's
+// bytes don't match the requested txid, fetchRawTxFromWoC must fall through
+// to the JSON endpoint — a mismatch is "that source failed", not a final
+// answer — and return the JSON endpoint's (correct) bytes.
+func TestFetchRawTxFromWoC_JSONFallbackOnHexMismatch(t *testing.T) {
+	wrongRaw := []byte{0xde, 0xad, 0xbe, 0xef}
+	correctRaw := []byte{0x02, 0x00, 0xbe, 0xef}
+	txid := realTxid(correctRaw)
+
+	s := newWoCStub(t, []byte(hex.EncodeToString(wrongRaw)), []byte(`{"hex":"0200beef"}`))
+	got, err := s.fetchRawTxFromWoC(txid)
+	if err != nil {
+		t.Fatalf("expected the JSON fallback to succeed after the hex mismatch, got: %v", err)
+	}
+	if got != "0200beef" {
+		t.Fatalf("expected the JSON fallback's bytes, got %q", got)
 	}
 }
