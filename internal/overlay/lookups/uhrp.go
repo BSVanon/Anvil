@@ -33,7 +33,6 @@ import (
 	"github.com/bsv-blockchain/go-sdk/storage"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
 // uhrpItemPrefix and uhrpHashPrefix are the LevelDB sub-prefixes for the
@@ -54,6 +53,12 @@ type uhrpItem struct {
 	URL         string `json:"url,omitempty"`
 	ContentType string `json:"content_type,omitempty"`
 	AdmittedAt  int64  `json:"admitted_at"`
+	// BRC26, IdentityKey and Expiry mirror topics.UHRPEntry — see there
+	// for field meaning. A record written before these fields existed
+	// decodes with BRC26 false (legacy), exactly as intended.
+	BRC26       bool   `json:"brc26,omitempty"`
+	IdentityKey string `json:"identity_key,omitempty"`
+	Expiry      int64  `json:"expiry,omitempty"`
 }
 
 // UHRPLookupService implements engine.LookupService for the BRC-26 UHRP
@@ -119,6 +124,9 @@ func (s *UHRPLookupService) BackfillFromLegacyMetadata(outpoint *transaction.Out
 		URL:         entry.URL,
 		ContentType: entry.ContentType,
 		AdmittedAt:  nowUnix(),
+		BRC26:       entry.BRC26,
+		IdentityKey: entry.IdentityKey,
+		Expiry:      entry.Expiry,
 	}
 	body, err := json.Marshal(&item)
 	if err != nil {
@@ -162,8 +170,9 @@ func (s *UHRPLookupService) OutputAdmittedByTopic(ctx context.Context, payload *
 	}
 	entry := topics.ParseUHRPOutput(out.LockingScript.Bytes())
 	if entry == nil {
-		// Not a UHRP advertisement. The topic admitted it for some other
-		// reason (shouldn't happen, but be defensive).
+		// Not a UHRP advertisement of either format. Admission already
+		// verified a BRC-26 output's shape and signature; a re-parse miss
+		// here is non-fatal, mirroring the KVStore lookup.
 		return nil
 	}
 
@@ -172,6 +181,9 @@ func (s *UHRPLookupService) OutputAdmittedByTopic(ctx context.Context, payload *
 		URL:         entry.URL,
 		ContentType: entry.ContentType,
 		AdmittedAt:  nowUnix(),
+		BRC26:       entry.BRC26,
+		IdentityKey: entry.IdentityKey,
+		Expiry:      entry.Expiry,
 	}
 	body, err := json.Marshal(&item)
 	if err != nil {
@@ -336,65 +348,10 @@ func (s *UHRPLookupService) removeOutpoint(txid *chainhash.Hash, vout uint32) er
 	return nil
 }
 
-// scanByHash returns formulas for every outpoint indexed under the given
-// content hash.
-func (s *UHRPLookupService) scanByHash(hashHex string) ([]lookup.LookupFormula, error) {
-	prefix := []byte(uhrpHashPrefix + hashHex + ":")
-	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
-	defer iter.Release()
-	var formulas []lookup.LookupFormula
-	for iter.Next() {
-		op, ok := decodeHashIndexKey(iter.Key(), len(prefix))
-		if !ok {
-			continue
-		}
-		formulas = append(formulas, lookup.LookupFormula{Outpoint: op})
-	}
-	if err := iter.Error(); err != nil {
-		return nil, fmt.Errorf("uhrp lookup: iterate hash index: %w", err)
-	}
-	return formulas, nil
-}
-
-// scanAllItems returns one formula per item in the local index.
-func (s *UHRPLookupService) scanAllItems() ([]lookup.LookupFormula, error) {
-	prefix := []byte(uhrpItemPrefix)
-	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
-	defer iter.Release()
-	var formulas []lookup.LookupFormula
-	for iter.Next() {
-		op, ok := decodeItemKey(iter.Key())
-		if !ok {
-			continue
-		}
-		formulas = append(formulas, lookup.LookupFormula{Outpoint: op})
-	}
-	if err := iter.Error(); err != nil {
-		return nil, fmt.Errorf("uhrp lookup: iterate items: %w", err)
-	}
-	return formulas, nil
-}
-
-// countByHash returns a hash→count map computed by scanning every item.
-func (s *UHRPLookupService) countByHash() (map[string]int, error) {
-	prefix := []byte(uhrpItemPrefix)
-	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
-	defer iter.Release()
-	counts := make(map[string]int)
-	for iter.Next() {
-		var item uhrpItem
-		if err := json.Unmarshal(iter.Value(), &item); err != nil {
-			continue
-		}
-		counts[item.ContentHash]++
-	}
-	if err := iter.Error(); err != nil {
-		return nil, fmt.Errorf("uhrp lookup: iterate items for counts: %w", err)
-	}
-	return counts, nil
-}
-
 // --- key encoding ----------------------------------------------------------
+//
+// The read-path counterparts (decodeItemKey, decodeHashIndexKey) live in
+// uhrp_filter.go, next to the iteration code that's their only caller.
 
 func uhrpItemKey(txid *chainhash.Hash, vout uint32) []byte {
 	return []byte(uhrpItemPrefix + txid.String() + ":" + strconv.FormatUint(uint64(vout), 10))
@@ -402,47 +359,6 @@ func uhrpItemKey(txid *chainhash.Hash, vout uint32) []byte {
 
 func uhrpHashKey(contentHash string, txid *chainhash.Hash, vout uint32) []byte {
 	return []byte(uhrpHashPrefix + contentHash + ":" + txid.String() + ":" + strconv.FormatUint(uint64(vout), 10))
-}
-
-func decodeItemKey(key []byte) (*transaction.Outpoint, bool) {
-	s := string(key)
-	if !strings.HasPrefix(s, uhrpItemPrefix) {
-		return nil, false
-	}
-	rest := s[len(uhrpItemPrefix):]
-	idx := strings.LastIndexByte(rest, ':')
-	if idx != 64 {
-		return nil, false
-	}
-	h, err := chainhash.NewHashFromHex(rest[:64])
-	if err != nil {
-		return nil, false
-	}
-	v, err := strconv.ParseUint(rest[idx+1:], 10, 32)
-	if err != nil {
-		return nil, false
-	}
-	return &transaction.Outpoint{Txid: *h, Index: uint32(v)}, true
-}
-
-func decodeHashIndexKey(key []byte, prefixLen int) (*transaction.Outpoint, bool) {
-	if len(key) <= prefixLen {
-		return nil, false
-	}
-	rest := string(key[prefixLen:])
-	idx := strings.LastIndexByte(rest, ':')
-	if idx != 64 {
-		return nil, false
-	}
-	h, err := chainhash.NewHashFromHex(rest[:64])
-	if err != nil {
-		return nil, false
-	}
-	v, err := strconv.ParseUint(rest[idx+1:], 10, 32)
-	if err != nil {
-		return nil, false
-	}
-	return &transaction.Outpoint{Txid: *h, Index: uint32(v)}, true
 }
 
 // nowUnix is a package-level indirection so tests can inject a fixed

@@ -5,6 +5,7 @@
 package topics
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv-blockchain/go-sdk/wallet"
 )
 
 // UHRPTopicName is the BRC-87 standard name for the UHRP topic.
@@ -20,53 +22,122 @@ const UHRPTopicName = "tm_uhrp"
 // UHRPProtocolID is the protocol identifier in BRC-48 push-drop scripts.
 const UHRPProtocolID = "UHRP"
 
-// UHRPEntry is the metadata stored for each admitted UHRP output.
+// UHRPEntry is the metadata stored for each admitted UHRP output, legacy
+// OP_RETURN or canonical BRC-26 PushDrop alike.
 type UHRPEntry struct {
 	// ContentHash is the SHA-256 hash of the hosted file.
 	ContentHash string `json:"content_hash"`
 	// URL is where the content can be fetched.
 	URL string `json:"url,omitempty"`
-	// ContentType is the MIME type of the hosted file.
+	// ContentType is the MIME type of the hosted file. Legacy-only;
+	// canonical BRC-26 adverts carry no content-type field.
 	ContentType string `json:"content_type,omitempty"`
+	// BRC26 marks this entry as a canonical BRC-26 PushDrop advertisement
+	// rather than a legacy OP_FALSE OP_RETURN advertisement. The zero
+	// value (false) is correct for every legacy entry, including ones
+	// stored before this field existed.
+	BRC26 bool `json:"brc26,omitempty"`
+	// IdentityKey is the hex-encoded 33-byte compressed host public key
+	// (BRC-26 field[0]). Empty for legacy entries.
+	IdentityKey string `json:"identity_key,omitempty"`
+	// Expiry is the BRC-26 advertisement's expiry as an absolute
+	// Unix-seconds timestamp (field[3]). Confirmed against the canonical
+	// resolver, which skips an advert once `expiryTime < currentTime`
+	// (ts-sdk storage/StorageDownloader.ts) — not a relative duration.
+	// Zero for legacy entries, which have no expiry concept.
+	Expiry int64 `json:"expiry,omitempty"`
 }
 
 // UHRPTopicManager implements overlay.TopicManager for BRC-26 UHRP.
 //
-// It admits outputs that advertise content availability:
-// OP_FALSE OP_RETURN "UHRP" <sha256_hash_hex> [<url>] [<content_type>]
+// It admits two shapes of output:
 //
-// When a UHRP UTXO is spent, the advertisement is removed (content no longer
-// advertised at that location). This enables versioning: spend old token,
-// create new one with updated hash.
+//   - Canonical BRC-26: a PushDrop output carrying [identityKey(33B),
+//     sha256(32B), https URL, varint expirySeconds, varint size] plus a
+//     trailing signature, validated by decodeUHRPBRC26 + verifyBRC26Linkage
+//     (uhrp_brc26.go — ported from UHRPTopicManager.ts +
+//     isTokenSignatureCorrectlyLinked.ts). Being a real PushDrop output,
+//     this format is spendable: revoking an advertisement is an ordinary
+//     spend of its UTXO.
+//   - Legacy: OP_FALSE OP_RETURN "UHRP" <sha256_hash_hex> [<url>]
+//     [<content_type>], read-only. OP_RETURN outputs are unspendable, so
+//     a legacy advertisement can never be revoked — admitted as-is so
+//     existing entries keep resolving.
+//
+// When an admitted output (of either shape) is later spent, the overlay
+// engine's own spend-tracking removes it from storage and notifies every
+// lookup service unconditionally — independent of this topic's
+// CoinsToRetain/CoinsRemoved choice below, which only affects GASP
+// provenance linking for an output newly admitted in the SAME transaction.
 type UHRPTopicManager struct {
-	log admitLogger
+	log          admitLogger
+	anyoneWallet *wallet.ProtoWallet
 }
 
-// NewUHRPTopicManager creates a UHRP topic manager. Pass WithLogger to
-// surface per-output admission-skip reasons; with no options the manager
-// stays silent.
+// NewUHRPTopicManager creates a UHRP topic manager. It holds a single
+// canonical "anyone" ProtoWallet for BRC-26 signature-linkage verification
+// (see verifyBRC26Linkage); construction of the anyone wallet is
+// deterministic and never fails in practice, but a nil wallet is guarded
+// at verify time. Pass WithLogger to surface per-output admission-skip
+// reasons; with no options the manager stays silent.
 func NewUHRPTopicManager(opts ...TopicOption) *UHRPTopicManager {
-	return &UHRPTopicManager{log: newAdmitLogger(opts...)}
+	log := newAdmitLogger(opts...)
+	w, err := wallet.NewProtoWallet(wallet.ProtoWalletArgs{Type: wallet.ProtoWalletArgsTypeAnyone})
+	if err != nil {
+		// The anyone constructor only builds a key deriver from a nil
+		// root key; it cannot error. Guard defensively anyway so a
+		// future SDK change surfaces as a clean admission-skip rather
+		// than a panic (mirrors kvstore.go's identical guard).
+		return &UHRPTopicManager{log: log, anyoneWallet: nil}
+	}
+	return &UHRPTopicManager{log: log, anyoneWallet: w}
 }
 
-// Admit evaluates a transaction for UHRP content advertisements.
+// Admit evaluates a transaction for UHRP content advertisements, canonical
+// BRC-26 PushDrop first, falling back to the legacy OP_RETURN format for
+// any output that isn't PushDrop-shaped.
 func (u *UHRPTopicManager) Admit(txData []byte, previousUTXOs []overlay.AdmittedOutput) (*overlay.AdmittanceInstructions, error) {
 	tx, err := transaction.NewTransactionFromBytes(txData)
 	if err != nil {
 		return nil, fmt.Errorf("invalid transaction: %w", err)
 	}
+	ctx := context.Background()
 
 	var outputsToAdmit []int
-	var coinsRemoved []int
 	outputMetadata := make(map[int]json.RawMessage)
 
-	// Check each output for UHRP advertisement pattern
 	for i, out := range tx.Outputs {
 		if out.LockingScript == nil {
 			continue
 		}
+		scriptBytes := out.LockingScript.Bytes()
 
-		entry, reason := classifyUHRPOutput(out.LockingScript.Bytes())
+		brc26, decErr := decodeUHRPBRC26(scriptBytes)
+		if decErr != nil {
+			// PushDrop-shaped but fails a canonical BRC-26 shape check
+			// (field count / hash length / HTTPS / expiry / size).
+			u.log.skip(UHRPTopicName, i, decErr)
+			continue
+		}
+		if brc26 != nil {
+			ok, linkErr := u.verifyBRC26Linkage(ctx, brc26)
+			if linkErr != nil {
+				u.log.skip(UHRPTopicName, i, linkErr)
+				continue
+			}
+			if !ok {
+				u.log.skip(UHRPTopicName, i, "signature is not properly linked to identityKey")
+				continue
+			}
+			outputsToAdmit = append(outputsToAdmit, i)
+			if meta, merr := json.Marshal(brc26.toEntry()); merr == nil {
+				outputMetadata[i] = meta
+			}
+			continue
+		}
+
+		// Not PushDrop-shaped at all — try the legacy format.
+		entry, reason := classifyUHRPOutput(scriptBytes)
 		if entry == nil {
 			if reason != "" {
 				// UHRP-tagged OP_RETURN whose hash field is malformed —
@@ -77,27 +148,32 @@ func (u *UHRPTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admitted
 			continue
 		}
 		outputsToAdmit = append(outputsToAdmit, i)
-		// Serialize UHRP entry as metadata for storage
-		meta, err := json.Marshal(entry)
-		if err == nil {
+		if meta, merr := json.Marshal(entry); merr == nil {
 			outputMetadata[i] = meta
 		}
 	}
 
-	// Mark all previously-admitted UTXOs as spent (removed)
+	// Canonical UHRPTopicManager.ts returns `coinsToRetain: previousCoins`
+	// for every coin this tx spends that this topic had previously
+	// admitted — not coinsRemoved. Matched here. (Corrected divergence:
+	// this topic previously set CoinsRemoved instead, which was moot while
+	// only the unspendable legacy format existed, since previousUTXOs was
+	// then always empty — see the package doc comment for why this field
+	// doesn't govern whether a spent advert keeps resolving.)
+	var coinsToRetain []int
 	for i := range previousUTXOs {
-		coinsRemoved = append(coinsRemoved, i)
+		coinsToRetain = append(coinsToRetain, i)
 	}
 
-	if len(outputsToAdmit) == 0 && len(coinsRemoved) == 0 {
+	if len(outputsToAdmit) == 0 && len(coinsToRetain) == 0 {
 		u.log.nothingAdmitted(UHRPTopicName)
 		return nil, nil // nothing relevant
 	}
 
 	return &overlay.AdmittanceInstructions{
 		OutputsToAdmit: outputsToAdmit,
-		CoinsToRetain:  nil,
-		CoinsRemoved:   coinsRemoved,
+		CoinsToRetain:  coinsToRetain,
+		CoinsRemoved:   nil,
 		OutputMetadata: outputMetadata,
 	}, nil
 }
@@ -116,12 +192,21 @@ func (u *UHRPTopicManager) GetMetadata() map[string]interface{} {
 	}
 }
 
-// ParseUHRPOutput checks if a script is a UHRP advertisement.
-// Expected format: OP_FALSE OP_RETURN <"UHRP"> <sha256_hash> [<url>] [<content_type>]
-// Returns nil for any non-UHRP or malformed-UHRP script. Callers that
-// want the malformed-vs-not-mine distinction (for skip logging) use
-// classifyUHRPOutput directly.
+// ParseUHRPOutput checks if a script is a UHRP advertisement, canonical
+// BRC-26 PushDrop first, falling back to the legacy
+// OP_FALSE OP_RETURN <"UHRP"> <sha256_hash> [<url>] [<content_type>]
+// format. Returns nil for any script that is neither. This re-derives
+// metadata from an output the caller already knows was admitted — it does
+// NOT verify a BRC-26 output's signature (Admit does that once, at
+// admission time); the single-value return keeps this a drop-in for its
+// existing callers (the lookup service, legacyshim's metadata parser).
+// Callers that want the malformed-vs-not-mine distinction, or BRC-26
+// validation detail, for skip logging use classifyUHRPOutput /
+// decodeUHRPBRC26 directly (Admit does).
 func ParseUHRPOutput(script []byte) *UHRPEntry {
+	if d, err := decodeUHRPBRC26(script); err == nil && d != nil {
+		return d.toEntry()
+	}
 	entry, _ := classifyUHRPOutput(script)
 	return entry
 }
@@ -291,7 +376,6 @@ func BuildUHRPScript(contentHash string, url string, contentType string) ([]byte
 // Ensure UHRPTopicManager implements TopicManager at compile time.
 var _ overlay.TopicManager = (*UHRPTopicManager)(nil)
 
-// suppress unused import
 // appendPushData appends the correct Bitcoin script push opcode for a data slice.
 // Caller must ensure len(data) <= 255 before calling.
 // <=75 bytes: direct push. 76-255: OP_PUSHDATA1.
@@ -302,5 +386,3 @@ func appendPushData(script, data []byte) []byte {
 	}
 	return append(script, 0x4c, byte(l)) // #nosec G115 // caller ensures <= 255
 }
-
-var _ = json.Marshal
