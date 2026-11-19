@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/bsv-blockchain/go-sdk/wallet"
 )
 
 // captureHandler is a minimal slog.Handler that records every emitted
@@ -86,7 +88,11 @@ func TestAdmitLogging_KVStoreSignatureFailure(t *testing.T) {
 	if attrs["output"] != "0" {
 		t.Fatalf("skip output = %q, want 0", attrs["output"])
 	}
-	if !strings.Contains(attrs["reason"], "signature verification failed") {
+	// go-sdk v1.7+ ProtoWallet.VerifySignature reports a signature that
+	// fails verification as wallet.ErrInvalidSignature ("signature is not
+	// valid", as the TS reference throws) instead of {Valid: false};
+	// verifySignature wraps that error into the skip reason.
+	if !strings.Contains(attrs["reason"], wallet.ErrInvalidSignature.Error()) {
 		t.Fatalf("skip reason = %q, want it to name the signature failure", attrs["reason"])
 	}
 

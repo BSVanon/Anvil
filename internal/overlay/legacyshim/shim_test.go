@@ -14,6 +14,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/BSVanon/Anvil/internal/overlay/legacyshim"
+	"github.com/BSVanon/Anvil/internal/overlay/overlaytest"
 	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/BSVanon/Anvil/internal/overlay/v3engine"
@@ -50,6 +51,7 @@ func newWiredShim(t *testing.T) *legacyshim.Shim {
 		t.Fatalf("headers store: %v", err)
 	}
 	t.Cleanup(func() { _ = hdrStore.Close() })
+	overlaytest.SeedFundingBlock(t, hdrStore)
 
 	eng, err := v3engine.New(&v3engine.Config{
 		Storage:      anvilstorage.New(storageDB),
@@ -82,8 +84,9 @@ func newShimServer(t *testing.T) string {
 
 // buildUHRPAtomicBEEF produces a single-output tx whose locking
 // script is a BRC-26 UHRP advertisement for the given content hash,
-// wrapped in atomic BEEF. Used by both the legacy submit path
-// (octet-stream + X-Topics) and the JSON-bodied path.
+// wrapped in atomic BEEF. The tx spends overlaytest's merkle-proven
+// funding output, so it passes spv.Verify. Used by both the legacy
+// submit path (octet-stream + X-Topics) and the JSON-bodied path.
 func buildUHRPAtomicBEEF(t *testing.T, contentHashHex string) []byte {
 	t.Helper()
 	hashBytes, err := hex.DecodeString(contentHashHex)
@@ -95,9 +98,8 @@ func buildUHRPAtomicBEEF(t *testing.T, contentHashHex string) []byte {
 	scriptBytes = append(scriptBytes, byte(len(hashBytes)))
 	scriptBytes = append(scriptBytes, hashBytes...)
 
-	tx := transaction.NewTransaction()
 	s := script.Script(scriptBytes)
-	tx.AddOutput(&transaction.TransactionOutput{LockingScript: &s, Satoshis: 0})
+	tx := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: &s, Satoshis: 0})
 	beef, err := transaction.NewBeefFromTransaction(tx)
 	if err != nil {
 		t.Fatalf("NewBeefFromTransaction: %v", err)

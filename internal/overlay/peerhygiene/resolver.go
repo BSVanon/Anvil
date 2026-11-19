@@ -25,10 +25,12 @@ type Resolver struct {
 }
 
 // NewResolver builds a hygiene-wrapped lookup resolver for the given network.
-// logger may be nil.
+// logger may be nil. Per-host lookups go through BoundedFacilitator instead of
+// go-sdk's HTTPSOverlayLookupFacilitator, whose unbounded read and
+// wire-sized allocations let any advertised host crash the node.
 func NewResolver(network overlay.Network, logger *slog.Logger) *Resolver {
 	cfg := &lookup.LookupResolver{
-		Facilitator:   NewFacilitator(&lookup.HTTPSOverlayLookupFacilitator{Client: http.DefaultClient}, logger),
+		Facilitator:   NewFacilitator(&BoundedFacilitator{Client: http.DefaultClient}, logger),
 		NetworkPreset: network,
 	}
 	// NewLookupResolver preserves a non-nil cfg.Facilitator and applies the

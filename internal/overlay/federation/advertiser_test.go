@@ -2,6 +2,7 @@ package federation
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"testing"
 
@@ -42,17 +43,17 @@ func (s *stubWallet) GetPublicKey(_ context.Context, args wallet.GetPublicKeyArg
 }
 
 func (s *stubWallet) CreateSignature(_ context.Context, args wallet.CreateSignatureArgs, _ string) (*wallet.CreateSignatureResult, error) {
-	// Sign whatever's in Data (or HashToDirectlySign) — admin-token
-	// builds the appropriate preimage; we just need a deterministic
-	// signature so the PushDrop output is well-formed.
-	var msg []byte
-	switch {
-	case len(args.HashToDirectlySign) > 0:
-		msg = args.HashToDirectlySign
-	default:
-		msg = args.Data
+	// BRC-100 CreateSignature semantics, as go-sdk's ProtoWallet applies
+	// them: sign HashToDirectlySign as given, otherwise sign SHA-256(Data).
+	// admin-token builds the preimage in Data; we just need a valid
+	// signature so the PushDrop output is well-formed. (go-sdk v1.7+
+	// ec.PrivateKey.Sign refuses a message longer than a 32-byte digest.)
+	digest := args.HashToDirectlySign
+	if len(digest) == 0 {
+		sum := sha256.Sum256(args.Data)
+		digest = sum[:]
 	}
-	sig, err := s.priv.Sign(msg)
+	sig, err := s.priv.Sign(digest)
 	if err != nil {
 		return nil, err
 	}

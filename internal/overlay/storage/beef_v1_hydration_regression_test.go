@@ -72,6 +72,15 @@ func TestBeefV1RoundtripHydration(t *testing.T) {
 	}
 }
 
+// TestLoadAncillaryBeef_GuardsPanicOnAncillaryBlob: an ancillary BEEF blob
+// that does not parse must surface as a "parse ancillary beef" error, never a
+// crash. The blob is testdata/ump_v1_legacy_malformed.hex: what go-sdk v1.2.x's
+// beef.Bytes() wrote for the Satsu fixture, a V1 header (0100beef) followed by
+// V2-layout transaction entries (format byte before each raw tx). Pre-v3.2.14
+// nodes stored blobs in that shape. v1.2.x panicked re-parsing it ("index out
+// of range"); go-sdk v1.7 returns an ordinary error ("invalid BEEF transaction
+// hasBump value"). The blob is a fixture now because v1.7's beef.Bytes() writes
+// the V1 layout correctly, so re-serializing no longer reproduces it.
 func TestLoadAncillaryBeef_GuardsPanicOnAncillaryBlob(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "ump_v1_roundtrip.hex"))
 	if err != nil {
@@ -85,9 +94,13 @@ func TestLoadAncillaryBeef_GuardsPanicOnAncillaryBlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseBeef(submitted): %v", err)
 	}
-	oldStored, err := beef.Bytes()
+	legacyRaw, err := os.ReadFile(filepath.Join("testdata", "ump_v1_legacy_malformed.hex"))
 	if err != nil {
-		t.Fatalf("beef.Bytes(): %v", err)
+		t.Fatalf("read legacy fixture: %v", err)
+	}
+	oldStored, err := hex.DecodeString(strings.TrimSpace(string(legacyRaw)))
+	if err != nil {
+		t.Fatalf("legacy hex: %v", err)
 	}
 
 	_, db := newStore(t)
@@ -108,5 +121,8 @@ func TestLoadAncillaryBeef_GuardsPanicOnAncillaryBlob(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parse ancillary beef") {
 		t.Fatalf("expected parse ancillary beef error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("go-sdk should reject the legacy layout with an error, not a recovered panic: %v", err)
 	}
 }

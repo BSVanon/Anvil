@@ -10,8 +10,8 @@ import (
 )
 
 // malformedBEEFBumpIndex builds a BEEF_V1 blob with ZERO BUMPs but a single
-// transaction that claims merkle-bump index 5 — so go-sdk's reader does
-// BUMPs[5] on a length-0 slice and PANICS. This reproduces the field crash
+// transaction that claims merkle-bump index 5 — so go-sdk v1.2.x's reader did
+// BUMPs[5] on a length-0 slice and PANICKED. This reproduces the field crash
 // behind the DEX-swap lookup 502 ("index out of range [210] with length 1").
 func malformedBEEFBumpIndex() []byte {
 	var buf bytes.Buffer
@@ -25,21 +25,25 @@ func malformedBEEFBumpIndex() []byte {
 	return buf.Bytes()
 }
 
-// TestSafeNewBeefFromBytes_RecoversPanic is the regression for the DEX-swap
-// lookup 502: a corrupt stored BEEF made go-sdk's NewBeefFromBytes panic deep
-// inside lookup hydration, crashing the request (502 via the proxy on the
-// dropped connection). safeNewBeefFromBytes must turn that panic into an
-// ordinary error.
-func TestSafeNewBeefFromBytes_RecoversPanic(t *testing.T) {
+// TestSafeNewBeefFromBytes_RejectsBadBumpIndex is the regression for the
+// DEX-swap lookup 502: a corrupt stored BEEF made go-sdk v1.2.x's
+// NewBeefFromBytes panic deep inside lookup hydration, crashing the request
+// (502 via the proxy on the dropped connection). go-sdk v1.7 checks the BUMP
+// index and returns an ordinary error instead of panicking, so the blob must
+// come back as that error and a nil BEEF. safeNewBeefFromBytes keeps its
+// recover() as defense in depth, though no known input reaches it now.
+// (Renamed from TestSafeNewBeefFromBytes_RecoversPanic, which asserted the
+// v1.2.x panic was recovered.)
+func TestSafeNewBeefFromBytes_RejectsBadBumpIndex(t *testing.T) {
 	beef, err := safeNewBeefFromBytes(malformedBEEFBumpIndex()) // must NOT panic
 	if err == nil {
-		t.Fatal("expected an error for a panic-inducing BEEF blob")
+		t.Fatal("expected an error for a BEEF blob with an out-of-range BUMP index")
 	}
 	if beef != nil {
 		t.Fatalf("expected nil beef on failure, got %v", beef)
 	}
-	if !strings.Contains(err.Error(), "panicked") {
-		t.Fatalf("expected the recover path (error mentions 'panicked'), got: %v", err)
+	if !strings.Contains(err.Error(), "BUMP index 5") {
+		t.Fatalf("expected go-sdk's BUMP-index check to reject the blob, got: %v", err)
 	}
 }
 

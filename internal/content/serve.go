@@ -330,17 +330,17 @@ func (s *Server) fetchRawTxFromWoC(txid string) (string, error) {
 		var txData struct {
 			Hex string `json:"hex"`
 		}
-		if err := json.NewDecoder(resp2.Body).Decode(&txData); err != nil {
+		if err := decodeWoCJSON(resp2.Body, &txData); err != nil {
 			return "", fmt.Errorf("decode tx: %w", err)
 		}
 		return txData.Hex, nil
 	}
 
-	buf := new(bytes.Buffer)
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
-		return "", fmt.Errorf("read response body: %w", err)
+	body, err := readWoCBody(resp.Body)
+	if err != nil {
+		return "", err
 	}
-	return strings.TrimSpace(buf.String()), nil
+	return strings.TrimSpace(string(body)), nil
 }
 
 // parseInscription extracts inscription data from a specific transaction output.

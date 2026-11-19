@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/BSVanon/Anvil/internal/overlay/overlaytest"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
@@ -36,22 +37,8 @@ func buildUMPTaggedBEEF(t *testing.T, presH, recH []byte, atomic bool) overlay.T
 	if err != nil {
 		t.Fatalf("pushdrop lock: %v", err)
 	}
-	tx := transaction.NewTransaction()
-	tx.AddOutput(&transaction.TransactionOutput{LockingScript: s, Satoshis: 1})
-	beef, err := transaction.NewBeefFromTransaction(tx)
-	if err != nil {
-		t.Fatalf("beef: %v", err)
-	}
-	var blob []byte
-	if atomic {
-		blob, err = beef.AtomicBytes(tx.TxID())
-	} else {
-		blob, err = beef.Bytes()
-	}
-	if err != nil {
-		t.Fatalf("encode beef: %v", err)
-	}
-	return overlay.TaggedBEEF{Beef: blob, Topics: []string{topics.UMPTopicName}}
+	tx := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: s, Satoshis: 1})
+	return overlay.TaggedBEEF{Beef: encodeFixtureBEEF(t, tx, atomic), Topics: []string{topics.UMPTopicName}}
 }
 
 // TestEngine_SubmitAndLookupUMP is the decisive Satsu reproduction: drive a

@@ -2,6 +2,7 @@ package federation
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	oa "github.com/bsv-blockchain/go-overlay-services/pkg/core/advertiser"
@@ -166,6 +167,15 @@ func buildShipTokenAndValidate(t *testing.T, counterparty wallet.Counterparty, f
 
 	valid, err := utils.IsTokenSignatureCorrectlyLinked(ctx, decoded.LockingPublicKey.ToDERHex(), fields)
 	if err != nil {
+		// go-sdk v1.7+ ProtoWallet.VerifySignature reports a signature that
+		// fails verification as wallet.ErrInvalidSignature (as the TS
+		// reference throws) instead of {Valid: false}. Canonical admission
+		// rejects the output on either (shared/admittance.go:88-93: `sigErr
+		// != nil || !valid`), so that error means "not admitted". Any other
+		// error is a broken fixture.
+		if errors.Is(err, wallet.ErrInvalidSignature) {
+			return false
+		}
 		t.Fatalf("IsTokenSignatureCorrectlyLinked error: %v", err)
 	}
 	return valid

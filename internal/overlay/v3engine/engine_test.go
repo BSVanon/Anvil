@@ -2,6 +2,7 @@ package v3engine
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/BSVanon/Anvil/internal/headers"
+	"github.com/BSVanon/Anvil/internal/overlay/overlaytest"
 	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
@@ -21,10 +23,10 @@ import (
 
 // newTestEngine wires every Anvil canonical piece into a fresh engine
 // backed by tmp-dir LevelDB instances + an Anvil header store with PoW
-// validation disabled. The header store stays at genesis height, which
-// is enough because the test transactions we submit don't carry merkle
-// proofs — they're unmined, so the SPV verifier exercises only the
-// no-merkle-path branch.
+// validation disabled. The header store holds genesis plus the block
+// overlaytest.SeedFundingBlock adds: the test transactions we submit are
+// unmined and spend overlaytest's funding output, whose BUMP the store
+// must accept for spv.Verify to pass.
 func newTestEngine(t *testing.T) (*engine.Engine, *leveldb.DB) {
 	t.Helper()
 	root := t.TempDir()
@@ -49,6 +51,7 @@ func newTestEngine(t *testing.T) (*engine.Engine, *leveldb.DB) {
 		t.Fatalf("open headers store: %v", err)
 	}
 	t.Cleanup(func() { _ = hdrStore.Close() })
+	overlaytest.SeedFundingBlock(t, hdrStore)
 
 	eng, err := New(&Config{
 		Storage:      anvilstorage.New(storageDB),
@@ -64,8 +67,10 @@ func newTestEngine(t *testing.T) (*engine.Engine, *leveldb.DB) {
 
 // buildUHRPTaggedBEEF assembles a TaggedBEEF carrying a one-output tx whose
 // locking script is a real BRC-26 UHRP advertisement for the given content
-// hash. atomic=true emits Atomic BEEF; atomic=false emits V1 BEEF (0x0100BEEF) —
-// the wire form standard SDKs send — and both must submit + index identically.
+// hash. The tx spends overlaytest's merkle-proven funding output, so it passes
+// spv.Verify. atomic=true emits Atomic BEEF; atomic=false emits V1 BEEF
+// (0x0100BEEF) — the wire form standard SDKs send — and both must submit +
+// index identically.
 func buildUHRPTaggedBEEF(t *testing.T, contentHashHex, url, contentType string, atomic bool) overlay.TaggedBEEF {
 	t.Helper()
 	hashBytes, err := hex.DecodeString(contentHashHex)
@@ -85,27 +90,39 @@ func buildUHRPTaggedBEEF(t *testing.T, contentHashHex, url, contentType string, 
 		scriptBytes = append(scriptBytes, []byte(contentType)...)
 	}
 
-	tx := transaction.NewTransaction()
 	s := script.Script(scriptBytes)
-	tx.AddOutput(&transaction.TransactionOutput{LockingScript: &s, Satoshis: 0})
-
-	beef, err := transaction.NewBeefFromTransaction(tx)
-	if err != nil {
-		t.Fatalf("NewBeefFromTransaction: %v", err)
+	tx := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: &s, Satoshis: 0})
+	return overlay.TaggedBEEF{
+		Beef:   encodeFixtureBEEF(t, tx, atomic),
+		Topics: []string{topics.UHRPTopicName},
 	}
-	var blob []byte
+}
+
+// encodeFixtureBEEF serializes tx with its ancestry: Atomic BEEF when atomic
+// is true, otherwise V1 BEEF (0x0100BEEF) via tx.BEEF(). beef.Bytes() would
+// emit V2, because NewBeefFromTransaction builds a V2 Beef.
+func encodeFixtureBEEF(t *testing.T, tx *transaction.Transaction, atomic bool) []byte {
+	t.Helper()
+	var (
+		blob []byte
+		err  error
+	)
 	if atomic {
+		var beef *transaction.Beef
+		if beef, err = transaction.NewBeefFromTransaction(tx); err != nil {
+			t.Fatalf("NewBeefFromTransaction: %v", err)
+		}
 		blob, err = beef.AtomicBytes(tx.TxID())
 	} else {
-		blob, err = beef.Bytes()
+		blob, err = tx.BEEF()
 	}
 	if err != nil {
 		t.Fatalf("encode beef (atomic=%v): %v", atomic, err)
 	}
-	return overlay.TaggedBEEF{
-		Beef:   blob,
-		Topics: []string{topics.UHRPTopicName},
+	if !atomic && binary.LittleEndian.Uint32(blob) != transaction.BEEF_V1 {
+		t.Fatalf("expected a V1 BEEF prefix, got %x", blob[:4])
 	}
+	return blob
 }
 
 // TestEngine_SubmitAndLookupUHRP is the W-5 phase A end-to-end proof
