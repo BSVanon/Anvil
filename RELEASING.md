@@ -39,13 +39,22 @@ This produces:
 cd dist && sha256sum -c checksums.txt
 ```
 
-### 4. Update install URL in README
+### 4. Update every hardcoded version/install pin
 
-Update the one-liner in `README.md` to point at the new tag:
+The `Version` constant from step 1 is the single source of truth for the
+running binary, but these files separately hardcode the release tag as a
+literal string and are not derived from it. Find them with
+`git grep -n "<previous version, e.g. 3.4.0>"` and update each by hand so all
+three point at the same new `vX.Y.Z` tag:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/vX.Y.Z/scripts/install.sh | sudo bash
-```
+- **`README.md`** — the one-liner install command in the "Install" section:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/vX.Y.Z/scripts/install.sh | sudo bash
+  ```
+- **`scripts/install.sh`** — the same one-liner, in the "Secure install" comment near the top of the file.
+- **`RELEASING.md`** (this file) — the "For operators who want maximum security" section below hardcodes a pinned curl one-liner and a `git checkout` example; both must track the release you're cutting, not stay on the previous one.
+
+Steps 5–7 below keep the `vX.Y.Z` placeholder because they describe the release process itself, not a specific file to edit.
 
 ### 5. Commit, tag, push
 
@@ -90,7 +99,7 @@ The installer should show `✓ SHA256 verified` during step 1.
 Pin to a specific tag (immutable on GitHub):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v3.4.0/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v3.4.1/scripts/install.sh | sudo bash
 ```
 
 Or clone and build from source:
@@ -98,7 +107,7 @@ Or clone and build from source:
 ```bash
 git clone https://github.com/BSVanon/Anvil.git
 cd Anvil
-git checkout v3.4.0
+git checkout v3.4.1
 make build
 sudo ./anvil deploy --nodes a --seed wss://anvil.sendbsv.com/mesh
 ```
