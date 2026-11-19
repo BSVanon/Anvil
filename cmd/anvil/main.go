@@ -28,6 +28,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/headers"
 	mempoolpkg "github.com/BSVanon/Anvil/internal/mempool"
 	anvilmsg "github.com/BSVanon/Anvil/internal/messaging"
+	"github.com/BSVanon/Anvil/internal/netguard"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/overlay/federation"
 	"github.com/BSVanon/Anvil/internal/overlay/gaspstatus"
@@ -88,6 +89,13 @@ func main() {
 			return
 		}
 	}
+
+	// From here on this process is the node. Bound every response read
+	// through http.DefaultClient before anything that reads through it
+	// implicitly (the overlay engine, its resolvers, broadcasters and GASP
+	// remotes) is built; see internal/netguard. CLI subcommands return above
+	// and never install it.
+	netguard.Install()
 
 	configPath := flag.String("config", "anvil.toml", "path to config file")
 	flag.Parse()

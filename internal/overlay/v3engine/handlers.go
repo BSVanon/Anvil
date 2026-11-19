@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/overlay/gaspstatus"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
@@ -29,6 +30,10 @@ import (
 type Handlers struct {
 	Engine       *engine.Engine
 	MaxBodyBytes int64
+
+	// SubmitTimeout caps each POST /submit; past it the route answers 504.
+	// Zero or less uses DefaultSubmitTimeout (see submit_deadline.go).
+	SubmitTimeout time.Duration
 
 	// SyncStatus, if set, supplies this node's GASP federation-sync state,
 	// which POST /lookup stamps as X-Overlay-Gasp-* response headers. It lets
@@ -89,7 +94,8 @@ func (h *Handlers) writeSyncHeaders(w http.ResponseWriter) {
 //   - x-topics header: JSON array of topic names, e.g. ["tm_uhrp"].
 //   - Response: 200 + STEAK JSON on success; 400 with a canonical
 //     error envelope `{status:"error",message:string}` otherwise
-//     (vector overlay.submit.7 + overlay.lookup.10).
+//     (vector overlay.submit.7 + overlay.lookup.10), or 504 with the
+//     same envelope when the submit outlasts SubmitTimeout.
 func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
@@ -127,9 +133,11 @@ func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) {
 		Topics:         topics,
 		OffChainValues: offChain,
 	}
-	steak, err := h.Engine.Submit(r.Context(), tagged, engine.SubmitModeCurrent, nil)
+	ctx, cancel := h.submitContext(r)
+	defer cancel()
+	steak, err := h.Engine.Submit(ctx, tagged, engine.SubmitModeCurrent, nil)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "submit failed: "+err.Error())
+		writeError(w, submitErrorStatus(err), "submit failed: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, canonicalSteak(steak))

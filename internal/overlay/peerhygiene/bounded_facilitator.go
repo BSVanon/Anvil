@@ -35,8 +35,8 @@ const MaxLookupResponseBytes int64 = 32 << 20
 // maxAnswerExpansion bounds the BEEF bytes a binary answer may expand into,
 // as a multiple of the response cap. Each output in a binary answer is
 // re-serialized together with its ancestry. Without a bound, an answer whose
-// outpoints name successive transactions of one long chain would cost memory
-// and CPU quadratic in the chain length.
+// outpoints name successive transactions of one long chain, or name one large
+// transaction over and over, would cost memory and CPU far beyond its size.
 const maxAnswerExpansion = 4
 
 // minBinaryOutpointBytes is the smallest encoding of one outpoint entry in a
@@ -163,8 +163,10 @@ func decodeLookupAnswer(contentType string, body []byte, expandBudget int64) (an
 //
 // Each output gets its own V1 BEEF of the referenced transaction and its
 // ancestry, as upstream produces, and context is skipped, as upstream drops it.
-// Outputs that name the same transaction share one serialization. The
-// serializations may total at most expandBudget bytes.
+// Outputs that name the same transaction share one serialization here, but
+// every output counts against expandBudget, repeats included: upstream
+// re-serializes once per output, and ValidateLookupAnswer relies on this
+// budget to bound what upstream allocates for a reply it lets through.
 func parseBinaryLookupAnswer(data []byte, expandBudget int64) (*lookup.LookupAnswer, error) {
 	r := util.NewReader(data)
 	remaining := func() uint64 { return uint64(len(r.Data) - r.Pos) } //nolint:gosec // Pos never passes len(Data)
@@ -227,10 +229,10 @@ func parseBinaryLookupAnswer(data []byte, expandBudget int64) (*lookup.LookupAns
 			if txBeef, err = tx.BEEF(); err != nil {
 				return nil, fmt.Errorf("binary lookup: re-serializing BEEF for txid %s: %w", m.txid, err)
 			}
-			if expanded += int64(len(txBeef)); expanded > expandBudget {
-				return nil, fmt.Errorf("binary lookup: re-serialized BEEF exceeds capacity of %d bytes", expandBudget)
-			}
 			serialized[m.txid] = txBeef
+		}
+		if expanded += int64(len(txBeef)); expanded > expandBudget {
+			return nil, fmt.Errorf("binary lookup: re-serialized BEEF exceeds capacity of %d bytes", expandBudget)
 		}
 		outputs = append(outputs, &lookup.OutputListItem{Beef: txBeef, OutputIndex: m.outputIndex})
 	}
