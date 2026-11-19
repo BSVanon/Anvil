@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 )
@@ -57,8 +58,10 @@ func TestInstall_GuardsTheExistingClientOnce(t *testing.T) {
 	if http.DefaultClient.Transport != g {
 		t.Fatal("a second Install must not wrap the transport again")
 	}
-	if g.base != http.DefaultTransport || g.maxBytes != MaxResponseBytes || g.maxLookupBytes != peerhygiene.MaxLookupResponseBytes {
-		t.Fatalf("guard misconfigured: base %T, maxBytes %d, maxLookupBytes %d", g.base, g.maxBytes, g.maxLookupBytes)
+	if g.base != http.DefaultTransport || g.maxBytes != MaxResponseBytes || g.maxLookupBytes != peerhygiene.MaxLookupResponseBytes ||
+		g.readTimeout != peerhygiene.LookupReadTimeout {
+		t.Fatalf("guard misconfigured: base %T, maxBytes %d, maxLookupBytes %d, readTimeout %v",
+			g.base, g.maxBytes, g.maxLookupBytes, g.readTimeout)
 	}
 	if _, ok := http.DefaultTransport.(*http.Transport); !ok {
 		t.Fatalf("http.DefaultTransport must stay unwrapped, got %T", http.DefaultTransport)
@@ -178,7 +181,7 @@ func TestGuard_ClosesRejectedBodies(t *testing.T) {
 			if tc.contentType != "" {
 				resp.Header.Set("Content-Type", tc.contentType)
 			}
-			g := &guard{base: fakeTransport{resp: resp}, maxBytes: 2, maxLookupBytes: 3}
+			g := &guard{base: fakeTransport{resp: resp}, maxBytes: 2, maxLookupBytes: 3, readTimeout: time.Minute}
 			got, err := g.RoundTrip(newRequest(t, tc.method, tc.url))
 			if got != nil || err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("expected an error containing %q, got response %v, err %v", tc.want, got, err)

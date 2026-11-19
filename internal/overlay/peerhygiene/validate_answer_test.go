@@ -48,30 +48,32 @@ func txBEEF(t *testing.T, tx *transaction.Transaction) []byte {
 	return b
 }
 
-// TestBoundedFacilitator_RepeatedOutpointsCountAgainstBudget: eight outpoints
-// naming one transaction with a 64 KiB output. Upstream re-serializes that
-// transaction for every outpoint, so the answer expands to eight times its
-// size, past the 4x budget, even though only one serialization is distinct.
-// A reply naming the transaction once stays within it.
+// TestBoundedFacilitator_RepeatedOutpointsCountAgainstBudget: outpoints
+// naming one transaction with a 64 KiB output, once more than
+// MaxAnswerBEEFBytes holds copies of its BEEF. Upstream re-serializes that
+// transaction for every outpoint, so the answer expands past the budget even
+// though only one serialization is distinct. One outpoint fewer stays within
+// it.
 func TestBoundedFacilitator_RepeatedOutpointsCountAgainstBudget(t *testing.T) {
 	tx := largeOutputTx(t, 64<<10)
 	beef := txBEEF(t, tx)
-	repeated := make([]binaryEntry, 8)
+	fit := int(MaxAnswerBEEFBytes) / len(beef)
+	repeated := make([]binaryEntry, fit+1)
 	for i := range repeated {
 		repeated[i] = binaryEntry{tx: tx}
 	}
 	body := encodeBinaryAnswer(t, beef, repeated...)
 	p := newStubPeer(t, 200, octetStream, body, false)
-	_, err := lookupVia(t, &BoundedFacilitator{MaxBytes: int64(len(body))}, p.url)
-	want := "binary lookup: re-serialized BEEF exceeds capacity of " + strconv.Itoa(4*len(body)) + " bytes"
+	_, err := lookupVia(t, &BoundedFacilitator{}, p.url)
+	want := "binary lookup: re-serialized BEEF exceeds capacity of " + strconv.FormatInt(MaxAnswerBEEFBytes, 10) + " bytes"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("expected %q, got: %v", want, err)
 	}
 
-	once := encodeBinaryAnswer(t, beef, binaryEntry{tx: tx})
-	p = newStubPeer(t, 200, octetStream, once, false)
-	if _, err := lookupVia(t, &BoundedFacilitator{MaxBytes: int64(len(once))}, p.url); err != nil {
-		t.Fatalf("one outpoint must fit the budget, got: %v", err)
+	fits := encodeBinaryAnswer(t, beef, repeated[:fit]...)
+	p = newStubPeer(t, 200, octetStream, fits, false)
+	if _, err := lookupVia(t, &BoundedFacilitator{}, p.url); err != nil {
+		t.Fatalf("%d outpoints must fit the budget, got: %v", fit, err)
 	}
 }
 
@@ -148,7 +150,7 @@ func TestValidateLookupAnswer_RejectsWhatTheFacilitatorRejects(t *testing.T) {
 		{"outpoint count", octetStream, []byte{0xFF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00}, "outpoint count 4294967296 exceeds capacity"},
 		{"context length", octetStream, hugeContextLenBody(), "context[0] length 9223372036854775807 exceeds capacity"},
 		{"null output", "application/json", []byte(`{"type":"output-list","outputs":[null]}`), "lookup: output 0 of the answer is null"},
-		{"over the cap", "application/json", freeformOfSize(int(MaxLookupResponseBytes) + 1), "body is over 33554432 bytes"},
+		{"over the cap", "application/json", freeformOfSize(int(MaxLookupResponseBytes) + 1), "body is over 2097152 bytes"},
 	} {
 		if err := ValidateLookupAnswer(tc.contentType, tc.body); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: expected an error containing %q, got: %v", tc.name, tc.want, err)

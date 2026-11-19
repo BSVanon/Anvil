@@ -139,11 +139,8 @@ func noPanic(t *testing.T, what string, f func() error) (err error) {
 // propagation takes) gets an ordinary error and the process lives on.
 func TestGuard_StockLookupStackSurvivesHostileAnswers(t *testing.T) {
 	ctx := context.Background()
-	bigTx, bigBEEF := spendingTx(t, bytes.Repeat([]byte{0xAB}, 1<<20))
-	repeats := make([]*transaction.Transaction, 129) // 129 x 1 MiB > 4 x 32 MiB
-	for i := range repeats {
-		repeats[i] = bigTx
-	}
+	bigTx, bigBEEF := spendingTx(t, bytes.Repeat([]byte{0xAB}, 600<<10))
+	repeats := []*transaction.Transaction{bigTx, bigTx} // 2 x 600 KiB > the 1 MiB expansion budget
 	_, smallBEEF := spendingTx(t, []byte("x"))
 
 	for _, h := range []struct {
@@ -155,10 +152,10 @@ func TestGuard_StockLookupStackSurvivesHostileAnswers(t *testing.T) {
 		{"9-byte outpoint count bomb", octetStream, countBomb, false, "binary lookup: outpoint count 4294967296 exceeds capacity of 0 remaining bytes"},
 		{"5-byte atomic BEEF prefix", octetStream, []byte{0x00, 0x01, 0x01, 0x01, 0x01}, false, "provided atomic BEEF length (4) is too short"},
 		{"MaxInt64 context length", octetStream, hugeContextLenBody(), false, "context[0] length 9223372036854775807 exceeds capacity"},
-		{"streamed over the 32 MiB lookup cap", "application/json", freeformOfSize(int(peerhygiene.MaxLookupResponseBytes) + 1), true, "lookup body is over 33554432 bytes"},
-		{"declared over the 32 MiB lookup cap", "application/json", freeformOfSize(int(peerhygiene.MaxLookupResponseBytes) + 1), false, "lookup Content-Length 33554433 is over 33554432 bytes"},
+		{"streamed over the 2 MiB lookup cap", "application/json", freeformOfSize(int(peerhygiene.MaxLookupResponseBytes) + 1), true, "lookup body is over 2097152 bytes"},
+		{"declared over the 2 MiB lookup cap", "application/json", freeformOfSize(int(peerhygiene.MaxLookupResponseBytes) + 1), false, "lookup Content-Length 2097153 is over 2097152 bytes"},
 		{"null output", "application/json", []byte(`{"type":"output-list","outputs":[null]}`), false, "lookup: output 0 of the answer is null"},
-		{"repeated-outpoint expansion", octetStream, binaryAnswer(t, bigBEEF, repeats, 0), false, "re-serialized BEEF exceeds capacity of 134217728 bytes"},
+		{"repeated-outpoint expansion", octetStream, binaryAnswer(t, bigBEEF, repeats, 0), false, "re-serialized BEEF exceeds capacity of 1048576 bytes"},
 		{"output index past the outputs", "application/json", jsonOutputList(t, smallBEEF, 5), false, "output index 5 is past the transaction's 1 outputs"},
 	} {
 		t.Run(h.name, func(t *testing.T) {

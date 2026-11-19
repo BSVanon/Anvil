@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -291,8 +290,8 @@ func TestBoundedFacilitator_OverCapBodyRejected(t *testing.T) {
 func TestBoundedFacilitator_DefaultCapIsMaxLookupResponseBytes(t *testing.T) {
 	p := newStubPeer(t, http.StatusOK, "application/json", freeformOfSize(int(MaxLookupResponseBytes)+1), true)
 	_, err := lookupVia(t, &BoundedFacilitator{}, p.url)
-	if !errors.Is(err, ErrLookupResponseTooLarge) || !strings.Contains(err.Error(), "body is over 33554432 bytes") {
-		t.Fatalf("expected the 32 MiB default cap, got: %v", err)
+	if !errors.Is(err, ErrLookupResponseTooLarge) || !strings.Contains(err.Error(), "body is over 2097152 bytes") {
+		t.Fatalf("expected the 2 MiB default cap, got: %v", err)
 	}
 }
 
@@ -307,27 +306,52 @@ func TestBoundedFacilitator_NullJSONOutputRejected(t *testing.T) {
 }
 
 // TestBoundedFacilitator_ExpansionBudgetBoundsReserialization: outpoints
-// naming every transaction of a 30-transaction chain make each output carry
-// the chain up to it, about 11 times the reply's size in total. Decoding is
-// fine with an unlimited budget, but the facilitator's budget (4 times its
-// MaxBytes) must stop it.
+// naming every transaction of a 30-transaction chain, each with a 4 KiB
+// output, make each output carry the chain up to it: about 15 times the
+// reply's 124 KiB in total, past MaxAnswerBEEFBytes. Naming only the first 20
+// stays within it.
 func TestBoundedFacilitator_ExpansionBudgetBoundsReserialization(t *testing.T) {
-	txs := chainTxs(t, 30)
+	txs := dataChainTxs(t, 30, 4<<10)
 	entries := make([]binaryEntry, len(txs))
 	for i, tx := range txs {
 		entries[i] = binaryEntry{tx: tx}
 	}
-	body := encodeBinaryAnswer(t, sharedBEEF(t, txs[len(txs)-1]), entries...)
-	if answer, err := parseBinaryLookupAnswer(body, math.MaxInt64); err != nil || len(answer.Outputs) != len(txs) {
-		t.Fatalf("the answer must decode without a budget: %v", err)
+	shared := sharedBEEF(t, txs[len(txs)-1])
+	if answer, err := parseBinaryLookupAnswer(encodeBinaryAnswer(t, shared, entries[:20]...)); err != nil || len(answer.Outputs) != 20 {
+		t.Fatalf("the first 20 outputs must fit the budget: %v", err)
 	}
 
+	body := encodeBinaryAnswer(t, shared, entries...)
 	p := newStubPeer(t, http.StatusOK, octetStream, body, false)
-	_, err := lookupVia(t, &BoundedFacilitator{MaxBytes: int64(len(body))}, p.url)
-	want := "binary lookup: re-serialized BEEF exceeds capacity of " + strconv.Itoa(4*len(body)) + " bytes"
+	_, err := lookupVia(t, &BoundedFacilitator{}, p.url)
+	want := "binary lookup: re-serialized BEEF exceeds capacity of " + strconv.FormatInt(MaxAnswerBEEFBytes, 10) + " bytes"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("expected %q, got: %v", want, err)
 	}
+}
+
+// dataChainTxs is chainTxs with an extra OP_RETURN output of size bytes on
+// every transaction.
+func dataChainTxs(t *testing.T, n, size int) []*transaction.Transaction {
+	t.Helper()
+	data := &script.Script{}
+	_ = data.AppendOpcodes(script.OpFALSE, script.OpRETURN)
+	if err := data.AppendPushData(bytes.Repeat([]byte{0xCD}, size)); err != nil {
+		t.Fatalf("AppendPushData: %v", err)
+	}
+	lock := script.Script{script.OpTRUE}
+	txs := []*transaction.Transaction{overlaytest.SpendingTx(t,
+		&transaction.TransactionOutput{LockingScript: &lock, Satoshis: 1000},
+		&transaction.TransactionOutput{LockingScript: data})}
+	for len(txs) < n {
+		tx := transaction.NewTransaction()
+		tx.AddInputFromTx(txs[len(txs)-1], 0, nil)
+		tx.Inputs[0].UnlockingScript = &script.Script{}
+		tx.AddOutput(&transaction.TransactionOutput{LockingScript: &lock, Satoshis: 1})
+		tx.AddOutput(&transaction.TransactionOutput{LockingScript: data})
+		txs = append(txs, tx)
+	}
+	return txs
 }
 
 // TestBoundedFacilitator_DecodePanicBecomesError: if decoding ever panics,

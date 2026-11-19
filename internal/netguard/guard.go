@@ -24,7 +24,10 @@
 // Install wraps DefaultClient's transport. Every response body is then capped
 // at MaxResponseBytes, and every reply to an overlay lookup is read in full,
 // up to peerhygiene.MaxLookupResponseBytes, and handed on only once
-// peerhygiene.ValidateLookupAnswer accepts it.
+// peerhygiene.ValidateLookupAnswer accepts it. A lookup reply is read,
+// validated and decoded under one of peerhygiene.LookupSlots decoding slots,
+// shared with peerhygiene.BoundedFacilitator, so however many hosts answer at
+// once, no more than that many answers are being decoded.
 package netguard
 
 import (
@@ -33,9 +36,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 )
@@ -75,6 +81,7 @@ func Install() {
 			base:           base,
 			maxBytes:       MaxResponseBytes,
 			maxLookupBytes: peerhygiene.MaxLookupResponseBytes,
+			readTimeout:    peerhygiene.LookupReadTimeout,
 		}
 	})
 }
@@ -84,6 +91,7 @@ type guard struct {
 	base           http.RoundTripper
 	maxBytes       int64
 	maxLookupBytes int64
+	readTimeout    time.Duration // how long reading a lookup reply may hold its slot
 }
 
 // RoundTrip sends req through the base transport and bounds the response. A
@@ -98,7 +106,7 @@ func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 	if resp.StatusCode == http.StatusOK && isLookup(req) {
-		return g.checkLookup(resp)
+		return g.checkLookup(req, resp)
 	}
 	if resp.ContentLength > g.maxBytes {
 		_ = resp.Body.Close()
@@ -127,19 +135,31 @@ func isLookup(req *http.Request) bool {
 		strings.HasSuffix(req.URL.String(), "/lookup")
 }
 
-// checkLookup reads a lookup reply in full, up to maxLookupBytes, and hands it
-// on only if peerhygiene.ValidateLookupAnswer accepts it, as a fresh body of
-// the same bytes. Otherwise the original body is closed and RoundTrip fails,
-// so go-sdk's facilitator never parses the reply.
-func (g *guard) checkLookup(resp *http.Response) (*http.Response, error) {
-	body, err := readLookupBody(resp, g.maxLookupBytes)
+// checkLookup takes a decoding slot, reads a lookup reply in full, up to
+// maxLookupBytes, and hands it on only if peerhygiene.ValidateLookupAnswer
+// accepts it, as a fresh body of the same bytes that keeps the slot until it is
+// closed. go-sdk's facilitator closes the body only after decoding the answer,
+// so the slot covers its decoding too. Otherwise the slot is returned, the
+// original body is closed and RoundTrip fails, so go-sdk's facilitator never
+// parses the reply.
+func (g *guard) checkLookup(req *http.Request, resp *http.Response) (*http.Response, error) {
+	release, err := peerhygiene.AcquireLookupSlot(req.Context())
 	if err != nil {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("netguard: %w", err)
+	}
+	peerhygiene.MarkLookupSlotHeld(req.Context())
+	body, err := readLookupBody(resp, g.maxLookupBytes, g.readTimeout)
+	if err == nil {
+		if verr := peerhygiene.ValidateLookupAnswer(resp.Header.Get("Content-Type"), body); verr != nil {
+			err = fmt.Errorf("netguard: rejected lookup answer: %w", verr)
+		}
+	}
+	if err != nil {
+		release()
 		return nil, err
 	}
-	if err := peerhygiene.ValidateLookupAnswer(resp.Header.Get("Content-Type"), body); err != nil {
-		return nil, fmt.Errorf("netguard: rejected lookup answer: %w", err)
-	}
-	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.Body = newSlotBody(body, release)
 	resp.ContentLength = int64(len(body))
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
@@ -149,21 +169,63 @@ func (g *guard) checkLookup(resp *http.Response) (*http.Response, error) {
 	return resp, nil
 }
 
-// readLookupBody reads resp's whole body, failing once it passes max bytes,
-// and always closes it.
-func readLookupBody(resp *http.Response, max int64) ([]byte, error) {
-	defer func() { _ = resp.Body.Close() }()
+// readLookupBody reads resp's whole body, failing once it passes max bytes or
+// once timeout has passed, and always closes it, exactly once: from the timer,
+// to cut a stalled read short, or else on return. The two never close it at
+// the same time.
+func readLookupBody(resp *http.Response, max int64, timeout time.Duration) ([]byte, error) {
+	var closeOnce sync.Once
+	closeBody := func() { closeOnce.Do(func() { _ = resp.Body.Close() }) }
+	defer closeBody()
 	if resp.ContentLength > max {
 		return nil, fmt.Errorf("%w: lookup Content-Length %d is over %d bytes", ErrResponseTooLarge, resp.ContentLength, max)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(timeout, func() {
+		timedOut.Store(true)
+		closeBody()
+	})
+	defer timer.Stop()
+	var body []byte
+	var err error
+	if resp.ContentLength >= 0 {
+		// The length is known: one exact allocation instead of io.ReadAll's
+		// growing copies. The transport ends the body at Content-Length.
+		body = make([]byte, resp.ContentLength)
+		_, err = io.ReadFull(resp.Body, body)
+	} else {
+		body, err = io.ReadAll(io.LimitReader(resp.Body, max+1))
+	}
 	if err != nil {
+		if timedOut.Load() {
+			return nil, fmt.Errorf("netguard: lookup answer not read within %v", timeout)
+		}
 		return nil, fmt.Errorf("netguard: reading lookup answer: %w", err)
 	}
 	if int64(len(body)) > max {
 		return nil, fmt.Errorf("%w: lookup body is over %d bytes", ErrResponseTooLarge, max)
 	}
 	return body, nil
+}
+
+// slotBody is a validated lookup answer handed on to the caller. It holds the
+// answer's decoding slot until Close, however often Close is called. A body
+// dropped without Close returns the slot once the garbage collector finds it
+// unreachable.
+type slotBody struct {
+	*bytes.Reader
+	release func()
+}
+
+func newSlotBody(b []byte, release func()) *slotBody {
+	body := &slotBody{Reader: bytes.NewReader(b), release: release}
+	runtime.AddCleanup(body, func(release func()) { release() }, release)
+	return body
+}
+
+func (b *slotBody) Close() error {
+	b.release()
+	return nil
 }
 
 // cappedBody passes a response body through until more than max bytes would

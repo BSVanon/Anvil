@@ -158,7 +158,8 @@ func newFacilitatorWithClock(inner lookup.Facilitator, logger *slog.Logger, now 
 // Lookup short-circuits hosts in backoff; otherwise it delegates and records the
 // outcome. A successful response clears any prior failure; a failure counts
 // toward backoff — except context cancellation, which is our own teardown (e.g.
-// node shutdown) and not the host's fault.
+// node shutdown), and giving up on a busy decoding slot, neither of which is
+// the host's fault.
 func (f *Facilitator) Lookup(ctx context.Context, url string, question *lookup.LookupQuestion) (*lookup.LookupAnswer, error) {
 	if f.tracker.inBackoff(url) {
 		return nil, fmt.Errorf("%w: %s", ErrHostInBackoff, url)
@@ -166,8 +167,8 @@ func (f *Facilitator) Lookup(ctx context.Context, url string, question *lookup.L
 
 	answer, err := f.inner.Lookup(ctx, url, question)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			// Our cancellation, not a peer fault — don't penalise the host.
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrNoLookupSlot) {
+			// Not a peer fault — don't penalise the host.
 			return nil, err
 		}
 		if deadline := f.tracker.recordFailure(url); !deadline.IsZero() {

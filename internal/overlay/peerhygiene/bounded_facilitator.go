@@ -5,8 +5,9 @@ package peerhygiene
 // overlay/lookup/facilitator.go (HTTPSOverlayLookupFacilitator and its
 // parseBinaryLookupAnswer), Copyright the go-sdk authors, used under the Open
 // BSV License (see the go-sdk LICENSE file). Anvil adds the response-size
-// cap, the bounds on wire-supplied counts and lengths, the output-expansion
-// budget, null-output rejection and the panic guard.
+// cap, the bounds on wire-supplied counts and lengths, the output, BEEF and
+// decode-cost caps, null-output rejection, the decoding slot and the panic
+// guard.
 
 import (
 	"bytes"
@@ -18,31 +19,23 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/util"
 )
 
-// MaxLookupResponseBytes caps how many bytes of one peer's /lookup reply are
-// read. The peers are whatever hosts are advertised on chain, so any of them
-// may be hostile. An honest answer, even a SHIP/SLAP listing of thousands of
-// advertisements with their proofs, is a few MiB at most. 32 MiB leaves
-// headroom of an order of magnitude while keeping the memory one host can
-// claim small.
-const MaxLookupResponseBytes int64 = 32 << 20
-
-// maxAnswerExpansion bounds the BEEF bytes a binary answer may expand into,
-// as a multiple of the response cap. Each output in a binary answer is
-// re-serialized together with its ancestry. Without a bound, an answer whose
-// outpoints name successive transactions of one long chain, or name one large
-// transaction over and over, would cost memory and CPU far beyond its size.
-const maxAnswerExpansion = 4
-
 // minBinaryOutpointBytes is the smallest encoding of one outpoint entry in a
 // binary answer: a 32-byte txid plus a 1-byte outputIndex varint and a 1-byte
 // contextLen varint.
 const minBinaryOutpointBytes = 32 + 1 + 1
+
+// LookupReadTimeout bounds how long reading one reply may hold a decoding
+// slot, so a peer that trickles its reply cannot keep the slot. It is
+// go-sdk's own SLAP tracker and SHIP query timeout.
+const LookupReadTimeout = 30 * time.Second
 
 // ErrLookupResponseTooLarge is returned when a peer's reply exceeds the
 // response cap.
@@ -59,10 +52,11 @@ var newBeefFromBytes = transaction.NewBeefFromBytes
 // application/octet-stream aggregated binary answer, decoded into the same
 // LookupAnswer shape. Unlike the upstream facilitator it treats the reply as
 // untrusted. It reads at most MaxBytes, it checks every wire-supplied count
-// and length against the bytes actually present before allocating, and it
-// turns any panic while decoding into an error. A panic would otherwise be
-// fatal: go-sdk's LookupResolver calls the facilitator in a goroutine of its
-// own, with no recover.
+// and length against the bytes actually present before allocating, it holds
+// the answer to the caps in budget.go, it decodes under one of the
+// LookupSlots decoding slots, and it turns any panic while decoding into an
+// error. A panic would otherwise be fatal: go-sdk's LookupResolver calls the
+// facilitator in a goroutine of its own, with no recover.
 type BoundedFacilitator struct {
 	// Client sends the request. Nil uses http.DefaultClient.
 	Client util.HTTPClient
@@ -79,6 +73,7 @@ func (f *BoundedFacilitator) Lookup(ctx context.Context, url string, question *l
 	if err != nil {
 		return nil, err
 	}
+	ctx, claim := withSlotClaim(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/lookup", bytes.NewReader(q))
 	if err != nil {
 		return nil, err
@@ -94,10 +89,27 @@ func (f *BoundedFacilitator) Lookup(ctx context.Context, url string, question *l
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	// The body is closed once: on return, or by the read timer below, never
+	// by both at the same time.
+	var closeOnce sync.Once
+	closeBody := func() { closeOnce.Do(func() { _ = resp.Body.Close() }) }
+	defer closeBody()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, &util.HTTPError{StatusCode: resp.StatusCode, Err: errors.New("lookup failed")}
+	}
+
+	// Through http.DefaultClient the netguard transport has taken a slot for
+	// this exchange already, and the deferred Close returns it. Otherwise the
+	// answer is read and decoded under a slot taken here.
+	if !claim.held.Load() {
+		release, err := AcquireLookupSlot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		timer := time.AfterFunc(LookupReadTimeout, closeBody)
+		defer timer.Stop()
 	}
 
 	maxBytes := f.maxBytes()
@@ -111,7 +123,7 @@ func (f *BoundedFacilitator) Lookup(ctx context.Context, url string, question *l
 	if int64(len(body)) > maxBytes {
 		return nil, fmt.Errorf("%w: body is over %d bytes", ErrLookupResponseTooLarge, maxBytes)
 	}
-	return decodeLookupAnswer(resp.Header.Get("Content-Type"), body, maxBytes*maxAnswerExpansion)
+	return decodeLookupAnswer(resp.Header.Get("Content-Type"), body)
 }
 
 func (f *BoundedFacilitator) maxBytes() int64 {
@@ -123,9 +135,9 @@ func (f *BoundedFacilitator) maxBytes() int64 {
 
 // decodeLookupAnswer decodes a reply body by its Content-Type, as the
 // upstream facilitator does (exact match on application/octet-stream,
-// otherwise JSON). Any panic while decoding becomes an error. expandBudget
-// bounds the BEEF bytes a binary answer may expand into.
-func decodeLookupAnswer(contentType string, body []byte, expandBudget int64) (answer *lookup.LookupAnswer, err error) {
+// otherwise JSON), and holds the answer to the caps in budget.go. Any panic
+// while decoding becomes an error.
+func decodeLookupAnswer(contentType string, body []byte) (answer *lookup.LookupAnswer, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			answer = nil
@@ -133,7 +145,10 @@ func decodeLookupAnswer(contentType string, body []byte, expandBudget int64) (an
 		}
 	}()
 	if contentType == "application/octet-stream" {
-		return parseBinaryLookupAnswer(body, expandBudget)
+		return parseBinaryLookupAnswer(body)
+	}
+	if cost := jsonCost(body); cost > MaxJSONDecodeCost {
+		return nil, fmt.Errorf("lookup: decoding the JSON answer could cost %d bytes, over the %d-byte cap", cost, MaxJSONDecodeCost)
 	}
 	answer = &lookup.LookupAnswer{}
 	if err := json.Unmarshal(body, answer); err != nil {
@@ -144,6 +159,18 @@ func decodeLookupAnswer(contentType string, body []byte, expandBudget int64) (an
 	for i, out := range answer.Outputs {
 		if out == nil {
 			return nil, fmt.Errorf("lookup: output %d of the answer is null", i)
+		}
+	}
+	if n := len(answer.Outputs); n > MaxLookupOutputs {
+		return nil, fmt.Errorf("lookup: the answer lists %d outputs, over the %d-output cap", n, MaxLookupOutputs)
+	}
+	var beefBytes int64
+	for i, out := range answer.Outputs {
+		if beefBytes += int64(len(out.Beef)); beefBytes > MaxAnswerBEEFBytes {
+			return nil, fmt.Errorf("lookup: the outputs' BEEF exceeds capacity of %d bytes", MaxAnswerBEEFBytes)
+		}
+		if cost := beefCost(out.Beef); cost > MaxBEEFParseCost {
+			return nil, fmt.Errorf("lookup: parsing output %d's BEEF could cost %d bytes, over the %d-byte cap", i, cost, MaxBEEFParseCost)
 		}
 	}
 	return answer, nil
@@ -164,10 +191,10 @@ func decodeLookupAnswer(contentType string, body []byte, expandBudget int64) (an
 // Each output gets its own V1 BEEF of the referenced transaction and its
 // ancestry, as upstream produces, and context is skipped, as upstream drops it.
 // Outputs that name the same transaction share one serialization here, but
-// every output counts against expandBudget, repeats included: upstream
+// every output counts against MaxAnswerBEEFBytes, repeats included: upstream
 // re-serializes once per output, and ValidateLookupAnswer relies on this
 // budget to bound what upstream allocates for a reply it lets through.
-func parseBinaryLookupAnswer(data []byte, expandBudget int64) (*lookup.LookupAnswer, error) {
+func parseBinaryLookupAnswer(data []byte) (*lookup.LookupAnswer, error) {
 	r := util.NewReader(data)
 	remaining := func() uint64 { return uint64(len(r.Data) - r.Pos) } //nolint:gosec // Pos never passes len(Data)
 
@@ -177,6 +204,9 @@ func parseBinaryLookupAnswer(data []byte, expandBudget int64) (*lookup.LookupAns
 	}
 	if nOutpoints > remaining()/minBinaryOutpointBytes {
 		return nil, fmt.Errorf("binary lookup: outpoint count %d exceeds capacity of %d remaining bytes", nOutpoints, remaining())
+	}
+	if nOutpoints > MaxLookupOutputs {
+		return nil, fmt.Errorf("binary lookup: the answer lists %d outputs, over the %d-output cap", nOutpoints, MaxLookupOutputs)
 	}
 
 	type outpointMeta struct {
@@ -210,8 +240,14 @@ func parseBinaryLookupAnswer(data []byte, expandBudget int64) (*lookup.LookupAns
 		})
 	}
 
-	// The remaining bytes are the shared BEEF holding every referenced transaction.
-	beef, err := newBeefFromBytes(r.Data[r.Pos:])
+	// The remaining bytes are the shared BEEF holding every referenced
+	// transaction. Price it before anything parses it: upstream parses it
+	// again, and every output's re-serialization is a subset of it.
+	shared := r.Data[r.Pos:]
+	if cost := beefCost(shared); cost > MaxBEEFParseCost {
+		return nil, fmt.Errorf("binary lookup: parsing the BEEF could cost %d bytes, over the %d-byte cap", cost, MaxBEEFParseCost)
+	}
+	beef, err := newBeefFromBytes(shared)
 	if err != nil {
 		return nil, fmt.Errorf("binary lookup: parsing BEEF: %w", err)
 	}
@@ -231,8 +267,8 @@ func parseBinaryLookupAnswer(data []byte, expandBudget int64) (*lookup.LookupAns
 			}
 			serialized[m.txid] = txBeef
 		}
-		if expanded += int64(len(txBeef)); expanded > expandBudget {
-			return nil, fmt.Errorf("binary lookup: re-serialized BEEF exceeds capacity of %d bytes", expandBudget)
+		if expanded += int64(len(txBeef)); expanded > MaxAnswerBEEFBytes {
+			return nil, fmt.Errorf("binary lookup: re-serialized BEEF exceeds capacity of %d bytes", MaxAnswerBEEFBytes)
 		}
 		outputs = append(outputs, &lookup.OutputListItem{Beef: txBeef, OutputIndex: m.outputIndex})
 	}
