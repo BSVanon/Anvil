@@ -122,24 +122,44 @@ func TestUHRP_AdmitAndLookupByHash(t *testing.T) {
 // the same outpoint as a raw content_hash query — the contract divergence an
 // external dev hit (canonical @bsv/sdk StorageDownloader clients query by URL,
 // never by raw hex hash).
+// TestUHRP_LookupByUhrpUrl covers the uhrpUrl query path's contract after
+// the fix pass (cold review B1 / spec item 1): a uhrpUrl query answers
+// with ONLY BRC-26 records. StorageDownloader.resolve() PushDrop-decodes
+// every returned output with no try/catch (ts-sdk
+// storage/StorageDownloader.ts) — a legacy OP_RETURN record isn't
+// PushDrop-shaped at all and would make that decode throw. This test
+// admits BOTH formats under the same content hash, at distinct URLs (so
+// filterUHRPRecords' separate legacy/BRC-26-duplicate rule never comes
+// into play here — that rule hides a legacy record only when its URL
+// exactly matches a live BRC-26 advert's URL), to prove the legacy
+// record is excluded from the uhrpUrl answer specifically, while staying
+// visible through content_hash.
 func TestUHRP_LookupByUhrpUrl(t *testing.T) {
 	s := newUHRPLookup(t)
 
-	payload := buildUHRPAdmitPayload(t, sampleHashA, "https://example.com/a", "image/png")
-	if err := s.OutputAdmittedByTopic(ctxBg(), payload); err != nil {
-		t.Fatalf("admit: %v", err)
+	hash := freshUHRPHash(0x77)
+	hashHex := hex.EncodeToString(hash)
+
+	legacyPayload := buildUHRPAdmitPayload(t, hashHex, "https://legacy.example.com/old", "image/png")
+	if err := s.OutputAdmittedByTopic(ctxBg(), legacyPayload); err != nil {
+		t.Fatalf("admit legacy: %v", err)
 	}
-	want := mustOutpointFromPayload(t, payload)
+
+	brc26Payload := buildUHRPBRC26AdmitPayload(t, freshIdentityPub(t), hash, "https://url.example.com/a", 2000000000, 10)
+	if err := s.OutputAdmittedByTopic(ctxBg(), brc26Payload); err != nil {
+		t.Fatalf("admit brc26: %v", err)
+	}
+	wantBRC26 := mustOutpointFromPayload(t, brc26Payload)
 
 	// Build the canonical uhrp:// URL for that hash — what a StorageDownloader
 	// client actually sends (base58check over [0xce,0x00]+hash+checksum).
-	hashBytes, _ := hex.DecodeString(sampleHashA)
-	b58, err := storage.GetURLForHash(hashBytes)
+	b58, err := storage.GetURLForHash(hash)
 	if err != nil {
 		t.Fatalf("GetURLForHash: %v", err)
 	}
 
-	// uhrp://, web+uhrp://, and the bare base58 must all resolve identically.
+	// uhrp://, web+uhrp://, and the bare base58 must all resolve identically,
+	// and only to the BRC-26 record — the legacy one never appears here.
 	for _, url := range []string{"uhrp://" + b58, "web+uhrp://" + b58, b58} {
 		q, _ := json.Marshal(topics.UHRPLookupQuery{UhrpUrl: url})
 		answer, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{
@@ -150,15 +170,27 @@ func TestUHRP_LookupByUhrpUrl(t *testing.T) {
 			t.Fatalf("lookup by %q: %v", url, err)
 		}
 		if answer.Type != lookup.AnswerTypeFormula || len(answer.Formulas) != 1 {
-			t.Fatalf("%q: expected 1 formula, got type=%s n=%d", url, answer.Type, len(answer.Formulas))
+			t.Fatalf("%q: expected 1 formula (brc26-only), got type=%s n=%d", url, answer.Type, len(answer.Formulas))
 		}
-		if got := answer.Formulas[0].Outpoint; got == nil || !got.Equal(want) {
-			t.Fatalf("%q: outpoint mismatch: got %v want %v", url, got, want)
+		if got := answer.Formulas[0].Outpoint; got == nil || !got.Equal(wantBRC26) {
+			t.Fatalf("%q: outpoint mismatch: got %v want %v", url, got, wantBRC26)
 		}
 	}
 
+	// The same hash via content_hash still surfaces both records — a
+	// uhrpUrl query is the one query shape canonicalOnly restricts; by-hash
+	// and list queries keep both formats per spec item 1.
+	qHash, _ := json.Marshal(topics.UHRPLookupQuery{ContentHash: hashHex})
+	hashAnswer, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{Service: topics.UHRPLookupServiceName, Query: qHash})
+	if err != nil {
+		t.Fatalf("lookup by content_hash: %v", err)
+	}
+	if len(hashAnswer.Formulas) != 2 {
+		t.Fatalf("content_hash: expected 2 formulas (legacy+brc26), got %d", len(hashAnswer.Formulas))
+	}
+
 	// An explicit content_hash still wins when both are supplied.
-	qBoth, _ := json.Marshal(topics.UHRPLookupQuery{ContentHash: sampleHashA, UhrpUrl: "uhrp://zzz"})
+	qBoth, _ := json.Marshal(topics.UHRPLookupQuery{ContentHash: hashHex, UhrpUrl: "uhrp://zzz"})
 	if _, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{Service: topics.UHRPLookupServiceName, Query: qBoth}); err != nil {
 		t.Fatalf("content_hash should take precedence over a bad uhrpUrl: %v", err)
 	}

@@ -73,6 +73,29 @@ func uhrpIdentityWallet(t *testing.T) (wallet.Interface, []byte) {
 // signs with counterparty=anyone — the symmetric partner of
 // verifyBRC26Linkage's counterparty=identityKey check, exactly as a real
 // advertiser's wallet would.
+//
+// Fix pass (cold review RISKS / spec item 6): forSelf is true, matching
+// canonical producers (overlays/uhrp-server-basic
+// createUHRPAdvertisement.ts calls `pushdrop.lock(fields, protocol, '1',
+// 'anyone', true)`). This is load-bearing, not cosmetic: go-sdk's
+// KeyDeriver.DerivePublicKey computes two different points depending on
+// forSelf (wallet/key_deriver.go) — forSelf=true derives
+// rootKey.DeriveChild(counterpartyKey, invoice) (the signer's OWN key,
+// privately derivable by the signer); forSelf=false derives
+// counterpartyKey.DeriveChild(rootKey, invoice) (the COUNTERPARTY's key,
+// from the signer's point of view). verifyBRC26Linkage's own
+// GetPublicKey call (uhrp_brc26.go) omits ForSelf entirely — defaulting
+// false — which is the correct mirror image of a forSelf=true producer
+// (BRC-42's symmetric/ECDH-style derivation makes
+// signerPriv.DeriveChild(anyonePub) equal anyonePub's-counterpart
+// verifierPriv.DeriveChild(signerPub), not signerPriv.DeriveChild(anyonePub)
+// equal anyonePub.DeriveChild(signerPriv), which is what the old
+// forSelf=false here produced). With the old forSelf=false, every
+// locking key this helper built was the WRONG point: it would never
+// equal what verifyBRC26Linkage's forSelf=false(default) derivation
+// computes — this helper was silently building adverts that cannot be
+// genuinely admitted. No test before this fix pass called this helper
+// and then asserted a successful admit, so the mismatch went unnoticed.
 func buildUHRPBRC26Script(t *testing.T, w wallet.Interface, identityPub, hash []byte, url string, expiry, size uint64) []byte {
 	t.Helper()
 	fields := [][]byte{
@@ -89,8 +112,8 @@ func buildUHRPBRC26Script(t *testing.T, w wallet.Interface, identityPub, hash []
 		uhrpBRC26Protocol,
 		uhrpBRC26KeyID,
 		wallet.Counterparty{Type: wallet.CounterpartyTypeAnyone},
-		false, // forSelf
-		true,  // includeSignature: a BRC-26 advert carries an appended signature
+		true, // forSelf — see the fix-pass comment above
+		true, // includeSignature: a BRC-26 advert carries an appended signature
 		pushdrop.LockBefore,
 	)
 	if err != nil {

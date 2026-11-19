@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -13,6 +14,16 @@ import (
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
+
+// errUHRPCorruptRecord marks an item that failed to JSON-decode — data
+// already written to the index that is no longer valid uhrpItem JSON.
+// itemsByHash and allItemRecords both treat this identically: skip the
+// single record and log a warning, never fail the whole scan over one bad
+// entry (fix pass, cold review B3 — mirrors storage.go's
+// safeNewBeefFromBytes skip-and-log treatment of an unparseable BEEF
+// blob). A genuine LevelDB read error is a different, infrastructural
+// failure and still propagates as-is.
+var errUHRPCorruptRecord = errors.New("uhrp lookup: corrupt record")
 
 // This file holds the UHRP lookup's read path: loading and filtering the
 // local index into the result sets Lookup (uhrp.go) returns. Split out of
@@ -37,7 +48,43 @@ func uhrpExpired(it uhrpItem, now int64) bool {
 	return it.BRC26 && it.Expiry != 0 && it.Expiry < now
 }
 
-// filterUHRPRecords applies the two cross-cutting UHRP display rules to a
+// uhrpQueryFilter is the optional AND-filter canonical
+// UHRPLookupService.ts applies on top of whatever base set (by-hash or
+// list-all) a query selects: HostIdentityKey and ExpiryTime each narrow
+// the result when supplied, the same way Mongo's implicit multi-field
+// exact match (`records.find(query)`) would. The zero value matches
+// everything (fix pass, cold review RISKS / spec item 5).
+//
+// expiryTime == 0 means "not supplied," matching UHRPLookupQuery's wire
+// contract (topics/uhrp_lookup.go): a stored advertisement's expiry is
+// always >= 1 (admission enforces it), so a query can never legitimately
+// mean "find expiryTime exactly 0."
+type uhrpQueryFilter struct {
+	hostIdentityKey string
+	expiryTime      int64
+}
+
+// active reports whether this filter has anything to apply — used by
+// Lookup (uhrp.go) to decide whether hostIdentityKey/expiryTime supplied
+// with no hash and no list should trigger a full scan the way List:"all"
+// does.
+func (f uhrpQueryFilter) active() bool {
+	return f.hostIdentityKey != "" || f.expiryTime != 0
+}
+
+// matches reports whether a record satisfies every field this filter has
+// set. The zero value (no fields set) matches every record.
+func (f uhrpQueryFilter) matches(it uhrpItem) bool {
+	if f.hostIdentityKey != "" && !strings.EqualFold(it.IdentityKey, f.hostIdentityKey) {
+		return false
+	}
+	if f.expiryTime != 0 && it.Expiry != f.expiryTime {
+		return false
+	}
+	return true
+}
+
+// filterUHRPRecords applies the cross-cutting UHRP display rules to a
 // candidate result set, in place of the engine's raw index contents:
 //
 //  1. Skip an expired BRC-26 advert. Canonical semantics per
@@ -45,30 +92,56 @@ func uhrpExpired(it uhrpItem, now int64) bool {
 //     once `expiryTime < currentTime` — the same strict less-than.
 //  2. Hide a legacy entry when a BRC-26 advert exists for the same
 //     (content hash, URL) pair, so a superseded legacy advertisement
-//     stops shadowing its canonical replacement.
+//     stops shadowing its canonical replacement. (Not reached when
+//     canonicalOnly already dropped every legacy entry — rule 3.)
+//  3. (Fix pass, cold review B1 / spec item 1) When canonicalOnly is
+//     set — the uhrpUrl query path only, never content_hash or list —
+//     drop every legacy (non-BRC26) record outright, not just ones a
+//     BRC-26 advert happens to supersede. A canonical @bsv/sdk
+//     StorageDownloader client resolving by uhrpUrl PushDrop-decodes
+//     every returned output with no try/catch
+//     (storage/StorageDownloader.ts, resolve()); a legacy OP_RETURN
+//     record isn't PushDrop-shaped at all and would make that decode
+//     throw.
+//  4. (Fix pass, cold review RISKS / spec item 5) Apply extra as an
+//     AND-filter (hostIdentityKey / expiryTime), matching canonical
+//     UHRPLookupService.ts's `records.find(query)` Mongo-style
+//     multi-field exact match.
 //
 // Divergence: canonical's reference ls_uhrp (UHRPLookupService.ts) does
-// neither of these server-side — rule 1 is left to each resolving client
-// (StorageDownloader.resolve), and rule 2 has no canonical equivalent at
-// all (legacy OP_RETURN adverts are an Anvil-only compatibility format).
-// Filtering server-side here is an Anvil choice: it keeps a request for
-// "resolve this URL" from describing dead or shadowed hosts, in addition
-// to whatever filtering a canonical client already does itself.
-func filterUHRPRecords(recs []uhrpItemRecord, now int64) []uhrpItemRecord {
+// none of rules 1-2 server-side for its content_hash path — rule 1 is
+// left to each resolving client (StorageDownloader.resolve), and rule 2
+// has no canonical equivalent at all (legacy OP_RETURN adverts are an
+// Anvil-only compatibility format). Filtering server-side here is an
+// Anvil choice: it keeps a request for "resolve this URL" from
+// describing dead or shadowed hosts, in addition to whatever filtering a
+// canonical client already does itself. Rule 3, by contrast, IS load-
+// bearing for canonical correctness, not just a convenience — a BRC-26
+// client literally cannot decode what rule 3 holds back.
+func filterUHRPRecords(recs []uhrpItemRecord, now int64, canonicalOnly bool, extra uhrpQueryFilter) []uhrpItemRecord {
 	dupKey := func(it uhrpItem) string { return it.ContentHash + "\x00" + it.URL }
 	brc26Keys := make(map[string]struct{}, len(recs))
 	for _, r := range recs {
+		if !extra.matches(r.uhrpItem) {
+			continue
+		}
 		if r.BRC26 && !uhrpExpired(r.uhrpItem, now) {
 			brc26Keys[dupKey(r.uhrpItem)] = struct{}{}
 		}
 	}
 	out := make([]uhrpItemRecord, 0, len(recs))
 	for _, r := range recs {
+		if !extra.matches(r.uhrpItem) {
+			continue
+		}
 		if r.BRC26 {
 			if uhrpExpired(r.uhrpItem, now) {
 				continue
 			}
 			out = append(out, r)
+			continue
+		}
+		if canonicalOnly {
 			continue
 		}
 		if _, superseded := brc26Keys[dupKey(r.uhrpItem)]; superseded {
@@ -90,13 +163,16 @@ func formulasFromRecords(recs []uhrpItemRecord) []lookup.LookupFormula {
 }
 
 // scanByHash returns formulas for every outpoint indexed under the given
-// content hash, after applying filterUHRPRecords.
-func (s *UHRPLookupService) scanByHash(hashHex string) ([]lookup.LookupFormula, error) {
+// content hash, after applying filterUHRPRecords. canonicalOnly (fix
+// pass, cold review B1) is set by the one caller — the uhrpUrl query
+// path — that needs BRC-26-only answers; a direct content_hash query
+// passes false and keeps seeing both formats.
+func (s *UHRPLookupService) scanByHash(hashHex string, canonicalOnly bool, extra uhrpQueryFilter) ([]lookup.LookupFormula, error) {
 	recs, err := s.itemsByHash(hashHex)
 	if err != nil {
 		return nil, err
 	}
-	return formulasFromRecords(filterUHRPRecords(recs, nowUnix())), nil
+	return formulasFromRecords(filterUHRPRecords(recs, nowUnix(), canonicalOnly, extra)), nil
 }
 
 // itemsByHash loads the full record (not just the outpoint) for every
@@ -114,6 +190,13 @@ func (s *UHRPLookupService) itemsByHash(hashHex string) ([]uhrpItemRecord, error
 		}
 		item, ok, err := s.loadItem(op)
 		if err != nil {
+			if errors.Is(err, errUHRPCorruptRecord) {
+				// Fix pass, cold review B3: one corrupt record must not
+				// fail the whole hash scan.
+				slog.Warn("uhrp lookup: skipping corrupt record in hash scan",
+					"txid", op.Txid.String(), "vout", op.Index, "error", err)
+				continue
+			}
 			return nil, err
 		}
 		if !ok {
@@ -138,7 +221,7 @@ func (s *UHRPLookupService) loadItem(op *transaction.Outpoint) (uhrpItem, bool, 
 	}
 	var item uhrpItem
 	if err := json.Unmarshal(body, &item); err != nil {
-		return uhrpItem{}, false, fmt.Errorf("uhrp lookup: decode item: %w", err)
+		return uhrpItem{}, false, fmt.Errorf("uhrp lookup: decode item: %w: %w", errUHRPCorruptRecord, err)
 	}
 	return item, true, nil
 }
@@ -157,7 +240,12 @@ func (s *UHRPLookupService) allItemRecords() ([]uhrpItemRecord, error) {
 		}
 		var item uhrpItem
 		if err := json.Unmarshal(iter.Value(), &item); err != nil {
-			continue // corrupt record — skip defensively
+			// Fix pass, cold review B3: same skip-and-log treatment as
+			// itemsByHash's errUHRPCorruptRecord path above — never fail
+			// the whole list scan over one bad entry.
+			slog.Warn("uhrp lookup: skipping corrupt record in list scan",
+				"key", string(iter.Key()), "error", err)
+			continue
 		}
 		recs = append(recs, uhrpItemRecord{uhrpItem: item, outpoint: op})
 	}
@@ -168,25 +256,28 @@ func (s *UHRPLookupService) allItemRecords() ([]uhrpItemRecord, error) {
 }
 
 // scanAllItems returns one formula per surviving item in the local index,
-// after applying filterUHRPRecords.
-func (s *UHRPLookupService) scanAllItems() ([]lookup.LookupFormula, error) {
+// after applying filterUHRPRecords. extra (fix pass, spec item 5)
+// AND-combines hostIdentityKey/expiryTime into this base set, matching
+// canonical UHRPLookupService.ts's query semantics; the zero value
+// matches everything.
+func (s *UHRPLookupService) scanAllItems(extra uhrpQueryFilter) ([]lookup.LookupFormula, error) {
 	recs, err := s.allItemRecords()
 	if err != nil {
 		return nil, err
 	}
-	return formulasFromRecords(filterUHRPRecords(recs, nowUnix())), nil
+	return formulasFromRecords(filterUHRPRecords(recs, nowUnix(), false, extra)), nil
 }
 
 // countByHash returns a hash→count map computed over the surviving items
-// (after filterUHRPRecords), so an expired or superseded-legacy advert
-// doesn't inflate a hash's reported host count.
-func (s *UHRPLookupService) countByHash() (map[string]int, error) {
+// (after filterUHRPRecords and extra), so an expired, superseded-legacy,
+// or filtered-out advert doesn't inflate a hash's reported host count.
+func (s *UHRPLookupService) countByHash(extra uhrpQueryFilter) (map[string]int, error) {
 	recs, err := s.allItemRecords()
 	if err != nil {
 		return nil, err
 	}
 	counts := make(map[string]int)
-	for _, r := range filterUHRPRecords(recs, nowUnix()) {
+	for _, r := range filterUHRPRecords(recs, nowUnix(), false, extra) {
 		counts[r.ContentHash]++
 	}
 	return counts, nil
