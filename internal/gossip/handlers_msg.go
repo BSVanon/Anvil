@@ -235,6 +235,7 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	m.seenMu.Lock()
 	if _, seen := m.msgSeen[dedup]; seen {
 		m.seenMu.Unlock()
+		m.IncrDuplicateArrival()
 		return nil
 	}
 	m.seenMu.Unlock()
@@ -262,6 +263,7 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	m.seenMu.Lock()
 	if _, seen := m.msgSeen[dedup]; seen {
 		m.seenMu.Unlock()
+		m.IncrDuplicateArrival()
 		return nil
 	}
 	if m.seenOwners == nil {
@@ -336,6 +338,7 @@ func (m *Manager) evictMsgSeenLocked(keep string) {
 			continue
 		}
 		delete(m.msgSeen, key)
+		m.IncrDedupEviction()
 	}
 }
 

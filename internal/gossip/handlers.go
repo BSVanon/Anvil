@@ -236,6 +236,7 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 	m.seenMu.Lock()
 	if _, seen := m.seen[hash]; seen {
 		m.seenMu.Unlock()
+		m.IncrDuplicateArrival()
 		return nil
 	}
 	m.seen[hash] = struct{}{}
@@ -243,6 +244,7 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 		count := 0
 		for k := range m.seen {
 			delete(m.seen, k)
+			m.IncrDedupEviction()
 			count++
 			if count >= m.maxSeen/2 {
 				break
@@ -425,6 +427,10 @@ func (m *Manager) onDataResponse(senderPKHex string, senderPK *ec.PublicKey, raw
 					_ = peer.Peer.ToPeer(context.Background(), payload, senderPK, 5000)
 				}
 			}
+		} else {
+			// The peer still has more to send, but this peer+topic has already
+			// used its maxCatchUpRounds budget — the catch-up stops here.
+			m.IncrCatchupTruncated()
 		}
 	}
 	return nil

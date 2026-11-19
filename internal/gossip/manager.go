@@ -112,6 +112,15 @@ type Manager struct {
 	envsReceived atomic.Int64
 	envsSent     atomic.Int64
 	startedAt    time.Time
+
+	// mesh health counters for GET /stats (lock-free atomics, cumulative
+	// since boot — see status.go). dedupEvictions covers both seen and
+	// msgSeen; duplicateArrivals covers every "already seen" discard
+	// (envelope, message forward, slash warning); catchupTruncated counts
+	// catch-up sequences cut off at maxCatchUpRounds while more remained.
+	dedupEvictions    atomic.Int64
+	duplicateArrivals atomic.Int64
+	catchupTruncated  atomic.Int64
 }
 
 // peerRate tracks token-bucket rate limiting for a single peer.

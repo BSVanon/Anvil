@@ -62,6 +62,37 @@ func (m *Manager) IncrReceived() { m.envsReceived.Add(1) }
 // IncrSent bumps the sent envelope counter (lock-free).
 func (m *Manager) IncrSent() { m.envsSent.Add(1) }
 
+// IncrDedupEviction bumps the gossip dedup-set eviction counter (lock-free).
+// Called once per entry evicted from seen or msgSeen when either hits its
+// maxSeen cap and is trimmed back to half (see onData and
+// evictMsgSeenLocked).
+func (m *Manager) IncrDedupEviction() { m.dedupEvictions.Add(1) }
+
+// DedupEvictions returns how many entries have been evicted from the gossip
+// dedup set (envelope hash dedup plus message-forward dedup) since this
+// node started, cumulative.
+func (m *Manager) DedupEvictions() int64 { return m.dedupEvictions.Load() }
+
+// IncrDuplicateArrival bumps the duplicate-arrival counter (lock-free).
+// Called once per envelope or message discarded because its dedup key was
+// already in seen or msgSeen (onData, onMsgForward, onSlashWarning).
+func (m *Manager) IncrDuplicateArrival() { m.duplicateArrivals.Add(1) }
+
+// DuplicateArrivals returns how many envelopes or messages have been
+// discarded as already seen since this node started, cumulative.
+func (m *Manager) DuplicateArrivals() int64 { return m.duplicateArrivals.Load() }
+
+// IncrCatchupTruncated bumps the catch-up truncation counter (lock-free).
+// Called once per onDataResponse where the peer reported more data
+// (HasMore) but this node had already used its maxCatchUpRounds budget for
+// that peer+topic, so no follow-up request was sent.
+func (m *Manager) IncrCatchupTruncated() { m.catchupTruncated.Add(1) }
+
+// CatchupTruncated returns how many catch-up sequences have been cut off at
+// the five-round limit (maxCatchUpRounds) while the peer still had more
+// data to send, cumulative since this node started.
+func (m *Manager) CatchupTruncated() int64 { return m.catchupTruncated.Load() }
+
 // Interests returns declared topic interests for all connected peers.
 func (m *Manager) Interests() map[string][]string {
 	m.mu.RLock()
