@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 )
@@ -8,10 +9,14 @@ import (
 // UTXONoncePool wraps a NonceProvider with pre-minting for fast 402 challenge issuance.
 // Maintains a pool of ready nonces so challenges don't wait for wallet CreateAction.
 //
+// Every mint, the refills and an empty pool's on-demand mints alike, spends
+// from the process-wide mint budget (payment_budget.go). An empty pool whose
+// budget is spent mints nothing and returns a *mintBudgetError.
+//
 // See Rui da Silva's "Replay Protection Without Databases" and
 // STRATEGIC_TOPICS.md Topic 12 / TODO_REMAINING.md.
 type UTXONoncePool struct {
-	inner    NonceProvider
+	inner    NonceProvider // the minting provider behind the mint budget
 	logger   *slog.Logger
 	mu       sync.Mutex
 	pool     []*NonceUTXO
@@ -22,6 +27,11 @@ type UTXONoncePool struct {
 // NewUTXONoncePool wraps a NonceProvider with a pre-mint pool.
 // poolSize is the target number of ready nonces (default: 100).
 func NewUTXONoncePool(inner NonceProvider, poolSize int, logger *slog.Logger) *UTXONoncePool {
+	return newUTXONoncePool(inner, poolSize, logger, defaultMintBudget)
+}
+
+// newUTXONoncePool is NewUTXONoncePool with the mint budget to spend from.
+func newUTXONoncePool(inner NonceProvider, poolSize int, logger *slog.Logger, budget *mintBudget) *UTXONoncePool {
 	if poolSize <= 0 {
 		poolSize = 100
 	}
@@ -29,7 +39,7 @@ func NewUTXONoncePool(inner NonceProvider, poolSize int, logger *slog.Logger) *U
 		logger = slog.Default()
 	}
 	p := &UTXONoncePool{
-		inner:    inner,
+		inner:    withMintBudget(inner, budget),
 		logger:   logger,
 		pool:     make([]*NonceUTXO, 0, poolSize),
 		poolSize: poolSize,
@@ -38,8 +48,9 @@ func NewUTXONoncePool(inner NonceProvider, poolSize int, logger *slog.Logger) *U
 	return p
 }
 
-// MintNonce returns a ready nonce UTXO from the pool.
-// If pool is empty, mints one on-demand (slower but never fails silently).
+// MintNonce returns a ready nonce UTXO from the pool. If the pool is empty it
+// mints one on demand, which the mint budget may refuse with a
+// *mintBudgetError.
 func (p *UTXONoncePool) MintNonce() (*NonceUTXO, error) {
 	p.mu.Lock()
 	if len(p.pool) > 0 {
@@ -57,11 +68,17 @@ func (p *UTXONoncePool) MintNonce() (*NonceUTXO, error) {
 	}
 	p.mu.Unlock()
 
-	p.logger.Warn("nonce pool empty, minting on-demand")
 	nonce, err := p.inner.MintNonce()
 	if err != nil {
+		var spent *mintBudgetError
+		if errors.As(err, &spent) {
+			// Logged at debug: a caller can ask for challenges as fast as the
+			// rate limiter lets it, and each refusal would log a line.
+			p.logger.Debug("nonce pool empty and the mint budget is spent", "retry_after", spent.retryAfter)
+		}
 		return nil, err
 	}
+	p.logger.Warn("nonce pool empty, minted a nonce on demand")
 
 	go p.replenish()
 	return nonce, nil
@@ -74,7 +91,8 @@ func (p *UTXONoncePool) PoolSize() int {
 	return len(p.pool)
 }
 
-// replenish mints nonces until the pool is full.
+// replenish mints nonces until the pool is full or the mint budget is spent.
+// The next nonce issued below a quarter of the pool tries again.
 func (p *UTXONoncePool) replenish() {
 	p.mu.Lock()
 	if p.minting {
@@ -97,7 +115,12 @@ func (p *UTXONoncePool) replenish() {
 	for i := 0; i < needed; i++ {
 		nonce, err := p.inner.MintNonce()
 		if err != nil {
-			p.logger.Warn("nonce mint failed, stopping replenish", "minted", minted, "error", err)
+			var spent *mintBudgetError
+			if errors.As(err, &spent) {
+				p.logger.Info("nonce pool refill paused: the mint budget is spent", "minted", minted, "retry_after", spent.retryAfter)
+			} else {
+				p.logger.Warn("nonce mint failed, stopping replenish", "minted", minted, "error", err)
+			}
 			break
 		}
 		p.mu.Lock()

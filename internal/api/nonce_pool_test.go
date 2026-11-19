@@ -12,6 +12,11 @@ type mockNonceProvider struct {
 	counter int
 }
 
+// noncesCostNothing exempts the mock from the process-wide mint budget
+// (payment_budget.go), which these pool tests would otherwise share and
+// exhaust; payment_budget_test.go tests the budget.
+func (*mockNonceProvider) noncesCostNothing() {}
+
 func (m *mockNonceProvider) MintNonce() (*NonceUTXO, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

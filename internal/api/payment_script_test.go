@@ -31,6 +31,11 @@ type keyNonceProvider struct {
 	key *ec.PrivateKey
 }
 
+// noncesCostNothing exempts the provider from the process-wide mint budget
+// (payment_budget.go), which the tests of this package would otherwise share
+// and exhaust; payment_budget_test.go tests the budget.
+func (*keyNonceProvider) noncesCostNothing() {}
+
 func (p *keyNonceProvider) MintNonce() (*NonceUTXO, error) {
 	addr, err := bsvscript.NewAddressFromPublicKey(p.key.PubKey(), true)
 	if err != nil {

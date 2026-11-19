@@ -1,12 +1,16 @@
 package v3engine
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strconv"
 
+	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
@@ -34,6 +38,16 @@ import (
 //     BEEF blob and merging into a single Beef via MergeBeef; the
 //     final binary is written via Beef.Bytes().
 //
+// No stored output may fail the whole answer. The outputs' BEEFs come from
+// storage, and go-sdk v1.7.7's MergeBump combines two proofs of one block
+// (beef.go:828), which panics (merklepath.go:480) when the proof merged in
+// declares more levels than the one already held, as two separately admitted
+// BEEFs can (cold-review round 3, B3). So an output without a BEEF, or whose
+// BEEF cannot be parsed, is skipped and logged, and when merging any output's
+// BEEF fails or panics, or the merged BEEF cannot be written, the answer is
+// written by writePerOutputAnswer instead, every output with its own BEEF,
+// with nothing merged.
+//
 // Responses with Type == AnswerTypeFreeform fail with a clear error
 // because they have no outputs to aggregate; callers should not set
 // x-aggregation:yes for freeform queries.
@@ -44,30 +58,80 @@ func writeAggregatedAnswer(w http.ResponseWriter, answer *lookup.LookupAnswer) e
 	if answer.Type == lookup.AnswerTypeFreeform {
 		return errors.New("x-aggregation incompatible with freeform answer (no outputs to aggregate)")
 	}
-	outputs := answer.Outputs
-	if outputs == nil {
-		// Empty result — still valid; write a 0-count header + empty
-		// BEEF marker so the canonical client always sees a parseable
-		// payload.
-		outputs = nil
+	items := usableOutputs(answer.Outputs)
+	payload, err := aggregateOutputs(items)
+	if err != nil {
+		slog.Warn("lookup: cannot aggregate the answer, answering with each output's own BEEF",
+			"outputs", len(items), "error", err)
+		return writePerOutputAnswer(w, items)
 	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write(payload)
+	return err
+}
 
+// answerOutput is an output of a lookup answer with the txid of the
+// transaction its BEEF carries.
+type answerOutput struct {
+	item *lookup.OutputListItem
+	txid chainhash.Hash
+}
+
+// usableOutputs returns the outputs whose BEEF parses, with their txids, in
+// the answer's order. It logs and skips every other output.
+func usableOutputs(outputs []*lookup.OutputListItem) []answerOutput {
+	usable := make([]answerOutput, 0, len(outputs))
+	for i, item := range outputs {
+		if item == nil || len(item.Beef) == 0 {
+			slog.Warn("lookup: skipping an answer output with no BEEF", "position", i, "outputIndex", indexOf(item))
+			continue
+		}
+		txid, err := subjectTxid(item.Beef)
+		if err != nil {
+			slog.Warn("lookup: skipping an answer output whose BEEF cannot be parsed",
+				"position", i, "outputIndex", item.OutputIndex, "error", err)
+			continue
+		}
+		usable = append(usable, answerOutput{item: item, txid: *txid})
+	}
+	return usable
+}
+
+// go-sdk's BEEF parser and serialiser, as variables so that a test can make
+// them panic: no input known today does, so the recovers around them could
+// not be tested otherwise.
+var (
+	parseAnswerBEEF    = transaction.NewTransactionFromBEEF
+	serialiseAggregate = (*transaction.Beef).Bytes
+)
+
+// subjectTxid returns the txid of the transaction beef carries, turning a
+// panic in go-sdk's parser into an error.
+func subjectTxid(beef []byte) (txid *chainhash.Hash, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			txid, err = nil, fmt.Errorf("BEEF parse panicked: %v", r)
+		}
+	}()
+	tx, err := parseAnswerBEEF(beef)
+	if err != nil {
+		return nil, err
+	}
+	if txid = tx.TxID(); txid == nil {
+		return nil, errors.New("nil txid from tx")
+	}
+	return txid, nil
+}
+
+// aggregateOutputs builds the binary aggregated answer for outputs. It fails
+// at the first output whose BEEF cannot be merged, and when the merged BEEF
+// cannot be written.
+func aggregateOutputs(outputs []answerOutput) ([]byte, error) {
 	header := new(bytes.Buffer)
 	writeVarInt(header, uint64(len(outputs)))
-
 	aggregated := transaction.NewBeef()
-	for _, item := range outputs {
-		if item == nil || len(item.Beef) == 0 {
-			return fmt.Errorf("aggregated output missing BEEF (outputIndex=%d)", indexOf(item))
-		}
-		tx, err := transaction.NewTransactionFromBEEF(item.Beef)
-		if err != nil {
-			return fmt.Errorf("parse output BEEF: %w", err)
-		}
-		txid := tx.TxID()
-		if txid == nil {
-			return errors.New("nil txid from tx")
-		}
+	for _, out := range outputs {
 		// Emit the txid in DISPLAY (big-endian) byte order. The canonical
 		// writer (OverlayExpress.ts) writes `tx.id()` — @bsv/sdk display
 		// order — and BOTH canonical readers (@bsv/sdk LookupResolver and
@@ -77,32 +141,77 @@ func writeAggregatedAnswer(w http.ResponseWriter, answer *lookup.LookupAnswer) e
 		// reverse it here. Emitting internal order made every @bsv/sdk
 		// LookupResolver throw "<txid> does not exist in this Beef" (reported
 		// by a canonical-client integrator), a false-empty for a real hit.
-		var disp [32]byte
-		for i := 0; i < len(txid); i++ {
-			disp[i] = txid[len(txid)-1-i]
+		for i := len(out.txid) - 1; i >= 0; i-- {
+			header.WriteByte(out.txid[i])
 		}
-		header.Write(disp[:])
-		writeVarInt(header, uint64(item.OutputIndex))
+		writeVarInt(header, uint64(out.item.OutputIndex))
 		// Context is a TS-only extension; Go canonical writes 0.
 		writeVarInt(header, 0)
 
-		if err := aggregated.MergeBeefBytes(item.Beef); err != nil {
-			return fmt.Errorf("merge BEEF into aggregate (outputIndex=%d): %w", item.OutputIndex, err)
+		if err := mergeOutputBEEF(aggregated, out.item.Beef); err != nil {
+			return nil, fmt.Errorf("merge the BEEF of %s:%d into the aggregate: %w", out.txid, out.item.OutputIndex, err)
 		}
 	}
-
-	beefBytes, err := aggregated.Bytes()
+	beefBytes, err := aggregatedBytes(aggregated)
 	if err != nil {
-		return fmt.Errorf("serialise aggregated BEEF: %w", err)
+		return nil, fmt.Errorf("serialise aggregated BEEF: %w", err)
 	}
+	return append(header.Bytes(), beefBytes...), nil
+}
 
-	w.Header().Set("Content-Type", "application/octet-stream")
+// mergeOutputBEEF merges beef into aggregated, turning a panic into an error.
+// After a failure aggregated may hold part of beef, so it must not be used.
+func mergeOutputBEEF(aggregated *transaction.Beef, beef []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("BEEF merge panicked: %v", r)
+		}
+	}()
+	return aggregated.MergeBeefBytes(beef)
+}
+
+// aggregatedBytes serialises the aggregated BEEF, turning a panic into an
+// error.
+func aggregatedBytes(aggregated *transaction.Beef) (b []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			b, err = nil, fmt.Errorf("BEEF serialisation panicked: %v", r)
+		}
+	}()
+	return serialiseAggregate(aggregated)
+}
+
+// writePerOutputAnswer answers with outputs as a JSON output-list, each output
+// with its own BEEF, as a /lookup without x-aggregation does. Each BEEF is
+// written as an array of byte values, the canonical JSON shape (vector
+// overlay.lookup.1; ts-stack's OverlayExpress), not as the base64 string
+// encoding/json writes for a []byte: @bsv/sdk's LookupResolver reads JSON for
+// any Content-Type other than application/octet-stream and drops an output
+// whose beef is not an array, and go-sdk's facilitator decodes either form
+// into []byte. The answer is streamed, so it never sits in memory whole.
+func writePerOutputAnswer(w http.ResponseWriter, outputs []answerOutput) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(header.Bytes()); err != nil {
-		return err
+	bw := bufio.NewWriterSize(w, 32<<10)
+	bw.WriteString(`{"type":` + strconv.Quote(string(lookup.AnswerTypeOutputList)) + `,"outputs":[`)
+	num := make([]byte, 0, 20)
+	for i, out := range outputs {
+		if i > 0 {
+			bw.WriteByte(',')
+		}
+		bw.WriteString(`{"beef":[`)
+		for j, b := range out.item.Beef {
+			if j > 0 {
+				bw.WriteByte(',')
+			}
+			bw.Write(strconv.AppendUint(num[:0], uint64(b), 10))
+		}
+		bw.WriteString(`],"outputIndex":`)
+		bw.Write(strconv.AppendUint(num[:0], uint64(out.item.OutputIndex), 10))
+		bw.WriteByte('}')
 	}
-	_, err = w.Write(beefBytes)
-	return err
+	bw.WriteString("]}\n")
+	return bw.Flush()
 }
 
 // writeVarInt encodes a uint64 as a Bitcoin-flavoured variable-length

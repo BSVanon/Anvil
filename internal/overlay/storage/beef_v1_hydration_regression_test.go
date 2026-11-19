@@ -72,16 +72,18 @@ func TestBeefV1RoundtripHydration(t *testing.T) {
 	}
 }
 
-// TestLoadAncillaryBeef_GuardsPanicOnAncillaryBlob: an ancillary BEEF blob
-// that does not parse must surface as a "parse ancillary beef" error, never a
-// crash. The blob is testdata/ump_v1_legacy_malformed.hex: what go-sdk v1.2.x's
-// beef.Bytes() wrote for the Satsu fixture, a V1 header (0100beef) followed by
-// V2-layout transaction entries (format byte before each raw tx). Pre-v3.2.14
-// nodes stored blobs in that shape. v1.2.x panicked re-parsing it ("index out
-// of range"); go-sdk v1.7 returns an ordinary error ("invalid BEEF transaction
-// hasBump value"). The blob is a fixture now because v1.7's beef.Bytes() writes
-// the V1 layout correctly, so re-serializing no longer reproduces it.
-func TestLoadAncillaryBeef_GuardsPanicOnAncillaryBlob(t *testing.T) {
+// TestLoadAncillaryBeef_SkipsUnparseableAncillaryBlob: an ancillary BEEF blob
+// that does not parse is skipped, never a crash and never a failed load:
+// go-overlay-services fails the whole lookup answer when LoadAncillaryBeef
+// returns an error. The blob is testdata/ump_v1_legacy_malformed.hex: what
+// go-sdk v1.2.x's beef.Bytes() wrote for the Satsu fixture, a V1 header
+// (0100beef) followed by V2-layout transaction entries (format byte before
+// each raw tx). Pre-v3.2.14 nodes stored blobs in that shape. v1.2.x panicked
+// re-parsing it ("index out of range"); go-sdk v1.7 returns an ordinary error
+// ("invalid BEEF transaction hasBump value"). The blob is a fixture now because
+// v1.7's beef.Bytes() writes the V1 layout correctly, so re-serializing no
+// longer reproduces it.
+func TestLoadAncillaryBeef_SkipsUnparseableAncillaryBlob(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "ump_v1_roundtrip.hex"))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
@@ -114,15 +116,24 @@ func TestLoadAncillaryBeef_GuardsPanicOnAncillaryBlob(t *testing.T) {
 		Beef:     beef,
 	}
 	out.AncillaryTxids = append(out.AncillaryTxids, badAncillaryTxid)
+	txs := len(beef.Transactions)
 
-	err = New(db).LoadAncillaryBeef(ctxBg(), out)
-	if err == nil {
-		t.Fatal("expected an error for bad ancillary BEEF")
+	if err := New(db).LoadAncillaryBeef(ctxBg(), out); err != nil {
+		t.Fatalf("an unparseable ancillary BEEF failed the load: %v", err)
 	}
-	if !strings.Contains(err.Error(), "parse ancillary beef") {
-		t.Fatalf("expected parse ancillary beef error, got: %v", err)
+	if out.Beef != beef || len(out.Beef.Transactions) != txs || out.Beef.FindTransaction(subjectTxid.String()) == nil {
+		t.Fatal("skipping the unparseable ancillary changed the output's BEEF")
+	}
+
+	target := beef
+	err = mergeStoredBEEF(&target, oldStored)
+	if err == nil || !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("expected a parse error for the legacy layout, got: %v", err)
 	}
 	if strings.Contains(err.Error(), "panicked") {
 		t.Fatalf("go-sdk should reject the legacy layout with an error, not a recovered panic: %v", err)
+	}
+	if target != beef {
+		t.Fatal("a blob that does not parse replaced the target BEEF")
 	}
 }

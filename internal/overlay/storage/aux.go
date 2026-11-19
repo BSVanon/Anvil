@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
@@ -330,6 +331,12 @@ func (s *Storage) ReconcileMerkleRoot(
 // LoadAncillaryBeef merges the BEEF data for every transaction in
 // out.AncillaryTxids into out.Beef so callers can hand the result to a
 // validator that needs the full evaluation graph.
+//
+// go-overlay-services fails the whole lookup answer, GASP node or history
+// when this returns an error (engine.go:772,852,1286), so an ancillary BEEF
+// that cannot be parsed or merged is logged and skipped, with out.Beef left
+// as it was before that merge (mergeStoredBEEF). Only a failed read of the
+// store is returned.
 func (s *Storage) LoadAncillaryBeef(ctx context.Context, out *engine.Output) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -362,12 +369,9 @@ func (s *Storage) LoadAncillaryBeef(ctx context.Context, out *engine.Output) err
 			}
 			return fmt.Errorf("storage: load ancillary beef %s: %w", h.String(), err)
 		}
-		ancillaryBeef, err := safeNewBeefFromBytes(blob)
-		if err != nil {
-			return fmt.Errorf("storage: parse ancillary beef %s: %w", h.String(), err)
-		}
-		if err := out.Beef.MergeBeef(ancillaryBeef); err != nil {
-			return fmt.Errorf("storage: merge ancillary beef %s: %w", h.String(), err)
+		if err := mergeStoredBEEF(&out.Beef, blob); err != nil {
+			slog.Warn("storage: skipping an ancillary BEEF that cannot be merged",
+				"txid", out.Outpoint.Txid.String(), "vout", out.Outpoint.Index, "ancillary", h.String(), "error", err)
 		}
 	}
 	return nil

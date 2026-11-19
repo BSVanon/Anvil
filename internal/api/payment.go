@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -144,6 +145,8 @@ type PaymentGate struct {
 
 	mu                sync.Mutex
 	pendingChallenges map[string]*pendingChallenge
+	reservedPending   int // places held for challenges being issued (payment_pending.go)
+	maxPending        int // cap on len(pendingChallenges)+reservedPending
 }
 
 type pendingChallenge struct {
@@ -165,6 +168,11 @@ type PaymentGateConfig struct {
 	AllowSplit       bool
 	MaxAppPriceSats  int
 	EndpointPrices   map[string]int // path → satoshis override
+
+	// mintBudget bounds the wallet mints of a NonceProvider that is not a
+	// UTXONoncePool; nil means the process-wide defaultMintBudget
+	// (payment_budget.go). Only this package's tests set it.
+	mintBudget *mintBudget
 }
 
 // NewPaymentGate creates a spec-compliant x402 payment gate.
@@ -186,10 +194,14 @@ func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 	if ttl == 0 {
 		ttl = 60 * time.Second
 	}
+	budget := cfg.mintBudget
+	if budget == nil {
+		budget = defaultMintBudget
+	}
 	return &PaymentGate{
 		priceSats:         cfg.PriceSats,
 		payeeScriptHex:    cfg.PayeeScriptHex,
-		nonceProvider:     cfg.NonceProvider,
+		nonceProvider:     withMintBudget(cfg.NonceProvider, budget),
 		challengeTTL:      ttl,
 		requireMempool:    cfg.RequireMempool,
 		arcClient:         cfg.ARCClient,
@@ -199,6 +211,7 @@ func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 		maxAppPriceSats:   cfg.MaxAppPriceSats,
 		endpointPrices:    cfg.EndpointPrices,
 		pendingChallenges: make(map[string]*pendingChallenge),
+		maxPending:        maxPendingChallenges,
 	}
 }
 
@@ -270,19 +283,41 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// issueChallengeForPayees builds and returns a 402 challenge.
+// issueChallengeForPayees builds and returns a 402 challenge. Everything that
+// can refuse the challenge runs before it takes a nonce: the size of what the
+// challenge keeps, the cap on pending challenges (payment_pending.go), and the
+// body read. A nonce the mint budget refuses (payment_budget.go) answers 503
+// with Retry-After.
 func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Request, payees []Payee) {
-	nonce, err := pg.nonceProvider.MintNonce()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to mint nonce: "+err.Error())
+	if n := challengeFootprint(r, payees); n > maxChallengeFootprint {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"request too large for a payment challenge: method, host, path, query and payee scripts are %d bytes, the limit is %d",
+			n, maxChallengeFootprint))
 		return
 	}
+	place, wait, ok := pg.reservePending()
+	if !ok {
+		writeUnavailable(w, wait, "too many payment challenges pending, retry later")
+		return
+	}
+	defer place.release()
 
 	bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	bodyHash := sha256Hex(bodyBytes)
 	// Restore body for downstream handlers
 	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	headerHash := canonicalHeaderHash(r)
+
+	nonce, err := pg.nonceProvider.MintNonce()
+	if err != nil {
+		var spent *mintBudgetError
+		if errors.As(err, &spent) {
+			writeUnavailable(w, spent.retryAfter, "no payment nonce available: the node's nonce budget is spent, retry later")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to mint nonce: "+err.Error())
+		return
+	}
 
 	totalSats := 0
 	primaryScript := pg.payeeScriptHex
@@ -316,12 +351,10 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 	challengeJSON, _ := json.Marshal(challenge)
 	challengeHash := sha256Hex(challengeJSON)
 
-	pg.mu.Lock()
-	pg.pendingChallenges[challengeHash] = &pendingChallenge{
+	place.fill(challengeHash, &pendingChallenge{
 		challenge: challenge,
 		payees:    payees,
-	}
-	pg.mu.Unlock()
+	})
 
 	go pg.cleanExpired()
 
@@ -329,18 +362,6 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusPaymentRequired)
 	_ = json.NewEncoder(w).Encode(challenge)
-}
-
-// cleanExpired removes challenges older than their expiry.
-func (pg *PaymentGate) cleanExpired() {
-	now := time.Now().Unix()
-	pg.mu.Lock()
-	defer pg.mu.Unlock()
-	for hash, pending := range pg.pendingChallenges {
-		if now > pending.challenge.ExpiresAt {
-			delete(pg.pendingChallenges, hash)
-		}
-	}
 }
 
 // --- Helpers ---
