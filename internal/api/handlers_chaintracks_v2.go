@@ -68,6 +68,11 @@ import (
 // SSE (tip/stream, reorg/stream) is NOT implemented: it would need a new
 // publish hook into the header-sync loop that does not exist today, which
 // is not a small addition.
+//
+// One addition beyond the canonical route table: GET .../height, a bare
+// {"height":N} with no envelope — not canonical's own route, but one a
+// real consumer (bcommon's Arcade kind) calls, which the canonical server
+// lacks entirely. See handleChaintracksV2Height's doc comment.
 
 // chaintracksV2Header is the 8-field header value the canonical server
 // answers: block.Header's six consensus fields plus the height and hash it
@@ -136,6 +141,22 @@ func chaintracksV2HeaderFor(hdr wire.BlockHeader, height uint32) chaintracksV2He
 		Height:       height,
 		Hash:         hash.String(),
 	}
+}
+
+// handleChaintracksV2Height serves GET /chaintracks/v2/height: a bare
+// {"height":N}, with NO {status,value} envelope. This route is not part of
+// the canonical go-chaintracks server's own route table (cmd/server/api.go
+// has no /height at all) — it exists because a real downstream consumer,
+// github.com/lightwebinc/bcommon's Arcade kind, calls exactly this path and
+// shape under /chaintracks/v2 (headers/source.go's Kind doc comment: "GET
+// /height and GET /header/height/{h}, each answering the value bare rather
+// than in a status envelope"; headers/chaintracker.go:313-336 CurrentHeight,
+// Arcade case, decodes the body straight into
+// `struct{ Height *uint32 "json:\"height\"" }` with no envelope-unwrapping).
+// header/height/{h} itself keeps the enveloped shape above, matching the
+// canonical server, which does define that route.
+func (s *Server) handleChaintracksV2Height(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"height": s.headerStore.Tip()})
 }
 
 // handleChaintracksV2Network serves GET /chaintracks/v2/network.

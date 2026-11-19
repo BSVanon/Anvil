@@ -268,6 +268,10 @@ func (s *Server) routes() {
 	// rate-limit, no payment/token gate. v1 routes are unchanged.
 	s.mux.HandleFunc("GET /chaintracks/v2/network", s.openPublic(s.handleChaintracksV2Network))
 	s.mux.HandleFunc("GET /chaintracks/v2/tip", s.openPublic(s.handleChaintracksV2Tip))
+	// Not a canonical route (the canonical server has no /height at all) —
+	// added because bcommon's Arcade kind calls it; see
+	// handleChaintracksV2Height's doc comment.
+	s.mux.HandleFunc("GET /chaintracks/v2/height", s.openPublic(s.handleChaintracksV2Height))
 	s.mux.HandleFunc("GET /chaintracks/v2/header/height/{height}", s.openPublic(s.handleChaintracksV2HeaderByHeight))
 	s.mux.HandleFunc("GET /chaintracks/v2/header/hash/{hash}", s.openPublic(s.handleChaintracksV2HeaderByHash))
 	s.mux.HandleFunc("GET /chaintracks/v2/headers", s.openPublic(s.handleChaintracksV2Headers))

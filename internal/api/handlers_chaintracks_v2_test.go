@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -29,6 +30,33 @@ func TestChaintracksV2Network(t *testing.T) {
 	}
 	if _, ok := resp["description"]; ok {
 		t.Fatal("success envelope must omit description")
+	}
+}
+
+// TestChaintracksV2Height covers the bcommon Arcade-kind addition: a bare
+// {"height":N}, no {status,value} envelope.
+func TestChaintracksV2Height(t *testing.T) {
+	srv := testServer(t)
+	addServerTestChain(t, srv, 7)
+
+	req := httptest.NewRequest("GET", "/chaintracks/v2/height", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["height"].(float64) != 7 {
+		t.Fatalf("expected height 7, got %v", body["height"])
+	}
+	if _, ok := body["status"]; ok {
+		t.Fatal("the bare /height route must not carry a {status,value} envelope")
+	}
+	if _, ok := body["value"]; ok {
+		t.Fatal("the bare /height route must not carry a {status,value} envelope")
 	}
 }
 
@@ -298,6 +326,7 @@ func TestChaintracksV2PublicAndCORS(t *testing.T) {
 	addServerTestChain(t, srv, 2)
 	paths := []string{
 		"/chaintracks/v2/network",
+		"/chaintracks/v2/height",
 		"/chaintracks/v2/tip",
 		"/chaintracks/v2/header/height/1",
 		"/chaintracks/v2/header/hash/000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",

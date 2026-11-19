@@ -154,3 +154,51 @@ func TestFetchRawTxFromWoC_JSONFallbackOnHexMismatch(t *testing.T) {
 		t.Fatalf("expected the JSON fallback's bytes, got %q", got)
 	}
 }
+
+// TestDecodeWoCMetadata_OversizeRejected: a body one byte over
+// maxWoCMetadataBytes must be refused by the same size-cap error as the hex
+// path's cap, just at the smaller metadata budget.
+func TestDecodeWoCMetadata_OversizeRejected(t *testing.T) {
+	body := bytes.NewReader(bytes.Repeat([]byte("a"), maxWoCMetadataBytes+1))
+	var v map[string]interface{}
+	err := decodeWoCMetadata(body, &v)
+	assertTooLarge(t, err)
+}
+
+// TestDecodeWoCMetadata_AtCapAccepted: exactly maxWoCMetadataBytes of valid
+// JSON still decodes, so the cap only refuses what is over it.
+func TestDecodeWoCMetadata_AtCapAccepted(t *testing.T) {
+	padding := maxWoCMetadataBytes - len(`{"block_hash":"x","pad":""}`)
+	body := []byte(`{"block_hash":"x","pad":"` + strings.Repeat("a", padding) + `"}`)
+	if len(body) != maxWoCMetadataBytes {
+		t.Fatalf("test setup: body is %d bytes, want %d", len(body), maxWoCMetadataBytes)
+	}
+	var v struct {
+		BlockHash string `json:"block_hash"`
+	}
+	if err := decodeWoCMetadata(bytes.NewReader(body), &v); err != nil {
+		t.Fatalf("a body at the cap must decode, got: %v", err)
+	}
+	if v.BlockHash != "x" {
+		t.Fatalf("expected block_hash=x, got %q", v.BlockHash)
+	}
+}
+
+// TestTryWoCStatus_OversizeReplyIgnored is the call-site-level counterpart:
+// findBlockHash's WoC status probe (serve.go's original :249, now
+// fetch.go's tryWoCStatus) must come back empty — not panic, not decode
+// garbage — when the status endpoint's reply exceeds the metadata cap.
+func TestTryWoCStatus_OversizeReplyIgnored(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /tx/{txid}/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"block_hash":"` + strings.Repeat("a", maxWoCMetadataBytes) + `"}`))
+	})
+	stub := httptest.NewServer(mux)
+	t.Cleanup(stub.Close)
+
+	s := NewServer(stub.URL, nil, nil, nil)
+	if got := s.tryWoCStatus(testWoCTxid); got != "" {
+		t.Fatalf("expected an oversize status reply to be ignored, got %q", got)
+	}
+}
