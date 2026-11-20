@@ -76,6 +76,9 @@ func main() {
 		case "prune-ads":
 			cmdPruneAds(os.Args[2:])
 			return
+		case "gateway":
+			cmdGateway(os.Args[2:])
+			return
 		case "version", "--version", "-v":
 			// Minimal output so diagnostics.BinaryVersion() can parse the
 			// on-disk binary's version without starting the full node.
@@ -87,11 +90,10 @@ func main() {
 		}
 	}
 
-	// From here on this process is the node. Bound every response read
-	// through http.DefaultClient before anything that reads through it
-	// implicitly (the overlay engine, its resolvers, broadcasters and GASP
-	// remotes) is built; see internal/netguard. CLI subcommands return above
-	// and never install it.
+	// From here on this process is the node. Bound every response read through
+	// http.DefaultClient before anything that reads through it implicitly (the
+	// overlay engine, its resolvers, broadcasters and GASP remotes) is built;
+	// see internal/netguard. CLI subcommands return above and never install it.
 	netguard.Install()
 
 	configPath := flag.String("config", "anvil.toml", "path to config file")
@@ -310,14 +312,12 @@ func main() {
 		defer overlayDir.Close()
 		log.Printf("overlay directory opened (topics=%v)", cfg.Overlay.Topics)
 
-		// v3.0.2: auto-migrate legacy v2 overlay data in-process on
-		// first boot from a v2.x.x install. v2.x.x stored admitted
-		// outputs under the `ovl:` LevelDB key family; the v3 canonical
-		// engine uses `ovl3:` instead. If we detect legacy keys with
-		// no matching v3 records, we run the same migration as the
-		// standalone `anvil overlay-migrate` subcommand BEFORE the v3
-		// engine wires up — the daemon serves traffic post-migration,
-		// not pre-migration.
+		// v3.0.2: auto-migrate legacy v2 overlay data in-process on first boot from
+		// a v2.x.x install. v2.x.x stored admitted outputs under the `ovl:` LevelDB
+		// key family; the v3 canonical engine uses `ovl3:` instead. If we detect
+		// legacy keys with no matching v3 records, we run the same migration as the
+		// standalone `anvil overlay-migrate` subcommand BEFORE the v3 engine wires
+		// up — the daemon serves traffic post-migration, not pre-migration.
 		//
 		// This breaks the v2→v3 upgrade chicken-and-egg: v2's upgrade.go
 		// can't run the migrate hook (it predates v3), but the v3
