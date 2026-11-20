@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -314,13 +313,9 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 
 	nonce, err := pg.nonceProvider.MintNonce()
 	if err != nil {
-		var spent *mintBudgetError
-		if errors.As(err, &spent) {
-			refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonMintBudgetExceeded)
-			writeUnavailable(w, spent.retryAfter, "no payment nonce available: the node's nonce budget is spent, retry later")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to mint nonce: "+err.Error())
+		// Classified in payment_nonce_errors.go: budget-exceeded gets 503,
+		// a replayed nonce gets 402 (BRC-121), anything else gets 500.
+		writeMintNonceError(w, r, err)
 		return
 	}
 
