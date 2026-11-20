@@ -525,7 +525,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Messaging.MaxInboxBytes < 0 {
 		cfg.Messaging.MaxInboxBytes = 0
 	}
-	normalizeMessagingPrivacy(&cfg.Messaging)
+	if err := normalizeMessagingPrivacy(&cfg.Messaging); err != nil {
+		return nil, fmt.Errorf("messaging privacy config: %w", err)
+	}
 
 	// Merge deprecated [foundry] into [mesh] for backward compatibility
 	if len(cfg.Foundry.Seeds) > 0 && len(cfg.Mesh.Seeds) == 0 {

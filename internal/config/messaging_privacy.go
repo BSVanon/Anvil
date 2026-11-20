@@ -18,6 +18,12 @@ package config
 // their correct default ("every connected peer" / "no extra hosts"),
 // with no other meaning for a bare zero-length slice to be confused with.
 
+import (
+	"encoding/hex"
+	"fmt"
+	"log"
+)
+
 // defaultForwardCopyTTLSeconds is decision 3's "the default is 24 hours."
 const defaultForwardCopyTTLSeconds = int64(24 * 60 * 60)
 
@@ -25,43 +31,61 @@ const defaultForwardCopyTTLSeconds = int64(24 * 60 * 60)
 // validation to cfg in place. Called once from Load, after cfg's other
 // Messaging fields (TTLSeconds etc.) have already been defaulted, since
 // forward_copy_ttl's validation depends on the final TTLSeconds value.
-func normalizeMessagingPrivacy(cfg *MessagingConfig) {
+//
+// N5/K5: returns an error for a value Load should refuse to start on,
+// rather than silently reinterpreting the operator's intent the way
+// this file's other clamps do:
+//   - a negative forward_copy_ttl used to be accepted and then behave
+//     like 0 downstream (the store-gate everywhere else is `ttl > 0`)
+//     with no indication why;
+//   - a forward_peers entry that isn't a valid compressed public key in
+//     hex (K5) would otherwise silently never match any real peer,
+//     making the allow-list quietly useless instead of visibly wrong.
+//
+// The ttl_seconds clamp below stays a clamp, not an error (matching
+// every other [messaging] key's style), but now logs when it actually
+// fires (N5) — previously a small ttl_seconds override could turn a
+// node relay-only with no line in the log saying so.
+func normalizeMessagingPrivacy(cfg *MessagingConfig) error {
 	if cfg.ForwardCopyTTLSeconds == nil {
 		ttl := defaultForwardCopyTTLSeconds
 		cfg.ForwardCopyTTLSeconds = &ttl
+	} else if *cfg.ForwardCopyTTLSeconds < 0 {
+		return fmt.Errorf("messaging.forward_copy_ttl must not be negative, got %d", *cfg.ForwardCopyTTLSeconds)
 	}
-	// "It must be below ttl_seconds" (decision 3). Clamp rather than
-	// fail startup, matching this file's existing clamp-not-error style
-	// for every other [messaging] key.
+	// "It must be below ttl_seconds" (decision 3).
 	if *cfg.ForwardCopyTTLSeconds >= cfg.TTLSeconds {
 		clamped := cfg.TTLSeconds - 1
 		if clamped < 0 {
 			clamped = 0
 		}
+		log.Printf("config: messaging.forward_copy_ttl (%d) must be below ttl_seconds (%d); clamped to %d",
+			*cfg.ForwardCopyTTLSeconds, cfg.TTLSeconds, clamped)
 		cfg.ForwardCopyTTLSeconds = &clamped
 	}
 	if cfg.OperatorReadsAllBoxes == nil {
 		allow := true
 		cfg.OperatorReadsAllBoxes = &allow
 	}
+	for _, peer := range cfg.ForwardPeers {
+		if !isCompressedPubKeyHex(peer) {
+			return fmt.Errorf("messaging.forward_peers: %q is not a valid compressed public key in hex", peer)
+		}
+	}
+	return nil
 }
 
-// ForwardCopyTTL returns the configured forward_copy_ttl, defaulting to
-// defaultForwardCopyTTLSeconds if Load's normalization was bypassed
-// (e.g. a MessagingConfig built directly, outside Load — tests only;
-// every real node config goes through Load).
-func (c MessagingConfig) ForwardCopyTTL() int64 {
-	if c.ForwardCopyTTLSeconds == nil {
-		return defaultForwardCopyTTLSeconds
+// isCompressedPubKeyHex reports whether value has the shape of a
+// compressed secp256k1 public key in hex: 66 characters, a "02" or "03"
+// prefix, valid hex throughout. Mirrors internal/gossip's
+// isCompressedKeyHex (handlers_msg.go) exactly; duplicated rather than
+// imported, since internal/config has no dependency on internal/gossip
+// and this is a six-line shape check, not shared logic worth a new seam
+// for.
+func isCompressedPubKeyHex(value string) bool {
+	if len(value) != 66 || value[0] != '0' || (value[1] != '2' && value[1] != '3') {
+		return false
 	}
-	return *c.ForwardCopyTTLSeconds
-}
-
-// OperatorReadsAll returns the configured operator_reads_all_boxes,
-// defaulting to true if Load's normalization was bypassed.
-func (c MessagingConfig) OperatorReadsAll() bool {
-	if c.OperatorReadsAllBoxes == nil {
-		return true
-	}
-	return *c.OperatorReadsAllBoxes
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
