@@ -53,6 +53,9 @@ type Store struct {
 	tip     uint32
 	work    *big.Int // cumulative work of the active chain
 	skipPoW bool     // for testing only
+
+	tipFeed   *broadcaster[uint32]
+	reorgFeed *broadcaster[ReorgNotice]
 }
 
 // NewStore opens or creates a header store at the given path.
@@ -63,7 +66,7 @@ func NewStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("open header store: %w", err)
 	}
 
-	s := &Store{db: db, work: big.NewInt(0)}
+	s := &Store{db: db, work: big.NewInt(0), tipFeed: newBroadcaster[uint32](), reorgFeed: newBroadcaster[ReorgNotice]()}
 
 	// Load current tip
 	tipBytes, err := db.Get(keyTip, nil)
@@ -114,6 +117,16 @@ func (s *Store) Tip() uint32 {
 	defer s.mu.RUnlock()
 	return s.tip
 }
+
+// SubscribeTip registers ch to receive the new tip height after every
+// successful AddHeaders append or adopted ReorgTo. Non-blocking send: a slow
+// or absent subscriber is skipped, never stalling header sync. Returns an
+// unsubscribe function.
+func (s *Store) SubscribeTip(ch chan uint32) func() { return s.tipFeed.subscribe(ch) }
+
+// SubscribeReorg registers ch to receive a ReorgNotice each time ReorgTo
+// adopts a competing chain. Same non-blocking-send contract as SubscribeTip.
+func (s *Store) SubscribeReorg(ch chan ReorgNotice) func() { return s.reorgFeed.subscribe(ch) }
 
 // AddHeaders stores a batch of sequential headers starting at the given height.
 // Validates:
@@ -195,6 +208,7 @@ func (s *Store) AddHeaders(startHeight uint32, headers []*wire.BlockHeader) erro
 
 	s.tip = newTip
 	s.work = newWork
+	s.tipFeed.publish(newTip)
 	return nil
 }
 
@@ -333,6 +347,10 @@ func (s *Store) ReorgTo(headers []*wire.BlockHeader) (adopted bool, forkHeight u
 	// update tip + cumulative work — all in one batch. Deletes are queued
 	// before Puts, so any height present in both resolves to the new header.
 	batch := new(leveldb.Batch)
+	// Captured here, not reconstructed later: once this batch commits, these
+	// headers are gone from the store, so a ReorgNotice subscriber could
+	// never look them up afterward.
+	orphaned := make([]p2pwire.Hash, 0, s.tip-forkHeight)
 	for h := s.tip; h > forkHeight; h-- {
 		raw, err := s.db.Get(heightToKey(prefixHeader, h), nil)
 		if err != nil {
@@ -343,6 +361,7 @@ func (s *Store) ReorgTo(headers []*wire.BlockHeader) (adopted bool, forkHeight u
 			return false, forkHeight, fmt.Errorf("reorg: deserialize old header at %d: %w", h, err)
 		}
 		oldHash := hdr.BlockHash()
+		orphaned = append(orphaned, oldHash)
 		batch.Delete(heightToKey(prefixHeader, h))
 		batch.Delete(append(append([]byte{}, prefixHash...), oldHash[:]...))
 		batch.Delete(heightToKey(prefixMerkle, h))
@@ -379,6 +398,8 @@ func (s *Store) ReorgTo(headers []*wire.BlockHeader) (adopted bool, forkHeight u
 	}
 	s.tip = newTip
 	s.work = newWork
+	s.reorgFeed.publish(ReorgNotice{ForkHeight: forkHeight, NewTip: newTip, OrphanedHashes: orphaned})
+	s.tipFeed.publish(newTip)
 	return true, forkHeight, nil
 }
 
@@ -405,23 +426,59 @@ func (s *Store) RangeHeaders(from, count uint32) ([][]byte, uint32, error) {
 	if last > uint64(tip) {
 		return nil, tip, ErrRangeExceedsTip
 	}
+	out, err := s.readHeadersLocked(from, count)
+	if err != nil {
+		return nil, tip, err
+	}
+	return out, tip, nil
+}
 
+// RangeHeadersTruncated is RangeHeaders without the hard tip-exceeded
+// error: count is clamped to what exists from `from` up to tip (zero past
+// tip), matching go-chaintracks' collectHeaders (routes/fiber/routes.go
+// :458-469), which stops at the first missing height and still answers
+// 200. Chaintracks v2 /headers(.bin) only (handlers_chaintracks_v2.go) —
+// native /headers/range keeps RangeHeaders' hard-error contract as-is.
+func (s *Store) RangeHeadersTruncated(from, count uint32) ([][]byte, uint32, error) {
+	if count == 0 {
+		return nil, 0, fmt.Errorf("count must be >= 1")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tip := s.tip
+	if from > tip {
+		return nil, tip, nil
+	}
+	available := uint64(tip) - uint64(from) + 1
+	if uint64(count) > available {
+		count = uint32(available) //nolint:gosec // available < count (a uint32) in this branch
+	}
+	out, err := s.readHeadersLocked(from, count)
+	if err != nil {
+		return nil, tip, err
+	}
+	return out, tip, nil
+}
+
+// readHeadersLocked reads count consecutive headers from `from`; the caller
+// must hold s.mu and have already bounds-checked count.
+func (s *Store) readHeadersLocked(from, count uint32) ([][]byte, error) {
 	out := make([][]byte, 0, count)
 	// Iterate by offset so the loop counter cannot overflow uint32 even when
-	// from+count would wrap. The uint64 bound check above already guarantees
-	// from+i fits in uint32 for every i in [0, count).
+	// from+count would wrap.
 	for i := uint32(0); i < count; i++ {
 		h := from + i
 		raw, err := s.db.Get(heightToKey(prefixHeader, h), nil)
 		if err != nil {
-			return nil, tip, fmt.Errorf("header at %d: %w", h, err)
+			return nil, fmt.Errorf("header at %d: %w", h, err)
 		}
 		if len(raw) != 80 {
-			return nil, tip, fmt.Errorf("header at %d: expected 80 bytes, got %d", h, len(raw))
+			return nil, fmt.Errorf("header at %d: expected 80 bytes, got %d", h, len(raw))
 		}
 		out = append(out, raw)
 	}
-	return out, tip, nil
+	return out, nil
 }
 
 // HashAtHeight returns the block hash at the given height.

@@ -168,8 +168,7 @@ func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
@@ -197,16 +196,20 @@ func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) 
 	// stream unmodified would allow a malicious header to inject a fake
 	// data: frame by embedding CR/LF. We emit the int if the header parses
 	// as one, otherwise just note a reconnect without echoing the value.
+	// Always flush at least once, under a fresh write deadline
+	// (sse_deadline.go) — a stalled client that never reads must not block
+	// here forever.
+	reconnectMsg := ""
 	if lastID := r.Header.Get("Last-Event-ID"); lastID != "" {
 		if n, err := strconv.ParseInt(lastID, 10, 64); err == nil {
-			fmt.Fprintf(w, ": reconnected after id %d — use POST /listMessages to backfill\n\n", n)
+			reconnectMsg = fmt.Sprintf(": reconnected after id %d — use POST /listMessages to backfill\n\n", n)
 		} else {
-			fmt.Fprint(w, ": reconnected — use POST /listMessages to backfill\n\n")
+			reconnectMsg = ": reconnected — use POST /listMessages to backfill\n\n"
 		}
-		flusher.Flush()
 	}
-
-	flusher.Flush()
+	if err := writeSSE(w, reconnectMsg); err != nil {
+		return
+	}
 
 	ch := make(chan *messaging.StoredMessage, 16)
 	unsub := s.msgHub.subscribe(recipient, messageBox, ch)
@@ -222,16 +225,18 @@ func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) 
 		case <-ctx.Done():
 			return
 		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
-			flusher.Flush()
+			if err := writeSSE(w, ": ping\n\n"); err != nil {
+				return
+			}
 		case msg := <-ch:
 			data, err := json.Marshal(msg)
 			if err != nil {
 				continue
 			}
 			id := s.msgHub.nextID()
-			fmt.Fprintf(w, "id: %d\ndata: %s\n\n", id, data)
-			flusher.Flush()
+			if err := writeSSE(w, fmt.Sprintf("id: %d\ndata: %s\n\n", id, data)); err != nil {
+				return
+			}
 		}
 	}
 }

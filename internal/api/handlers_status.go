@@ -85,6 +85,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		mesh := map[string]interface{}{
 			"peers":     s.gossipMgr.PeerCount(),
 			"peer_list": s.gossipMgr.PeerList(),
+			// Cumulative since boot — see internal/gossip/status.go.
+			"dedup_evictions":    s.gossipMgr.DedupEvictions(),
+			"duplicate_arrivals": s.gossipMgr.DuplicateArrivals(),
+			"catchup_truncated":  s.gossipMgr.CatchupTruncated(),
 		}
 		if recent := s.gossipMgr.RecentConnections(10); len(recent) > 0 {
 			mesh["recent_connections"] = recent

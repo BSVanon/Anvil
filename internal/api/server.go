@@ -37,8 +37,17 @@ type headerStore interface {
 	HeaderAtHeight(uint32) ([]byte, error)
 	HeightForHash(*chainhash.Hash) (uint32, error)
 	RangeHeaders(uint32, uint32) ([][]byte, uint32, error)
+	// RangeHeadersTruncated backs the chaintracks v2 /headers and
+	// /headers.bin routes only — see its doc comment in
+	// internal/headers/store.go for why it never errors past tip.
+	RangeHeadersTruncated(uint32, uint32) ([][]byte, uint32, error)
 	Tip() uint32
 	Work() *big.Int
+	// SubscribeTip/SubscribeReorg feed the chaintracks v2 SSE routes
+	// (handlers_chaintracks_v2_sse.go) from internal/headers.Store's
+	// broadcaster seam (feed.go).
+	SubscribeTip(chan uint32) func()
+	SubscribeReorg(chan headers.ReorgNotice) func()
 }
 
 type beefFetcher interface {
@@ -261,6 +270,31 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /findHeaderHexForHeight", s.openPublic(s.handleFindHeaderHexForHeight))
 	s.mux.HandleFunc("GET /findHeaderHexForBlockHash", s.openPublic(s.handleFindHeaderHexForBlockHash))
 	s.mux.HandleFunc("GET /getPresentHeight", s.openPublic(s.handleGetPresentHeight))
+	// Chaintracks v2: the embeddable go-chaintracks route set
+	// (routes/fiber/routes.go) that an Arcade installation mounts at
+	// /chaintracks/v2 — the exact path Anvil uses — answering bare values
+	// (no {status,value} envelope), a different wire shape from the v1
+	// routes just above (see handlers_chaintracks_v2.go for the canonical
+	// source citations). Same openPublic treatment: CORS + rate-limit, no
+	// payment/token gate. v1 routes are unchanged.
+	s.mux.HandleFunc("GET /chaintracks/v2/network", s.openPublic(s.handleChaintracksV2Network))
+	s.mux.HandleFunc("GET /chaintracks/v2/tip", s.openPublic(s.handleChaintracksV2Tip))
+	s.mux.HandleFunc("GET /chaintracks/v2/tip.bin", s.openPublic(s.handleChaintracksV2TipBinary))
+	s.mux.HandleFunc("GET /chaintracks/v2/tip/stream", s.openPublic(s.handleChaintracksV2TipStream))
+	s.mux.HandleFunc("GET /chaintracks/v2/reorg/stream", s.openPublic(s.handleChaintracksV2ReorgStream))
+	// /height IS a canonical route (routes/fiber/routes.go:109 Register,
+	// handleGetHeight impl at :306-316) — it's simply absent from the
+	// *standalone* go-chaintracks server's route table (cmd/server/api.go),
+	// which is not what Anvil mirrors here; see handleChaintracksV2Height's
+	// doc comment.
+	s.mux.HandleFunc("GET /chaintracks/v2/height", s.openPublic(s.handleChaintracksV2Height))
+	// header/height/{height} and header/hash/{hash} also serve their own
+	// ".bin" shape — see handlers_chaintracks_v2.go's doc comments on why
+	// that isn't a separately-registered pattern.
+	s.mux.HandleFunc("GET /chaintracks/v2/header/height/{height}", s.openPublic(s.handleChaintracksV2HeaderByHeight))
+	s.mux.HandleFunc("GET /chaintracks/v2/header/hash/{hash}", s.openPublic(s.handleChaintracksV2HeaderByHash))
+	s.mux.HandleFunc("GET /chaintracks/v2/headers", s.openPublic(s.handleChaintracksV2Headers))
+	s.mux.HandleFunc("GET /chaintracks/v2/headers.bin", s.openPublic(s.handleChaintracksV2HeadersBinary))
 	s.mux.HandleFunc("GET /tx/{txid}/beef", s.openRead(s.handleGetBEEF))
 	// Confirmation-count status: openPublic (free/portable) so SPV consumers can
 	// offload "did my tx confirm?" polling from external explorers onto any node.

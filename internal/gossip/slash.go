@@ -134,9 +134,11 @@ func (m *Manager) onSlashWarning(senderPK string, raw json.RawMessage) error {
 	m.seenMu.Lock()
 	if _, seen := m.seen[warnHash]; seen {
 		m.seenMu.Unlock()
+		m.IncrDuplicateArrival()
 		return nil
 	}
 	m.seen[warnHash] = struct{}{}
+	m.evictSeenLocked()
 	m.seenMu.Unlock()
 
 	m.logger.Warn("slash warning received",

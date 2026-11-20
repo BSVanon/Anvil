@@ -256,3 +256,48 @@ func TestMsgSeenEvictionKeepsSequentialForwardsBounded(t *testing.T) {
 		}
 	}
 }
+
+// TestMsgSeenEvictionIncrementsDedupEvictionsCounter is Risk 2:
+// TestMsgSeenEvictionBatchesUnownedEntries above only checks which keys
+// survive eviction, never the dedup_evictions stat (status.go's
+// DedupEvictions/IncrDedupEviction) that evictMsgSeenLocked is supposed to
+// advance on every reclaimed entry. Same seeding as that test — 2 owned
+// entries plus enough unowned ones to fill maxSeen — so the exact number
+// evicted is deterministic.
+func TestMsgSeenEvictionIncrementsDedupEvictionsCounter(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Logger: slog.Default(), MaxSeen: 10})
+	firstOwned := "msg:first-owned"
+	secondOwned := "msg:second-owned"
+	mgr.seenMu.Lock()
+	mgr.seenOwners = map[string]*forwardSeenOwner{
+		firstOwned:  {},
+		secondOwned: {},
+	}
+	for i := 0; i < mgr.maxSeen-2; i++ {
+		mgr.msgSeen[fmt.Sprintf("msg:existing-%d", i)] = struct{}{}
+	}
+	mgr.msgSeen[firstOwned] = struct{}{}
+	mgr.msgSeen[secondOwned] = struct{}{}
+	mgr.seenMu.Unlock()
+
+	if before := mgr.DedupEvictions(); before != 0 {
+		t.Fatalf("expected a fresh manager to start at 0 dedup evictions, got %d", before)
+	}
+
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	msg := sampleMsg(sender, recipient)
+	msg.MessageID = "counter-check"
+	raw, err := json.Marshal(legacyForward(t, senderKey, msg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+
+	wantEvicted := int64(mgr.maxSeen - mgr.maxSeen/2) // at cap (10), trimmed to 5: exactly 5 unowned entries reclaimed
+	if got := mgr.DedupEvictions(); got != wantEvicted {
+		t.Fatalf("DedupEvictions() = %d, want %d", got, wantEvicted)
+	}
+}

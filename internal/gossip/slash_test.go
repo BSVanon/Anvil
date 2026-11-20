@@ -1,6 +1,8 @@
 package gossip
 
 import (
+	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -143,5 +145,45 @@ func TestSlashWarningDedup(t *testing.T) {
 	m.seenMu.Unlock()
 	if !exists {
 		t.Fatal("warn hash should be in seen map")
+	}
+}
+
+// TestSlashWarningSeenStaysBounded is Risk 3: onSlashWarning used to insert
+// into m.seen with no eviction at all (unlike onData), so a flood of
+// warnings distinguished only by Timestamp could grow m.seen without bound.
+// It now routes its insert through evictSeenLocked — the same bounded
+// insert-and-evict path onData uses for its own m.seen writes (handlers.go)
+// — so this drives many distinct warnings through the real onSlashWarning
+// handler and checks m.seen never exceeds maxSeen.
+func TestSlashWarningSeenStaysBounded(t *testing.T) {
+	const maxSeen = 10
+	mgr := NewManager(ManagerConfig{Logger: slog.Default(), MaxSeen: maxSeen})
+	defer mgr.Stop()
+
+	for i := 0; i < maxSeen*5; i++ {
+		w := SlashWarningPayload{
+			Target:    "target-peer",
+			Reason:    SlashGossipSpam,
+			Reporter:  "reporter-1",
+			Timestamp: int64(i), // distinct per iteration, so each is a distinct warnHash
+		}
+		raw, err := json.Marshal(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.onSlashWarning("sender-peer", raw); err != nil {
+			t.Fatal(err)
+		}
+
+		mgr.seenMu.Lock()
+		gotLen := len(mgr.seen)
+		mgr.seenMu.Unlock()
+		if gotLen > maxSeen {
+			t.Fatalf("iteration %d: len(m.seen) = %d, exceeds maxSeen %d", i, gotLen, maxSeen)
+		}
+	}
+
+	if got := mgr.DedupEvictions(); got == 0 {
+		t.Fatal("expected at least one eviction while the seen set stayed bounded")
 	}
 }

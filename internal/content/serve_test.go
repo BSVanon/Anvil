@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -61,6 +62,137 @@ func TestServeInvalidTxid(t *testing.T) {
 	}
 }
 
+// fakeTxSource is a minimal TxSource for driving fetchRawTx's source-by-
+// source fallthrough directly, without a real P2P connection.
+type fakeTxSource struct {
+	rawHex string
+	err    error
+}
+
+func (f *fakeTxSource) FetchRawTx(string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.rawHex, nil
+}
+
+// fakeBlockSource is a minimal BlockTxSource.
+type fakeBlockSource struct {
+	cachedHex string
+	cachedOK  bool
+	blockHex  string
+	blockErr  error
+}
+
+func (f *fakeBlockSource) LookupCachedTx(string) (string, bool) {
+	return f.cachedHex, f.cachedOK
+}
+
+func (f *fakeBlockSource) FetchTxFromBlock(string, string) (string, error) {
+	if f.blockErr != nil {
+		return "", f.blockErr
+	}
+	return f.blockHex, nil
+}
+
+// TestFetchRawTx_SkipsMismatchedSourceForNextOne drives fetchRawTx's
+// multi-source order directly: the block cache answers first but with
+// another tx's bytes, which verifyTxidMatch must reject, falling through to
+// the next source (P2P) rather than returning or caching the wrong bytes.
+func TestFetchRawTx_SkipsMismatchedSourceForNextOne(t *testing.T) {
+	correctRaw := []byte{0x03, 0x00, 0xbe, 0xef}
+	correctHex := hex.EncodeToString(correctRaw)
+	txid := realTxid(correctRaw)
+	wrongHex := hex.EncodeToString([]byte{0xde, 0xad, 0xbe, 0xef})
+
+	block := &fakeBlockSource{cachedHex: wrongHex, cachedOK: true}
+	p2p := &fakeTxSource{rawHex: correctHex}
+
+	s := NewServer("", p2p, block, nil)
+	got, err := s.fetchRawTx(txid)
+	if err != nil {
+		t.Fatalf("expected fetchRawTx to recover via the next source, got: %v", err)
+	}
+	if got != correctHex {
+		t.Fatalf("got %q, want %q", got, correctHex)
+	}
+}
+
+// TestFetchRawTx_AllSourcesMismatchedFails: when every source's bytes fail
+// to match — including WhatsOnChain, stubbed here so the test never touches
+// the real network — fetchRawTx must return an error and never the
+// mismatched bytes.
+func TestFetchRawTx_AllSourcesMismatchedFails(t *testing.T) {
+	txid := realTxid([]byte{0x03, 0x00, 0xbe, 0xef})
+	wrongHex := hex.EncodeToString([]byte{0xde, 0xad, 0xbe, 0xef})
+
+	woc := newWoCStub(t, []byte(wrongHex), []byte(`{"hex":"`+wrongHex+`"}`))
+	block := &fakeBlockSource{cachedHex: wrongHex, cachedOK: true}
+	p2p := &fakeTxSource{rawHex: wrongHex}
+
+	s := NewServer(woc.wocURL, p2p, block, nil)
+	got, err := s.fetchRawTx(txid)
+	if err == nil {
+		t.Fatalf("expected an error when every source mismatches, got bytes %q", got)
+	}
+	if got != "" {
+		t.Fatalf("mismatched bytes must never be returned, got %q", got)
+	}
+}
+
+// TestServeContent_MismatchedWoCBytesNeverServed: a fake WhatsOnChain that
+// answers with a different transaction's bytes (on both the hex endpoint and
+// its JSON fallback) must never have those bytes served to the client.
+func TestServeContent_MismatchedWoCBytesNeverServed(t *testing.T) {
+	wrongHex := hex.EncodeToString([]byte{0xde, 0xad, 0xbe, 0xef})
+	requestedTxid := realTxid([]byte{0x00, 0x01, 0x02, 0x03}) // a different, real txid
+
+	s := newWoCStub(t, []byte(wrongHex), []byte(`{"hex":"`+wrongHex+`"}`))
+
+	origin := requestedTxid + "_0"
+	req := httptest.NewRequest("GET", "/content/"+origin, nil)
+	req.SetPathValue("origin", origin)
+	w := httptest.NewRecorder()
+
+	s.ServeContent(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("mismatched bytes must never be served with 200, body: %q", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "deadbeef") {
+		t.Fatalf("response must not contain the mismatched source's bytes: %q", w.Body.String())
+	}
+}
+
+// TestServeContent_CorrectWoCBytesServed: a WhatsOnChain reply whose bytes
+// genuinely hash to the requested txid is parsed and served normally.
+func TestServeContent_CorrectWoCBytesServed(t *testing.T) {
+	bAddr := "19HxigV4QyBv3tHpQVcUEQyq1pzZVdoAut"
+	script := buildBProtocolScript(bAddr, []byte("hello world"), "text/plain")
+	tx := buildTestTx([][]byte{script})
+	txHex := hex.EncodeToString(tx)
+	txid := realTxid(tx)
+
+	s := newWoCStub(t, []byte(txHex), nil)
+
+	origin := txid + "_0"
+	req := httptest.NewRequest("GET", "/content/"+origin, nil)
+	req.SetPathValue("origin", origin)
+	w := httptest.NewRecorder()
+
+	s.ServeContent(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "hello world" {
+		t.Fatalf("expected %q, got %q", "hello world", w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/plain" {
+		t.Fatalf("expected Content-Type text/plain, got %q", ct)
+	}
+}
+
 func TestServeMissingOrigin(t *testing.T) {
 	s := NewServer("", nil, nil, nil)
 
@@ -83,9 +215,9 @@ func TestExtractOutputScript_MultiOutput(t *testing.T) {
 	// 0 inputs (for simplicity — not a valid real tx, but sufficient for output parsing)
 	// 3 outputs with distinct scripts
 	tx := buildTestTx([][]byte{
-		{0x6a, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f},       // output 0: OP_RETURN "hello"
-		{0x6a, 0x05, 0x77, 0x6f, 0x72, 0x6c, 0x64},       // output 1: OP_RETURN "world"
-		{0x6a, 0x03, 0x66, 0x6f, 0x6f},                     // output 2: OP_RETURN "foo"
+		{0x6a, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f}, // output 0: OP_RETURN "hello"
+		{0x6a, 0x05, 0x77, 0x6f, 0x72, 0x6c, 0x64}, // output 1: OP_RETURN "world"
+		{0x6a, 0x03, 0x66, 0x6f, 0x6f},             // output 2: OP_RETURN "foo"
 	})
 
 	// Verify each output returns the correct script

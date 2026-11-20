@@ -236,19 +236,11 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 	m.seenMu.Lock()
 	if _, seen := m.seen[hash]; seen {
 		m.seenMu.Unlock()
+		m.IncrDuplicateArrival()
 		return nil
 	}
 	m.seen[hash] = struct{}{}
-	if len(m.seen) >= m.maxSeen {
-		count := 0
-		for k := range m.seen {
-			delete(m.seen, k)
-			count++
-			if count >= m.maxSeen/2 {
-				break
-			}
-		}
-	}
+	m.evictSeenLocked()
 	m.seenMu.Unlock()
 
 	if err := env.Validate(); err != nil {
@@ -277,6 +269,32 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 	}
 
 	return nil
+}
+
+// evictSeenLocked trims m.seen back to maxSeen/2 once it has reached
+// maxSeen, amortizing the cost of the dedup set's otherwise-unbounded
+// growth. Callers must hold seenMu and must already have inserted the key
+// they just saw — map iteration order is unspecified, so (as before this
+// was extracted from onData) the just-inserted key is not specially
+// protected from eviction. onSlashWarning routes its own m.seen insert
+// through this same path (it previously inserted with no bound at all,
+// letting an attacker grow m.seen past maxSeen by varying each warning's
+// timestamp) so every m.seen writer shares one bounded insert-and-evict
+// path, the way onMsgForward/finishForwardSeen already share
+// evictMsgSeenLocked for m.msgSeen.
+func (m *Manager) evictSeenLocked() {
+	if len(m.seen) < m.maxSeen {
+		return
+	}
+	count := 0
+	for k := range m.seen {
+		delete(m.seen, k)
+		m.IncrDedupEviction()
+		count++
+		if count >= m.maxSeen/2 {
+			break
+		}
+	}
 }
 
 // onTopics handles a peer's interest declaration.
@@ -425,6 +443,10 @@ func (m *Manager) onDataResponse(senderPKHex string, senderPK *ec.PublicKey, raw
 					_ = peer.Peer.ToPeer(context.Background(), payload, senderPK, 5000)
 				}
 			}
+		} else {
+			// The peer still has more to send, but this peer+topic has already
+			// used its maxCatchUpRounds budget — the catch-up stops here.
+			m.IncrCatchupTruncated()
 		}
 	}
 	return nil

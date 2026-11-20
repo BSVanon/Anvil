@@ -14,7 +14,7 @@ import (
 type envelopeHub struct {
 	mu    sync.RWMutex
 	subs  map[string]map[chan *envelope.Envelope]struct{} // topic → set of channels
-	seqID atomic.Int64                                     // monotonic event ID
+	seqID atomic.Int64                                    // monotonic event ID
 }
 
 func newEnvelopeHub() *envelopeHub {
@@ -62,7 +62,6 @@ func (h *envelopeHub) nextID() int64 {
 	return h.seqID.Add(1)
 }
 
-
 // handleSubscribe is the SSE endpoint: GET /data/subscribe?topic=X
 // Routed through openRead so rate limiting, payment gates, and token gates apply.
 // Paid payloads are redacted for unauthenticated clients, matching GET /data behavior.
@@ -74,8 +73,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
@@ -89,13 +87,17 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
 
-	// If reconnecting with Last-Event-ID, warn about potential gap
+	// If reconnecting with Last-Event-ID, warn about potential gap. Always
+	// flush at least once (reconnectMsg == "" when there's nothing to warn
+	// about) under a fresh write deadline (sse_deadline.go) — a stalled
+	// client that never reads must not block here forever.
+	reconnectMsg := ""
 	if lastID := r.Header.Get("Last-Event-ID"); lastID != "" {
-		fmt.Fprintf(w, ": reconnected after id %s — events between disconnect and reconnect may be lost; use GET /data?since=TIMESTAMP to backfill\n\n", lastID)
-		flusher.Flush()
+		reconnectMsg = fmt.Sprintf(": reconnected after id %s — events between disconnect and reconnect may be lost; use GET /data?since=TIMESTAMP to backfill\n\n", lastID)
 	}
-
-	flusher.Flush()
+	if err := writeSSE(w, reconnectMsg); err != nil {
+		return
+	}
 
 	// Track demand for this topic.
 	if s.gossipMgr != nil {
@@ -130,8 +132,9 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			id := s.sseHub.nextID()
-			fmt.Fprintf(w, "id: %d\ndata: %s\n\n", id, data)
-			flusher.Flush()
+			if err := writeSSE(w, fmt.Sprintf("id: %d\ndata: %s\n\n", id, data)); err != nil {
+				return
+			}
 		}
 	}
 }
