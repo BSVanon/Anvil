@@ -186,8 +186,8 @@ func (t *Ticket) keepHeadroom(weight int64) error {
 
 // handOnExec returns the execution slot, if the ticket holds it, once a
 // garbage collection has freed what the scripts verified in it held, so the
-// next holder starts from a collected heap. It does not wait for the
-// collection.
+// next holder starts from a collected heap: the guard's, then the client's.
+// It does not wait for the collection.
 func (t *Ticket) handOnExec() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -195,9 +195,20 @@ func (t *Ticket) handOnExec() {
 		return
 	}
 	t.held[slotExec] = false
+	cl := t.cl
+	if !t.own[slotExec] {
+		cl = nil
+	} else {
+		t.own[slotExec] = false
+		t.g.clients.hold(cl) // until the client's slot is back
+	}
 	go func(g *Guard) {
 		runtime.GC()
 		g.exec.Release(1)
+		if cl != nil {
+			cl.slot[slotExec].Release(1)
+			g.clients.unref(cl)
+		}
 	}(t.g)
 }
 

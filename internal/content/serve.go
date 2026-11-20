@@ -137,35 +137,17 @@ func (s *Server) ServeContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache
-	s.mu.Lock()
-	s.cache[cacheKey] = insc
-	// Evict old entries if cache grows too large
-	if len(s.cache) > 10000 {
-		oldest := ""
-		oldestTime := time.Now()
-		for k, v := range s.cache {
-			if v.FetchedAt.Before(oldestTime) {
-				oldest = k
-				oldestTime = v.FetchedAt
-			}
-		}
-		if oldest != "" {
-			delete(s.cache, oldest)
-		}
-	}
-	s.mu.Unlock()
+	s.storeInscription(cacheKey, insc)
 
 	serveInscription(w, insc)
 }
 
+// storeInscription, Inscription and defaultContentType — the gateway
+// mechanism's content seam — live in inscription_seam.go.
+
 func serveInscription(w http.ResponseWriter, insc *inscription) {
-	ct := insc.ContentType
-	if ct == "" {
-		ct = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+	w.Header().Set("Content-Type", defaultContentType(insc.ContentType))
+	w.Header().Set("Cache-Control", ImmutableCacheControl)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	_, _ = w.Write(insc.Data)
 }

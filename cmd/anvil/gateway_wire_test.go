@@ -1,0 +1,131 @@
+package main
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"github.com/BSVanon/Anvil/internal/api"
+	"github.com/BSVanon/Anvil/internal/config"
+	"github.com/BSVanon/Anvil/internal/gateway"
+	"github.com/BSVanon/Anvil/internal/headers"
+)
+
+// newTestAPIServer builds a minimal but functional *api.Server: a real
+// (temp-dir, PoW-skipping) HeaderStore so GET /stats — which reads the
+// header tip unconditionally — works, with everything else left at its
+// zero value.
+func newTestAPIServer(t *testing.T) *api.Server {
+	t.Helper()
+	hs, err := headers.NewTestStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hs.Close() })
+	return api.NewServer(api.ServerConfig{HeaderStore: hs})
+}
+
+// TestWireGateway_DisabledIsIdenticalToTodaysHandler is the hard gate's
+// "[gateway] off must be byte-for-byte identical to today's behaviour":
+// wireGateway's disabled path must behave exactly like calling
+// srv.Handler() directly — the same mux, the same header strip, nothing
+// else in between.
+func TestWireGateway_DisabledIsIdenticalToTodaysHandler(t *testing.T) {
+	cfg := &config.Config{} // Gateway.Enabled is false by default
+	srv := newTestAPIServer(t)
+	logger := slog.Default()
+
+	wired := wireGateway(cfg, srv, logger)
+	today := srv.Handler()
+
+	for _, path := range []string{"/stats", "/no-such-route-at-all"} {
+		req1 := httptest.NewRequest("GET", "http://example.org"+path, nil)
+		w1 := httptest.NewRecorder()
+		wired.ServeHTTP(w1, req1)
+
+		req2 := httptest.NewRequest("GET", "http://example.org"+path, nil)
+		w2 := httptest.NewRecorder()
+		today.ServeHTTP(w2, req2)
+
+		if w1.Code != w2.Code {
+			t.Fatalf("%s: status differs: wireGateway=%d, srv.Handler()=%d", path, w1.Code, w2.Code)
+		}
+		if w1.Body.String() != w2.Body.String() {
+			t.Fatalf("%s: body differs:\nwireGateway: %s\nsrv.Handler(): %s", path, w1.Body.String(), w2.Body.String())
+		}
+		h1, h2 := w1.Header(), w2.Header()
+		if len(h1) != len(h2) {
+			t.Fatalf("%s: header set differs: wireGateway=%v, srv.Handler()=%v", path, h1, h2)
+		}
+		for k, v := range h1 {
+			if got := h2[k]; len(got) != len(v) || (len(got) > 0 && got[0] != v[0]) {
+				t.Fatalf("%s: header %q differs: wireGateway=%v, srv.Handler()=%v", path, k, v, got)
+			}
+		}
+	}
+}
+
+// TestWireGateway_EnabledBuildsRouterAndWiresStats is the gateway-on smoke
+// test: with [gateway] enabled, wireGateway must return a *gateway.Router
+// configured from cfg, with the SetGatewayStats hook actually wired (the
+// gateway counters must show up in GET /stats reached through api_host).
+func TestWireGateway_EnabledBuildsRouterAndWiresStats(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	cfg.Gateway.Enabled = true
+	cfg.Gateway.APIHost = "admin.example.org"
+	cfg.Gateway.SitesFile = filepath.Join(dir, "gateway-sites.conf") // missing file: not an error
+	cfg.Gateway.ContentScope = "site"
+
+	srv := newTestAPIServer(t)
+	logger := slog.Default()
+
+	h := wireGateway(cfg, srv, logger)
+	rt, ok := h.(*gateway.Router)
+	if !ok {
+		t.Fatalf("expected wireGateway to return a *gateway.Router when enabled, got %T", h)
+	}
+	if rt.APIHost != cfg.Gateway.APIHost {
+		t.Fatalf("expected APIHost %q to be wired through, got %q", cfg.Gateway.APIHost, rt.APIHost)
+	}
+	if rt.Sites == nil {
+		t.Fatal("expected a non-nil Sites handler")
+	}
+
+	// api_host still reaches /stats — now carrying decision 8's gateway
+	// counters, proving SetGatewayStats was actually wired (not just that
+	// the Router exists).
+	req := httptest.NewRequest("GET", "http://admin.example.org/stats", nil)
+	req.Host = "admin.example.org"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /stats: %v", err)
+	}
+	gw, ok := body["gateway"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected a \"gateway\" object in /stats once gateway mode is wired, got %#v", body["gateway"])
+	}
+	for _, key := range []string{
+		"gateway_requests", "gateway_not_found", "gateway_txt_lookups",
+		"gateway_txt_stale_served", "gateway_scope_refused",
+	} {
+		if _, ok := gw[key]; !ok {
+			t.Fatalf("expected %q in the gateway stats, got %#v", key, gw)
+		}
+	}
+
+	// A Host that is neither api_host nor an allowed site: 404.
+	req2 := httptest.NewRequest("GET", "http://not-a-site.example.org/", nil)
+	req2.Host = "not-a-site.example.org"
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unrecognised Host, got %d", w2.Code)
+	}
+}

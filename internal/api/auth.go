@@ -1,11 +1,11 @@
 package api
 
 import (
-	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/BSVanon/Anvil/internal/clientkey"
 )
 
 // requireAuth rejects requests without a valid bearer token.
@@ -203,78 +203,11 @@ func (rl *RateLimiter) evictLoop() {
 }
 
 // clientIP extracts a canonical client IP using the configured proxy trust
-// semantics. Local reverse proxies are trusted for their rightmost XFF entry
-// even when trustProxy is disabled, which preserves per-client buckets for the
-// shipped local nginx deployment without trusting direct remote clients.
+// semantics (clientkey.IP, which the overlay route guard shares).
 func clientIP(r *http.Request, trustProxy bool, hops int) string {
-	peer := remotePeer(r.RemoteAddr)
-	entries := xForwardedForEntries(r.Header.Values("X-Forwarded-For"))
-	if len(entries) == 0 {
-		return peer
-	}
-
-	chosen := ""
-	if trustProxy {
-		if hops < 1 {
-			hops = 1
-		}
-		idx := len(entries) - hops
-		if idx < 0 {
-			idx = 0
-		}
-		chosen = entries[idx]
-	} else if ip := net.ParseIP(peer); ip != nil && ip.IsLoopback() {
-		chosen = entries[len(entries)-1]
-	}
-	if chosen == "" {
-		return peer
-	}
-	if ip := parseForwardedIP(chosen); ip != nil {
-		return ip.String()
-	}
-	return peer
+	return clientkey.IP(r, trustProxy, hops)
 }
 
-func remotePeer(addr string) string {
-	if host, _, err := net.SplitHostPort(addr); err == nil {
-		addr = host
-	}
-	if ip := net.ParseIP(addr); ip != nil {
-		return ip.String()
-	}
-	return addr
-}
-
-func xForwardedForEntries(values []string) []string {
-	var entries []string
-	for _, value := range values {
-		for _, entry := range strings.Split(value, ",") {
-			if entry = strings.TrimSpace(entry); entry != "" {
-				entries = append(entries, entry)
-			}
-		}
-	}
-	return entries
-}
-
-func parseForwardedIP(value string) net.IP {
-	value = strings.TrimSpace(value)
-	if ip := net.ParseIP(value); ip != nil {
-		return ip
-	}
-	if host, _, err := net.SplitHostPort(value); err == nil {
-		return net.ParseIP(host)
-	}
-	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
-		return net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(value, "["), "]"))
-	}
-	return nil
-}
-
-func rateLimitKey(ip string) string {
-	parsed := net.ParseIP(ip)
-	if parsed == nil || parsed.To4() != nil {
-		return ip
-	}
-	return net.IP(parsed.To16()[:8]).String() + "/64"
-}
+// rateLimitKey is the bucket key for ip: ip itself, or the /64 of an IPv6
+// address (clientkey.Key).
+func rateLimitKey(ip string) string { return clientkey.Key(ip) }

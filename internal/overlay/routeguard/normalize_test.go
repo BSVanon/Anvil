@@ -22,12 +22,13 @@ import (
 func verified(t *testing.T, beef []byte, tracker chaintracker.ChainTracker) (*Submit, error) {
 	t.Helper()
 	g := New(1<<32, 4, 4, testWait)
-	tk, err := g.Begin(false)
+	r := httptest.NewRequest("POST", "/submit", bytes.NewReader(beef))
+	w := httptest.NewRecorder()
+	tk, err := g.Begin(w, r, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest("POST", "/submit", bytes.NewReader(beef))
-	if _, err := tk.ReadBody(httptest.NewRecorder(), r, BEEFRoute); err != nil {
+	if _, err := tk.ReadBody(w, r, BEEFRoute); err != nil {
 		t.Fatal(err)
 	}
 	sub, err := tk.PreVerify(context.Background(), tracker, func(string) bool { return true }, beef, []string{"tm_test"})

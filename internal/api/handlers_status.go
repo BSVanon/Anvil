@@ -124,6 +124,12 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		warnings = append(warnings, spvWarnings...)
 	}
 
+	if s.gatewayStatsFn != nil {
+		if g := s.gatewayStatsFn(); len(g) > 0 {
+			stats["gateway"] = g
+		}
+	}
+
 	if len(warnings) > 0 {
 		stats["warnings"] = warnings
 	}

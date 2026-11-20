@@ -115,7 +115,7 @@ func main() {
 	if cfg.API.AuthToken != "" {
 		log.Printf("  auth:       configured (run 'anvil token' to display)")
 	}
-
+	configureAdmission(cfg) // logs the memory limit with the lines above
 	go checkForUpdate(logger)
 
 	headerDir := filepath.Join(cfg.Node.DataDir, "headers")
@@ -929,7 +929,7 @@ func main() {
 	}
 
 	go func() {
-		handler := srv.Handler()
+		handler := wireGateway(cfg, srv, logger)
 		if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
 			log.Printf("REST API listening on %s (TLS)", cfg.Node.APIListen)
 			tlsSrv := &http.Server{

@@ -62,7 +62,7 @@ func (h *Handlers) RequestSyncResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	resp, err := h.Engine.ProvideForeignSyncResponse(r.Context(), &req, topic)
+	resp, err := h.Engine.ProvideForeignSyncResponse(readOnly(r), &req, topic)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -121,7 +121,7 @@ func (h *Handlers) RequestForeignGASPNode(w http.ResponseWriter, r *http.Request
 		return
 	}
 	outpoint := &transaction.Outpoint{Txid: *req.Txid, Index: req.OutputIndex}
-	node, err := h.Engine.ProvideForeignGASPNode(r.Context(), req.GraphID, outpoint, topic)
+	node, err := h.Engine.ProvideForeignGASPNode(readOnly(r), req.GraphID, outpoint, topic)
 	if err != nil {
 		// Canonical contract: missing-output / not-found is a 404, not
 		// a 500. Two upstream sentinels can surface here:

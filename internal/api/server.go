@@ -92,10 +92,11 @@ type Server struct {
 	signingKey        *ec.PrivateKey // node identity key for signing envelopes
 	healthChecks      []HealthCheck  // registered subsystem health checks
 	customCaps        []map[string]interface{}
-	nodeWallet        sdk.Interface      // go-sdk wallet for canonical BRC-31 messagebox auth (nil if mesh/wallet disabled)
-	msgSessions       *sessionTokenStore // 2a: per-identity SSE session tokens minted from a BRC-31 handshake
-	messageboxBRC31   bool               // true when messagebox routes are served behind canonical BRC-31 mutual auth
-	messagingPolicy   MessagingPolicy    // decisions 2/3/5 (B6 messaging-privacy spec); see MessagingPolicy's doc comment
+	nodeWallet        sdk.Interface           // go-sdk wallet for canonical BRC-31 messagebox auth (nil if mesh/wallet disabled)
+	msgSessions       *sessionTokenStore      // 2a: per-identity SSE session tokens minted from a BRC-31 handshake
+	messageboxBRC31   bool                    // true when messagebox routes are served behind canonical BRC-31 mutual auth
+	gatewayStatsFn    func() map[string]int64 // optional: merged into GET /stats under "gateway" — see SetGatewayStats
+	messagingPolicy   MessagingPolicy         // decisions 2/3/5 (B6 messaging-privacy spec); see MessagingPolicy's doc comment
 }
 
 // HealthCheck is a named subsystem health probe. Returns a warning string
