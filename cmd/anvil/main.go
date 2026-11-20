@@ -745,7 +745,7 @@ func main() {
 			log.Printf("feeds: heartbeat (60s) publisher started")
 		}
 	}
-
+	api.ConfigureMintBudget(cfg.API.X402MintBurst, cfg.API.X402MintsPerMinute)
 	// x402 payment gating — requires identity.wif + wallet; forced off without both
 	paymentSatoshis := cfg.API.PaymentSatoshis
 	var payeeScriptHex string

@@ -45,6 +45,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.API.MessageboxRateLimit != 20 || cfg.API.MessageboxRateBurst != 40 || cfg.API.TrustProxyHops != 1 {
 		t.Fatalf("unexpected messagebox defaults: %+v", cfg.API)
 	}
+	if cfg.API.X402MintBurst != 10 || cfg.API.X402MintsPerMinute != 2 {
+		t.Fatalf("expected default x402 mint budget 10/2, got burst=%d per_minute=%d", cfg.API.X402MintBurst, cfg.API.X402MintsPerMinute)
+	}
 }
 
 func TestLoadMessageboxRateLimitInvalidValuesUseDefaults(t *testing.T) {
@@ -113,6 +116,8 @@ auth_token = "bearer-secret"
 tls_cert = "/etc/ssl/anvil.crt"
 tls_key = "/etc/ssl/anvil.key"
 rate_limit = 50
+x402_mint_burst = 25
+x402_mints_per_minute = 5
 `
 	f, _ := os.CreateTemp("", "anvil-cfg-full-*.toml")
 	f.WriteString(toml)
@@ -159,6 +164,9 @@ rate_limit = 50
 	}
 	if cfg.API.RateLimit != 50 {
 		t.Fatalf("got rate_limit=%d", cfg.API.RateLimit)
+	}
+	if cfg.API.X402MintBurst != 25 || cfg.API.X402MintsPerMinute != 5 {
+		t.Fatalf("got x402 mint budget burst=%d per_minute=%d, want 25/5", cfg.API.X402MintBurst, cfg.API.X402MintsPerMinute)
 	}
 }
 

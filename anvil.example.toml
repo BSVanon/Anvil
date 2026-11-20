@@ -98,6 +98,21 @@ rate_limit = 100                  # requests/second per IP for open reads
 trust_proxy = false               # set true behind nginx/caddy
 payment_satoshis = 0              # x402 price per request (0 = free, experimental)
 
+# Process-wide nonce mint budget for 402 challenges (api.ConfigureMintBudget) —
+# applies on a charging node (payment_satoshis > 0) AND on a free node with an
+# app-priced topic (passthrough/split still mint a nonce per challenge). 0 or
+# unset on either key below → the compiled-in default: 10 burst, 2/minute.
+# Worst-case mints in any T minutes = x402_mint_burst + x402_mints_per_minute*T,
+# so in one hour: x402_mint_burst + x402_mints_per_minute*60. At the default
+# (10, 2) that is 130 mints/hour. Each mint is one wallet tx paying ~23-76 sat
+# in fees (one P2PKH input/output up to three inputs, wallet-toolbox's default
+# fee model — see payment_budget.go) plus 1 sat locked in the nonce output
+# itself, so the worst-case hourly cost at the default is roughly
+# 130 sats (nonce outputs) + 130 * 23..76 sats (fees) = 3,120..9,880 sats/hour.
+# Recompute both terms with your own values before raising them.
+x402_mint_burst = 10               # mints allowed at once before the per-minute rate applies
+x402_mints_per_minute = 2          # sustained mint rate once the burst is spent
+
 # Non-custodial app payment models.
 # These control which payment flows third-party apps can use.
 # All are safe by default — the node never holds or forwards funds.
