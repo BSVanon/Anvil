@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -33,7 +34,6 @@ import (
 	"github.com/bsv-blockchain/go-sdk/storage"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
 // uhrpItemPrefix and uhrpHashPrefix are the LevelDB sub-prefixes for the
@@ -54,6 +54,12 @@ type uhrpItem struct {
 	URL         string `json:"url,omitempty"`
 	ContentType string `json:"content_type,omitempty"`
 	AdmittedAt  int64  `json:"admitted_at"`
+	// BRC26, IdentityKey and Expiry mirror topics.UHRPEntry — see there
+	// for field meaning. A record written before these fields existed
+	// decodes with BRC26 false (legacy), exactly as intended.
+	BRC26       bool   `json:"brc26,omitempty"`
+	IdentityKey string `json:"identity_key,omitempty"`
+	Expiry      int64  `json:"expiry,omitempty"`
 }
 
 // UHRPLookupService implements engine.LookupService for the BRC-26 UHRP
@@ -82,154 +88,12 @@ func NewUHRPLookupService(db *leveldb.DB) *UHRPLookupService {
 // Compile-time assertion that the type satisfies engine.LookupService.
 var _ engine.LookupService = (*UHRPLookupService)(nil)
 
-// --- event handlers --------------------------------------------------------
-
-// BackfillFromLegacyMetadata populates this service's local lk_uhrp
-// indexes for a single legacy AdmittedOutput. Used by the W-4 phase B
-// migration to make migrated records visible through engine.Lookup
-// without going through the OutputAdmittedByTopic event (which
-// requires AtomicBEEF the migration doesn't have).
-//
-// metadata is the JSON blob the legacy engine stored on each admitted
-// output — for UHRP topics it's a marshalled topics.UHRPEntry.
-//
-// NOTE: even after backfill, canonical /lookup will drop migrated
-// records at engine-hydration time because storage has no beef3 entry
-// for them (legacy engine never stored BEEF). The backfilled lk_*
-// entries are still useful for: (a) preventing re-admission of the
-// same outpoint, (b) being immediately queryable once BEEF arrives via
-// a future fetch (e.g. JungleBus). Tracked in operator docs as a known
-// post-migration limitation.
-func (s *UHRPLookupService) BackfillFromLegacyMetadata(outpoint *transaction.Outpoint, metadata json.RawMessage) error {
-	if outpoint == nil {
-		return errors.New("uhrp backfill: nil outpoint")
-	}
-	if len(metadata) == 0 {
-		return errors.New("uhrp backfill: empty metadata")
-	}
-	var entry topics.UHRPEntry
-	if err := json.Unmarshal(metadata, &entry); err != nil {
-		return fmt.Errorf("uhrp backfill: decode metadata: %w", err)
-	}
-	if entry.ContentHash == "" {
-		return errors.New("uhrp backfill: metadata missing content_hash")
-	}
-	item := uhrpItem{
-		ContentHash: strings.ToLower(entry.ContentHash),
-		URL:         entry.URL,
-		ContentType: entry.ContentType,
-		AdmittedAt:  nowUnix(),
-	}
-	body, err := json.Marshal(&item)
-	if err != nil {
-		return fmt.Errorf("uhrp backfill: marshal item: %w", err)
-	}
-	batch := new(leveldb.Batch)
-	batch.Put(uhrpItemKey(&outpoint.Txid, outpoint.Index), body)
-	batch.Put(uhrpHashKey(item.ContentHash, &outpoint.Txid, outpoint.Index), nil)
-	if err := s.db.Write(batch, nil); err != nil {
-		return fmt.Errorf("uhrp backfill: write index: %w", err)
-	}
-	return nil
-}
-
-// OutputAdmittedByTopic ingests a freshly-admitted output. The payload's
-// AtomicBEEF carries the focus tx; we extract that tx's locking script at
-// OutputIndex, parse it via the canonical UHRP parser, and store the
-// metadata in our local indexes. Non-UHRP topics are ignored — the engine
-// fans every admission out to every registered lookup service, so the
-// per-service topic filter is the lookup's responsibility.
-func (s *UHRPLookupService) OutputAdmittedByTopic(ctx context.Context, payload *engine.OutputAdmittedByTopic) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if payload == nil || payload.Topic != topics.UHRPTopicName {
-		return nil
-	}
-	// Version-agnostic parse via the shared helper (accepts Atomic / V1 / V2) —
-	// the engine forwards whatever BEEF the submitter sent. Parsing atomic-only
-	// here (as this path used to) rejected real-world V1 submits.
-	tx, focusTxid, err := loadFocusTx(payload.AtomicBEEF)
-	if err != nil {
-		return fmt.Errorf("uhrp lookup: %w", err)
-	}
-	if int(payload.OutputIndex) >= len(tx.Outputs) {
-		return fmt.Errorf("uhrp lookup: output index %d out of range for tx %s", payload.OutputIndex, focusTxid.String())
-	}
-	out := tx.Outputs[payload.OutputIndex]
-	if out.LockingScript == nil {
-		return nil
-	}
-	entry := topics.ParseUHRPOutput(out.LockingScript.Bytes())
-	if entry == nil {
-		// Not a UHRP advertisement. The topic admitted it for some other
-		// reason (shouldn't happen, but be defensive).
-		return nil
-	}
-
-	item := uhrpItem{
-		ContentHash: strings.ToLower(entry.ContentHash),
-		URL:         entry.URL,
-		ContentType: entry.ContentType,
-		AdmittedAt:  nowUnix(),
-	}
-	body, err := json.Marshal(&item)
-	if err != nil {
-		return fmt.Errorf("uhrp lookup: marshal item: %w", err)
-	}
-
-	batch := new(leveldb.Batch)
-	batch.Put(uhrpItemKey(focusTxid, payload.OutputIndex), body)
-	batch.Put(uhrpHashKey(item.ContentHash, focusTxid, payload.OutputIndex), nil)
-	if err := s.db.Write(batch, nil); err != nil {
-		return fmt.Errorf("uhrp lookup: write index: %w", err)
-	}
-	return nil
-}
-
-// OutputSpent removes the outpoint from both indexes when the engine
-// notifies us that a UHRP UTXO was spent.
-func (s *UHRPLookupService) OutputSpent(ctx context.Context, payload *engine.OutputSpent) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if payload == nil || payload.Topic != topics.UHRPTopicName || payload.Outpoint == nil {
-		return nil
-	}
-	return s.removeOutpoint(&payload.Outpoint.Txid, payload.Outpoint.Index)
-}
-
-// OutputNoLongerRetainedInHistory is treated identically to OutputSpent
-// for UHRP — the service doesn't retain history.
-func (s *UHRPLookupService) OutputNoLongerRetainedInHistory(ctx context.Context, outpoint *transaction.Outpoint, topic string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if topic != topics.UHRPTopicName || outpoint == nil {
-		return nil
-	}
-	return s.removeOutpoint(&outpoint.Txid, outpoint.Index)
-}
-
-// OutputEvicted removes the outpoint regardless of topic — the canonical
-// LookupService contract is "permanently remove from all indices."
-// Because the UHRP service only stores UHRP entries, a per-outpoint
-// removal can safely target the single index family.
-func (s *UHRPLookupService) OutputEvicted(ctx context.Context, outpoint *transaction.Outpoint) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if outpoint == nil {
-		return nil
-	}
-	return s.removeOutpoint(&outpoint.Txid, outpoint.Index)
-}
-
-// OutputBlockHeightUpdated is a no-op: UHRP results aren't ordered by
-// block height (queries are by content hash or list-all).
-func (s *UHRPLookupService) OutputBlockHeightUpdated(ctx context.Context, txid *chainhash.Hash, blockHeight uint32, blockIndex uint64) error {
-	return nil
-}
+// The event handlers (BackfillFromLegacyMetadata, OutputAdmittedByTopic,
+// OutputSpent, OutputNoLongerRetainedInHistory, OutputEvicted,
+// OutputBlockHeightUpdated) and the removeOutpoint helper they share live
+// in uhrp_events.go — split out to hold this file under the package's
+// per-file size norm once the fix pass's query-path additions landed
+// here, no behaviour change.
 
 // --- query path ------------------------------------------------------------
 
@@ -255,12 +119,29 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		}
 	}
 
+	// Fix pass (spec item 5): Outpoint is canonical's direct single-
+	// record key and short-circuits before every other key is even
+	// inspected — UHRPLookupService.ts's lookup() returns on this path
+	// first, so Anvil's does too.
+	if q.Outpoint != "" {
+		return s.lookupByOutpoint(q.Outpoint)
+	}
+
 	// Canonical @bsv/sdk StorageDownloader clients resolve content by its
 	// uhrp:// URL, not by raw hash. Decode the URL to the content hash so
 	// those queries hit the same hash index — accept what canonical clients
 	// send (same lesson as V1/atomic BEEF on submit). An explicit
 	// content_hash takes precedence when both are supplied.
-	if q.ContentHash == "" && q.UhrpUrl != "" {
+	//
+	// Fix pass (cold review B1 / spec item 1): capture viaUhrpUrl BEFORE
+	// rewriting ContentHash below. A uhrpUrl-originated query must only
+	// ever answer with BRC-26 records — StorageDownloader.resolve()
+	// PushDrop-decodes every returned output with no try/catch
+	// (ts-sdk storage/StorageDownloader.ts) — while a direct content_hash
+	// query keeps returning both formats (filterUHRPRecords' canonicalOnly
+	// parameter, uhrp_filter.go).
+	viaUhrpUrl := q.ContentHash == "" && q.UhrpUrl != ""
+	if viaUhrpUrl {
 		hashBytes, err := storage.GetHashFromURL(q.UhrpUrl)
 		if err != nil {
 			return nil, fmt.Errorf("uhrp lookup: invalid uhrpUrl %q: %w", q.UhrpUrl, err)
@@ -268,9 +149,16 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		q.ContentHash = hex.EncodeToString(hashBytes)
 	}
 
+	// Fix pass (spec item 5): HostIdentityKey / ExpiryTime AND-combine
+	// with whatever base set ContentHash/UhrpUrl/List selects below, or —
+	// supplied alone with no hash and no list — scan every entry the way
+	// List:"all" does. Mirrors canonical UHRPLookupService.ts's
+	// `records.find(query)` Mongo-style multi-field exact match.
+	extra := uhrpQueryFilter{hostIdentityKey: q.HostIdentityKey, expiryTime: q.ExpiryTime}
+
 	switch {
 	case q.ContentHash != "":
-		formulas, err := s.scanByHash(strings.ToLower(q.ContentHash))
+		formulas, err := s.scanByHash(strings.ToLower(q.ContentHash), viaUhrpUrl, extra)
 		if err != nil {
 			return nil, err
 		}
@@ -280,7 +168,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		}, nil
 
 	case q.List == "all":
-		formulas, err := s.scanAllItems()
+		formulas, err := s.scanAllItems(extra)
 		if err != nil {
 			return nil, err
 		}
@@ -290,7 +178,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		}, nil
 
 	case q.List == "hashes":
-		counts, err := s.countByHash()
+		counts, err := s.countByHash(extra)
 		if err != nil {
 			return nil, err
 		}
@@ -299,9 +187,66 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 			Result: counts,
 		}, nil
 
+	case extra.active():
+		formulas, err := s.scanAllItems(extra)
+		if err != nil {
+			return nil, err
+		}
+		return &lookup.LookupAnswer{
+			Type:     lookup.AnswerTypeFormula,
+			Formulas: formulas,
+		}, nil
+
 	default:
-		return nil, errors.New("uhrp lookup: query must specify content_hash, uhrpUrl, or list")
+		return nil, errors.New("uhrp lookup: query must specify content_hash, uhrpUrl, outpoint, hostIdentityKey, expiryTime, or list")
 	}
+}
+
+// lookupByOutpoint answers the Outpoint query key: a direct single-record
+// lookup, independent of (and ignoring) every other field on the query —
+// matching canonical UHRPLookupService.ts's short-circuit (fix pass, spec
+// item 5).
+//
+// Unlike every other query path, this one does NOT filter an expired
+// BRC-26 record: canonical UHRPLookupService.ts:62-67's outpoint branch
+// is a bare findOne with no expiry check at all, so Anvil matches that
+// exactly here (fix pass, re-review RISKS item 2). The other paths'
+// server-side expiry filtering (uhrpExpired, filterUHRPRecords rule 1,
+// uhrp_filter.go) is a separate, pre-existing, deliberate Anvil-only
+// hardening choice that canonical doesn't apply on ITS non-outpoint path
+// either (UHRPLookupService.ts:68-72's records.find(query) has no expiry
+// check) — this change only removes Anvil's own expiry check from the
+// one path (outpoint) where canonical's behavior is unambiguous and
+// directly comparable; it leaves the other, already-divergent paths
+// exactly as they were.
+func (s *UHRPLookupService) lookupByOutpoint(raw string) (*lookup.LookupAnswer, error) {
+	op, err := parseUHRPOutpointQuery(raw)
+	if err != nil {
+		return nil, fmt.Errorf("uhrp lookup: invalid outpoint %q: %w", raw, err)
+	}
+	_, ok, err := s.loadItem(op)
+	if err != nil {
+		if errors.Is(err, errUHRPCorruptRecord) {
+			// Fix pass, re-review BLOCKER: a corrupt record must be
+			// skipped here exactly as itemsByHash and allItemRecords skip
+			// one during a scan (uhrp_filter.go) — propagating it as a
+			// hard error would turn a single bit-rotted record into a
+			// failure for the one query shape that names it directly,
+			// while the same corruption is already silently skipped by a
+			// content_hash, uhrpUrl, or list=all query over the same data.
+			slog.Warn("uhrp lookup: skipping corrupt record in outpoint lookup",
+				"txid", op.Txid.String(), "vout", op.Index, "error", err)
+			return &lookup.LookupAnswer{Type: lookup.AnswerTypeFormula, Formulas: []lookup.LookupFormula{}}, nil
+		}
+		return nil, err
+	}
+	if !ok {
+		return &lookup.LookupAnswer{Type: lookup.AnswerTypeFormula, Formulas: []lookup.LookupFormula{}}, nil
+	}
+	return &lookup.LookupAnswer{
+		Type:     lookup.AnswerTypeFormula,
+		Formulas: []lookup.LookupFormula{{Outpoint: op}},
+	}, nil
 }
 
 // GetDocumentation returns the human-readable description.
@@ -310,91 +255,14 @@ func (s *UHRPLookupService) GetDocumentation() string { return s.docs }
 // GetMetaData returns the typed canonical metadata block.
 func (s *UHRPLookupService) GetMetaData() *overlay.MetaData { return s.meta }
 
-// --- internal helpers ------------------------------------------------------
-
-func (s *UHRPLookupService) removeOutpoint(txid *chainhash.Hash, vout uint32) error {
-	itemKey := uhrpItemKey(txid, vout)
-	body, err := s.db.Get(itemKey, nil)
-	if err != nil {
-		if errors.Is(err, leveldb.ErrNotFound) {
-			return nil
-		}
-		return fmt.Errorf("uhrp lookup: read item for remove: %w", err)
-	}
-	var item uhrpItem
-	if err := json.Unmarshal(body, &item); err != nil {
-		// Corrupt record — drop the primary key but skip the hash key
-		// because we can't decode it.
-		return s.db.Delete(itemKey, nil)
-	}
-	batch := new(leveldb.Batch)
-	batch.Delete(itemKey)
-	batch.Delete(uhrpHashKey(item.ContentHash, txid, vout))
-	if err := s.db.Write(batch, nil); err != nil {
-		return fmt.Errorf("uhrp lookup: delete batch: %w", err)
-	}
-	return nil
-}
-
-// scanByHash returns formulas for every outpoint indexed under the given
-// content hash.
-func (s *UHRPLookupService) scanByHash(hashHex string) ([]lookup.LookupFormula, error) {
-	prefix := []byte(uhrpHashPrefix + hashHex + ":")
-	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
-	defer iter.Release()
-	var formulas []lookup.LookupFormula
-	for iter.Next() {
-		op, ok := decodeHashIndexKey(iter.Key(), len(prefix))
-		if !ok {
-			continue
-		}
-		formulas = append(formulas, lookup.LookupFormula{Outpoint: op})
-	}
-	if err := iter.Error(); err != nil {
-		return nil, fmt.Errorf("uhrp lookup: iterate hash index: %w", err)
-	}
-	return formulas, nil
-}
-
-// scanAllItems returns one formula per item in the local index.
-func (s *UHRPLookupService) scanAllItems() ([]lookup.LookupFormula, error) {
-	prefix := []byte(uhrpItemPrefix)
-	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
-	defer iter.Release()
-	var formulas []lookup.LookupFormula
-	for iter.Next() {
-		op, ok := decodeItemKey(iter.Key())
-		if !ok {
-			continue
-		}
-		formulas = append(formulas, lookup.LookupFormula{Outpoint: op})
-	}
-	if err := iter.Error(); err != nil {
-		return nil, fmt.Errorf("uhrp lookup: iterate items: %w", err)
-	}
-	return formulas, nil
-}
-
-// countByHash returns a hash→count map computed by scanning every item.
-func (s *UHRPLookupService) countByHash() (map[string]int, error) {
-	prefix := []byte(uhrpItemPrefix)
-	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
-	defer iter.Release()
-	counts := make(map[string]int)
-	for iter.Next() {
-		var item uhrpItem
-		if err := json.Unmarshal(iter.Value(), &item); err != nil {
-			continue
-		}
-		counts[item.ContentHash]++
-	}
-	if err := iter.Error(); err != nil {
-		return nil, fmt.Errorf("uhrp lookup: iterate items for counts: %w", err)
-	}
-	return counts, nil
-}
+// removeOutpoint (shared by the write-path event handlers that delete an
+// entry) lives in uhrp_events.go, next to the handlers that are its only
+// callers.
 
 // --- key encoding ----------------------------------------------------------
+//
+// The read-path counterparts (decodeItemKey, decodeHashIndexKey) live in
+// uhrp_filter.go, next to the iteration code that's their only caller.
 
 func uhrpItemKey(txid *chainhash.Hash, vout uint32) []byte {
 	return []byte(uhrpItemPrefix + txid.String() + ":" + strconv.FormatUint(uint64(vout), 10))
@@ -404,45 +272,26 @@ func uhrpHashKey(contentHash string, txid *chainhash.Hash, vout uint32) []byte {
 	return []byte(uhrpHashPrefix + contentHash + ":" + txid.String() + ":" + strconv.FormatUint(uint64(vout), 10))
 }
 
-func decodeItemKey(key []byte) (*transaction.Outpoint, bool) {
-	s := string(key)
-	if !strings.HasPrefix(s, uhrpItemPrefix) {
-		return nil, false
+// parseUHRPOutpointQuery decodes canonical UHRPLookupService.ts's
+// Outpoint query key: "<txid-hex>.<output-index>", dot-separated (fix
+// pass, spec item 5). This is the wire format an external canonical
+// client sends inside its query object — distinct from uhrpItemKey /
+// uhrpHashKey above, which encode Anvil's own internal LevelDB keys
+// using ':' and never appear on the wire.
+func parseUHRPOutpointQuery(s string) (*transaction.Outpoint, error) {
+	txidHex, idxStr, ok := strings.Cut(s, ".")
+	if !ok {
+		return nil, errors.New(`want "<txid-hex>.<output-index>"`)
 	}
-	rest := s[len(uhrpItemPrefix):]
-	idx := strings.LastIndexByte(rest, ':')
-	if idx != 64 {
-		return nil, false
-	}
-	h, err := chainhash.NewHashFromHex(rest[:64])
+	h, err := chainhash.NewHashFromHex(txidHex)
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("invalid txid: %w", err)
 	}
-	v, err := strconv.ParseUint(rest[idx+1:], 10, 32)
+	idx, err := strconv.ParseUint(idxStr, 10, 32)
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("invalid output index: %w", err)
 	}
-	return &transaction.Outpoint{Txid: *h, Index: uint32(v)}, true
-}
-
-func decodeHashIndexKey(key []byte, prefixLen int) (*transaction.Outpoint, bool) {
-	if len(key) <= prefixLen {
-		return nil, false
-	}
-	rest := string(key[prefixLen:])
-	idx := strings.LastIndexByte(rest, ':')
-	if idx != 64 {
-		return nil, false
-	}
-	h, err := chainhash.NewHashFromHex(rest[:64])
-	if err != nil {
-		return nil, false
-	}
-	v, err := strconv.ParseUint(rest[idx+1:], 10, 32)
-	if err != nil {
-		return nil, false
-	}
-	return &transaction.Outpoint{Txid: *h, Index: uint32(v)}, true
+	return &transaction.Outpoint{Txid: *h, Index: uint32(idx)}, nil
 }
 
 // nowUnix is a package-level indirection so tests can inject a fixed
