@@ -79,6 +79,50 @@ func TestPrivateEnvelopeVisibleForBearerAuth(t *testing.T) {
 	}
 }
 
+// TestQueryDataDropsPrivateBeforeLimit: a private envelope that is NEWER
+// than every public envelope on its topic must not consume a slot in
+// ?limit= before the private filter runs — otherwise a caller can
+// binary-search a private envelope's write time by varying limit and
+// watching the returned count shift (e.g. limit=1 returning 0 results while
+// limit=2 returns 1, with nothing else explaining the jump). Private
+// envelopes must be dropped from the candidate set before limit (and
+// since) are ever applied, so this response is identical to a topic that
+// never had a private envelope at all.
+func TestQueryDataDropsPrivateBeforeLimit(t *testing.T) {
+	srv := testServer(t)
+	const (
+		privPub = "02ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+		pubPub  = "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"
+	)
+	const topic = "oracle:private-before-limit"
+	// Private is the NEWEST write — under the old (buggy) order, limit=1
+	// would select only this envelope, which the later private check then
+	// drops, leaving count=0. Filtering private first means limit=1 instead
+	// selects the next-newest envelope that's actually visible.
+	storeEnv(t, srv, topic, "secret", privPub, 200, true)
+	storeEnv(t, srv, topic, "pub-data", pubPub, 100, false)
+
+	req := httptest.NewRequest("GET", "/data?topic="+topic+"&limit=1", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Count     int                      `json:"count"`
+		Envelopes []map[string]interface{} `json:"envelopes"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Count != 1 {
+		t.Fatalf("limit=1 should still return the one visible public envelope (private dropped before limit, not after); got count=%d", resp.Count)
+	}
+	if p, _ := resp.Envelopes[0]["payload"].(string); !strings.Contains(p, "pub-data") {
+		t.Fatalf("expected the public envelope's payload, got: %v", resp.Envelopes[0]["payload"])
+	}
+}
+
 // TestPrivateSpoofedAnvilAuthedRejected: a client cannot bypass the read-gate
 // by sending X-Anvil-Authed itself. That header is an internal signal stripped
 // at the trust boundary (Handler), so a spoofed value leaves the private
@@ -246,7 +290,7 @@ func TestMixedTopicHidesPrivateHistoryFromDiscovery(t *testing.T) {
 func TestPrivateMetaNotLeakedViaDiscovery(t *testing.T) {
 	srv := testServer(t)
 	const pub = "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"
-	storeEnv(t, srv, "shop:widgets", "pub-data", pub, 100, false)                      // public data topic
+	storeEnv(t, srv, "shop:widgets", "pub-data", pub, 100, false)                           // public data topic
 	storeEnv(t, srv, "meta:shop:widgets", `{"secret":"private-meta-leak"}`, pub, 101, true) // private meta
 
 	req := httptest.NewRequest("GET", "/topics/shop:widgets", nil)
@@ -305,7 +349,7 @@ func TestPrivateIdentityNotLeakedViaGetIdentity(t *testing.T) {
 func TestPrivatePublisherIdentityOmittedFromTopicGet(t *testing.T) {
 	srv := testServer(t)
 	const pub = "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"
-	storeEnv(t, srv, "shop:widgets", "pub-data", pub, 100, false)                            // public data topic, publisher=pub
+	storeEnv(t, srv, "shop:widgets", "pub-data", pub, 100, false)                           // public data topic, publisher=pub
 	storeEnv(t, srv, "identity:"+pub, `{"secret":"private-identity-leak"}`, pub, 101, true) // publisher's PRIVATE identity
 
 	req := httptest.NewRequest("GET", "/topics/shop:widgets", nil)

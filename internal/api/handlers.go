@@ -120,47 +120,6 @@ func (s *Server) handleNodePublish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isAuthed reports whether the request is authenticated: the internal
-// X-Anvil-Authed marker that ONLY the operator-token/app-token middleware
-// sets (client copies are stripped at the trust boundary — see Handler), or
-// the operator bearer token directly. isAuthed is the ONLY signal that gates
-// `private` envelope data and metadata — a verified x402 payment is never
-// sufficient on its own; see isAuthedOrPaid for the payment-inclusive check
-// used by paid/monetized payload redaction. See
-// docs/ANVIL_PRIVATE_FLAG_CONTRACT.md for the full contract.
-func (s *Server) isAuthed(r *http.Request) bool {
-	return r.Header.Get("X-Anvil-Authed") == "true" ||
-		(s.authToken != "" && r.Header.Get("Authorization") == "Bearer "+s.authToken)
-}
-
-// isAuthedOrPaid reports whether the request is authenticated (isAuthed) or
-// carries a verified x402 payment for this request (isPaid, paid_context.go).
-// Use this to gate paid/monetized payloads, which a payment alone may
-// unlock — unchanged from before the authenticated/paid split. Never use it
-// to gate a `private` envelope or its metadata; use isAuthed for that.
-func (s *Server) isAuthedOrPaid(r *http.Request) bool {
-	return s.isAuthed(r) || isPaid(r)
-}
-
-// latestVisibleEnvelope returns the newest envelope on a topic that the caller
-// may see: for unauthenticated callers (isAuthed=false) Private envelopes are
-// skipped, so a private meta:/identity: envelope never leaks through the
-// discovery/identity helper reads; authenticated callers get the newest
-// regardless. Returns nil if none is visible. Used for the small, low-cardinality
-// meta:/identity: topics.
-func (s *Server) latestVisibleEnvelope(topic string, isAuthed bool) *envelope.Envelope {
-	if s.envelopeStore == nil {
-		return nil
-	}
-	envs, _ := s.envelopeStore.QueryByTopic(topic, 0) // newest-first
-	for _, e := range envs {
-		if isAuthed || !e.Private {
-			return e
-		}
-	}
-	return nil
-}
-
 func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 	if s.envelopeStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "envelope store not configured")
@@ -173,8 +132,17 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track demand for this topic.
-	if s.gossipMgr != nil {
+	// authed gates `private` envelope omission below: operator bearer token
+	// ONLY — a verified x402 payment or a valid app token is never
+	// sufficient (docs/ANVIL_PRIVATE_FLAG_CONTRACT.md). authedOrPaid
+	// additionally accepts a verified payment and gates paid/monetized
+	// payload redaction, unchanged from before the split.
+	authed := s.isAuthed(r)
+	authedOrPaid := s.isAuthedOrPaid(r)
+
+	// Track demand for this topic — operator reads never count, so the
+	// operator's own reads can't be mistaken for mesh-wide demand.
+	if s.gossipMgr != nil && !authed {
 		s.gossipMgr.IncrDemand(topic)
 	}
 
@@ -191,10 +159,22 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Sscanf(s, "%d", &since) // bad input keeps zero
 	}
 
-	envs, err := s.envelopeStore.QueryByTopic(topic, limit)
+	// Fetch unlimited and filter private envelopes out first, before since
+	// or limit ever run — the same order internal/gossip/handlers.go uses
+	// for a peer pull (dropPrivate then visiblePage). Filtering after a
+	// limit, or after a since cutoff, truncates the candidate set on
+	// unfiltered data first: a caller can then binary-search a private
+	// envelope's write time by varying limit/since and watching the
+	// returned count shift. Fetching unlimited and dropping private
+	// envelopes immediately removes that signal; limit and since then
+	// apply only to what the caller may actually see.
+	envs, err := s.envelopeStore.QueryByTopic(topic, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query error: %v", err))
 		return
+	}
+	if !authed {
+		envs = dropPrivateEnvelopes(envs)
 	}
 
 	// Filter by timestamp if since is set (results are newest-first)
@@ -208,25 +188,22 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		envs = filtered
 	}
 
-	// authed gates `private` envelope omission below: operator bearer token
-	// or a valid app token ONLY — a verified x402 payment is never
-	// sufficient (docs/ANVIL_PRIVATE_FLAG_CONTRACT.md). authedOrPaid
-	// additionally accepts a verified payment and gates paid/monetized
-	// payload redaction, unchanged from before the split.
-	authed := s.isAuthed(r)
-	authedOrPaid := s.isAuthedOrPaid(r)
+	if limit > 0 && len(envs) > limit {
+		envs = envs[:limit]
+	}
 
 	// Clone envelopes for response — never mutate the in-memory store.
-	// Private envelopes are OMITTED entirely for callers who are not
-	// authenticated (not just payload-redacted) so neither the sealed blob
-	// nor its metadata (topic/pubkey/timestamp/size) leaks; operator bearer
-	// / app token callers see them in full. Paying never unlocks one.
+	// Private envelopes were already dropped above for callers who are not
+	// authenticated, omitted entirely (not just payload-redacted) so
+	// neither the sealed blob nor its metadata (topic/pubkey/timestamp/size)
+	// leaks; operator bearer token callers see them in full. Paying never
+	// unlocks one.
 	responseEnvs := make([]*envelope.Envelope, 0, len(envs))
 	for _, env := range envs {
-		if env.Private && !authed {
-			continue
-		}
-		if !authedOrPaid && env.Monetization != nil && env.Monetization.PriceSats > 0 {
+		// A validated app token (Model 4) additionally unredacts an envelope
+		// on EXACTLY the topic it was validated for — never a private
+		// envelope (dropped above regardless of this check).
+		if !authedOrPaid && !appTokenTopicMatches(r, env.Topic) && env.Monetization != nil && env.Monetization.PriceSats > 0 {
 			// Shallow copy + redact payload
 			redacted := *env
 			redacted.Payload = "[paid content — access via HTTP 402]"
@@ -241,6 +218,22 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		"count":     len(responseEnvs),
 		"envelopes": responseEnvs,
 	})
+}
+
+// dropPrivateEnvelopes returns envs with every Private envelope removed,
+// reusing the backing array (same in-place-filter shape as
+// internal/gossip/handlers.go's dropPrivate). Callers that need operator
+// visibility must not call this at all, not call it and then add private
+// envelopes back — this function has no "except operator" mode on purpose,
+// so every call site is unambiguous about which caller it is filtering for.
+func dropPrivateEnvelopes(envs []*envelope.Envelope) []*envelope.Envelope {
+	kept := envs[:0]
+	for _, env := range envs {
+		if !env.Private {
+			kept = append(kept, env)
+		}
+	}
+	return kept
 }
 
 func (s *Server) handleDeleteData(w http.ResponseWriter, r *http.Request) {

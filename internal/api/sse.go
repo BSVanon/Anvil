@@ -103,8 +103,9 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track demand for this topic.
-	if s.gossipMgr != nil {
+	// Track demand for this topic — operator reads never count, so the
+	// operator's own subscriptions can't be mistaken for mesh-wide demand.
+	if s.gossipMgr != nil && !authed {
 		s.gossipMgr.IncrDemand(topic)
 	}
 
@@ -124,9 +125,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			if env.Private && !authed {
 				continue
 			}
-			// Redact paid payloads unless authenticated or paid.
+			// Redact paid payloads unless authenticated, paid, or carrying a
+			// validated app token for this exact topic (appTokenTopicMatches
+			// — same rule as GET /data, handlers.go).
 			outEnv := env
-			if !authedOrPaid && env.Monetization != nil && env.Monetization.PriceSats > 0 {
+			if !authedOrPaid && !appTokenTopicMatches(r, env.Topic) && env.Monetization != nil && env.Monetization.PriceSats > 0 {
 				redacted := *env
 				redacted.Payload = "[paid content — access via HTTP 402]"
 				outEnv = &redacted

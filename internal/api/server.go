@@ -374,20 +374,29 @@ func (s *Server) routes() {
 	}
 }
 
-// openRead wraps a handler with CORS, rate limiting, token gating, and x402 payment gating.
+// openRead wraps a handler with CORS, rate limiting, token gating, and x402
+// payment gating — except for the operator's own bearer token, admitted free.
 func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
-	h := next
+	gated := next
 	if s.paymentGate != nil {
-		h = s.paymentGate.Middleware(h)
+		gated = s.paymentGate.Middleware(gated)
 	}
 	if s.tokenGate != nil {
-		h = s.tokenGate.Middleware(h)
+		gated = s.tokenGate.Middleware(gated)
+	}
+	// The operator is never charged on a read route — admit a valid
+	// operator token before the payment/token gate chain even runs, so it
+	// can neither 402 nor 401 them. Matches authOrPay.
+	h := func(w http.ResponseWriter, r *http.Request) {
+		if s.isOperatorToken(r) {
+			next(w, r)
+			return
+		}
+		gated(w, r)
 	}
 	if s.rateLimiter != nil {
 		h = s.rateLimiter.Middleware(h)
 	}
-	// CORS: open read endpoints are public and safe to call from any origin.
-	// Required for browser-based consumers like the Anvil Explorer.
 	return cors(h)
 }
 
@@ -696,10 +705,12 @@ func (s *Server) handleStorageQuoteStub(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleAnvilManifest(w http.ResponseWriter, r *http.Request) {
 	tip := s.headerStore.Tip()
 
-	// Build capabilities from live topics
+	// Build capabilities from live topics. This route carries no auth layer
+	// at all (cors only) — PublicTopics (not Topics) so a private topic's
+	// name/count never appears in a manifest any crawler can fetch.
 	capabilities := []map[string]interface{}{}
 	if s.envelopeStore != nil {
-		for topic, count := range s.envelopeStore.Topics() {
+		for topic, count := range s.envelopeStore.PublicTopics() {
 			cap := map[string]interface{}{
 				"type":      "data-feed",
 				"topic":     topic,
@@ -782,15 +793,9 @@ func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Check X-Anvil-Auth first, then Authorization (same order as requireAuth)
-		token := r.Header.Get("X-Anvil-Auth")
-		if token == "" {
-			if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
-				token = auth[7:]
-			}
-		}
-		if token != "" && s.authToken != "" && token == s.authToken {
-			r.Header.Set("X-Anvil-Authed", "true")
+		// Operator bearer token, constant-time — same helper isAuthed and
+		// openRead use (auth.go).
+		if s.isOperatorToken(r) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			next(w, r)
 			return
@@ -853,15 +858,8 @@ func (s *Server) authOrPayBinary(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 1. Bearer token
-		token := r.Header.Get("X-Anvil-Auth")
-		if token == "" {
-			if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
-				token = auth[7:]
-			}
-		}
-		if token != "" && s.authToken != "" && token == s.authToken {
-			r.Header.Set("X-Anvil-Authed", "true")
+		// 1. Bearer token, constant-time — same helper isAuthed and openRead use.
+		if s.isOperatorToken(r) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			next(w, r)
 			return
@@ -893,17 +891,13 @@ func (s *Server) authOrPayBinary(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Trust boundary: strip any client-supplied X-Anvil-Authed. This header
-		// is an INTERNAL authentication signal that only the operator-token/
-		// app-token middleware may set (on a validated bearer or app token);
-		// handlers read it (isAuthed) to authorize `private` envelope data and
-		// metadata. A verified x402 payment is marked separately, by a
-		// request-context value a client cannot set at all (paid_context.go):
-		// paid unlocks paid/monetized payloads (isAuthedOrPaid) but never a
-		// private envelope. Without this strip a client could send
-		// `X-Anvil-Authed: true` and — on a node with no gate configured — read
-		// content it never authenticated for. Server middleware re-sets it
-		// downstream on genuine success, so legitimate auth is unaffected.
+		// Trust boundary: strip any client-supplied X-Anvil-Authed. Nothing in
+		// this codebase sets or reads it as a signal anymore — the operator
+		// token is re-checked directly on every request (isOperatorToken,
+		// auth.go), and a validated app token or verified payment is carried
+		// as an unexported request-context value a client cannot set at all
+		// (app_token_context.go, paid_context.go). Stripped here as defense
+		// in depth only.
 		r.Header.Del("X-Anvil-Authed")
 		s.mux.ServeHTTP(w, r)
 	})

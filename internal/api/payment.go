@@ -238,8 +238,9 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		payees, tokenGated := pg.resolvePayees(r)
-		if tokenGated {
-			r.Header.Set("X-Anvil-Authed", "true")
+		// Skip the toll only when THIS request's token gate already
+		// validated a token for this exact topic; payment.go sets no auth signal.
+		if tokenGated && appTokenTopicMatches(r, r.URL.Query().Get("topic")) {
 			next(w, r)
 			return
 		}

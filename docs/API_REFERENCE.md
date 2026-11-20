@@ -446,12 +446,22 @@ max_inbox_messages = 0
 max_inbox_bytes = 0
 ```
 
-## Authentication
+## Authentication and payment
 
-Transport auth for publishing data:
+Two distinct mechanisms gate write/query access, and they are not
+interchangeable:
 
-1. **Bearer token** — operator auth, derived from WIF: `Authorization: Bearer <token>`
-2. **x402 payment** — anyone can publish/query by paying the node's price
+1. **Bearer token** — operator authentication, derived from WIF:
+   `Authorization: Bearer <token>` (or `X-Anvil-Auth: <token>`). This is the
+   only credential that identifies a caller as this node's operator.
+2. **x402 payment** — a per-request toll, not authentication. Anyone can
+   publish/query by paying the node's price. Paying never identifies the
+   caller as the operator.
+
+Only the operator's bearer token unlocks a `private` envelope (one marked
+`"private": true`) or its metadata — on `GET /data`, on the SSE
+subscription below, and on every discovery/metadata endpoint. A verified
+x402 payment never unlocks one, by itself.
 
 Every published envelope is also signed by the app's BSV key. The signature
 proves authorship, but it does not replace bearer auth or x402 payment for
@@ -472,7 +482,11 @@ curl -N "http://localhost:9333/data/subscribe?topic=oracle:rates:bsv"
 ```
 
 Each new envelope is pushed as a `data:` event with a monotonic `id:` field.
-Paid payloads are redacted for unauthenticated clients.
+Monetized payloads are redacted for a client that hasn't paid; a verified
+x402 payment unlocks that topic's monetized content for the paying client,
+the same as `GET /data`. A `private` envelope is never streamed to a client
+without the operator's bearer token — a payment never unlocks one here
+either.
 
 On reconnect, the browser's `EventSource` sends `Last-Event-ID` automatically.
 Use `GET /data?since=TIMESTAMP` to backfill any missed events.

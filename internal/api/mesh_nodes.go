@@ -12,15 +12,15 @@ import (
 // MeshNode represents a single node in the merged read-model.
 // Evidence flags preserve the source of each piece of data.
 type MeshNode struct {
-	Identity string        `json:"identity"`
-	Name     string        `json:"name"`
-	Version  string        `json:"version"`
-	URL      string        `json:"url"`
-	Height   uint32        `json:"height,omitempty"`
-	Peers    int           `json:"peers,omitempty"`
-	Topics   []string      `json:"topics,omitempty"`
-	LastSeen string        `json:"last_seen"`
-	Evidence MeshEvidence  `json:"evidence"`
+	Identity string       `json:"identity"`
+	Name     string       `json:"name"`
+	Version  string       `json:"version"`
+	URL      string       `json:"url"`
+	Height   uint32       `json:"height,omitempty"`
+	Peers    int          `json:"peers,omitempty"`
+	Topics   []string     `json:"topics,omitempty"`
+	LastSeen string       `json:"last_seen"`
+	Evidence MeshEvidence `json:"evidence"`
 }
 
 // MeshEvidence records which data sources contributed to this node entry.
@@ -63,8 +63,12 @@ func (s *Server) handleMeshNodes(w http.ResponseWriter, r *http.Request) {
 			Evidence: MeshEvidence{Self: true},
 		},
 	}
+	// This route carries no auth layer at all (cors only) — PublicTopics so a
+	// private topic's name never appears here. Peer topics (below) are
+	// already public-only at the source: they come from the gossiped
+	// heartbeat, which only ever names public topics (internal/feeds).
 	if s.envelopeStore != nil {
-		topics := s.envelopeStore.Topics()
+		topics := s.envelopeStore.PublicTopics()
 		names := make([]string, 0, len(topics))
 		for t := range topics {
 			names = append(names, t)

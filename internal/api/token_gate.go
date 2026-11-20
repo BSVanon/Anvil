@@ -26,8 +26,8 @@ import (
 // The signature is DER-encoded, verified against the auth_pubkey from
 // the topic's envelope monetization metadata.
 type TokenGate struct {
-	resolver     *TopicMonetizationResolver
-	enabled      bool
+	resolver       *TopicMonetizationResolver
+	enabled        bool
 	validityWindow time.Duration
 }
 
@@ -77,8 +77,12 @@ func (tg *TokenGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		r.Header.Set("X-Anvil-Authed", "true")
-		next(w, r)
+		// Carry the validated topic as a request-context value — never
+		// a header, never "authenticated". A validated token is a credential
+		// for monetized PUBLIC content on exactly this topic; it is read by
+		// payment.go (toll skip) and by the redaction checks in handlers.go
+		// and sse.go, and it is NEVER consulted by isAuthed/isOperatorToken.
+		next(w, r.WithContext(withAppTokenTopic(r.Context(), topic)))
 	}
 }
 

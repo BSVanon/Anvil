@@ -22,16 +22,27 @@ func NewTopicMonetizationResolver(store *envelope.Store) *TopicMonetizationResol
 }
 
 // Resolve returns the monetization metadata for a topic, or nil if none.
-// Looks at the latest envelope for the topic and returns its monetization field.
+// Looks at the latest PUBLIC envelope for the topic — a private envelope's
+// monetization (payee script, price, auth pubkey) must never surface via a
+// 402 challenge or the token gate's 401/403, or either becomes an existence
+// oracle for a private-only topic: a private-only monetized topic must
+// answer exactly like a topic that doesn't exist at all (no payee, no
+// price, no token requirement to probe for).
 func (r *TopicMonetizationResolver) Resolve(topic string) *envelope.Monetization {
 	if r == nil || topic == "" {
 		return nil
 	}
-	envs, err := r.store.QueryByTopic(topic, 1)
-	if err != nil || len(envs) == 0 {
+	envs, err := r.store.QueryByTopic(topic, 0)
+	if err != nil {
 		return nil
 	}
-	return envs[0].Monetization
+	for _, env := range envs {
+		if env.Private {
+			continue
+		}
+		return env.Monetization
+	}
+	return nil
 }
 
 // resolvePayees determines the payee list for a request based on the
@@ -109,6 +120,15 @@ func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGate
 		return []Payee{appPayee}, false
 
 	case envelope.MonetizationToken:
+		// tokenGated=true tells the caller (payment.go's Middleware) to
+		// check the request's appTokenTopic context value before admitting
+		// for free — this function has no access to that per-request
+		// state, and never grants the free pass itself. Without a
+		// validated token, a token-model topic owes the node's own price
+		// like any other topic.
+		if nodePayee != nil {
+			return []Payee{*nodePayee}, true
+		}
 		return nil, true
 
 	case envelope.MonetizationFree:

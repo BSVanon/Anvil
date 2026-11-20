@@ -24,14 +24,19 @@ func newTopicCache(ttl time.Duration) *topicCache {
 	return &topicCache{ttl: ttl}
 }
 
-func (tc *topicCache) get(countsFn func() map[string]int, latestFn func() map[string]int64) (map[string]int, map[string]int64) {
+// get takes a single function returning both maps at once (rather than two
+// separate zero-arg functions) specifically so the only legitimate source,
+// Store.PublicTopicSummary, can be passed as one method value — a bare
+// method value has no call-expression syntax for a reviewer or a grep to
+// catch, so pairing mismatched counts/latest sources here is exactly the
+// mistake this signature makes impossible to make again.
+func (tc *topicCache) get(summaryFn func() (map[string]int, map[string]int64)) (map[string]int, map[string]int64) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	if time.Since(tc.updated) < tc.ttl {
 		return tc.counts, tc.latest
 	}
-	tc.counts = countsFn()
-	tc.latest = latestFn()
+	tc.counts, tc.latest = summaryFn()
 	tc.updated = time.Now()
 	return tc.counts, tc.latest
 }
@@ -76,12 +81,12 @@ func (s *Server) handleMeshStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Topics with counts and freshness (cached to avoid LevelDB scan per request)
+	// Topics with counts and freshness (cached to avoid LevelDB scan per
+	// request). This route carries no auth layer at all (cors only, no
+	// openRead) — PublicTopicSummary so a private-only topic's name, count,
+	// and last-write time never appear here for any caller.
 	if s.envelopeStore != nil {
-		counts, latest := s.meshTopicCache.get(
-			s.envelopeStore.Topics,
-			s.envelopeStore.LatestByTopic,
-		)
+		counts, latest := s.meshTopicCache.get(s.envelopeStore.PublicTopicSummary)
 
 		type topicInfo struct {
 			Topic    string `json:"topic"`

@@ -1,29 +1,28 @@
 package api
 
 import (
-	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
-// --- B3: a payment never unlocks a `private` envelope ---
+// --- A payment never unlocks a `private` envelope ---
 //
 // These tests run against a charging configuration (payment_satoshis > 0, or
 // a priced topic) and prove the authenticated/paid split in handlers.go,
 // sse.go and payment.go: a verified x402 payment marks a request *paid*
-// (isPaid, paid_context.go), never *authenticated* (isAuthed). Only isAuthed
-// — the operator bearer token or a valid app token — gates `private`
-// envelope data and metadata. See docs/ANVIL_PRIVATE_FLAG_CONTRACT.md.
+// (isPaid, paid_context.go), never *authenticated* (isAuthed). Only
+// isAuthed — this node's own operator bearer token, and nothing else —
+// gates `private` envelope data and metadata. A validated app token is a
+// separate, narrower credential that unlocks monetized PUBLIC content on
+// its own topic only; it never gates `private` data. See
+// docs/ANVIL_PRIVATE_FLAG_CONTRACT.md.
 
 // queryWithProof submits a GET to path with a valid x402 proof attached and
 // returns the decoded /data response. t.Fatal on anything but 200.
@@ -103,32 +102,15 @@ func TestPaidRequestStillUnlocksMonetizedPayload(t *testing.T) {
 	}
 }
 
-// TestOperatorTokenUnlocksPrivateUnderChargingConfig: on a node that is in a
-// genuine charging configuration (a priced topic elsewhere, payment gate
-// active), the operator bearer token still sees a `private` envelope on an
-// unpriced topic in full — auth, not payment, is the private-envelope
-// credential.
+// TestOperatorTokenUnlocksPrivateUnderChargingConfig: on a node where EVERY
+// /data request genuinely owes a toll (route price > 0, not the earlier,
+// vacuous PriceSats:0 config where this request was never actually charged
+// anything), the operator bearer token still sees a `private` envelope in
+// full, for free — no 402, no toll. Auth, not payment, is the
+// private-envelope credential, and the operator is never charged on a read.
 func TestOperatorTokenUnlocksPrivateUnderChargingConfig(t *testing.T) {
-	srv := testServer(t)
-	storePrivate(t, srv, `{"secret":"operator-sees-this"}`) // lacriada:household-x, unpriced
-	seedEnvelope(t, srv.envelopeStore, "priced:other", &envelope.Monetization{
-		Model:                 envelope.MonetizationPassthrough,
-		PayeeLockingScriptHex: appPayeeScript(),
-		PriceSats:             50,
-	})
-
-	resolver := NewTopicMonetizationResolver(srv.envelopeStore)
-	srv.paymentGate = NewPaymentGate(PaymentGateConfig{
-		PriceSats:        0, // node itself is free; priced:other is charged via its own monetization
-		NonceProvider:    &DevNonceProvider{},
-		Resolver:         resolver,
-		AllowPassthrough: true,
-	})
-	srv.mux = http.NewServeMux()
-	srv.routes()
-	if srv.paymentGate == nil {
-		t.Fatal("expected a charging configuration (gate must exist)")
-	}
+	srv := testServerWithPaymentGate(t, 100) // every /data request owes 100 sats
+	storePrivate(t, srv, `{"secret":"operator-sees-this"}`)
 
 	envs := queryPrivateTopic(t, srv, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer test-token")
@@ -138,64 +120,6 @@ func TestOperatorTokenUnlocksPrivateUnderChargingConfig(t *testing.T) {
 	}
 	if p, _ := envs[0]["payload"].(string); !strings.Contains(p, "operator-sees-this") {
 		t.Fatalf("expected full private payload, got: %v", envs[0]["payload"])
-	}
-}
-
-// TestAppTokenUnlocksPrivateEnvelope: a `private` envelope on a token-gated
-// (Model 4) topic is served in full to a caller presenting a valid,
-// signature-verified X-App-Token — the other credential the contract allows
-// — with the payment gate also active (charging configuration).
-func TestAppTokenUnlocksPrivateEnvelope(t *testing.T) {
-	srv := testServer(t)
-
-	appKey, _ := ec.NewPrivateKey()
-	appPubHex := hex.EncodeToString(appKey.PubKey().Compressed())
-
-	srv.envelopeStore.StoreEphemeralDirect(&envelope.Envelope{
-		Type:      "data",
-		Topic:     "appgated:private",
-		Payload:   `{"secret":"app-token-sees-this"}`,
-		Pubkey:    "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
-		Signature: "3045022100abcd",
-		TTL:       60,
-		Timestamp: 1700000000,
-		Private:   true,
-		Monetization: &envelope.Monetization{
-			Model:      envelope.MonetizationToken,
-			AuthPubkey: appPubHex,
-		},
-	})
-
-	resolver := NewTopicMonetizationResolver(srv.envelopeStore)
-	srv.tokenGate = NewTokenGate(resolver, true)
-	srv.paymentGate = testGateWithAppPayments(t, 100, srv.envelopeStore) // charging configuration
-	srv.mux = http.NewServeMux()
-	srv.routes()
-
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	digest := sha256.Sum256([]byte("appgated:private:" + ts))
-	sig, _ := appKey.Sign(digest[:])
-	token := hex.EncodeToString(sig.Serialize()) + ":" + ts
-
-	req := httptest.NewRequest("GET", "/data?topic=appgated:private&limit=10", nil)
-	req.Host = "localhost"
-	req.Header.Set("X-App-Token", token)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 with valid app token, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp struct {
-		Count     int                      `json:"count"`
-		Envelopes []map[string]interface{} `json:"envelopes"`
-	}
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Count != 1 {
-		t.Fatalf("app token should see the private envelope; got count %d", resp.Count)
-	}
-	if p, _ := resp.Envelopes[0]["payload"].(string); !strings.Contains(p, "app-token-sees-this") {
-		t.Fatalf("expected full private payload, got: %v", resp.Envelopes[0]["payload"])
 	}
 }
 
@@ -236,47 +160,82 @@ func TestSpoofedPaidMarkerIgnoredUnderChargingConfig(t *testing.T) {
 	}
 }
 
-// TestSubscribePaidRequestOmitsPrivateEnvelope: /data/subscribe (SSE) follows
-// the same rule as GET /data — a verified payment never streams a private
-// envelope to the paying subscriber.
-func TestSubscribePaidRequestOmitsPrivateEnvelope(t *testing.T) {
-	srv := testServerWithPaymentGate(t, 100)
+// TestTokenGatedWriteRoutesRequirePayment: a write route
+// never skips the toll because ?topic= names a token-model topic — only the
+// operator token or a real payment admits it. payment.go used to mark ANY
+// such request "authenticated" with zero credential check, and write routes
+// don't even wire a token gate, so nothing was ever verified at all.
+func TestTokenGatedWriteRoutesRequirePayment(t *testing.T) {
+	srv := testServer(t)
 
-	path := "/data/subscribe?topic=sse:private"
-	ch := getChallenge(t, srv, "GET", path)
-	proofB64 := buildProof(t, ch, 200, testPayeeScript(t))
+	appKey, _ := ec.NewPrivateKey()
+	appPubHex := hex.EncodeToString(appKey.PubKey().Compressed())
+	seedEnvelope(t, srv.envelopeStore, "writer:gated", &envelope.Monetization{
+		Model:      envelope.MonetizationToken,
+		AuthPubkey: appPubHex,
+	})
 
-	req := httptest.NewRequest("GET", path, nil)
-	req.Host = "localhost"
-	req.Header.Set(HeaderX402Proof, proofB64)
-	ctx, cancel := context.WithCancel(req.Context())
-	defer cancel()
-	req = req.WithContext(ctx)
-	w := httptest.NewRecorder()
+	resolver := NewTopicMonetizationResolver(srv.envelopeStore)
+	srv.paymentGate = NewPaymentGate(PaymentGateConfig{
+		PriceSats:      100,
+		PayeeScriptHex: testPayeeScript(t),
+		NonceProvider:  &DevNonceProvider{},
+		Resolver:       resolver,
+	})
+	srv.mux = http.NewServeMux()
+	srv.routes()
 
-	done := make(chan struct{})
-	go func() {
-		srv.Handler().ServeHTTP(w, req)
-		close(done)
-	}()
-	time.Sleep(50 * time.Millisecond)
-
-	key, _ := ec.NewPrivateKey()
-	env := &envelope.Envelope{
-		Type:      "data",
-		Topic:     "sse:private",
-		Payload:   `{"secret":"sse-leak-check"}`,
-		Timestamp: time.Now().Unix(),
-		Private:   true,
+	req1 := httptest.NewRequest("POST", "/data?topic=writer:gated", strings.NewReader(`{}`))
+	req1.Host = "localhost"
+	w1 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w1, req1)
+	if w1.Code != http.StatusPaymentRequired {
+		t.Fatalf("POST /data on a token-model topic without payment must 402, got %d: %s", w1.Code, w1.Body.String())
 	}
-	env.Sign(key)
-	srv.NotifyEnvelope(env)
 
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
+	req2 := httptest.NewRequest("POST", "/broadcast?topic=writer:gated", strings.NewReader("not-real-beef"))
+	req2.Host = "localhost"
+	w2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusPaymentRequired {
+		t.Fatalf("POST /broadcast on a token-model topic without payment must 402, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
 
-	if strings.Contains(w.Body.String(), "sse-leak-check") {
-		t.Fatal("a verified payment must not stream a private envelope over /data/subscribe")
+// TestPrivateOnlyMonetizedTopicNoExistenceOracle: a
+// private-only topic whose latest (private) envelope happens to declare
+// monetization must answer EXACTLY like a topic that doesn't exist at all —
+// same price, same payee, no multi-payee list — so a 402 challenge can never
+// be used to probe for a private-only topic's existence, payee, or price.
+func TestPrivateOnlyMonetizedTopicNoExistenceOracle(t *testing.T) {
+	srv := testServer(t)
+
+	srv.envelopeStore.StoreEphemeralDirect(&envelope.Envelope{
+		Type: "data", Topic: "priv:monetized", Payload: `{"secret":"do-not-leak"}`,
+		Pubkey:    "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+		Signature: "3045022100abcd", TTL: 60, Timestamp: 1700000000,
+		Private: true,
+		Monetization: &envelope.Monetization{
+			Model:                 envelope.MonetizationPassthrough,
+			PayeeLockingScriptHex: appPayeeScript(),
+			PriceSats:             50,
+		},
+	})
+
+	srv.paymentGate = testGateWithAppPayments(t, 100, srv.envelopeStore)
+	srv.mux = http.NewServeMux()
+	srv.routes()
+
+	chPrivate := getChallenge(t, srv, "GET", "/data?topic=priv:monetized")
+	chMissing := getChallenge(t, srv, "GET", "/data?topic=does:not:exist")
+
+	if chPrivate.AmountSats != chMissing.AmountSats {
+		t.Fatalf("private-only monetized topic leaked its price via 402: got %d, nonexistent-topic baseline is %d", chPrivate.AmountSats, chMissing.AmountSats)
+	}
+	if chPrivate.PayeeLockingScriptHex != chMissing.PayeeLockingScriptHex {
+		t.Fatalf("private-only monetized topic leaked its payee script via 402: got %s, nonexistent-topic baseline is %s", chPrivate.PayeeLockingScriptHex, chMissing.PayeeLockingScriptHex)
+	}
+	if len(chPrivate.Payees) != 0 {
+		t.Fatalf("private-only monetized topic leaked a multi-payee list: %v", chPrivate.Payees)
 	}
 }

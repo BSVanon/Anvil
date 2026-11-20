@@ -24,9 +24,9 @@ type Store struct {
 	ephemeral map[string]*Envelope // key → envelope
 	mu        sync.RWMutex
 
-	maxEphemeralTTL  int // max TTL seconds for ephemeral envelopes
-	maxDurableSize   int // max payload size in bytes for durable envelopes
-	maxDurableStoreB int64 // max total durable store size in bytes (0 = unlimited)
+	maxEphemeralTTL  int         // max TTL seconds for ephemeral envelopes
+	maxDurableSize   int         // max payload size in bytes for durable envelopes
+	maxDurableStoreB int64       // max total durable store size in bytes (0 = unlimited)
 	durableFull      atomic.Bool // set by CheckDurableCapacity, checked on write
 }
 
@@ -337,42 +337,4 @@ func (s *Store) Topics() map[string]int {
 	s.mu.RUnlock()
 
 	return topics
-}
-
-// PublicTopicSummary returns, per topic, the count and newest timestamp of
-// NON-private envelopes only, in a single pass. Used to build discovery
-// responses (/topics) for unauthenticated callers so private envelopes never
-// leak via existence, count, or last_updated — even under a topic whose latest
-// envelope is public (a mixed topic). Topics with zero public envelopes do not
-// appear in the maps at all.
-func (s *Store) PublicTopicSummary() (counts map[string]int, latest map[string]int64) {
-	counts = make(map[string]int)
-	latest = make(map[string]int64)
-
-	iter := s.db.NewIterator(util.BytesPrefix(prefixDurable), nil)
-	for iter.Next() {
-		env, err := UnmarshalEnvelope(iter.Value())
-		if err != nil || env.Private {
-			continue
-		}
-		counts[env.Topic]++
-		if env.Timestamp > latest[env.Topic] {
-			latest[env.Topic] = env.Timestamp
-		}
-	}
-	iter.Release()
-
-	s.mu.RLock()
-	for _, env := range s.ephemeral {
-		if env.IsExpired() || env.Private {
-			continue
-		}
-		counts[env.Topic]++
-		if env.Timestamp > latest[env.Topic] {
-			latest[env.Topic] = env.Timestamp
-		}
-	}
-	s.mu.RUnlock()
-
-	return counts, latest
 }
