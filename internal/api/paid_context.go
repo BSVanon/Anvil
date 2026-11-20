@@ -14,10 +14,10 @@ import (
 // direct payment has actually verified.
 //
 // A verified payment marks a request *paid*, which is distinct from
-// *authenticated* (operator bearer token or a valid app token, see
-// Server.isAuthed). Paid unlocks paid/monetized payloads, same as today —
-// see Server.isAuthedOrPaid. It must never unlock a `private` envelope or
-// its metadata; only isAuthed gates those reads. See
+// *authenticated* (this node's own operator bearer token, and nothing
+// else — see Server.isAuthed). Paid unlocks paid/monetized payloads, same
+// as today — see Server.isAuthedOrPaid. It must never unlock a `private`
+// envelope or its metadata; only isAuthed gates those reads. See
 // docs/ANVIL_PRIVATE_FLAG_CONTRACT.md for the full contract.
 type paidContextKey struct{}
 
