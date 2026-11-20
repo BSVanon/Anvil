@@ -186,18 +186,7 @@ func NewServer(cfg ServerConfig) *Server {
 		cfg.TrustProxyHops,
 	)
 	resolver := NewTopicMonetizationResolver(cfg.EnvelopeStore)
-	pg := NewPaymentGate(PaymentGateConfig{
-		PriceSats:        cfg.PaymentSatoshis,
-		PayeeScriptHex:   cfg.PayeeScriptHex,
-		NonceProvider:    cfg.NonceProvider,
-		RequireMempool:   cfg.RequireMempool,
-		ARCClient:        cfg.ARCClient,
-		Resolver:         resolver,
-		AllowPassthrough: cfg.AllowPassthrough,
-		AllowSplit:       cfg.AllowSplit,
-		MaxAppPriceSats:  cfg.MaxAppPriceSats,
-		EndpointPrices:   cfg.EndpointPrices,
-	})
+	pg := newServerPaymentGate(cfg, resolver)
 	tg := NewTokenGate(resolver, cfg.AllowTokenGating)
 	logger := cfg.Logger
 	if logger == nil {

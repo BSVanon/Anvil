@@ -22,8 +22,7 @@ const (
 	HeaderX402Challenge = "X402-Challenge"
 	HeaderX402Proof     = "X402-Proof"
 	HeaderX402Receipt   = "X402-Receipt"
-	// Direct payment: a raw or Extended Format (BRC-30) transaction, as hex
-	// or base64 (verifyDirectPayment). Atomic BEEF (BRC-95) is not parsed.
+	// Direct payment: a raw or Extended Format (BRC-30) tx, never Atomic BEEF.
 	HeaderBSVPayment = "X-Bsv-Payment"
 )
 
@@ -142,6 +141,8 @@ type PaymentGate struct {
 	// this map, its price overrides priceSats for that endpoint.
 	endpointPrices map[string]int
 
+	headerTip         func() uint32     // the node's header tip (checkPaymentDepth, payment_arc.go)
+	replays           *paymentReplaySet // accepted direct payments (payment_replay.go)
 	mu                sync.Mutex
 	pendingChallenges map[string]*pendingChallenge
 	reservedPending   int // places held for challenges being issued (payment_pending.go)
@@ -167,6 +168,7 @@ type PaymentGateConfig struct {
 	AllowSplit       bool
 	MaxAppPriceSats  int
 	EndpointPrices   map[string]int // path → satoshis override
+	HeaderTip        func() uint32  // the node's header tip, nil if it has none
 
 	// mintBudget bounds the wallet mints of a NonceProvider that is not a
 	// UTXONoncePool; nil means the process-wide defaultMintBudget
@@ -209,6 +211,8 @@ func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 		allowSplit:        cfg.AllowSplit,
 		maxAppPriceSats:   cfg.MaxAppPriceSats,
 		endpointPrices:    cfg.EndpointPrices,
+		headerTip:         cfg.HeaderTip,
+		replays:           newPaymentReplaySet(directPaymentReplayWindow, directPaymentReplayCapacity, time.Now),
 		pendingChallenges: make(map[string]*pendingChallenge),
 		maxPending:        maxPendingChallenges,
 	}
@@ -288,12 +292,9 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// issueChallengeForPayees builds and returns a 402 challenge. The body is
-// read first, under its own size cap and deadline (payment_bodyread.go) —
-// RISK 2: reservePending used to run before this read, so a stalled body
-// held a pending-place slot indefinitely — then the challenge's footprint
-// cap, the pending-challenge cap (payment_pending.go), and the nonce mint
-// (budget-bounded, payment_budget.go, 503 with Retry-After) run in order.
+// issueChallengeForPayees builds and returns a 402 challenge. In order: the
+// footprint cap, the body read (payment_bodyread.go), the pending-challenge
+// cap (payment_pending.go) and the budget-bounded mint (payment_budget.go).
 func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Request, payees []Payee) {
 	if n := challengeFootprint(r, payees); n > maxChallengeFootprint {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf(

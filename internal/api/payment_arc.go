@@ -53,3 +53,40 @@ func checkARCAcceptance(resp *txrelay.ARCResponse) error {
 	}
 	return nil
 }
+
+// maxDirectPaymentDepth is the deepest a direct payment that ARC reports as
+// MINED may be below this node's header tip: 144 blocks, about 24 hours at
+// 10 minutes a block, the same span as directPaymentReplayWindow
+// (payment_replay.go).
+const maxDirectPaymentDepth = 144
+
+// checkPaymentDepth refuses a direct payment that ARC reports as MINED more
+// than maxDirectPaymentDepth blocks below the node's header tip, so a payment
+// the replay set no longer remembers, after eviction or a restart, cannot pay
+// again once it is buried. A MINED report whose depth the node cannot work
+// out, because it carries no block height or the node has no header tip, is
+// refused as well. Other accepted statuses are unmined and pass.
+func (pg *PaymentGate) checkPaymentDepth(resp *txrelay.ARCResponse) error {
+	if resp.Status != "MINED" {
+		return nil
+	}
+	var tip uint32
+	if pg.headerTip != nil {
+		tip = pg.headerTip()
+	}
+	if resp.BlockHeight == 0 || tip == 0 {
+		return &paymentRefusal{
+			code: codePaymentTooOld,
+			msg: fmt.Sprintf("ARC reports the payment mined at height %d and this node's header tip is %d, so the node cannot confirm it is recent; pay with a new transaction",
+				resp.BlockHeight, tip),
+		}
+	}
+	if tip > resp.BlockHeight && tip-resp.BlockHeight > maxDirectPaymentDepth {
+		return &paymentRefusal{
+			code: codePaymentTooOld,
+			msg: fmt.Sprintf("the payment was mined at height %d, %d blocks below this node's header tip %d, and a direct payment may be at most %d blocks deep; pay with a new transaction",
+				resp.BlockHeight, tip-resp.BlockHeight, tip, maxDirectPaymentDepth),
+		}
+	}
+	return nil
+}

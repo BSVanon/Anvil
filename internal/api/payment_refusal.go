@@ -16,6 +16,13 @@ const (
 	// codePaymentNotAccepted: ARC did not report the payment transaction as
 	// accepted by the network (checkARCAcceptance, payment_arc.go).
 	codePaymentNotAccepted = "ERR_PAYMENT_NOT_ACCEPTED"
+	// codePaymentReplayed: the direct payment's transaction already paid for
+	// a request (paymentReplaySet, payment_replay.go).
+	codePaymentReplayed = "ERR_PAYMENT_REPLAYED"
+	// codePaymentTooOld: ARC reports the direct payment mined deeper than this
+	// node accepts, or at a depth it cannot work out (checkPaymentDepth,
+	// payment_arc.go).
+	codePaymentTooOld = "ERR_PAYMENT_TOO_OLD"
 )
 
 // paymentRefusal is a payment refused with one of the codes above.

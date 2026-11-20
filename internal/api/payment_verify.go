@@ -288,6 +288,17 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 		}
 	}
 
+	// One transaction pays for one request (payment_replay.go). The claim is
+	// released on every return, and kept only for an accepted payment.
+	txHash := tx.TxID()
+	txid := txHash.String()
+	if !pg.replays.begin(*txHash) {
+		return nil, &paymentRefusal{code: codePaymentReplayed,
+			msg: "payment transaction " + txid + " was already used: a direct payment pays for one request"}
+	}
+	accepted := false
+	defer func() { pg.replays.end(*txHash, accepted) }()
+
 	// Verify every input's script and signature against the source output the
 	// client supplied (payment_direct_verify.go), before ARC is asked. The
 	// check proves the signatures match those outputs, not that the outputs
@@ -295,8 +306,6 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 	if err := verifyDirectPaymentInputs(tx); err != nil {
 		return nil, fmt.Errorf("direct payment input verification failed: %w", err)
 	}
-
-	txid := tx.TxID().String()
 
 	// Broadcast the payment: a direct payment has no challenge binding, so
 	// only the network's acceptance shows that its inputs exist and are
@@ -308,6 +317,10 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 	if err := checkARCAcceptance(arcResp); err != nil {
 		return nil, err
 	}
+	if err := pg.checkPaymentDepth(arcResp); err != nil {
+		return nil, err
+	}
+	accepted = true
 
 	return &X402Receipt{
 		TxID:      txid,
