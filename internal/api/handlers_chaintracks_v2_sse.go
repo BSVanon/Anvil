@@ -127,20 +127,26 @@ func (s *Server) handleChaintracksV2TipStream(w http.ResponseWriter, r *http.Req
 	}
 	defer release()
 
+	// Subscribe before any write, matching canonical (routes.go:350-355
+	// registers the client; only then, at :362-372, does it send the
+	// initial tip): a tip published in the gap between here and the first
+	// write would otherwise be lost.
+	ch := make(chan uint32, 1)
+	unsub := s.headerStore.SubscribeTip(ch)
+	defer unsub()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	var lastSent chaintracksTipDedup
+
 	// Canonical sends the current tip immediately on connect.
-	if err := s.writeChaintracksV2TipEvent(w, s.headerStore.Tip()); err != nil {
+	if err := s.writeChaintracksV2TipEvent(w, &lastSent); err != nil {
 		return
 	}
-
-	ch := make(chan uint32, 1)
-	unsub := s.headerStore.SubscribeTip(ch)
-	defer unsub()
 
 	ping := time.NewTicker(sseHeartbeatInterval)
 	defer ping.Stop()
@@ -154,22 +160,52 @@ func (s *Server) handleChaintracksV2TipStream(w http.ResponseWriter, r *http.Req
 			if err := writeSSE(w, ": ping\n\n"); err != nil {
 				return
 			}
-		case height := <-ch:
-			if err := s.writeChaintracksV2TipEvent(w, height); err != nil {
+		case <-ch:
+			// ch only wakes the loop; writeChaintracksV2TipEvent always
+			// re-reads the store's current tip, so a notification the
+			// broadcaster's non-blocking send dropped (feed.go) can never
+			// leave this stream behind on a stale height.
+			if err := s.writeChaintracksV2TipEvent(w, &lastSent); err != nil {
 				return
 			}
 		}
 	}
 }
 
+// chaintracksTipDedup remembers the hash of the last tip event a tip/stream
+// connection actually sent, so the same tip is never sent to it twice in a
+// row. The zero value means nothing has been sent yet.
+type chaintracksTipDedup struct {
+	hash chainhash.Hash
+	sent bool
+}
+
+func (d *chaintracksTipDedup) skip(hash chainhash.Hash) bool {
+	return d.sent && d.hash == hash
+}
+
+func (d *chaintracksTipDedup) record(hash chainhash.Hash) {
+	d.hash, d.sent = hash, true
+}
+
 // writeChaintracksV2TipEvent writes one SSE data frame carrying the bare
-// header JSON for height, under sse_deadline.go's per-write deadline. A
-// transient read/decode failure is skipped rather than sent malformed — the
-// stream just waits for the next tip; that is not a write error and never
-// aborts the connection. A genuine write/flush error (including a stalled
-// client exceeding the deadline) IS returned, so the caller's loop returns
-// and its deferred release() frees the stream slot.
-func (s *Server) writeChaintracksV2TipEvent(w http.ResponseWriter, height uint32) error {
+// header JSON for the store's current tip, under sse_deadline.go's
+// per-write deadline. It always re-reads the tip itself rather than trusting
+// a height the caller already had in hand: the single notification slot
+// behind SubscribeTip (feed.go) can silently drop a publish, so by the time
+// anything wakes up the store may already be further ahead than whatever
+// triggered the wakeup. lastSent then skips a repeat of the same block —
+// counting the initial send — which is what stops a notification queued for
+// a tip this stream already sent (including one racing in right after
+// SubscribeTip, before the first send) from producing a duplicate event.
+//
+// A transient read/decode failure is skipped rather than sent malformed —
+// the stream just waits for the next tip; that is not a write error and
+// never aborts the connection. A genuine write/flush error (including a
+// stalled client exceeding the deadline) IS returned, so the caller's loop
+// returns and its deferred release() frees the stream slot.
+func (s *Server) writeChaintracksV2TipEvent(w http.ResponseWriter, lastSent *chaintracksTipDedup) error {
+	height := s.headerStore.Tip()
 	raw, err := s.headerStore.HeaderAtHeight(height)
 	if err != nil {
 		return nil
@@ -178,11 +214,19 @@ func (s *Server) writeChaintracksV2TipEvent(w http.ResponseWriter, height uint32
 	if err != nil {
 		return nil
 	}
+	hash := hdr.BlockHash()
+	if lastSent.skip(hash) {
+		return nil
+	}
 	data, err := json.Marshal(chaintracksV2HeaderFor(hdr, height))
 	if err != nil {
 		return nil
 	}
-	return writeSSE(w, fmt.Sprintf("data: %s\n\n", data))
+	if err := writeSSE(w, fmt.Sprintf("data: %s\n\n", data)); err != nil {
+		return err
+	}
+	lastSent.record(hash)
+	return nil
 }
 
 // handleChaintracksV2ReorgStream serves GET /chaintracks/v2/reorg/stream.
@@ -200,6 +244,14 @@ func (s *Server) handleChaintracksV2ReorgStream(w http.ResponseWriter, r *http.R
 	}
 	defer release()
 
+	// Subscribe before any write, matching canonical (routes.go:412-417
+	// registers the client before any write at all): a reorg published in
+	// the gap between here and the header flush below would otherwise be
+	// lost.
+	ch := make(chan headers.ReorgNotice, 1)
+	unsub := s.headerStore.SubscribeReorg(ch)
+	defer unsub()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -208,10 +260,6 @@ func (s *Server) handleChaintracksV2ReorgStream(w http.ResponseWriter, r *http.R
 	if err := writeSSE(w, ""); err != nil {
 		return
 	}
-
-	ch := make(chan headers.ReorgNotice, 1)
-	unsub := s.headerStore.SubscribeReorg(ch)
-	defer unsub()
 
 	ping := time.NewTicker(sseHeartbeatInterval)
 	defer ping.Stop()
