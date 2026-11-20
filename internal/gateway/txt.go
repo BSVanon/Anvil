@@ -130,25 +130,27 @@ func NewResolver(cfg ResolverConfig) *Resolver {
 	}
 }
 
-// AllowSpeculative consults the global flood guard (decision 4's last
-// bullet). Policy calls this before looking up a Host that has no
-// explicit domain entry, so a flood of random Host headers can't run the
-// resolver ragged just because some "origin" entries exist to
-// speculatively match against.
-func (r *Resolver) AllowSpeculative() bool {
-	return r.flood.Allow("")
-}
-
 // Lookup resolves host's _ordfs TXT to an origin, through the cache
-// (decision 4): a fresh cache entry answers immediately; a miss or expiry
-// triggers one singleflighted DNS lookup per host, bounded by a 3s
+// (decision 4): a fresh cache entry answers immediately — regardless of
+// speculative, since a cache hit makes no new resolver call at all and so
+// can never be what the flood guard exists to limit (B2) — a miss or
+// expiry triggers one singleflighted DNS lookup per host, bounded by a 3s
 // timeout independent of ctx (singleflight shares this call across every
 // concurrent caller for host, so it must not depend on any one of their
 // contexts' cancellation). A genuine resolver error — not a definitive
 // "no such record" answer — falls back to the last known-good origin for
 // up to StaleGrace; past that, or with no prior good answer, it's treated
 // as no mapping, same as a definitive negative DNS answer.
-func (r *Resolver) Lookup(ctx context.Context, host string) (origin string, ok bool) {
+//
+// speculative marks a lookup for a Host with no explicit "domain" entry
+// (it can only possibly match through an "origin" entry) — Policy passes
+// !hasDomain. Only a speculative lookup that MISSES the cache consults
+// the global flood guard (decision 4's last bullet), so a flood of random
+// Host headers can't run the resolver ragged just because some "origin"
+// entries exist to speculatively match against, while a cached, legitimate
+// answer is never throttled no matter how busy the guard's global bucket
+// is (B2 — the guard used to run in Policy.Allowed, ahead of this cache).
+func (r *Resolver) Lookup(ctx context.Context, host string, speculative bool) (origin string, ok bool) {
 	if ctx.Err() != nil {
 		return "", false
 	}
@@ -156,6 +158,10 @@ func (r *Resolver) Lookup(ctx context.Context, host string) (origin string, ok b
 	now := r.now()
 	if e := r.cacheGet(host, now); e != nil {
 		return e.origin, e.ok
+	}
+
+	if speculative && !r.flood.Allow("") {
+		return "", false
 	}
 
 	r.stats.TXTLookups.Add(1)

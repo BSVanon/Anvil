@@ -25,22 +25,27 @@ func NewPolicy(sites *Allowlist, txt *Resolver) *Policy {
 
 // Allowed reports whether host may be served, and the origin to serve,
 // per decision 3. A Host with no domain entry only triggers a TXT lookup
-// when the sites file lists any "origin" entries at all — and even then,
-// subject to the resolver's global flood guard (decision 4) — since
-// otherwise an arbitrary Host header can never possibly match anything in
-// the sites file and a lookup would be pure resolver load with no chance
-// of a hit.
+// when the sites file lists any "origin" entries at all — otherwise an
+// arbitrary Host header can never possibly match anything in the sites
+// file and a lookup would be pure resolver load with no chance of a hit.
+//
+// The resolver's flood guard (decision 4) is NOT consulted here: it must
+// only ever gate a genuine resolver cache miss, never a cached answer, so
+// Resolver.Lookup itself checks it, after its own cache lookup and before
+// the singleflighted network call (B2) — never ahead of the cache, the
+// way this function used to. host's no-domain-entry status ("speculative"
+// — can only possibly match through an "origin" entry, not an explicit
+// "domain" one) still decides WHICH lookups the guard applies to; Lookup
+// just decides WHEN, relative to its cache.
 func (p *Policy) Allowed(ctx context.Context, host string) (origin string, ok bool) {
+	host = normalizeHost(host)
 	snap := p.sites.Snapshot()
 	hasDomain := snap.HasDomain(host)
 	if !hasDomain && !snap.HasAnyOrigin() {
 		return "", false
 	}
-	if !hasDomain && !p.txt.AllowSpeculative() {
-		return "", false
-	}
 
-	origin, ok = p.txt.Lookup(ctx, host)
+	origin, ok = p.txt.Lookup(ctx, host, !hasDomain)
 	if !ok {
 		return "", false
 	}

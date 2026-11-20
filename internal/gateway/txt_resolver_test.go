@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -61,7 +62,7 @@ func TestResolver_PositiveTTL(t *testing.T) {
 	clock := time.Now()
 	r := newTestResolver(fake, &clock)
 
-	got, ok := r.Lookup(context.Background(), "example.org")
+	got, ok := r.Lookup(context.Background(), "example.org", false)
 	if !ok || got != origin {
 		t.Fatalf("first lookup = (%q, %v), want (%q, true)", got, ok, origin)
 	}
@@ -71,7 +72,7 @@ func TestResolver_PositiveTTL(t *testing.T) {
 
 	// Within TTL: cached, no new lookup.
 	clock = clock.Add(4 * time.Minute)
-	got, ok = r.Lookup(context.Background(), "example.org")
+	got, ok = r.Lookup(context.Background(), "example.org", false)
 	if !ok || got != origin {
 		t.Fatalf("cached lookup = (%q, %v), want (%q, true)", got, ok, origin)
 	}
@@ -81,7 +82,7 @@ func TestResolver_PositiveTTL(t *testing.T) {
 
 	// Past TTL: a fresh lookup happens.
 	clock = clock.Add(2 * time.Minute) // total 6m > 5m TTL
-	_, _ = r.Lookup(context.Background(), "example.org")
+	_, _ = r.Lookup(context.Background(), "example.org", false)
 	if fake.callCount() != 2 {
 		t.Fatalf("expected a fresh lookup after TTL expiry, got %d calls", fake.callCount())
 	}
@@ -92,7 +93,7 @@ func TestResolver_NegativeEntries(t *testing.T) {
 	clock := time.Now()
 	r := newTestResolver(fake, &clock)
 
-	_, ok := r.Lookup(context.Background(), "nope.example.org")
+	_, ok := r.Lookup(context.Background(), "nope.example.org", false)
 	if ok {
 		t.Fatal("expected no mapping for a definitive NXDOMAIN-style answer")
 	}
@@ -102,7 +103,7 @@ func TestResolver_NegativeEntries(t *testing.T) {
 
 	// Within the negative TTL (1m default): still cached, no new lookup.
 	clock = clock.Add(30 * time.Second)
-	_, ok = r.Lookup(context.Background(), "nope.example.org")
+	_, ok = r.Lookup(context.Background(), "nope.example.org", false)
 	if ok {
 		t.Fatal("expected cached negative answer")
 	}
@@ -112,7 +113,7 @@ func TestResolver_NegativeEntries(t *testing.T) {
 
 	// Past the negative TTL: a fresh lookup happens.
 	clock = clock.Add(time.Minute) // total 90s > 60s TTL
-	_, _ = r.Lookup(context.Background(), "nope.example.org")
+	_, _ = r.Lookup(context.Background(), "nope.example.org", false)
 	if fake.callCount() != 2 {
 		t.Fatalf("expected a fresh lookup after negative TTL expiry, got %d calls", fake.callCount())
 	}
@@ -126,7 +127,7 @@ func TestResolver_StaleGraceOnResolverFailure(t *testing.T) {
 	r.staleGrace = time.Hour
 
 	// Establish a good answer.
-	got, ok := r.Lookup(context.Background(), "flaky.example.org")
+	got, ok := r.Lookup(context.Background(), "flaky.example.org", false)
 	if !ok || got != origin {
 		t.Fatalf("expected an initial good answer, got (%q, %v)", got, ok)
 	}
@@ -136,7 +137,7 @@ func TestResolver_StaleGraceOnResolverFailure(t *testing.T) {
 	// good answer must still be served.
 	clock = clock.Add(6 * time.Minute) // past the 5m positive TTL
 	fake.err = &net.DNSError{IsTimeout: true}
-	got, ok = r.Lookup(context.Background(), "flaky.example.org")
+	got, ok = r.Lookup(context.Background(), "flaky.example.org", false)
 	if !ok || got != origin {
 		t.Fatalf("expected stale-grace fallback to the last good answer, got (%q, %v)", got, ok)
 	}
@@ -146,7 +147,7 @@ func TestResolver_StaleGraceOnResolverFailure(t *testing.T) {
 
 	// Past StaleGrace (measured from the original good answer): no mapping.
 	clock = clock.Add(2 * time.Hour)
-	_, ok = r.Lookup(context.Background(), "flaky.example.org")
+	_, ok = r.Lookup(context.Background(), "flaky.example.org", false)
 	if ok {
 		t.Fatal("expected stale grace to be exhausted")
 	}
@@ -161,14 +162,14 @@ func TestResolver_DefinitiveNegativeNotMaskedByStaleGrace(t *testing.T) {
 	clock := time.Now()
 	r := newTestResolver(fake, &clock)
 
-	if _, ok := r.Lookup(context.Background(), "changed.example.org"); !ok {
+	if _, ok := r.Lookup(context.Background(), "changed.example.org", false); !ok {
 		t.Fatal("expected an initial good answer")
 	}
 
 	clock = clock.Add(6 * time.Minute)
 	fake.records = nil
 	fake.err = &net.DNSError{IsNotFound: true}
-	_, ok := r.Lookup(context.Background(), "changed.example.org")
+	_, ok := r.Lookup(context.Background(), "changed.example.org", false)
 	if ok {
 		t.Fatal("a definitive negative answer must not fall back to the stale good answer")
 	}
@@ -187,7 +188,7 @@ func TestResolver_Singleflight(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, ok := r.Lookup(context.Background(), "popular.example.org"); ok {
+			if _, ok := r.Lookup(context.Background(), "popular.example.org", false); ok {
 				successes.Add(1)
 			}
 		}()
@@ -207,29 +208,33 @@ func TestResolver_Singleflight(t *testing.T) {
 	}
 }
 
-func TestResolver_FloodGuard(t *testing.T) {
-	r := NewResolver(ResolverConfig{})
+// TestResolver_FloodGuardThrottlesDistinctUncachedHosts replaces the old
+// TestResolver_FloodGuard now that AllowSpeculative is gone (B2): the
+// flood guard is consulted inside Lookup itself, only on a genuine cache
+// miss for a speculative (no-domain-entry) host. A flood of distinct,
+// never-before-seen hosts is still capped at the guard's burst — counted
+// here by real DNS calls made, per item 2's "count DNS calls, don't time
+// them" — and, separately, the guard still refills after elapsed time.
+func TestResolver_FloodGuardThrottlesDistinctUncachedHosts(t *testing.T) {
+	fake := &fakeTXTLookup{err: &net.DNSError{IsNotFound: true}}
 	clock := time.Now()
+	r := newTestResolver(fake, &clock)
 	r.flood.now = func() time.Time { return clock }
 
-	allowed := 0
-	for i := 0; i < floodGuardBurst+5; i++ {
-		if r.AllowSpeculative() {
-			allowed++
-		}
+	const extra = 10
+	for i := 0; i < floodGuardBurst+extra; i++ {
+		r.Lookup(context.Background(), fmt.Sprintf("distinct-%d.example.org", i), true)
 	}
-	if allowed != floodGuardBurst {
-		t.Fatalf("expected exactly burst (%d) requests allowed, got %d", floodGuardBurst, allowed)
-	}
-
-	// After the burst is exhausted, a further call this instant is refused.
-	if r.AllowSpeculative() {
-		t.Fatal("expected the flood guard to refuse once its burst is exhausted")
+	if fake.callCount() != floodGuardBurst {
+		t.Fatalf("expected real DNS calls capped at the burst (%d) across %d distinct hosts, got %d",
+			floodGuardBurst, floodGuardBurst+extra, fake.callCount())
 	}
 
-	// After enough elapsed time to refill at least one token, it allows again.
+	// After enough elapsed time to refill at least one token, a further
+	// distinct host reaches a real lookup again.
 	clock = clock.Add(time.Second)
-	if !r.AllowSpeculative() {
-		t.Fatal("expected the flood guard to refill after 1s at 5/s")
+	r.Lookup(context.Background(), "refilled-after-wait.example.org", true)
+	if fake.callCount() != floodGuardBurst+1 {
+		t.Fatalf("expected the flood guard to refill after 1s at %d/s, got %d calls", floodGuardRate, fake.callCount())
 	}
 }
