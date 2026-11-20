@@ -443,9 +443,7 @@ func TestMessagingDefaultsAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Messaging.TTLSeconds != 60 || cfg.Messaging.MaxPairMessages != 2 || cfg.Messaging.MaxPairBytes != 3 ||
-		cfg.Messaging.MaxStoreMessages != 4 || cfg.Messaging.MaxStoreBytes != 5 ||
-		cfg.Messaging.MaxInboxMessages != 6 || cfg.Messaging.MaxInboxBytes != 7 {
+	if cfg.Messaging.TTLSeconds != 60 || cfg.Messaging.MaxPairMessages != 2 || cfg.Messaging.MaxPairBytes != 3 || cfg.Messaging.MaxStoreMessages != 4 || cfg.Messaging.MaxStoreBytes != 5 || cfg.Messaging.MaxInboxMessages != 6 || cfg.Messaging.MaxInboxBytes != 7 {
 		t.Fatalf("messaging override = %+v", cfg.Messaging)
 	}
 }

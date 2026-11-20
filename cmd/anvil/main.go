@@ -450,7 +450,6 @@ func main() {
 		}
 	}
 
-	homeResolver, forwardCopyTTL, operatorReadsAll := wireMessagingPrivacy(cfg, v3Eng, overlayDir)
 	var bondCheck *bond.Checker
 	var nodeWallet *anvilwallet.NodeWallet
 	if cfg.Identity.WIF != "" {
@@ -566,8 +565,6 @@ func main() {
 				}
 			}(),
 		})
-		gossipMgr.SetMsgStore(msgStore)
-		wireGossipMessagingPolicy(gossipMgr, cfg, homeResolver, forwardCopyTTL)
 		defer gossipMgr.Stop()
 
 		// Connect to seed peers (auto-reconnect on disconnect, 30s retry)
@@ -611,6 +608,7 @@ func main() {
 		}
 	}
 
+	messagingPolicy := wireGossipMessagingPolicy(gossipMgr, cfg, v3Eng, overlayDir, msgStore) // decisions 2/3/5 (B6 spec), unconditional: see its doc comment
 	// SHIP re-announce at half the TTL so entries survive on remote directories
 	if gossipMgr != nil {
 		go func() {
@@ -838,14 +836,12 @@ func main() {
 			}
 			return nil
 		}(),
-		ProofFetcher:          spv.NewProofFetcher(arcClient, logger),
-		P2PTxSource:           p2pTxFetcher,
-		P2PBlockSource:        p2pBlockFetcher,
-		MsgStore:              msgStore,
-		HomeResolver:          homeResolver,
-		ForwardCopyTTLSeconds: forwardCopyTTL,
-		OperatorReadsAllBoxes: operatorReadsAll,
-		SigningKey:            identityPrivKey,
+		ProofFetcher:    spv.NewProofFetcher(arcClient, logger),
+		P2PTxSource:     p2pTxFetcher,
+		P2PBlockSource:  p2pBlockFetcher,
+		MsgStore:        msgStore,
+		MessagingPolicy: messagingPolicy, // decisions 2/3/5 (B6 messaging-privacy spec); see its doc comment
+		SigningKey:      identityPrivKey,
 		Wallet: func() sdkwallet.Interface {
 			if nodeWallet != nil {
 				return nodeWallet.Wallet()

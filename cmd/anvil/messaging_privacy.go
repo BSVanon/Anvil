@@ -9,6 +9,7 @@ package main
 // instead of growing with this logic inline.
 
 import (
+	anvilapi "github.com/BSVanon/Anvil/internal/api"
 	"github.com/BSVanon/Anvil/internal/config"
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
 	anvilmsg "github.com/BSVanon/Anvil/internal/messaging"
@@ -18,47 +19,58 @@ import (
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 )
 
-// wireMessagingPrivacy builds the HomeResolver and hands back the two
-// already-normalised config pointers (config.Load's normalizeMessagingPrivacy
-// guarantees both are non-nil) that internal/api's ServerConfig needs
-// verbatim. All three are computed unconditionally — independent of
-// whether mesh/gossip is enabled — because the Home rule and the
-// operator-box switch govern the REST API's /sendMessage,
-// /listMessages, /acknowledgeMessage and /messages/subscribe paths on a
-// node with no mesh peers at all, same as one with a full mesh. Call
-// wireGossipMessagingPolicy separately, once gossipMgr exists, to apply
-// the gossip-side half (decisions 3/4's forward scoping) using the same
-// HomeResolver and TTL returned here, so both layers agree on who is
-// Home.
+// wireMessagingPrivacy builds the api.MessagingPolicy (F7: one struct,
+// not three separate values) that internal/api's ServerConfig needs
+// verbatim: the HomeResolver plus the two already-normalised config
+// pointers (config.Load's normalizeMessagingPrivacy guarantees both are
+// non-nil). Computed unconditionally — independent of whether
+// mesh/gossip is enabled — because the Home rule and the operator-box
+// switch govern the REST API's /sendMessage, /listMessages,
+// /acknowledgeMessage and /messages/subscribe paths on a node with no
+// mesh peers at all, same as one with a full mesh. wireGossipMessagingPolicy
+// calls this itself once gossipMgr/msgStore exist, so both layers agree
+// on who is Home from the same computation.
 //
 // overlayDir is the same *anviloverlay.Directory main.go opens for the
 // v3 engine's LookupDB (nil exactly when overlay is disabled, matching
 // v3Eng == nil): messageBoxAdvertSource reads ls_messagebox's own
 // LevelDB index directly through it. See that function's doc comment
 // for why it does not go through v3Eng instead.
-func wireMessagingPrivacy(cfg *config.Config, v3Eng *engine.Engine, overlayDir *anviloverlay.Directory) (home anvilmsg.HomeResolver, forwardCopyTTLSeconds *int64, operatorReadsAllBoxes *bool) {
+func wireMessagingPrivacy(cfg *config.Config, v3Eng *engine.Engine, overlayDir *anviloverlay.Directory) anvilapi.MessagingPolicy {
 	ownHosts := make([]string, 0, 1+len(cfg.Messaging.HomeHosts))
 	if cfg.Node.PublicURL != "" {
 		ownHosts = append(ownHosts, cfg.Node.PublicURL)
 	}
 	ownHosts = append(ownHosts, cfg.Messaging.HomeHosts...)
-	home = anvilmsg.NewHomeResolver(ownHosts, messageBoxAdvertSource(v3Eng, overlayDir))
-	return home, cfg.Messaging.ForwardCopyTTLSeconds, cfg.Messaging.OperatorReadsAllBoxes
+	home := anvilmsg.NewHomeResolver(ownHosts, messageBoxAdvertSource(v3Eng, overlayDir))
+	return anvilapi.MessagingPolicy{
+		Home:                  home,
+		ForwardCopyTTLSeconds: cfg.Messaging.ForwardCopyTTLSeconds,
+		OperatorReadsAllBoxes: cfg.Messaging.OperatorReadsAllBoxes,
+	}
 }
 
-// wireGossipMessagingPolicy applies decisions 3/4 to gossipMgr: the
-// HomeResolver and forward_copy_ttl wireMessagingPrivacy already built
-// for the API layer, plus the gossip-only forward_peers scoping. A nil
-// gossipMgr (mesh disabled) is a no-op.
-func wireGossipMessagingPolicy(gossipMgr *anvilgossip.Manager, cfg *config.Config, home anvilmsg.HomeResolver, forwardCopyTTLSeconds *int64) {
+// wireGossipMessagingPolicy builds the messaging policy (wireMessagingPrivacy)
+// and applies it everywhere it's needed (F7): gossipMgr's message store
+// and decisions 3/4's Home/TTL/forward_peers policy when gossipMgr is
+// non-nil (mesh enabled), always returning the policy so the caller can
+// also hand it to internal/api's ServerConfig — one call standing in
+// for what used to be a standalone wireMessagingPrivacy call plus a
+// separate SetMsgStore/SetMessagingPolicy pair. A nil gossipMgr (mesh
+// disabled) skips the gossip-side wiring but still returns a real
+// policy, since the API layer needs it regardless.
+func wireGossipMessagingPolicy(gossipMgr *anvilgossip.Manager, cfg *config.Config, v3Eng *engine.Engine, overlayDir *anviloverlay.Directory, msgStore *anvilmsg.Store) anvilapi.MessagingPolicy {
+	policy := wireMessagingPrivacy(cfg, v3Eng, overlayDir)
 	if gossipMgr == nil {
-		return
+		return policy
 	}
+	gossipMgr.SetMsgStore(msgStore)
 	gossipMgr.SetMessagingPolicy(anvilgossip.MessagingPolicy{
-		Home:                  home,
-		ForwardCopyTTLSeconds: forwardCopyTTLSeconds,
+		Home:                  policy.Home,
+		ForwardCopyTTLSeconds: policy.ForwardCopyTTLSeconds,
 		ForwardPeers:          anvilgossip.NewForwardPeerFilter(cfg.Messaging.ForwardPeers),
 	})
+	return policy
 }
 
 // messageBoxAdvertSource adapts ls_messagebox's own LevelDB index

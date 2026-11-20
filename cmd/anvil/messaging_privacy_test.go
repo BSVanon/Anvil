@@ -208,7 +208,7 @@ func TestReviewR1ProductionEngineHomeRule(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Node.PublicURL = "https://my-anvil.example.org"
-	home, _, _ := wireMessagingPrivacy(cfg, eng, dir)
+	home := wireMessagingPrivacy(cfg, eng, dir).Home
 
 	// Home: a canonical advert naming this node's own public_url, admitted
 	// through the real pipeline (signature verified by Admit).
@@ -269,7 +269,7 @@ func TestWireMessagingPrivacyHomeViaRealRegisteredLookupService(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Node.PublicURL = "https://my-anvil.example.org"
 
-	home, _, _ := wireMessagingPrivacy(cfg, eng, dir)
+	home := wireMessagingPrivacy(cfg, eng, dir).Home
 	res, err := home.Resolve(identityHex)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -296,7 +296,7 @@ func TestWireMessagingPrivacyElsewhereWhenAdvertDoesNotMatchOwnHosts(t *testing.
 	cfg.Node.PublicURL = "https://my-anvil.example.org"
 	cfg.Messaging.HomeHosts = []string{"https://my-second-host.example.org"}
 
-	home, _, _ := wireMessagingPrivacy(cfg, eng, dir)
+	home := wireMessagingPrivacy(cfg, eng, dir).Home
 	res, err := home.Resolve(identityHex)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -315,7 +315,7 @@ func TestWireMessagingPrivacyNilEngineIsUnadvertised(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Node.PublicURL = "https://my-anvil.example.org"
 
-	home, _, _ := wireMessagingPrivacy(cfg, nil, nil)
+	home := wireMessagingPrivacy(cfg, nil, nil).Home
 	res, err := home.Resolve("anyone")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -340,7 +340,7 @@ func TestWireMessagingPrivacyEngineWithoutMessageBoxServiceIsUnadvertised(t *tes
 	cfg := &config.Config{}
 	cfg.Node.PublicURL = "https://my-anvil.example.org"
 
-	home, _, _ := wireMessagingPrivacy(cfg, eng, dir)
+	home := wireMessagingPrivacy(cfg, eng, dir).Home
 	res, err := home.Resolve("anyone")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -362,7 +362,8 @@ func TestWireMessagingPrivacyPassesThroughConfigPointers(t *testing.T) {
 	cfg.Messaging.ForwardCopyTTLSeconds = &ttl
 	cfg.Messaging.OperatorReadsAllBoxes = &allow
 
-	_, gotTTL, gotAllow := wireMessagingPrivacy(cfg, nil, nil)
+	policy := wireMessagingPrivacy(cfg, nil, nil)
+	gotTTL, gotAllow := policy.ForwardCopyTTLSeconds, policy.OperatorReadsAllBoxes
 	if gotTTL != cfg.Messaging.ForwardCopyTTLSeconds {
 		t.Fatalf("ForwardCopyTTLSeconds pointer not passed through verbatim")
 	}
@@ -376,7 +377,7 @@ func TestWireMessagingPrivacyPassesThroughConfigPointers(t *testing.T) {
 // are configured) must be a safe no-op.
 func TestWireGossipMessagingPolicyNilManagerNoPanic(t *testing.T) {
 	cfg := &config.Config{}
-	wireGossipMessagingPolicy(nil, cfg, anvilmsg.AlwaysUnadvertised, nil)
+	wireGossipMessagingPolicy(nil, cfg, nil, nil, nil)
 }
 
 // TestWireGossipMessagingPolicyAppliesToRealManager constructs a
@@ -401,10 +402,16 @@ func TestWireGossipMessagingPolicyAppliesToRealManager(t *testing.T) {
 
 	ttl := int64(3600)
 	cfg := &config.Config{}
-	wireGossipMessagingPolicy(mgr, cfg, anvilmsg.AlwaysUnadvertised, &ttl)
+	cfg.Messaging.ForwardCopyTTLSeconds = &ttl
+	msgStore, err := anvilmsg.NewStore(t.TempDir(), anvilmsg.Options{})
+	if err != nil {
+		t.Fatalf("messaging.NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = msgStore.Close() })
+	wireGossipMessagingPolicy(mgr, cfg, nil, nil, msgStore)
 
 	cfg.Messaging.ForwardPeers = []string{"0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"}
-	wireGossipMessagingPolicy(mgr, cfg, anvilmsg.AlwaysUnadvertised, &ttl)
+	wireGossipMessagingPolicy(mgr, cfg, nil, nil, msgStore)
 }
 
 // TestDefaultsAcceptanceConfigLoadCatchesB2 is F4: the review's required
@@ -479,8 +486,6 @@ func TestDefaultsAcceptanceConfigLoadCatchesB2(t *testing.T) {
 		t.Fatalf("expected config.Load to default forward_copy_ttl to 86400, got %v", cfg.Messaging.ForwardCopyTTLSeconds)
 	}
 
-	home, forwardCopyTTL, _ := wireMessagingPrivacy(cfg, eng, dir)
-
 	hubKey, err := ec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("new priv: %v", err)
@@ -498,8 +503,8 @@ func TestDefaultsAcceptanceConfigLoadCatchesB2(t *testing.T) {
 		IdentityKey:    hubKey,
 	})
 	t.Cleanup(func() { hub.Stop() })
-	hub.SetMsgStore(hubMsgStore)
-	wireGossipMessagingPolicy(hub, cfg, home, forwardCopyTTL)
+	policy := wireGossipMessagingPolicy(hub, cfg, eng, dir, hubMsgStore)
+	home := policy.Home
 	ts := httptest.NewServer(hub.MeshHandler())
 	t.Cleanup(ts.Close)
 	wsURL := "ws" + ts.URL[len("http"):]

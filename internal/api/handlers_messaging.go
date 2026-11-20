@@ -91,6 +91,19 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// MessagingPolicy bundles decisions 2/3/5's (B6 messaging-privacy spec)
+// API-layer configuration — the Home resolver, the per-copy forward
+// TTL, and the operator-box-read switch — as one value, so Server and
+// ServerConfig each carry a single field instead of three (F7). A zero
+// MessagingPolicy (every field nil) reproduces forwardCopyPolicy's and
+// homeResolverOrDefault's documented "never wired up at all" legacy
+// fallback, exactly as three separate nil fields did before.
+type MessagingPolicy struct {
+	Home                  messaging.HomeResolver
+	ForwardCopyTTLSeconds *int64
+	OperatorReadsAllBoxes *bool
+}
+
 // sendHomeAware applies decision 3's "API send" table rows for msg's
 // recipient (B6 messaging-privacy spec):
 //
@@ -138,8 +151,8 @@ func (s *Server) sendHomeAware(msg *messaging.Message) (id string, forward bool,
 // answers Unadvertised — "when this node doesn't host the topic"
 // (decision 2), and today's behaviour.
 func (s *Server) homeResolverOrDefault() messaging.HomeResolver {
-	if s.homeResolver != nil {
-		return s.homeResolver
+	if s.messagingPolicy.Home != nil {
+		return s.messagingPolicy.Home
 	}
 	return messaging.AlwaysUnadvertised
 }
@@ -150,10 +163,10 @@ func (s *Server) homeResolverOrDefault() messaging.HomeResolver {
 // exact pre-brick behaviour rather than treating a bare zero as an
 // explicit forward_copy_ttl=0.
 func (s *Server) forwardCopyPolicy() (ttlSeconds int64, store bool, legacy bool) {
-	if s.forwardCopyTTLSeconds == nil {
+	if s.messagingPolicy.ForwardCopyTTLSeconds == nil {
 		return 0, false, true
 	}
-	ttl := *s.forwardCopyTTLSeconds
+	ttl := *s.messagingPolicy.ForwardCopyTTLSeconds
 	return ttl, ttl > 0, false
 }
 

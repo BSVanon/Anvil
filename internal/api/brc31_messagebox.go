@@ -212,10 +212,10 @@ func (s *Server) operatorBoxAllowed(bodyRecipient string) bool {
 // (never wired, or the config key absent) means the default: true,
 // today's behaviour.
 func (s *Server) operatorReadsAll() bool {
-	if s.operatorReadsAllBoxes == nil {
+	if s.messagingPolicy.OperatorReadsAllBoxes == nil {
 		return true
 	}
-	return *s.operatorReadsAllBoxes
+	return *s.messagingPolicy.OperatorReadsAllBoxes
 }
 
 // handleMessageSession mints a short-lived SSE session token bound to the

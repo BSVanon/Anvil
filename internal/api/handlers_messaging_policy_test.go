@@ -42,8 +42,8 @@ func TestSendHomeAware(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			srv, _ := messageHandlerServer(t, messaging.Options{})
-			srv.forwardCopyTTLSeconds = apiTTLPtr(86400)
-			srv.homeResolver = stubHomeResolverAPI{state: c.state}
+			srv.messagingPolicy.ForwardCopyTTLSeconds = apiTTLPtr(86400)
+			srv.messagingPolicy.Home = stubHomeResolverAPI{state: c.state}
 			_, sender, _ := newKeyWallet(t)
 			_, recipient, _ := newKeyWallet(t)
 			msg := &messaging.Message{Sender: sender, Recipient: recipient, MessageBox: "box", Body: "hi"}
@@ -75,8 +75,8 @@ func TestSendHomeAware(t *testing.T) {
 // so sentTo stays 0 too.
 func TestHandleSendMessageUndeliveredReturns503(t *testing.T) {
 	srv, _ := messageHandlerServer(t, messaging.Options{})
-	srv.forwardCopyTTLSeconds = apiTTLPtr(0)
-	srv.homeResolver = stubHomeResolverAPI{state: messaging.Elsewhere}
+	srv.messagingPolicy.ForwardCopyTTLSeconds = apiTTLPtr(0)
+	srv.messagingPolicy.Home = stubHomeResolverAPI{state: messaging.Elsewhere}
 	// srv.gossipMgr is left nil: forward is skipped entirely, so a
 	// nonzero ForwardMessage count can never mask the missing store.
 	_, recipient, _ := newKeyWallet(t)
@@ -99,8 +99,8 @@ func TestHandleSendMessageUndeliveredReturns503(t *testing.T) {
 // row with forward_copy_ttl=0: forwarded, never stored.
 func TestSendHomeAwareElsewhereForwardCopyTTLZero(t *testing.T) {
 	srv, _ := messageHandlerServer(t, messaging.Options{})
-	srv.forwardCopyTTLSeconds = apiTTLPtr(0)
-	srv.homeResolver = stubHomeResolverAPI{state: messaging.Elsewhere}
+	srv.messagingPolicy.ForwardCopyTTLSeconds = apiTTLPtr(0)
+	srv.messagingPolicy.Home = stubHomeResolverAPI{state: messaging.Elsewhere}
 	_, sender, _ := newKeyWallet(t)
 	_, recipient, _ := newKeyWallet(t)
 	msg := &messaging.Message{Sender: sender, Recipient: recipient, MessageBox: "box", Body: "hi"}
@@ -139,8 +139,8 @@ func TestSendHomeAwareElsewhereStoresAtForwardCopyTTLNotTTLSeconds(t *testing.T)
 	const ttlSeconds = int64(604800)
 	const forwardCopyTTL = int64(86400)
 	srv, _ := messageHandlerServer(t, messaging.Options{TTLSeconds: ttlSeconds})
-	srv.forwardCopyTTLSeconds = apiTTLPtr(forwardCopyTTL)
-	srv.homeResolver = stubHomeResolverAPI{state: messaging.Elsewhere}
+	srv.messagingPolicy.ForwardCopyTTLSeconds = apiTTLPtr(forwardCopyTTL)
+	srv.messagingPolicy.Home = stubHomeResolverAPI{state: messaging.Elsewhere}
 	_, sender, _ := newKeyWallet(t)
 	_, recipient, _ := newKeyWallet(t)
 	msg := &messaging.Message{Sender: sender, Recipient: recipient, MessageBox: "box", Body: "hi"}
@@ -258,12 +258,12 @@ func TestHandleSendMessageHomeRealEndToEnd(t *testing.T) {
 	// real forward to verify.
 	srv.identityPub = hex.EncodeToString(hubKey.PubKey().Compressed())
 	srv.gossipMgr = gossipHub
-	srv.forwardCopyTTLSeconds = apiTTLPtr(86400)
+	srv.messagingPolicy.ForwardCopyTTLSeconds = apiTTLPtr(86400)
 
 	_, homeRecipient, _ := newKeyWallet(t)
 	_, elsewhereRecipient, _ := newKeyWallet(t)
 	_, unadvertisedRecipient, _ := newKeyWallet(t)
-	srv.homeResolver = fixedStatesHomeResolver{
+	srv.messagingPolicy.Home = fixedStatesHomeResolver{
 		homeRecipient:      homeRecipient,
 		unadvertisedState:  messaging.Unadvertised,
 		elsewhereRecipient: elsewhereRecipient,
@@ -302,7 +302,7 @@ func TestHandleSendMessageHomeRealEndToEnd(t *testing.T) {
 	// Unadvertised — Unadvertised always stores regardless of TTL, so
 	// this send would still show up in srv.msgStore under the
 	// pre-N8-fix resolver bug. Forwarded either way.
-	srv.forwardCopyTTLSeconds = apiTTLPtr(0)
+	srv.messagingPolicy.ForwardCopyTTLSeconds = apiTTLPtr(0)
 	if response, body := callMessageHandler(t, srv.handleSendMessage, map[string]string{
 		"recipient": elsewhereRecipient, "messageBox": "box", "body": "elsewhere copy, ttl=0",
 	}); response.Code != http.StatusOK {
@@ -370,7 +370,7 @@ func TestOperatorBoxAllowed(t *testing.T) {
 		t.Fatal("default (operator_reads_all_boxes unset) must allow naming another box")
 	}
 
-	srv.operatorReadsAllBoxes = apiBoolPtr(false)
+	srv.messagingPolicy.OperatorReadsAllBoxes = apiBoolPtr(false)
 	if !srv.operatorBoxAllowed("") || !srv.operatorBoxAllowed(nodeHex) {
 		t.Fatal("the node's own box must remain allowed even when the switch is false")
 	}
@@ -378,7 +378,7 @@ func TestOperatorBoxAllowed(t *testing.T) {
 		t.Fatal("naming another box must be denied when operator_reads_all_boxes is false")
 	}
 
-	srv.operatorReadsAllBoxes = apiBoolPtr(true)
+	srv.messagingPolicy.OperatorReadsAllBoxes = apiBoolPtr(true)
 	if !srv.operatorBoxAllowed(other) {
 		t.Fatal("naming another box must be allowed when the switch is explicitly true")
 	}
@@ -393,7 +393,7 @@ func TestScopedRecipientOperatorSwitch(t *testing.T) {
 	operatorCaller := messageCaller{identityHex: nodeHex, scoped: false}
 
 	for _, switchVal := range []*bool{nil, apiBoolPtr(true)} {
-		srv.operatorReadsAllBoxes = switchVal
+		srv.messagingPolicy.OperatorReadsAllBoxes = switchVal
 		w := httptest.NewRecorder()
 		got, ok := srv.scopedRecipient(w, operatorCaller, other)
 		if !ok || got != other {
@@ -401,7 +401,7 @@ func TestScopedRecipientOperatorSwitch(t *testing.T) {
 		}
 	}
 
-	srv.operatorReadsAllBoxes = apiBoolPtr(false)
+	srv.messagingPolicy.OperatorReadsAllBoxes = apiBoolPtr(false)
 	w := httptest.NewRecorder()
 	got, ok := srv.scopedRecipient(w, operatorCaller, other)
 	if ok || got != "" || w.Code != http.StatusForbidden {
@@ -464,7 +464,7 @@ func TestHandleMessageSubscribeOperatorSwitch(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	srv.operatorReadsAllBoxes = apiBoolPtr(false)
+	srv.messagingPolicy.OperatorReadsAllBoxes = apiBoolPtr(false)
 	if code := get(other); code != http.StatusForbidden {
 		t.Fatalf("switch=false, other recipient: code = %d", code)
 	}

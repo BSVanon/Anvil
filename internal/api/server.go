@@ -95,17 +95,7 @@ type Server struct {
 	nodeWallet        sdk.Interface      // go-sdk wallet for canonical BRC-31 messagebox auth (nil if mesh/wallet disabled)
 	msgSessions       *sessionTokenStore // 2a: per-identity SSE session tokens minted from a BRC-31 handshake
 	messageboxBRC31   bool               // true when messagebox routes are served behind canonical BRC-31 mutual auth
-
-	// Decision 2/3/5 (B6 messaging-privacy spec). homeResolver answers the
-	// Home Rule for handleSendMessage; forwardCopyTTLSeconds nil means
-	// decisions 2/3 were never wired up at all — legacy behaviour (see
-	// forwardCopyPolicy in handlers_messaging.go), exactly mirroring
-	// gossip.MessagingPolicy's same pointer-nil-vs-zero convention and for
-	// the same reason (0 is a real, different-from-unset operator choice).
-	// operatorReadsAllBoxes nil means the config default (true).
-	homeResolver          messaging.HomeResolver
-	forwardCopyTTLSeconds *int64
-	operatorReadsAllBoxes *bool
+	messagingPolicy   MessagingPolicy    // decisions 2/3/5 (B6 messaging-privacy spec); see MessagingPolicy's doc comment
 }
 
 // HealthCheck is a named subsystem health probe. Returns a warning string
@@ -173,13 +163,7 @@ type ServerConfig struct {
 	// the /.well-known/anvil manifest. Lets an operator advertise AVOS oracle
 	// availability, custom data relays, etc., without Anvil code changes.
 	CustomCapabilities []map[string]interface{}
-
-	// HomeResolver, ForwardCopyTTLSeconds and OperatorReadsAllBoxes wire
-	// decisions 2/3/5 (B6 messaging-privacy spec) into the API layer. See
-	// the matching Server fields' doc comment.
-	HomeResolver          messaging.HomeResolver
-	ForwardCopyTTLSeconds *int64
-	OperatorReadsAllBoxes *bool
+	MessagingPolicy    MessagingPolicy // decisions 2/3/5 (B6 messaging-privacy spec); see its doc comment
 }
 
 // NewServer creates a new REST API server.
@@ -256,10 +240,7 @@ func NewServer(cfg ServerConfig) *Server {
 		signingKey:        cfg.SigningKey,
 		customCaps:        cfg.CustomCapabilities,
 		nodeWallet:        cfg.Wallet,
-
-		homeResolver:          cfg.HomeResolver,
-		forwardCopyTTLSeconds: cfg.ForwardCopyTTLSeconds,
-		operatorReadsAllBoxes: cfg.OperatorReadsAllBoxes,
+		messagingPolicy:   cfg.MessagingPolicy,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"
