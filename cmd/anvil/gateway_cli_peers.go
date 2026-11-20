@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/BSVanon/Anvil/internal/config"
+	"github.com/BSVanon/Anvil/internal/sitesfile"
 )
 
 // cmdGatewayPeer handles `anvil gateway peer add|remove|list`.
@@ -179,6 +180,10 @@ func readGatewayPeersBlock(configPath string) ([]gatewayPeer, error) {
 // empty arrays and an empty block) — a gateway config not produced by
 // `anvil deploy` is out of scope for v1.
 func applyGatewayPeers(configPath string, peers []gatewayPeer) error {
+	info, err := os.Stat(configPath)
+	if err != nil {
+		return fmt.Errorf("stat config: %w", err)
+	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
@@ -215,7 +220,11 @@ func applyGatewayPeers(configPath string, peers []gatewayPeer) error {
 	if !blockWritten {
 		out = append(out, "", strings.TrimRight(renderGatewayPeersBlock(peers), "\n"))
 	}
-	return os.WriteFile(configPath, []byte(strings.Join(out, "\n")), 0644)
+	// A restart follows this write immediately (gatewayPeerAdd/Remove), so
+	// a partial write here would break it: the same unique-temp-file,
+	// fsync, rename, directory-fsync pattern the sites file uses, and the
+	// existing file's own mode kept rather than a hardcoded one.
+	return sitesfile.AtomicWriteFile(configPath, []byte(strings.Join(out, "\n")), info.Mode().Perm())
 }
 
 // tomlSectionHeader reports whether trimmed is a "[section]" table header

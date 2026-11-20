@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/BSVanon/Anvil/internal/config"
+	"github.com/BSVanon/Anvil/internal/sitesfile"
 )
 
 // gatewayPeer is one entry of ANVIL_GATEWAY_PEERS / `anvil gateway peer add`:
@@ -128,16 +129,6 @@ func peerOverlayURLs(peers []gatewayPeer) []string {
 	return out
 }
 
-// tomlStringArray renders a Go string slice as a single-line TOML array
-// literal, e.g. ["a", "b"] or [] for an empty/nil slice.
-func tomlStringArray(items []string) string {
-	quoted := make([]string, len(items))
-	for i, s := range items {
-		quoted[i] = `"` + s + `"`
-	}
-	return "[" + strings.Join(quoted, ", ") + "]"
-}
-
 // gatewayPeersBeginMarker / gatewayPeersEndMarker bound the human-readable
 // peer registry `anvil gateway peer add|remove` edits in place (see
 // cmd/anvil/gateway_cli_peers.go). deploy writes the same block so the
@@ -247,10 +238,41 @@ allow_token_gating = true
 max_app_price_sats = 10000
 
 %s
-`, strings.ToUpper(node), name, dataDir, meshPort, apiPort,
+`, strings.ToUpper(node), tomlEscapeString(name), tomlEscapeString(dataDir), meshPort, apiPort,
 		tomlStringArray(peerMeshURLs(peers)), tomlStringArray(peerPubKeys(peers)),
 		tomlStringArray(peerOverlayURLs(peers)), tomlStringArray(peerOverlayURLs(peers)),
-		apiHost, sitesFile, renderGatewayPeersBlock(peers))
+		tomlEscapeString(apiHost), tomlEscapeString(sitesFile), renderGatewayPeersBlock(peers))
+}
+
+// validateGatewayDeployMode is resolveGatewayDeployArgs's pure check on
+// --mode alone, split out so it returns an error instead of calling
+// fatal — dropping this check is then a real, test-asserted regression
+// rather than something only a manual CLI run would catch.
+func validateGatewayDeployMode(mode string) error {
+	if mode != "standard" && mode != "gateway" {
+		return fmt.Errorf("--mode must be standard or gateway")
+	}
+	return nil
+}
+
+// validateGatewayDeployAPIHost is resolveGatewayDeployArgs's pure check
+// on --api-host: required in gateway mode (there is no [node] public_url
+// for internal/config.Load to default it from — gateway mode never sets
+// one), and shaped like a hostname — the same rule
+// internal/sitesfile.ValidateDomain applies to a site domain, so IP
+// literals and anything but ASCII LDH labels are refused here too. In
+// standard mode apiHost is unused, so nothing is checked.
+func validateGatewayDeployAPIHost(mode, apiHost string) error {
+	if mode != "gateway" {
+		return nil
+	}
+	if apiHost == "" {
+		return fmt.Errorf("--mode gateway requires --api-host (there is no [node] public_url for internal/config.Load to default it from — gateway mode never sets one)")
+	}
+	if _, ok := sitesfile.ValidateDomain(apiHost); !ok {
+		return fmt.Errorf("--api-host %q is not a valid hostname: no IP literals, ASCII LDH labels only", apiHost)
+	}
+	return nil
 }
 
 // resolveGatewayDeployArgs validates `anvil deploy`'s gateway-mode flags
@@ -259,15 +281,15 @@ max_app_price_sats = 10000
 // daemon tries to start. Kept here (not cmd/anvil/deploy.go) so deploy.go
 // only grows by the one line that calls this.
 func resolveGatewayDeployArgs(mode, apiHost, gatewayPeersRaw string) []gatewayPeer {
-	if mode != "standard" && mode != "gateway" {
-		fatal("--mode must be standard or gateway")
+	if err := validateGatewayDeployMode(mode); err != nil {
+		fatal(err.Error())
 	}
 	peers, err := parseGatewayPeers(gatewayPeersRaw)
 	if err != nil {
 		fatal("--gateway-peers: " + err.Error())
 	}
-	if mode == "gateway" && apiHost == "" {
-		fatal("--mode gateway requires --api-host (there is no [node] public_url for internal/config.Load to default it from — gateway mode never sets one)")
+	if err := validateGatewayDeployAPIHost(mode, apiHost); err != nil {
+		fatal(err.Error())
 	}
 	return peers
 }

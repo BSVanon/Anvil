@@ -277,3 +277,53 @@ func TestGatewayPeerAdd_ReplacesByPubKey(t *testing.T) {
 		t.Errorf("expected the single peer to be replaced in place, got %+v", final)
 	}
 }
+
+// TestApplyGatewayPeers_KeepsTheExistingFileMode is risk 4's required
+// coverage: applyGatewayPeers must not hardcode a mode on the file it
+// rewrites — whatever mode the config already had (here a
+// non-default 0640, standing in for an operator who tightened it) comes
+// back unchanged after the rewrite.
+func TestApplyGatewayPeers_KeepsTheExistingFileMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "node-a.toml")
+	original := fakeGatewayConfig([]gatewayPeer{goldenPeerA})
+	if err := os.WriteFile(path, []byte(original), 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := applyGatewayPeers(path, []gatewayPeer{goldenPeerA, goldenPeerB}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0640 {
+		t.Errorf("mode after applyGatewayPeers = %v, want the original 0640", info.Mode().Perm())
+	}
+}
+
+// TestApplyGatewayPeers_LeavesNoStagingFileBehind confirms the rewrite
+// goes through the atomic stage-fsync-rename path (no risk-4-style plain
+// os.WriteFile) and cleans up after itself.
+func TestApplyGatewayPeers_LeavesNoStagingFileBehind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "node-a.toml")
+	original := fakeGatewayConfig([]gatewayPeer{goldenPeerA})
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := applyGatewayPeers(path, []gatewayPeer{goldenPeerB}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	leftovers, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Errorf("staging files left behind: %v", leftovers)
+	}
+}

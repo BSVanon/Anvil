@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+
+	"github.com/BSVanon/Anvil/internal/config"
 )
 
 // writeGatewayTestConfig renders a valid gateway config (the same
@@ -37,6 +39,31 @@ func TestLoadGatewayConfigOrFatal_Success(t *testing.T) {
 	}
 	if cfg.Gateway.APIHost != "gateway-a.example.org" {
 		t.Errorf("Gateway.APIHost = %q, want gateway-a.example.org", cfg.Gateway.APIHost)
+	}
+}
+
+// TestCheckGatewayEnabled unit-tests loadGatewayConfigOrFatal's pure
+// enabled check directly, so dropping the check fails a real test
+// instead of needing a manual CLI run to notice.
+func TestCheckGatewayEnabled(t *testing.T) {
+	dir := t.TempDir()
+	path := writeGatewayTestConfig(t, dir, "gateway-a.example.org", "")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := checkGatewayEnabled(cfg, path); err != nil {
+		t.Errorf("gateway enabled: unexpected error: %v", err)
+	}
+
+	cfg.Gateway.Enabled = false
+	err = checkGatewayEnabled(cfg, path)
+	if err == nil {
+		t.Fatal("gateway disabled: want an error, got nil")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error does not name the config path %q: %v", path, err)
 	}
 }
 

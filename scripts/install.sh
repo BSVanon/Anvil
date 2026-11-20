@@ -361,23 +361,28 @@ echo ""
 echo -e "  ${DIM}Generating identity and configuring services...${NC}"
 echo ""
 
-DEPLOY_ARGS="--nodes a --skip-health"
+# An array, not a flat string: deploy is invoked below as
+# "${DEPLOY_ARGS[@]}", so each value here reaches deploy as exactly one
+# argument no matter what it contains — unlike a flat string expanded
+# unquoted, which word-splits on any space in GATEWAY_API_HOST,
+# GATEWAY_PEERS, SEED_PEER or NODE_NAME.
+DEPLOY_ARGS=(--nodes a --skip-health)
 if [ "$NODE_MODE" = "gateway" ]; then
   # Gateway mode never uses the default public mesh seed — it peers only
   # with the gateways named in GATEWAY_PEERS (added now, or later via
   # `anvil gateway peer add`).
-  DEPLOY_ARGS="$DEPLOY_ARGS --mode gateway --api-host $GATEWAY_API_HOST"
+  DEPLOY_ARGS+=(--mode gateway --api-host "$GATEWAY_API_HOST")
   if [ -n "$GATEWAY_PEERS" ]; then
-    DEPLOY_ARGS="$DEPLOY_ARGS --gateway-peers $GATEWAY_PEERS"
+    DEPLOY_ARGS+=(--gateway-peers "$GATEWAY_PEERS")
   fi
 elif [ -n "$SEED_PEER" ]; then
-  DEPLOY_ARGS="$DEPLOY_ARGS --seed $SEED_PEER"
+  DEPLOY_ARGS+=(--seed "$SEED_PEER")
 fi
 if [ -n "$NODE_NAME" ]; then
-  DEPLOY_ARGS="$DEPLOY_ARGS --name $NODE_NAME"
+  DEPLOY_ARGS+=(--name "$NODE_NAME")
 fi
 
-"$TMPBIN" deploy $DEPLOY_ARGS >/dev/null 2>&1
+"$TMPBIN" deploy "${DEPLOY_ARGS[@]}" >/dev/null 2>&1
 
 echo -e "    ${GREEN}✓${NC} Identity generated"
 echo -e "    ${GREEN}✓${NC} Config written to /etc/anvil/"

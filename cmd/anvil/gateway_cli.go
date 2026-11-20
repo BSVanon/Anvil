@@ -49,6 +49,18 @@ commands:
 every command accepts -config <path> (default: the same as "anvil info")`)
 }
 
+// checkGatewayEnabled is loadGatewayConfigOrFatal's pure check that
+// [gateway] is actually enabled, split out so it returns an error
+// instead of calling fatal — dropping this check is then a real,
+// test-asserted regression rather than something only a manual CLI run
+// would catch.
+func checkGatewayEnabled(cfg *config.Config, configPath string) error {
+	if !cfg.Gateway.Enabled {
+		return fmt.Errorf("[gateway] enabled is not true in %s — this node is not configured as a gateway", configPath)
+	}
+	return nil
+}
+
 // loadGatewayConfigOrFatal loads configPath and confirms [gateway] is
 // actually enabled — site/peer management on a node that isn't serving
 // gateway traffic at all is almost certainly a mistake, so this fails
@@ -60,8 +72,8 @@ func loadGatewayConfigOrFatal(configPath string) *config.Config {
 	if err != nil {
 		fatal("config: " + err.Error())
 	}
-	if !cfg.Gateway.Enabled {
-		fatal("[gateway] enabled is not true in " + configPath + " — this node is not configured as a gateway")
+	if err := checkGatewayEnabled(cfg, configPath); err != nil {
+		fatal(err.Error())
 	}
 	return cfg
 }

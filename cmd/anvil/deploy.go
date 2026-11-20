@@ -53,7 +53,9 @@ func cmdDeploy(args []string) {
 
 	fmt.Println("=== Anvil Deploy ===")
 	fmt.Printf("  nodes:       %v\n", nodeList)
-	fmt.Printf("  mode:        %s\n", *mode)
+	if *mode == "gateway" {
+		fmt.Printf("  mode:        %s\n", *mode)
+	}
 	fmt.Printf("  config-dir:  %s\n", *configDir)
 	fmt.Printf("  data-dir:    %s\n", *dataBase)
 	fmt.Printf("  install-dir: %s\n", *installDir)

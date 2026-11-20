@@ -6,17 +6,8 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/config"
+	"github.com/BSVanon/Anvil/internal/sitesfile"
 )
-
-// defaultPublicHeaderFallbackPeer mirrors internal/config's own
-// unexported default header-fallback peer — the one baked-in public
-// endpoint [bsv] header_fallback_peers can silently gain when
-// [overlay] named_peers is empty (internal/config's
-// ensureHeaderFallbackPeers). Hardcoded here, the same way
-// internal/config/config_test.go already pins this exact literal,
-// because this is the only place outside that package that needs to
-// recognise it.
-const defaultPublicHeaderFallbackPeer = "https://anvil.sendbsv.com"
 
 // doctorGatewayChecks runs the gateway checks (the mode, whether the
 // sites file parses, each listed domain's live TXT status, and the
@@ -42,7 +33,7 @@ func doctorGatewayChecks(cfg *config.Config, txtStatus func(ctx context.Context,
 		return issues
 	}
 
-	entries, err := readSiteEntries(cfg.Gateway.SitesFile)
+	entries, err := sitesfile.Read(cfg.Gateway.SitesFile)
 	switch {
 	case err != nil:
 		fail("sites file %s: %v", cfg.Gateway.SitesFile, err)
@@ -76,7 +67,7 @@ func doctorGatewayChecks(cfg *config.Config, txtStatus func(ctx context.Context,
 		warn("[mesh] allowed_peers is empty — any peer that completes the handshake may connect")
 	}
 	for _, p := range cfg.BSV.HeaderFallbackPeers {
-		if p == defaultPublicHeaderFallbackPeer {
+		if config.IsDefaultHeaderFallbackPeer(p) {
 			warn("a default public endpoint (%s) would be contacted for header fallback — set [overlay] named_peers, or header_fallback_disabled, to stop this", p)
 			break
 		}

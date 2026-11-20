@@ -193,23 +193,25 @@ func TestDoctorGatewayChecks_ClosedPostureWarnings(t *testing.T) {
 	})
 
 	t.Run("default public header fallback peer warns but is not an issue", func(t *testing.T) {
+		defaultPeer := config.DefaultHeaderFallbackPeers()[0]
 		cfg := base()
-		cfg.BSV.HeaderFallbackPeers = []string{defaultPublicHeaderFallbackPeer}
+		cfg.BSV.HeaderFallbackPeers = []string{defaultPeer}
 		var issues int
 		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noTXTStatus) })
 		if issues != 0 {
 			t.Errorf("issues = %d, want 0", issues)
 		}
-		if !bytes.Contains([]byte(out), []byte(defaultPublicHeaderFallbackPeer)) {
-			t.Errorf("expected a warning naming %s, got:\n%s", defaultPublicHeaderFallbackPeer, out)
+		if !bytes.Contains([]byte(out), []byte(defaultPeer)) {
+			t.Errorf("expected a warning naming %s, got:\n%s", defaultPeer, out)
 		}
 	})
 
 	t.Run("a non-default header fallback peer does not warn", func(t *testing.T) {
+		defaultPeer := config.DefaultHeaderFallbackPeers()[0]
 		cfg := base()
 		cfg.BSV.HeaderFallbackPeers = []string{"https://peer.example"}
 		out := captureStdout(t, func() { doctorGatewayChecks(cfg, noTXTStatus) })
-		if bytes.Contains([]byte(out), []byte(defaultPublicHeaderFallbackPeer)) {
+		if bytes.Contains([]byte(out), []byte(defaultPeer)) {
 			t.Errorf("did not expect the default-peer warning when it is not configured, got:\n%s", out)
 		}
 	})
