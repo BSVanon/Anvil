@@ -565,7 +565,6 @@ func main() {
 				}
 			}(),
 		})
-		gossipMgr.SetMsgStore(msgStore)
 		defer gossipMgr.Stop()
 
 		// Connect to seed peers (auto-reconnect on disconnect, 30s retry)
@@ -609,6 +608,7 @@ func main() {
 		}
 	}
 
+	messagingPolicy := wireGossipMessagingPolicy(gossipMgr, cfg, v3Eng, overlayDir, msgStore) // unconditional: see its doc comment
 	// SHIP re-announce at half the TTL so entries survive on remote directories
 	if gossipMgr != nil {
 		go func() {
@@ -836,11 +836,12 @@ func main() {
 			}
 			return nil
 		}(),
-		ProofFetcher:   spv.NewProofFetcher(arcClient, logger),
-		P2PTxSource:    p2pTxFetcher,
-		P2PBlockSource: p2pBlockFetcher,
-		MsgStore:       msgStore,
-		SigningKey:     identityPrivKey,
+		ProofFetcher:    spv.NewProofFetcher(arcClient, logger),
+		P2PTxSource:     p2pTxFetcher,
+		P2PBlockSource:  p2pBlockFetcher,
+		MsgStore:        msgStore,
+		MessagingPolicy: messagingPolicy, // see its doc comment
+		SigningKey:      identityPrivKey,
 		Wallet: func() sdkwallet.Interface {
 			if nodeWallet != nil {
 				return nodeWallet.Wallet()

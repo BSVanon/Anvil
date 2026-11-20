@@ -96,6 +96,7 @@ type Server struct {
 	msgSessions       *sessionTokenStore      // 2a: per-identity SSE session tokens minted from a BRC-31 handshake
 	messageboxBRC31   bool                    // true when messagebox routes are served behind canonical BRC-31 mutual auth
 	gatewayStatsFn    func() map[string]int64 // optional: merged into GET /stats under "gateway" — see SetGatewayStats
+	messagingPolicy   MessagingPolicy         // see MessagingPolicy's doc comment
 }
 
 // HealthCheck is a named subsystem health probe. Returns a warning string
@@ -163,6 +164,7 @@ type ServerConfig struct {
 	// the /.well-known/anvil manifest. Lets an operator advertise AVOS oracle
 	// availability, custom data relays, etc., without Anvil code changes.
 	CustomCapabilities []map[string]interface{}
+	MessagingPolicy    MessagingPolicy // see its doc comment
 }
 
 // NewServer creates a new REST API server.
@@ -239,6 +241,7 @@ func NewServer(cfg ServerConfig) *Server {
 		signingKey:        cfg.SigningKey,
 		customCaps:        cfg.CustomCapabilities,
 		nodeWallet:        cfg.Wallet,
+		messagingPolicy:   cfg.MessagingPolicy,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"

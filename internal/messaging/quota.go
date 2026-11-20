@@ -147,7 +147,7 @@ func (s *Store) insertLockedWithDeletes(record *StoredMessage, enforce bool, del
 	batch := new(leveldb.Batch)
 	batch.Put(primary, data)
 	batch.Put(indexKey(record.Recipient, record.MessageID), primary)
-	batch.Put(expiryKey(record.ReceivedAt, primary), nil)
+	batch.Put(expiryKey(effectiveExpiryBase(record), primary), nil)
 	putUint64(batch, keyMetaSeq, seq)
 	for _, key := range deleteKeys {
 		batch.Delete(key)
@@ -210,7 +210,7 @@ func (s *Store) deletePrimaryLocked(primary []byte) (bool, error) {
 	batch := new(leveldb.Batch)
 	batch.Delete(primary)
 	batch.Delete(indexKey(record.Recipient, record.MessageID))
-	batch.Delete(expiryKey(record.ReceivedAt, primary))
+	batch.Delete(expiryKey(effectiveExpiryBase(record), primary))
 	if pair.Count <= 0 {
 		batch.Delete(pairKey)
 	} else if err := putCounter(batch, pairKey, pair); err != nil {

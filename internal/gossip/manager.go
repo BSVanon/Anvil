@@ -106,6 +106,10 @@ type Manager struct {
 	// Point-to-point messaging (BRC-33)
 	msgStore    *messaging.Store // nil = messaging forwarding disabled
 	identityKey *ec.PrivateKey   // node identity key for signing messages
+	// messagingPolicy holds the Home Rule, forward_copy_ttl
+	// and forward_peers configuration (handlers_msg_policy.go). The zero
+	// value reproduces today's behaviour exactly.
+	messagingPolicy MessagingPolicy
 
 	// Demand tracking: topic → subscriber/query count (local node).
 	// Updated by SSE hub and query handlers. Gossiped in heartbeat.

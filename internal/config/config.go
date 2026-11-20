@@ -372,6 +372,11 @@ type MessagingConfig struct {
 	MaxStoreBytes    int64 `toml:"max_store_bytes"`
 	MaxInboxMessages int64 `toml:"max_inbox_messages"`
 	MaxInboxBytes    int64 `toml:"max_inbox_bytes"`
+	// Defaults/validation for the fields below are in messaging_privacy.go.
+	ForwardCopyTTLSeconds *int64   `toml:"forward_copy_ttl"`
+	ForwardPeers          []string `toml:"forward_peers"`
+	OperatorReadsAllBoxes *bool    `toml:"operator_reads_all_boxes"`
+	HomeHosts             []string `toml:"home_hosts"`
 }
 
 type APIConfig struct {
@@ -524,6 +529,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Messaging.MaxInboxBytes < 0 {
 		cfg.Messaging.MaxInboxBytes = 0
+	}
+	if err := normalizeMessagingPrivacy(&cfg.Messaging); err != nil {
+		return nil, fmt.Errorf("messaging privacy config: %w", err)
 	}
 
 	if err := finalizeGateway(cfg, path); err != nil {

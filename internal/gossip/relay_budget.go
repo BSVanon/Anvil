@@ -17,6 +17,7 @@ type unstoredRelayBucket struct {
 	lastRefill time.Time
 	dropped    int
 	lastWarn   time.Time
+	nowFunc    func() time.Time // injectable clock for tests; nil means time.Now
 }
 
 var relayForwardTestHook func(*Manager, string, MsgForwardPayload)
@@ -29,7 +30,11 @@ func (m *Manager) allowUnstoredRelay() bool {
 	bucket := relayBucketFor(m)
 	bucket.mu.Lock()
 	defer bucket.mu.Unlock()
-	now := time.Now()
+	nowFunc := bucket.nowFunc
+	if nowFunc == nil {
+		nowFunc = time.Now
+	}
+	now := nowFunc()
 	if bucket.lastRefill.IsZero() {
 		bucket.tokens, bucket.lastRefill = unstoredRelayBurst, now
 	}
@@ -53,6 +58,11 @@ func (m *Manager) allowUnstoredRelay() bool {
 	return false
 }
 
+// relayMessageForward relays an incoming forward to every OTHER connected
+// peer that the forward_peers filter allows (nil = every peer, today's
+// behaviour). Called only for forwards onMsgForward (handlers_msg.go)
+// decided to relay, per the "Forward received" table; this function does not
+// itself re-check Home or any budget.
 func (m *Manager) relayMessageForward(senderPKHex string, fwd MsgForwardPayload) {
 	if relayForwardTestHook != nil {
 		relayForwardTestHook(m, senderPKHex, fwd)
@@ -65,7 +75,7 @@ func (m *Manager) relayMessageForward(senderPKHex string, fwd MsgForwardPayload)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for pkHex, peer := range m.peers {
-		if pkHex != senderPKHex && peer.Peer != nil {
+		if pkHex != senderPKHex && peer.Peer != nil && m.peerAllowedForForward(pkHex) {
 			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
 		}
 	}

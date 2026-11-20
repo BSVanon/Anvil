@@ -1,13 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware"
+	"github.com/bsv-blockchain/go-sdk/auth"
 )
 
 // This file wires Anvil's BRC-33 messagebox routes behind canonical BRC-31
@@ -101,7 +104,8 @@ func (s *Server) registerMessageboxBRC31() {
 	sub.HandleFunc("POST /acknowledgeMessage", s.handleAcknowledgeMessage)
 	sub.HandleFunc("POST /messages/session", s.handleMessageSession)
 
-	wrapped := brc31CORS(messageboxRateLimit(s.messageboxLimiter, authMW.HTTPHandler(sub)))
+	authHandler := brc31ReplayNonceStatus(authMW.HTTPHandler(sub))
+	wrapped := brc31CORS(messageboxRateLimit(s.messageboxLimiter, authHandler))
 
 	// Path-only patterns: preflight OPTIONS and the handshake/write POSTs all
 	// reach the wrapper. The auth middleware handles /.well-known/auth
@@ -125,6 +129,77 @@ func (s *Server) registerMessageboxLegacy() {
 	s.mux.Handle("POST /listMessages", messageboxRateLimit(s.messageboxLimiter, s.requireAuth(s.handleListMessages)))
 	s.mux.Handle("POST /acknowledgeMessage", messageboxRateLimit(s.messageboxLimiter, s.requireAuth(s.handleAcknowledgeMessage)))
 	s.mux.Handle("GET /messages/subscribe", messageboxRateLimit(s.messageboxLimiter, s.requireAuthSSE(s.handleMessageSubscribe)))
+}
+
+// replayedNonceMarker is go-sdk's own text for a replayed BRC-103 message
+// nonce (auth.ErrReplayedNonce, go-sdk v1.7.7 auth/errors.go:44), read from
+// the sentinel itself rather than retyped, so brc31ReplayNonceStatus keeps
+// matching it even if the wording ever changes upstream.
+var replayedNonceMarker = []byte(auth.ErrReplayedNonce.Error())
+
+// brc31ReplayNonceStatus wraps the BRC-31 auth handler so a replayed nonce
+// answers 401 instead of go-bsv-middleware's default 500.
+//
+// go-bsv-middleware v0.13.3 maps errors to HTTP statuses once, in
+// authentication.(*Middleware).toHTTPError (pkg/internal/authentication/
+// middleware.go:236-292). That switch has a case for go-sdk's
+// auth.ErrInvalidNonce (400) but none for auth.ErrReplayedNonce, so a
+// replayed nonce falls through to the default branch and answers 500. There
+// is no exported way to add a case or install a different error handler:
+// authentication.Config (what pkg/middleware.AuthMiddlewareConfig aliases)
+// has no error-handler field, and authentication.NewMiddleware always sets
+// the middleware's handler to DefaultErrorHandler directly — so this wraps
+// the HTTP response instead of the Go error.
+//
+// 401 is what the canonical TypeScript auth middleware answers for the same
+// case (@bsv/auth-express-middleware v2.0.5, src/index.ts:665-677): when an
+// authenticated general message's callback rejects with an error whose text
+// matches /nonce|signature|session|auth version/i, it responds 401 with
+// code ERR_AUTH_FAILED rather than 500.
+//
+// Buffering the whole response is safe here because every route this wraps
+// (registerMessageboxBRC31's POST routes) answers with one small, unstreamed
+// body; the SSE route is wired separately and never passes through this
+// wrapper.
+func brc31ReplayNonceStatus(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &replayStatusBuffer{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		rec.flush()
+	})
+}
+
+type replayStatusBuffer struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+	body   bytes.Buffer
+}
+
+func (r *replayStatusBuffer) WriteHeader(status int) {
+	r.status = status
+	r.wrote = true
+}
+
+func (r *replayStatusBuffer) Write(b []byte) (int, error) {
+	if !r.wrote {
+		r.status = http.StatusOK
+		r.wrote = true
+	}
+	return r.body.Write(b)
+}
+
+func (r *replayStatusBuffer) flush() {
+	if r.status == http.StatusInternalServerError && bytes.Contains(r.body.Bytes(), replayedNonceMarker) {
+		writeCodedError(r.ResponseWriter, http.StatusUnauthorized, "ERR_REPLAYED_NONCE", "This request's nonce has already been used.")
+		return
+	}
+	status := r.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	r.ResponseWriter.WriteHeader(status)
+	_, _ = r.ResponseWriter.Write(r.body.Bytes())
 }
 
 // brc31CORS wraps the BRC-31 messagebox handler with permissive CORS. Browser
@@ -170,17 +245,51 @@ func (s *Server) resolveMessageCaller(w http.ResponseWriter, r *http.Request) (m
 	return messageCaller{}, false
 }
 
-// scopedRecipient resolves the inbox an authenticated caller may read/ack.
-// BRC-31 callers are strictly scoped to their own identity; the operator token
-// may target a body-supplied recipient (defaulting to the node identity).
-func (s *Server) scopedRecipient(caller messageCaller, bodyRecipient string) string {
+// scopedRecipient resolves the inbox an authenticated caller may
+// read/ack. BRC-31 callers are strictly scoped to their own identity,
+// unconditionally — regardless of the operator-box switch below. The operator token may
+// target a body-supplied recipient (defaulting to the node identity)
+// when [messaging] operator_reads_all_boxes allows it (operatorBoxAllowed,
+// below); otherwise this writes a 403 and returns ok=false.
+func (s *Server) scopedRecipient(w http.ResponseWriter, caller messageCaller, bodyRecipient string) (string, bool) {
 	if caller.scoped {
-		return caller.identityHex
+		return caller.identityHex, true
+	}
+	if !s.operatorBoxAllowed(bodyRecipient) {
+		writeCodedError(w, http.StatusForbidden, "ERR_OPERATOR_BOX_RESTRICTED", operatorBoxRestrictedMsg)
+		return "", false
 	}
 	if bodyRecipient != "" {
-		return bodyRecipient
+		return bodyRecipient, true
 	}
-	return s.identityPub
+	return s.identityPub, true
+}
+
+// operatorBoxRestrictedMsg is the 403 body for every path the operator-box
+// switch gates (scopedRecipient, above, and handleMessageSubscribe's
+// operator fallback, sse_messages.go).
+const operatorBoxRestrictedMsg = "the operator token may only access this node's own identity box; naming another recipient is disabled ([messaging] operator_reads_all_boxes = false)"
+
+// operatorBoxAllowed reports whether an operator-token caller may target
+// bodyRecipient: naming nothing,
+// or this node's own identity box, is always allowed — that is today's
+// default behaviour regardless of the switch. Naming any OTHER recipient
+// requires operatorReadsAll() (default true, today's behaviour).
+func (s *Server) operatorBoxAllowed(bodyRecipient string) bool {
+	if bodyRecipient == "" || strings.EqualFold(bodyRecipient, s.identityPub) {
+		return true
+	}
+	return s.operatorReadsAll()
+}
+
+// operatorReadsAll reports [messaging] operator_reads_all_boxes. nil
+// (never wired, or the config key absent) means the default: true,
+// today's behaviour.
+func (s *Server) operatorReadsAll() bool {
+	if s.messagingPolicy.OperatorReadsAllBoxes == nil {
+		return true
+	}
+	return *s.messagingPolicy.OperatorReadsAllBoxes
 }
 
 // handleMessageSession mints a short-lived SSE session token bound to the

@@ -133,29 +133,48 @@ func messageForwardDigest(msg *messaging.Message, originNode string) [32]byte {
 	return sha256.Sum256([]byte(canonical))
 }
 
-// ForwardMessage sends a message to peers for cross-node delivery, attesting the
-// BRC-31-authenticated sender with this node's identity (origin-node attestation,
-// per the canonical server-vouches-for-sender model). msg.Sender carries the real
-// user identity; this node signs the forward so peers can verify the attestation.
-func (m *Manager) ForwardMessage(msg *messaging.Message) {
+// ForwardMessage sends a locally-sent message to peers for cross-node
+// delivery, attesting the BRC-31-authenticated sender with this node's
+// identity (origin-node attestation, per the canonical
+// server-vouches-for-sender model). msg.Sender carries the real user
+// identity; this node signs the forward so peers can verify the
+// attestation.
+//
+// This is the "API send" half of
+// the store/relay table. The caller (handlers_messaging.go) must resolve
+// the recipient's Home state FIRST and skip calling ForwardMessage
+// entirely when it is Home — a message already stored at its recipient's
+// home node needs no flood. ForwardMessage itself does not re-check Home;
+// it unconditionally broadcasts to every connected peer that the
+// forward_peers filter allows (nil = every peer, today's behaviour).
+//
+// Returns how many peers it actually sent to (ToPeer returning no
+// error), not merely how many it attempted — the caller needs the real
+// count to decide whether a message that wasn't stored anywhere was
+// also never sent anywhere, the condition that must not come back 200.
+func (m *Manager) ForwardMessage(msg *messaging.Message) int {
 	if msg == nil {
-		return
+		return 0
 	}
 	fwd := m.signedForwardPayload(msg)
 	payload, err := Encode(MsgForward, fwd)
 	if err != nil {
 		m.logger.Warn("failed to encode message forward", "error", err)
-		return
+		return 0
 	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	for _, peer := range m.peers {
-		if peer.Peer != nil {
-			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
+	sent := 0
+	for pkHex, peer := range m.peers {
+		if peer.Peer != nil && m.peerAllowedForForward(pkHex) {
+			if err := peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000); err == nil {
+				sent++
+			}
 		}
 	}
+	return sent
 }
 
 func (m *Manager) signedForwardPayload(msg *messaging.Message) MsgForwardPayload {
@@ -179,35 +198,18 @@ func (m *Manager) signedForwardPayload(msg *messaging.Message) MsgForwardPayload
 	}
 }
 
-// ForwardSignedMessage sends a pre-signed message to peers.
-// Used by the API handler which has the sender's signature.
-func (m *Manager) ForwardSignedMessage(msg *messaging.Message, sigHex string) {
-	if msg == nil {
-		return
-	}
-
-	payload, err := Encode(MsgForward, MsgForwardPayload{
-		Message:   *msg,
-		Signature: sigHex,
-	})
-	if err != nil {
-		m.logger.Warn("failed to encode message forward", "error", err)
-		return
-	}
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, peer := range m.peers {
-		if peer.Peer != nil {
-			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
-		}
-	}
-}
-
-// onMsgForward handles an incoming forwarded message from a peer.
-// Only stores the message if the recipient is hosted on this node.
-// Verifies sender signature before accepting.
+// onMsgForward handles an incoming forwarded message from a peer,
+// verifying its signature before accepting.
+//
+// This is the "Forward received"
+// half of the store/relay table (handlers_msg_policy.go's
+// deliverForward): Home stores at ttl_seconds and relays only when the
+// recipient also advertises a host that isn't this node; Unadvertised or
+// Elsewhere stores a forward_copy_ttl-bounded copy (or nothing, when
+// forward_copy_ttl is 0) and always relays. A relay of a message this
+// node did not just store is bounded by the manager-wide
+// allowUnstoredRelay budget, on top of the per-peer bucket already
+// checked at entry (allowPeerMessage, below).
 func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	// Forwards deliberately share the per-peer gossip bucket with envelopes.
 	if !m.allowPeerMessage(senderPKHex) {
@@ -277,31 +279,27 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	m.seenOwners[dedup] = seenOwner
 	m.seenMu.Unlock()
 
-	relay := m.msgStore == nil
+	// No store at all (a relay-only node) still forwards, past the
+	// per-peer entry bound already checked above, but now ALSO through
+	// the same manager-wide allowUnstoredRelay budget a node with a
+	// store applies via deliverForward's quota/non-home branches:
+	// a prior version relayed every forward unconditionally, so a
+	// relay-only node's only cap on an unstored flood was the per-peer
+	// bucket, not the shared budget every other unstored-relay path
+	// respects. In practice every production node calls SetMsgStore, so
+	// this branch is unreachable there — this closes it regardless. A
+	// node WITH a store applies the "Forward received" table via
+	// deliverForward (handlers_msg_policy.go).
+	relay := m.msgStore == nil && m.allowUnstoredRelay()
 	clearSeen := false
-	// Store using Deliver (preserves original MessageID) when a message store is
-	// available. Copies on non-home nodes are never acknowledged, so an
-	// intermediate node's pair quota can fill for a busy pair. Relaying
-	// quota-rejected forwards keeps multi-hop delivery to the recipient's home
-	// node, and the manager-wide unstored-relay budget bounds amplification.
 	if m.msgStore != nil {
 		attestedBy := "sender"
 		if fwd.OriginNode != "" {
 			attestedBy = strings.ToLower(fwd.OriginNode)
 		}
-		if ok, err := m.msgStore.Deliver(msg, attestedBy); err != nil {
-			if errors.Is(err, messaging.ErrPairQuota) || errors.Is(err, messaging.ErrInboxQuota) || errors.Is(err, messaging.ErrStoreFull) {
-				m.logMessageQuotaDrop(err)
-				relay = m.allowUnstoredRelay()
-			} else {
-				clearSeen = true
-				m.logger.Debug("forwarded message store failed", "error", err)
-			}
-		} else if ok {
-			relay = true
-			m.logger.Debug("forwarded message delivered",
-				"id", msg.MessageID, "recipient", msg.Recipient)
-		}
+		outcome := m.deliverForward(msg, attestedBy)
+		relay = outcome.relay
+		clearSeen = outcome.clearSeen
 	}
 	m.finishForwardSeen(dedup, seenOwner, clearSeen)
 
