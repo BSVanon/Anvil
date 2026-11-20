@@ -47,8 +47,8 @@ func lockMessageBoxFields(t *testing.T, w wallet.Interface, fields [][]byte) []b
 		messageBoxProtocol,
 		messageBoxKeyID,
 		wallet.Counterparty{Type: wallet.CounterpartyTypeAnyone},
-		false, // forSelf
-		true,  // includeSignature
+		true, // forSelf, matching canonical anointHost (MessageBoxClient.ts:1553) — N2
+		true, // includeSignature
 		pushdrop.LockBefore,
 	)
 	if err != nil {
@@ -163,21 +163,26 @@ func TestMessageBoxAdmit_InvalidUTF8HostRejected(t *testing.T) {
 	assertNotAdmitted(t, admitOne(t, scriptBytes, nil))
 }
 
-// TestMessageBoxAdmit_RetainsPreviousCoins confirms the canonical
-// coinsToRetain: previousCoins semantic (MessageBox does NOT force-
-// remove prior coins — an identity may hold several live adverts).
-func TestMessageBoxAdmit_RetainsPreviousCoins(t *testing.T) {
+// TestMessageBoxAdmit_RemovesPreviousCoins confirms the K1-corrected
+// canonical coinsToRetain: [], coinsRemoved: previousCoins semantic
+// (MessageBoxTopicManager.ts:95-96): every previously-admitted coin a
+// submission spends is reported as removed, never retained, so a
+// revocation's OutputSpent always fires and the lookup-side storage row
+// is cleaned up (see messagebox.go's header comment for the full K1
+// history). An identity may still hold several live adverts at once —
+// this governs only the coins THIS transaction's inputs actually spend.
+func TestMessageBoxAdmit_RemovesPreviousCoins(t *testing.T) {
 	w, identityPub := mbIdentityWallet(t)
 	scriptBytes := buildMessageBoxScript(t, w, identityPub, "https://messagebox.example")
 	inst := admitOne(t, scriptBytes, make([]anviloverlay.AdmittedOutput, 2))
 	if inst == nil {
 		t.Fatal("expected non-nil instructions")
 	}
-	if len(inst.CoinsToRetain) != 2 {
-		t.Fatalf("expected 2 retained coins, got %d", len(inst.CoinsToRetain))
+	if len(inst.CoinsToRetain) != 0 {
+		t.Fatalf("expected 0 retained coins, got %d", len(inst.CoinsToRetain))
 	}
-	if len(inst.CoinsRemoved) != 0 {
-		t.Fatalf("expected 0 removed coins, got %d", len(inst.CoinsRemoved))
+	if len(inst.CoinsRemoved) != 2 {
+		t.Fatalf("expected 2 removed coins, got %d", len(inst.CoinsRemoved))
 	}
 }
 

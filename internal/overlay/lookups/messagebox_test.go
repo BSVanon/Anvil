@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -51,7 +52,7 @@ func mbLockFields(t *testing.T, fields [][]byte) []byte {
 		wallet.Protocol{SecurityLevel: wallet.SecurityLevelEveryApp, Protocol: "messagebox advertisement"},
 		"1",
 		wallet.Counterparty{Type: wallet.CounterpartyTypeAnyone},
-		false, true, pushdrop.LockBefore,
+		true, true, pushdrop.LockBefore, // forSelf=true, matching canonical anointHost (MessageBoxClient.ts:1553) — N2
 	)
 	if err != nil {
 		t.Fatalf("PushDrop Lock: %v", err)
@@ -206,6 +207,47 @@ func TestMessageBox_IdentityKeyRequired(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected an error for a missing identityKey")
+	}
+}
+
+// TestMessageBox_CurrentHostsBoundedAt1000Adverts is K6's required test:
+// with 1,000 live adverts for one identity, CurrentHosts's Get-and-decode
+// work stays at most maxCurrentHostsScan (32), not O(N). This asserts
+// the RESULT length rather than instrumenting the LevelDB handle with a
+// call counter, which is a faithful proxy here, not a weaker substitute:
+// currentRecords' scanPrefix callback calls Get/json.Unmarshal and THEN
+// appends to hits in the same step that checks the limit and returns the
+// stop sentinel, and scanPrefix stops iterating entirely the instant its
+// callback returns a non-nil error (common.go) — so with >=32 valid
+// entries, Get is called exactly as many times as the final hit count,
+// never once more. Counted by construction, not timed.
+func TestMessageBox_CurrentHostsBoundedAt1000Adverts(t *testing.T) {
+	ctx := context.Background()
+	s := newMessageBoxLookup(t)
+	identityPub := mbIdentity(t)
+	identityHex := hex.EncodeToString(identityPub)
+
+	const totalAdverts = 1000
+	for i := 0; i < totalAdverts; i++ {
+		tx := mbBuildTx(t, identityPub, fmt.Sprintf("https://host-%04d.example", i))
+		if err := s.OutputAdmittedByTopic(ctx, mbPayload(t, tx, 0)); err != nil {
+			t.Fatalf("admit %d: %v", i, err)
+		}
+	}
+
+	hosts, err := s.CurrentHosts(identityHex)
+	if err != nil {
+		t.Fatalf("CurrentHosts: %v", err)
+	}
+	if len(hosts) != maxCurrentHostsScan {
+		t.Fatalf("CurrentHosts decoded %d of %d adverts, want exactly %d (the K6 cap)", len(hosts), totalAdverts, maxCurrentHostsScan)
+	}
+
+	// Lookup (the external BRC-33 contract) stays unbounded, matching
+	// canon — the cap is internal to CurrentHosts only.
+	all := mbLookup(t, s, topics.MessageBoxLookupQuery{IdentityKey: identityHex})
+	if len(all.Formulas) != totalAdverts {
+		t.Fatalf("Lookup returned %d of %d adverts, want all %d (unbounded, unlike CurrentHosts)", len(all.Formulas), totalAdverts, totalAdverts)
 	}
 }
 

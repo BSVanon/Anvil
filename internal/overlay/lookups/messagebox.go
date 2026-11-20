@@ -2,22 +2,29 @@ package lookups
 
 // Canonical upstream primitive — MessageBox Lookup Service (ls_messagebox).
 //
-// Port source: overlay-express-examples
-// `src/services/message-box/MessageBoxLookupService.ts` +
-// `MessageBoxStorage.ts`, pinned commit
-// 481c42ed315279c17363e8b6d4c92401c8540fb7 (MCP-verified via brc100-mcp
-// read_file).
+// Port source (re-pinned, N1): ts-stack
+// `packages/overlays/topics/src/message-box/MessageBoxLookupService.ts` +
+// `MessageBoxStorage.ts` (MCP-verified via brc100-mcp read_file against
+// /home/robert/Documents/BRC100-MCP/lib/sources/ts-stack). The prior pin,
+// overlay-express-examples @481c42ed315279c17363e8b6d4c92401c8540fb7, is
+// a migrated-away repo; cited only as history. Both pins describe the
+// same MongoDB-backed design — ts-stack has not replaced this half with
+// the newer message-box-client package's host.ts logic, which is a
+// client-side (MessageBoxClient.ts) concern, not a lookup-service one.
 //
 // The canonical service indexes admitted MessageBox adverts into MongoDB
 // and answers by identityKey (required) plus an optional exact-match
-// host, newest-first (MessageBoxStorage.ts:58-78). This port keeps the
-// identical query contract but is backed by a LevelDB key-prefix index
-// under `lk_messagebox:` rather than a Mongo collection.
+// host, newest-first (MessageBoxStorage.ts:78-94, findAdvertisements).
+// This port keeps the identical query contract but is backed by a
+// LevelDB key-prefix index under `lk_messagebox:` rather than a Mongo
+// collection. "identityKey query missing" mirrors
+// MessageBoxLookupService.ts:85 (`if (!query?.identityKey) { throw new
+// Error('identityKey query missing') }`).
 //
 // Divergences from canonical (interop-priority rule: executable interop
 // with the canonical client wins):
 //   - Tie-break order. Canon sorts only by `createdAt: -1`
-//     (MessageBoxStorage.ts:68); two adverts admitted in the same
+//     (MessageBoxStorage.ts:87); two adverts admitted in the same
 //     millisecond fall to MongoDB's unspecified natural order. This port
 //     sorts by AdmittedAt (Unix-nanos, nowUnixNano — common.go) descending
 //     and breaks a tie by outpoint (txid, then vout) ascending, for a
@@ -31,10 +38,13 @@ package lookups
 //     explicitly, matching Anvil's existing controller/identity-field
 //     convention elsewhere (e.g. kvstore.go's Controller).
 //   - No limit/skip/pagination. Canon's findAdvertisements takes none
-//     either (MessageBoxStorage.ts:58-78) — a live advert set per
+//     either (MessageBoxStorage.ts:78-94) — a live advert set per
 //     identity is small (bounded by how many adverts that identity
-//     hasn't spent yet), so this port returns every match, unbounded,
-//     exactly like canon.
+//     hasn't spent yet), so this port originally returned every match,
+//     unbounded, exactly like canon; K6 now caps CurrentHosts's own scan
+//     at the newest maxCurrentHostsScan adverts (documented there) —
+//     Lookup's own LookupFormula answer (this file's exported contract)
+//     stays unbounded, matching canon exactly.
 //
 // See messagebox.go for the admission-side divergences.
 
@@ -43,7 +53,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"math"
 	"strconv"
 	"strings"
 
@@ -58,8 +68,45 @@ import (
 
 const (
 	mbItemPrefix = "lk_messagebox:item:" // lk_messagebox:item:<txid>:<vout> -> JSON messageboxRecord
-	mbIDPrefix   = "lk_messagebox:id:"   // lk_messagebox:id:<hex(identityKeyLower)>:<txid>:<vout> -> nil
+	// mbIDPrefix indexes
+	// lk_messagebox:id:<hex(identityKeyLower)>:<invertedTime>:<txid>:<vout> -> nil.
+	// K6: the inverted-time segment (mbInvertedTimeWidth fixed-width
+	// digits of math.MaxInt64-AdmittedAt) makes a forward lexicographic
+	// scan visit the newest record first, for free — see
+	// maxCurrentHostsScan and currentRecords below.
+	mbIDPrefix = "lk_messagebox:id:"
+
+	// maxCurrentHostsScan bounds how many of an identity's newest live
+	// adverts CurrentHosts decodes (K6). Resolve runs on every message
+	// send and forward (handlers_messaging.go, handlers_msg_policy.go),
+	// so an identity that keeps accumulating cheap adverts (one satoshi
+	// each, and K1 no longer force-retains spent ones but an owner can
+	// still hold arbitrarily many live, unspent ones) must not make
+	// every message to it cost O(N) Gets and JSON decodes. 32 is a
+	// generous ceiling for a real recipient's genuinely live host count
+	// while bounding the worst case; Lookup's own external answer (the
+	// BRC-33 contract) stays unbounded, matching canon.
+	maxCurrentHostsScan = 32
+
+	// mbInvertedTimeWidth is the zero-padded decimal width of the
+	// inverted-time index segment: math.MaxInt64 is 19 digits, so 20
+	// digits with leading zeros never truncates and always sorts
+	// correctly as a string.
+	mbInvertedTimeWidth = 20
 )
+
+// errMBScanLimitReached is returned by currentRecords' scanPrefix
+// callback to stop the scan once limit hits are collected (K6). It is
+// not a real error — scanPrefix propagates whatever the callback
+// returns, and currentRecords recognises this sentinel and swallows it.
+var errMBScanLimitReached = errors.New("messagebox lookup: scan limit reached")
+
+// invertedTimeKey renders admittedAt as a fixed-width string such that
+// lexicographic (byte) order on the rendered string is descending
+// chronological order on admittedAt.
+func invertedTimeKey(admittedAt int64) string {
+	return fmt.Sprintf("%0*d", mbInvertedTimeWidth, math.MaxInt64-admittedAt)
+}
 
 // messageboxRecord is the per-output state kept in LevelDB. AdmittedAt
 // (Unix-nanos) drives the newest-first sort (the createdAt analogue).
@@ -135,7 +182,7 @@ func (s *MessageBoxLookupService) OutputAdmittedByTopic(ctx context.Context, pay
 	}
 	batch := new(leveldb.Batch)
 	batch.Put(itemKey(mbItemPrefix, focusTxid, payload.OutputIndex), body)
-	batch.Put(mbIndexKey(rec.IdentityKey, focusTxid, payload.OutputIndex), nil)
+	batch.Put(mbIndexKey(rec.IdentityKey, rec.AdmittedAt, focusTxid, payload.OutputIndex), nil)
 	if err := s.db.Write(batch, nil); err != nil {
 		return fmt.Errorf("messagebox lookup: write index: %w", err)
 	}
@@ -204,7 +251,10 @@ func (s *MessageBoxLookupService) Lookup(ctx context.Context, question *lookup.L
 		return nil, errors.New("messagebox lookup: identityKey query missing")
 	}
 
-	recs, err := s.currentRecords(strings.ToLower(q.IdentityKey))
+	// Lookup is the external BRC-33 contract: unbounded, matching canon
+	// (see this file's header comment). Only CurrentHosts, the internal
+	// Home-rule hot path, is bounded (K6).
+	recs, err := s.currentRecords(strings.ToLower(q.IdentityKey), 0)
 	if err != nil {
 		return nil, err
 	}
@@ -236,13 +286,19 @@ func (s *MessageBoxLookupService) GetMetaData() *overlay.MetaData { return s.met
 type mbHit struct {
 	op   *transaction.Outpoint
 	host string
-	at   int64
 }
 
-// currentRecords returns every live (unspent, unevicted) advert for
-// identityKeyLower, newest first (ties broken by outpoint ascending —
-// see the tie-break divergence above).
-func (s *MessageBoxLookupService) currentRecords(identityKeyLower string) ([]mbHit, error) {
+// currentRecords returns live (unspent, unevicted) adverts for
+// identityKeyLower, newest first, decoding at most limit of them (0 =
+// unbounded). Newest-first order and the limit both come from the index
+// KEY's own lexicographic order (mbIndexKey's inverted-time segment),
+// not an in-memory sort: scanPrefix already visits keys in ascending
+// byte order, which is descending AdmittedAt order by construction, and
+// ties resolve by txid then vout ascending — the index key's own
+// trailing bytes — "for free", with nothing left to sort afterwards
+// (N6: there is no comparator computing Txid.String() repeatedly,
+// because there is no comparator).
+func (s *MessageBoxLookupService) currentRecords(identityKeyLower string, limit int) ([]mbHit, error) {
 	fullPrefix := []byte(mbIDPrefix + identityKeyLower + ":")
 	var hits []mbHit
 	err := scanPrefix(s.db, fullPrefix, func(k, _ []byte) error {
@@ -258,36 +314,37 @@ func (s *MessageBoxLookupService) currentRecords(identityKeyLower string) ([]mbH
 		if err := json.Unmarshal(body, &rec); err != nil {
 			return nil
 		}
-		hits = append(hits, mbHit{op: op, host: rec.Host, at: rec.AdmittedAt})
+		hits = append(hits, mbHit{op: op, host: rec.Host})
+		if limit > 0 && len(hits) >= limit {
+			return errMBScanLimitReached
+		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errMBScanLimitReached) {
 		return nil, fmt.Errorf("messagebox lookup: scan %s: %w", mbIDPrefix, err)
 	}
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].at != hits[j].at {
-			return hits[i].at > hits[j].at // newest first
-		}
-		if hits[i].op.Txid != hits[j].op.Txid {
-			return hits[i].op.Txid.String() < hits[j].op.Txid.String()
-		}
-		return hits[i].op.Index < hits[j].op.Index
-	})
 	return hits, nil
 }
 
-// CurrentHosts returns the raw (un-normalised) host string of every live
-// advert for identityKeyHex, in no particular order — decision 2's
-// "ordering doesn't matter" rule. This is a native Go side-channel for
-// messaging.HomeResolver: it reads the same `lk_messagebox:` index this
-// service's own Lookup answers from (the LevelDB handle is the single
-// source of truth), skipping the BEEF/output-list round trip the
+// CurrentHosts returns the raw (un-normalised) host string of the
+// newest maxCurrentHostsScan live adverts for identityKeyHex (K6),
+// deduplicated after normalisation is NOT done here — qualifyAndNormalise
+// (internal/messaging/home.go) normalises and HomeResolver.Resolve
+// dedupes by comparing normalised forms, since two raw hosts can
+// normalise to the same qualifying host (e.g. differing case or a
+// trailing slash) and this package has no dependency on
+// internal/messaging to do that itself. This is a native Go side-channel
+// for messaging.HomeResolver: it reads the same `lk_messagebox:` index
+// this service's own Lookup answers from (the LevelDB handle is the
+// single source of truth), skipping the BEEF/output-list round trip the
 // external ls_messagebox HTTP contract requires — the Home Rule check
 // runs on every message send/forward and would otherwise re-fetch and
-// re-decode a transaction per call. Returns (nil, nil) for an unknown or
+// re-decode a transaction per call, and without a bound would re-pay
+// O(N) Gets and JSON decodes for an identity holding N live adverts on
+// every single message. Returns (nil, nil) for an unknown or
 // unadvertised identity.
 func (s *MessageBoxLookupService) CurrentHosts(identityKeyHex string) ([]string, error) {
-	hits, err := s.currentRecords(strings.ToLower(strings.TrimSpace(identityKeyHex)))
+	hits, err := s.currentRecords(strings.ToLower(strings.TrimSpace(identityKeyHex)), maxCurrentHostsScan)
 	if err != nil {
 		return nil, err
 	}
@@ -314,27 +371,33 @@ func (s *MessageBoxLookupService) removeOutpoint(txid *chainhash.Hash, vout uint
 	}
 	batch := new(leveldb.Batch)
 	batch.Delete(primary)
-	batch.Delete(mbIndexKey(rec.IdentityKey, txid, vout))
+	batch.Delete(mbIndexKey(rec.IdentityKey, rec.AdmittedAt, txid, vout))
 	if err := s.db.Write(batch, nil); err != nil {
 		return fmt.Errorf("messagebox lookup: delete batch: %w", err)
 	}
 	return nil
 }
 
-// mbIndexKey produces <mbIDPrefix><identityKeyLower>:<txid>:<vout>. The
+// mbIndexKey produces
+// <mbIDPrefix><identityKeyLower>:<invertedTime>:<txid>:<vout> (K6). The
 // identity key is already hex (fixed alphabet, no ':'), so unlike
-// kvstore's free-text keys it needs no extra hex-escaping layer.
-func mbIndexKey(identityKeyLower string, txid *chainhash.Hash, vout uint32) []byte {
-	return []byte(mbIDPrefix + identityKeyLower + ":" + txid.String() + ":" + strconv.FormatUint(uint64(vout), 10))
+// kvstore's free-text keys it needs no extra hex-escaping layer, and the
+// inverted-time segment is fixed-width so decodeMBIndexOutpoint can skip
+// it unambiguously.
+func mbIndexKey(identityKeyLower string, admittedAt int64, txid *chainhash.Hash, vout uint32) []byte {
+	return []byte(mbIDPrefix + identityKeyLower + ":" + invertedTimeKey(admittedAt) + ":" + txid.String() + ":" + strconv.FormatUint(uint64(vout), 10))
 }
 
 // decodeMBIndexOutpoint extracts the trailing <txid>:<vout> from an index
-// key, given the length of the <mbIDPrefix><identityKeyLower>: portion.
+// key, given the length of the <mbIDPrefix><identityKeyLower>: portion
+// (fullPrefixLen does NOT include the inverted-time segment, which this
+// function skips by its known fixed width before applying the original
+// txid/vout parse).
 func decodeMBIndexOutpoint(key []byte, fullPrefixLen int) (*transaction.Outpoint, bool) {
-	if len(key) < fullPrefixLen {
+	if len(key) < fullPrefixLen+mbInvertedTimeWidth+1 {
 		return nil, false
 	}
-	rest := string(key[fullPrefixLen:])
+	rest := string(key[fullPrefixLen+mbInvertedTimeWidth+1:]) // skip "<invertedTime>:"
 	idx := strings.LastIndexByte(rest, ':')
 	if idx != 64 {
 		return nil, false

@@ -3,48 +3,63 @@ package topics
 // Canonical upstream primitive — MessageBox host advertisement
 // (tm_messagebox).
 //
-// Port source: overlay-express-examples
-// `src/services/message-box/MessageBoxTopicManager.ts`, pinned commit
-// 481c42ed315279c17363e8b6d4c92401c8540fb7 (MCP-verified via brc100-mcp
-// read_file, source_id "overlay-express-examples").
+// Port source (re-pinned, N1): ts-stack
+// `packages/overlays/topics/src/message-box/MessageBoxTopicManager.ts`
+// (MCP-verified via brc100-mcp read_file against
+// /home/robert/Documents/BRC100-MCP/lib/sources/ts-stack). The prior pin,
+// overlay-express-examples @481c42ed315279c17363e8b6d4c92401c8540fb7, is a
+// migrated-away repo (its HEAD commit replaces the README with a redirect
+// notice) and is cited below only as history, where a divergence traces
+// back to it specifically.
 //
 // Admission mirrors the canonical identifyAdmissibleOutputs
-// (MessageBoxTopicManager.ts:35-104) 1:1 modulo language idioms:
-// PushDrop-decode -> pop the trailing field as the signature
-// (MessageBoxTopicManager.ts:60-61) -> field[0] = identity key, non-empty
-// (:65-70) -> field[1] = host, non-empty + valid UTF-8 (:65-76) -> verify
-// the signature with the canonical "anyone" ProtoWallet over the
-// concatenation of the remaining fields (:79-80), counterparty =
-// hex(field[0]) (:81, :87), protocolID = [1, "messagebox advertisement"]
-// (:88), keyID = "1" (:89). Like canon, every previous coin is retained
-// (coinsToRetain: previousCoins, MessageBoxTopicManager.ts:96-99) — an
-// identity may hold more than one live advert at once, and a spend
-// (ls_messagebox's OutputSpent) removes just that one.
+// (MessageBoxTopicManager.ts:37-106) 1:1 modulo language idioms:
+// PushDrop-decode (:48) -> pop the trailing field as the signature, the
+// rest destructured as [identityKeyBuf, hostBuf] (:51-52) -> both fields
+// required non-empty (:54-60) -> host must additionally be valid UTF-8
+// (Utils.toUTF8, :62-67) -> verify the signature with the canonical
+// "anyone" ProtoWallet over the flattened remaining fields (:69-70, :73),
+// counterparty = hex(field[0]) (:69, :75), protocolID = [1, "messagebox
+// advertisement"] (:76), keyID = "1" (:77).
+//
+// Coin retention (K1, corrected from a stale pin). The overlay-express-examples
+// @481c42e pin this port originally followed retained every previous coin
+// (`coinsToRetain: previousCoins`, that repo's MessageBoxTopicManager.ts:111-114).
+// Current ts-stack does the opposite: `coinsToRetain: [], coinsRemoved:
+// previousCoins` (MessageBoxTopicManager.ts:95-96), explained by its own
+// comment as "the spent input should always be removed so outputSpent
+// fires and deleteRecord cleans up the DB" (:90-92). This port now
+// matches current canon: CoinsToRetain is always nil and every previous
+// coin is reported in CoinsRemoved. Routing is unaffected either way —
+// the engine fires OutputSpent for every spent input of a topic whether
+// retained or not — but retaining was a storage-bookkeeping leak: a
+// revoked advert's engine storage row stayed stored (spent=true) forever
+// instead of being deleted, which is exactly the class of bug Anvil
+// already fixed for UHRP (see TestUHRPEngine_PureRevocationDeletesStorageRow).
 //
 // Divergences (interop-priority rule: executable interop with the
 // canonical MessageBoxClient.ts wins):
 //
 //   - UTF-8 strictness. Canon's host decode (Utils.toUTF8,
-//     MessageBoxTopicManager.ts:65-71) wraps a non-fatal TextDecoder,
-//     which silently substitutes malformed byte sequences rather than
-//     rejecting them; whether that ever actually throws in practice is
-//     UNCERTAIN (the @bsv/sdk implementation was not independently
-//     re-verified here). This port uses Go's utf8.Valid and refuses a
-//     host field containing invalid UTF-8 outright, per the explicit
-//     admission rule the spec states. Only adversarial/malformed byte
-//     sequences diverge — a canonical client-built advert
-//     (MessageBoxClient.ts:1296-1299 anointHost) always writes
-//     well-formed UTF-8, so this is strictly more conservative than
-//     canon, never less.
-//   - Decode-failure narration. Canon's outer try/catch logs every skip
-//     reason, including "not PushDrop at all"
-//     (MessageBoxTopicManager.ts:92-93 console.warn). This port follows
-//     Anvil's own established per-topic convention instead (kvstore.go,
-//     ump.go): a non-PushDrop or wrong-shape output is skipped silently;
-//     only a messagebox-shaped output that fails a specific check (empty
-//     field, bad UTF-8, bad signature) is logged, via admitLogger.skip.
-//     No admission outcome differs — this is a logging-verbosity
-//     divergence only.
+//     MessageBoxTopicManager.ts:62-67) wraps a non-fatal TextDecoder
+//     (ts-sdk `toUTF8`, primitives/utils.ts — non-fatal confirmed, N4):
+//     canon therefore never refuses invalid UTF-8 for this. This port
+//     uses Go's utf8.Valid and refuses a host field containing invalid
+//     UTF-8 outright, per the explicit admission rule the spec states —
+//     a deliberate, documented divergence, strictly more conservative
+//     than canon, never less. Only adversarial/malformed byte sequences
+//     diverge: a canonical client-built advert (anointHost,
+//     MessageBoxClient.ts:1551, `Utils.toArray(host, 'utf8')` on a JS
+//     string that is always well-formed) never produces one.
+//   - Decode-failure narration. Canon's per-output try/catch logs every
+//     skip reason, including a caught decode exception for a non-PushDrop
+//     output (MessageBoxTopicManager.ts:85-87 console.warn). This port
+//     follows Anvil's own established per-topic convention instead
+//     (kvstore.go, ump.go): a non-PushDrop or wrong-shape output is
+//     skipped silently; only a messagebox-shaped output that fails a
+//     specific check (empty field, bad UTF-8, bad signature) is logged,
+//     via admitLogger.skip. No admission outcome differs — this is a
+//     logging-verbosity divergence only.
 //   - OutputMetadata (the legacy v1/v2 per-output metadata map) is not
 //     populated. The v3 Adapter (adapter.go) drops it unconditionally
 //     ("OutputMetadata is intentionally dropped at the adapter
@@ -75,10 +90,12 @@ import (
 // host-advertisement publication topic.
 const MessageBoxTopicName = "tm_messagebox"
 
-// Canonical signature-check constants (MessageBoxTopicManager.ts:81-89
-// and MessageBoxClient.ts:1303-1304). Unlike KVStore, neither the
-// protocol name nor the keyID is an on-chain field here: both are fixed
-// by the protocol itself, not chosen by the advertiser.
+// Canonical signature-check constants (MessageBoxTopicManager.ts:76-77
+// and the matching client-side signing call, MessageBoxClient.ts:1553
+// `pushdrop.lock(fields, [1, 'messagebox advertisement'], '1', 'anyone',
+// true)`). Unlike KVStore, neither the protocol name nor the keyID is an
+// on-chain field here: both are fixed by the protocol itself, not chosen
+// by the advertiser.
 const (
 	messageBoxProtocolName = "messagebox advertisement"
 	messageBoxKeyID        = "1"
@@ -103,7 +120,8 @@ type MessageBoxAdvertEntry struct {
 	// Host is the raw UTF-8 host URL (field[1]), exactly as the
 	// advertiser wrote it on-chain — not normalised. ls_messagebox's
 	// optional host= query matches this raw value exactly, mirroring
-	// canon's exact Mongo filter (MessageBoxStorage.ts:61-78);
+	// canon's exact Mongo filter (MessageBoxStorage.ts:78-94, the filter
+	// itself built at :79-82);
 	// messaging.HomeResolver does its own normalisation on top of the
 	// unfiltered per-identityKey result (decision 2).
 	Host string `json:"host"`
@@ -178,24 +196,28 @@ func (m *MessageBoxTopicManager) Admit(txData []byte, previousUTXOs []anviloverl
 		outputsToAdmit = append(outputsToAdmit, i)
 	}
 
-	// MessageBox retains previous coins (canonical coinsToRetain:
-	// previousCoins, MessageBoxTopicManager.ts:97-99). An identity can
-	// hold more than one live advert; updates/revocations go through the
-	// normal UTXO spend path, so nothing is force-removed here.
-	var coinsToRetain []int
+	// K1 (corrected from a stale pin): canon removes every previous coin
+	// (coinsToRetain: [], coinsRemoved: previousCoins,
+	// MessageBoxTopicManager.ts:95-96) so that outputSpent always fires
+	// for a spent advert and the lookup-side storage row is cleaned up —
+	// see this file's header comment for the full K1 history. An
+	// identity may still hold more than one live advert at once; nothing
+	// here force-removes a DIFFERENT, still-unspent advert output, only
+	// the ones previousUTXOs already names as spent by this transaction.
+	var coinsRemoved []int
 	for i := range previousUTXOs {
-		coinsToRetain = append(coinsToRetain, i)
+		coinsRemoved = append(coinsRemoved, i)
 	}
 
-	if len(outputsToAdmit) == 0 && len(coinsToRetain) == 0 {
+	if len(outputsToAdmit) == 0 && len(coinsRemoved) == 0 {
 		m.log.nothingAdmitted(MessageBoxTopicName)
 		return nil, nil
 	}
 
 	return &anviloverlay.AdmittanceInstructions{
 		OutputsToAdmit: outputsToAdmit,
-		CoinsToRetain:  coinsToRetain,
-		CoinsRemoved:   nil,
+		CoinsToRetain:  nil,
+		CoinsRemoved:   coinsRemoved,
 	}, nil
 }
 
@@ -238,7 +260,13 @@ func (m *MessageBoxTopicManager) verifySignature(ctx context.Context, d *mbDecod
 	for _, f := range d.dataFields {
 		data = append(data, f...)
 	}
-	res, err := m.anyoneWallet.VerifySignature(ctx, wallet.VerifySignatureArgs{
+	// N3: go-sdk's ProtoWallet.VerifySignature never returns a result with
+	// Valid==false — on an invalid signature it returns (nil,
+	// ErrInvalidSignature) instead (go-sdk@v1.7.7 wallet/proto_wallet.go,
+	// matching the TS reference's throw-rather-than-return-invalid
+	// behaviour). A "checked the result, then also checked res.Valid"
+	// branch was therefore dead code; removed.
+	if _, err := m.anyoneWallet.VerifySignature(ctx, wallet.VerifySignatureArgs{
 		EncryptionArgs: wallet.EncryptionArgs{
 			ProtocolID:   messageBoxProtocol,
 			KeyID:        messageBoxKeyID,
@@ -246,12 +274,8 @@ func (m *MessageBoxTopicManager) verifySignature(ctx context.Context, d *mbDecod
 		},
 		Data:      data,
 		Signature: sig,
-	}, "")
-	if err != nil {
+	}, ""); err != nil {
 		return false, fmt.Errorf("signature verification errored: %w", err)
-	}
-	if !res.Valid {
-		return false, errors.New("signature verification failed")
 	}
 	return true, nil
 }
@@ -298,7 +322,7 @@ func decodeMessageBoxAdvert(scriptBytes []byte) (*mbDecoded, error) {
 	}
 
 	// Pop the trailing signature; whatever remains is the signed
-	// preimage (MessageBoxTopicManager.ts:58-61). Canon does not assert
+	// preimage (MessageBoxTopicManager.ts:51-52). Canon does not assert
 	// an exact field count beyond this — it destructures the first two
 	// of whatever is left and treats a missing one as empty.
 	signature := fields[len(fields)-1]
