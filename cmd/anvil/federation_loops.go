@@ -2,14 +2,21 @@ package main
 
 import (
 	"context"
+	"log"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/config"
 	"github.com/BSVanon/Anvil/internal/netguard"
+	"github.com/BSVanon/Anvil/internal/overlay/federation"
 	"github.com/BSVanon/Anvil/internal/overlay/gaspstatus"
+	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
+	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
+	anvilwallet "github.com/BSVanon/Anvil/internal/wallet"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	goSdkOverlay "github.com/bsv-blockchain/go-sdk/overlay"
+	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 )
 
 // overlayNetworkFromBSV returns the canonical overlay network identifier
@@ -29,21 +36,162 @@ func overlayNetworkFromBSV(_ *config.Config) goSdkOverlay.Network {
 // those into the peer set at NewEngine time but we set them again here
 // so the post-construction upgrade path lands the same shape.
 //
+// When namedPeers is non-empty ([overlay] named_peers, closed-network
+// mode), every topic — not just tm_ship/tm_slap — uses
+// SyncConfigurationPeers seeded with namedPeers instead. StartGASPSync
+// only runs SHIP-lookup peer discovery for SyncConfigurationSHIP entries
+// (engine.go's discoverSHIPPeers), so this skips that discovery
+// entirely: GASP catch-up runs straight against the named peers for
+// every topic, and no SHIP lookup ever reaches a public or default
+// tracker.
+//
 // ListTopicManagers returns map[topicName]*MetaData; we iterate over
 // the keys to enumerate registered topic names.
-func buildSyncConfiguration(eng *engine.Engine) map[string]engine.SyncConfiguration {
+func buildSyncConfiguration(eng *engine.Engine, namedPeers []string) map[string]engine.SyncConfiguration {
 	out := map[string]engine.SyncConfiguration{}
 	for name := range eng.ListTopicManagers() {
-		switch name {
-		case "tm_ship":
+		switch {
+		case len(namedPeers) > 0:
+			out[name] = engine.SyncConfiguration{Type: engine.SyncConfigurationPeers, Peers: namedPeers}
+		case name == "tm_ship":
 			out[name] = engine.SyncConfiguration{Type: engine.SyncConfigurationPeers, Peers: eng.SHIPTrackers}
-		case "tm_slap":
+		case name == "tm_slap":
 			out[name] = engine.SyncConfiguration{Type: engine.SyncConfigurationPeers, Peers: eng.SLAPTrackers}
 		default:
 			out[name] = engine.SyncConfiguration{Type: engine.SyncConfigurationSHIP}
 		}
 	}
 	return out
+}
+
+// resolveFederationTrackers decides the SHIPTrackers/SLAPTrackers pair
+// wireV3Federation wires into the engine. When namedPeers ([overlay]
+// named_peers) is non-empty, it is the sole source of truth: no
+// ship_trackers/slap_trackers merge, no DEFAULT_SLAP_TRACKERS fallback —
+// every outbound overlay call this wiring enables targets only these
+// peers. Otherwise, behaviour is exactly what it was before this setting
+// existed: configured ship_trackers/slap_trackers, falling back to
+// go-sdk's DEFAULT_SLAP_TRACKERS (overlay-us-1.bsvb.tech,
+// overlay-eu-1.bsvb.tech, overlay-ap-1.bsvb.tech, users.bapp.dev) when
+// either is left blank.
+func resolveFederationTrackers(cfg *config.Config, namedPeers []string) (shipTrackers, slapTrackers []string) {
+	if len(namedPeers) > 0 {
+		return namedPeers, namedPeers
+	}
+	slapTrackers = cfg.Overlay.SLAPTrackers
+	if len(slapTrackers) == 0 {
+		slapTrackers = append(slapTrackers, lookup.DEFAULT_SLAP_TRACKERS...)
+	}
+	shipTrackers = cfg.Overlay.SHIPTrackers
+	if len(shipTrackers) == 0 {
+		shipTrackers = append(shipTrackers, lookup.DEFAULT_SLAP_TRACKERS...)
+	}
+	return shipTrackers, slapTrackers
+}
+
+// sanitizeNamedPeers trims whitespace and drops blank entries from
+// [overlay] named_peers, mirroring how [mesh] allowed_peers is sanitized
+// (internal/gossip/allowlist.go's newPeerAllowlist) — so a stray blank
+// string in the TOML list is never treated as "named_peers is set" and
+// never reaches an HTTP call as a literal peer URL.
+func sanitizeNamedPeers(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	for _, p := range raw {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// wireV3Federation wires the v3 engine's canonical BRC-88 federation
+// surface (LookupResolver, SHIP/SLAP trackers, GASP SyncConfiguration)
+// and starts its periodic sync loop. Called once nodeWallet exists — the
+// caller must only call this when nodeWallet != nil.
+//
+// Gating:
+//   - cfg.Overlay.EnableGASPSync must be true, or this is a no-op (GASP
+//     routes still serve inbound requests).
+//   - With [overlay] named_peers empty, behaviour is exactly as before
+//     this setting existed: wiring additionally requires [node]
+//     public_url to be set (adverts need it; see
+//     internal/overlay/federation/advertiser.go FindAllAdvertisements),
+//     and the SHIP/SLAP Advertiser is constructed and its periodic
+//     SyncAdvertisements loop started.
+//   - With named_peers non-empty (closed network), GASP sync wiring
+//     (LookupResolver, SHIP/SLAP trackers, SyncConfiguration,
+//     runGASPSync) happens regardless of public_url — the "peer only
+//     with named nodes, advertise nothing" case this setting exists for
+//     needs GASP catch-up with no public_url at all. The Advertiser is
+//     NEVER constructed in this mode, even when public_url is also set:
+//     an advert transaction submitted via engine.Submit reaches
+//     engine.Broadcaster/ARC unconditionally (main.go wires Broadcaster
+//     regardless of named_peers), which would broadcast it to the public
+//     Bitcoin network and permanently link this node's identity key and
+//     HostingURL on-chain — the exact outcome closed-network mode exists
+//     to prevent. This is logged once at startup.
+//
+// [overlay] named_peers, when wiring proceeds: every outbound overlay
+// call this wiring enables — GASP sync for every topic, lookup
+// federation, submit propagation to interested hosts, and SHIP/SLAP
+// resolution — targets only the named peers. ship_trackers /
+// slap_trackers and the DEFAULT_SLAP_TRACKERS fallback are not
+// consulted; named_peers is the sole source of truth for
+// SHIPTrackers/SLAPTrackers in that mode, so the node never contacts a
+// baked-in Anvil endpoint or a public tracker.
+func wireV3Federation(
+	cfg *config.Config,
+	v3Eng *engine.Engine,
+	gaspTracker *gaspstatus.Tracker,
+	shipStore *federation.SHIPStorage,
+	slapStore *federation.SLAPStorage,
+	anvilStore *anvilstorage.Storage,
+	nodeWallet *anvilwallet.NodeWallet,
+	logger *slog.Logger,
+) {
+	if v3Eng == nil {
+		return
+	}
+	if !cfg.Overlay.EnableGASPSync {
+		log.Printf("v3 federation disabled (cfg.Overlay.EnableGASPSync = false); GASP routes still serve inbound requests")
+		return
+	}
+
+	namedPeers := sanitizeNamedPeers(cfg.Overlay.NamedPeers)
+	closedNetwork := len(namedPeers) > 0
+	if !closedNetwork && cfg.Node.PublicURL == "" {
+		return
+	}
+
+	shipTrackers, slapTrackers := resolveFederationTrackers(cfg, namedPeers)
+
+	// peerhygiene.NewResolver mirrors engine.NewLookupResolverWithNetwork
+	// but routes every per-host lookup through a hygiene Facilitator, so
+	// dead SLAP/SHIP peers get skipped/backed-off instead of re-queried on
+	// every GASP sync + lookup resolution (the federation thrash the DEX saw).
+	resolver := peerhygiene.NewResolver(overlayNetworkFromBSV(cfg), slapTrackers, logger)
+	v3Eng.LookupResolver = resolver
+	v3Eng.SHIPTrackers = shipTrackers
+	v3Eng.SLAPTrackers = slapTrackers
+	v3Eng.SyncConfiguration = buildSyncConfiguration(v3Eng, namedPeers)
+
+	if closedNetwork {
+		log.Printf("v3 federation: named_peers set, SHIP/SLAP advertiser disabled (closed network — no on-chain ads)")
+	} else {
+		adv := federation.NewAdvertiser(nodeWallet.Wallet(), cfg.Node.PublicURL, shipStore, slapStore, anvilStore)
+		v3Eng.Advertiser = adv
+		go runSyncAdvertisements(context.Background(), v3Eng, logger, cfg.Overlay.AdvertiseIntervalSecs)
+	}
+
+	log.Printf("v3 federation wired: %d topics syncable via canonical SHIP/SLAP (trackers=%d)",
+		len(v3Eng.SyncConfiguration), len(slapTrackers))
+
+	if gaspTracker != nil {
+		gaspTracker.MarkEnabled()
+	}
+	go runGASPSync(context.Background(), v3Eng, logger, cfg.Overlay.GASPSyncIntervalSecs, gaspTracker)
 }
 
 // runSyncAdvertisements ticks engine.SyncAdvertisements at the

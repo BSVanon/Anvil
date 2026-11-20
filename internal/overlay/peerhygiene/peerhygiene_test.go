@@ -234,7 +234,7 @@ func TestFacilitator_BurstFailuresDoNotOverEscalate(t *testing.T) {
 // TestResolver_SLAPTrackerWiring confirms the provider mirrors the engine's
 // SLAP-tracker semantics (set replaces; empty is a no-op).
 func TestResolver_SLAPTrackerWiring(t *testing.T) {
-	r := NewResolver(overlay.NetworkMainnet, nil)
+	r := NewResolver(overlay.NetworkMainnet, nil, nil)
 	r.SetSLAPTrackers([]string{"https://a.example", "https://b.example"})
 	if got := r.SLAPTrackers(); len(got) != 2 || got[0] != "https://a.example" {
 		t.Fatalf("SLAP trackers not wired: %v", got)

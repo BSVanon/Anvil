@@ -75,6 +75,10 @@ type Manager struct {
 	// bond checker (nil = no bond required)
 	bondChecker *bond.Checker
 
+	// allowlist enforces [mesh] allowed_peers (nil/empty set = no
+	// restriction, today's behaviour)
+	allowlist *peerAllowlist
+
 	// per-peer gossip rate limiting (loose defaults: 30/s burst 100)
 	peerRates  map[string]*peerRate
 	peerRateMu sync.Mutex
@@ -154,6 +158,14 @@ type MeshPeer struct {
 	ConnectedAt time.Time    // when this peer connected
 	origKey     string       // the original map key at insertion time (for cleanup after re-key)
 	closeFunc   func() error // closes the underlying transport connection
+
+	// bondChecked marks that the one-time bond-verification step has run
+	// for this peer. Tracked separately from IdentityPK == nil (which used
+	// to double as this trigger) because ConnectPeer/ConnectSeedWithReconnect
+	// now re-key IdentityPK proactively, via establishAndAuthorizePeer,
+	// before the reactive ListenForGeneralMessages callback ever fires —
+	// AcceptPeer still re-keys reactively and doesn't need this field.
+	bondChecked bool
 }
 
 // ManagerConfig holds configuration for the gossip manager.
@@ -166,6 +178,10 @@ type ManagerConfig struct {
 	OnEnvelope     func(*envelope.Envelope)
 	OverlayDir     OverlayDirectory
 	BondChecker    *bond.Checker
+	// AllowedPeers restricts mesh peering ([mesh] allowed_peers) to these
+	// identity public key hexes, inbound and outbound. Empty means no
+	// restriction — today's behaviour.
+	AllowedPeers []string
 	// CatchUpTopics are topics to request from peers on connect.
 	// Ensures new nodes receive critical data (catalog, feeds) immediately.
 	CatchUpTopics []string
@@ -208,6 +224,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		onEnvelope:     cfg.OnEnvelope,
 		overlayDir:     cfg.OverlayDir,
 		bondChecker:    cfg.BondChecker,
+		allowlist:      newPeerAllowlist(cfg.AllowedPeers),
 		peerRates:      make(map[string]*peerRate),
 		ratePerSec:     cfgRatePerSec(cfg.RatePerSec),
 		rateBurst:      cfgRateBurst(cfg.RateBurst),
@@ -248,17 +265,17 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 		Transport: transport,
 	})
 
-	// Register message handler before starting
+	// Register message handler before starting. By the time this fires,
+	// establishAndAuthorizePeer below has already re-keyed this peer's
+	// map entry to its identity hex and checked allowed_peers — this
+	// callback only still needs to run the one-time bond check.
 	peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
 		pkHex := fmt.Sprintf("%x", senderPK.Compressed())
 
-		// Update peer identity on first message (auth handshake completes)
 		m.mu.Lock()
 		needsBondCheck := false
-		if mp, ok := m.peers[endpoint]; ok && mp.IdentityPK == nil {
-			mp.IdentityPK = senderPK
-			m.peers[pkHex] = mp
-			delete(m.peers, endpoint)
+		if mp, ok := m.peers[pkHex]; ok && !mp.bondChecked {
+			mp.bondChecked = true
 			needsBondCheck = true
 		}
 		m.mu.Unlock()
@@ -325,6 +342,15 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 	// Start the read loop for incoming messages
 	go transport.StartReceive()
 
+	// Complete the handshake and check [mesh] allowed_peers BEFORE sending
+	// anything derived from local state (interests, SHIP directory,
+	// catch-up requests) — see establishAndAuthorizePeer. A refused peer
+	// is already removed and its transport closed; we must not announce
+	// anything to it.
+	if _, err := m.establishAndAuthorizePeer(ctx, peer, endpoint, "outbound", endpoint, 5000); err != nil {
+		return fmt.Errorf("peer identity not established: %w", err)
+	}
+
 	// Announce our topic interests
 	if err := m.announceInterests(peer); err != nil {
 		return err
@@ -384,6 +410,17 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 		}
 		m.mu.Unlock()
 
+		// [mesh] allowed_peers: refuse an inbound peer whose identity isn't
+		// listed, right after the handshake and before any bond check,
+		// message processing, or reply. This is the earliest point this
+		// side learns who dialed in — accepting a connection can't gate
+		// the handshake response itself, since BRC-31 is mutual: we only
+		// learn the dialer's identity by completing it. See
+		// establishAndAuthorizePeer for the symmetric outbound-dial case.
+		if needsBondCheck && !m.checkAllowedPeer(pkHex, "inbound", transport.RemoteAddr()) {
+			return fmt.Errorf("peer identity not in allowed_peers")
+		}
+
 		// Verify bond on first message (identity just revealed)
 		if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
 			balance, err := m.bondChecker.VerifyBond(senderPK)
@@ -412,6 +449,15 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 		}
 		if needsBondCheck {
 			m.notePeerIdentity(pkHex)
+			// Reply with our own announces now that this peer's identity
+			// has passed allowed_peers — never before. (We are the
+			// acceptor: the dialer always speaks first, so replying here,
+			// strictly after the check, cannot deadlock.)
+			if err := m.announceInterests(peer); err != nil {
+				m.logger.Warn("inbound peer interest announce failed", "peer", truncate(pkHex), "error", err)
+			}
+			m.announceSHIP(peer)
+			m.requestCatchUp(peer)
 		}
 
 		return m.handleMessage(pkHex, senderPK, payload)
@@ -445,11 +491,12 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 	// Start the read loop in a goroutine; when it exits the done channel closes
 	go transport.StartReceive()
 
-	if err := m.announceInterests(peer); err != nil {
-		return tempKey, err
-	}
-	m.announceSHIP(peer)
-	m.requestCatchUp(peer)
+	// No unconditional announce here: AcceptPeer can't gate the handshake
+	// itself (BRC-31 is mutual — we only learn the dialer's identity by
+	// completing it), so the earliest point this side can check
+	// allowed_peers is reactively, inside the ListenForGeneralMessages
+	// callback above, once the dialer sends its own first message. That
+	// callback replies with our announces only after that check passes.
 	return tempKey, nil
 }
 

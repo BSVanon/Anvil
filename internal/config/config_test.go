@@ -550,17 +550,17 @@ func TestHeaderFallbackDisabled(t *testing.T) {
 
 // TestEnsureHeaderFallbackPeers unit-tests the append/dedup/self-skip/disable logic.
 func TestEnsureHeaderFallbackPeers(t *testing.T) {
-	if got := ensureHeaderFallbackPeers(nil, "", false); !bsvNodesEqual(got, []string{"https://anvil.sendbsv.com"}) {
+	if got := ensureHeaderFallbackPeers(nil, "", false, false); !bsvNodesEqual(got, []string{"https://anvil.sendbsv.com"}) {
 		t.Fatalf("empty+enabled = %v", got)
 	}
-	got := ensureHeaderFallbackPeers([]string{"https://a.example", "https://anvil.sendbsv.com"}, "", false)
+	got := ensureHeaderFallbackPeers([]string{"https://a.example", "https://anvil.sendbsv.com"}, "", false, false)
 	if !bsvNodesEqual(got, []string{"https://a.example", "https://anvil.sendbsv.com"}) {
 		t.Fatalf("dedup = %v", got)
 	}
-	if got := ensureHeaderFallbackPeers(nil, "https://anvil.sendbsv.com/", false); len(got) != 0 {
+	if got := ensureHeaderFallbackPeers(nil, "https://anvil.sendbsv.com/", false, false); len(got) != 0 {
 		t.Fatalf("self-skip = %v", got)
 	}
-	if got := ensureHeaderFallbackPeers([]string{"https://a.example"}, "", true); got != nil {
+	if got := ensureHeaderFallbackPeers([]string{"https://a.example"}, "", true, false); got != nil {
 		t.Fatalf("disabled = %v", got)
 	}
 }

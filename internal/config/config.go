@@ -48,7 +48,17 @@ type CapabilitiesConfig struct {
 
 // MeshConfig defines Anvil mesh peering via go-sdk auth.Peer + WebSocket.
 type MeshConfig struct {
-	Seeds        []string `toml:"seeds"`          // WebSocket endpoints of seed peers
+	Seeds []string `toml:"seeds"` // WebSocket endpoints of seed peers
+
+	// AllowedPeers is a closed-network allowlist of identity public keys
+	// (hex). Empty means today's behaviour: any peer that completes the
+	// BRC-31 handshake may connect (MinBondSats rules still apply). When
+	// set, an inbound or outbound peer whose authenticated identity isn't
+	// listed is dropped immediately after the handshake, before any of
+	// its messages are processed, for both AcceptPeer and
+	// ConnectPeer/ConnectSeedWithReconnect.
+	AllowedPeers []string `toml:"allowed_peers"`
+
 	MinBondSats  int      `toml:"min_bond_sats"`  // minimum bond UTXO required to peer (0 = no bond required)
 	BondCheckURL string   `toml:"bond_check_url"` // UTXO lookup API (default: WoC)
 	LocalPubkeys []string `toml:"local_pubkeys"`  // app pubkeys exempt from double-publish slashing on this node
@@ -207,7 +217,13 @@ var defaultHeaderFallbackPeers = []string{
 // never header-syncs from itself (notably the default node, which is its own
 // public URL). If disabled is true the fallback is off entirely (returns nil),
 // honoring an explicit operator opt-out.
-func ensureHeaderFallbackPeers(peers []string, selfPublicURL string, disabled bool) []string {
+//
+// If suppressDefault is true ([overlay] named_peers is set — closed network),
+// the baked-in default peer is never appended, so a closed-network node never
+// contacts it; the operator's own peers list still applies as-is, so a node
+// that wants the HTTPS header catch-up in closed-network mode lists its own
+// trusted peers explicitly instead of relying on the public default.
+func ensureHeaderFallbackPeers(peers []string, selfPublicURL string, disabled, suppressDefault bool) []string {
 	if disabled {
 		return nil
 	}
@@ -233,7 +249,9 @@ func ensureHeaderFallbackPeers(peers []string, selfPublicURL string, disabled bo
 		}
 	}
 	add(peers)
-	add(defaultHeaderFallbackPeers)
+	if !suppressDefault {
+		add(defaultHeaderFallbackPeers)
+	}
 	return out
 }
 
@@ -281,6 +299,28 @@ type OverlayConfig struct {
 	// staging tracker, or a regional preference.
 	SHIPTrackers []string `toml:"ship_trackers"`
 	SLAPTrackers []string `toml:"slap_trackers"`
+
+	// NamedPeers is a closed-network allowlist of overlay base URLs.
+	// Empty means today's behaviour, including the public_url
+	// requirement below. Entries are trimmed; blank entries are
+	// skipped (cmd/anvil's sanitizeNamedPeers), so a stray blank string
+	// doesn't count as "set".
+	//
+	// When set, GASP sync wiring (lookup federation, SHIP/SLAP
+	// resolution, and sync for every topic — not just tm_ship/tm_slap)
+	// is wired regardless of [node] public_url, so a node can peer with
+	// named nodes and run GASP catch-up with no public_url at all.
+	// ship_trackers / slap_trackers and go-sdk's DEFAULT_SLAP_TRACKERS
+	// fallback are not consulted in this mode, and the baked-in default
+	// header-fallback peer is not appended either (see
+	// ensureHeaderFallbackPeers).
+	//
+	// The SHIP/SLAP Advertiser is NEVER constructed when NamedPeers is
+	// set, even if public_url is also set: an advert transaction would
+	// still reach the configured Broadcaster/ARC and permanently link
+	// this node's identity on-chain — the exact outcome closed-network
+	// mode exists to prevent. See cmd/anvil's wireV3Federation.
+	NamedPeers []string `toml:"named_peers"`
 
 	// GASPSyncIntervalSecs is how often we pull canonical federation
 	// state from discovered peers (every N seconds). v3.0.0-v3.0.6
@@ -498,8 +538,10 @@ func Load(path string) (*Config, error) {
 	// operator disabled it), minus this node's own public URL. This makes the
 	// mesh header self-heal automatic on `anvil upgrade` — no per-node config edit
 	// — mirroring the default BSV seeds above. Consulted when P2P sync fails or the
-	// stored tip is stale.
-	cfg.BSV.HeaderFallbackPeers = ensureHeaderFallbackPeers(cfg.BSV.HeaderFallbackPeers, cfg.Node.PublicURL, cfg.BSV.HeaderFallbackDisabled)
+	// stored tip is stale. A closed-network node ([overlay] named_peers set) never
+	// gets the baked-in default appended here either — only its own explicitly
+	// configured header_fallback_peers apply.
+	cfg.BSV.HeaderFallbackPeers = ensureHeaderFallbackPeers(cfg.BSV.HeaderFallbackPeers, cfg.Node.PublicURL, cfg.BSV.HeaderFallbackDisabled, len(cfg.Overlay.NamedPeers) > 0)
 
 	// Environment variable overrides
 	if v := os.Getenv("ANVIL_IDENTITY_WIF"); v != "" {
