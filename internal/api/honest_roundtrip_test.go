@@ -10,16 +10,14 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
-// --- Item 5: a full honest payment round trip, through both ways a client
-// can pay (the x402 challenge/proof flow and the simpler X-Bsv-Payment
-// direct-payment header), after every item 1-9 hardening change in this
-// brick. Every other test in this package's x402 surface is adversarial —
-// this is the one that proves a legitimate payer is never collateral
-// damage from any of it: the body-read-before-reserve ordering (item 1),
-// the budget-bounded nonce mint (item 3), direct-payment input
-// verification (item 4), and exact-topic resolution/redaction (items 6, 8,
-// 9) all still let a real payer through to their own, correctly-priced
-// content, unredacted, and still deny it before payment. ---
+// A full honest payment round trip, through both ways a client can pay (the
+// x402 challenge/proof flow and the simpler X-Bsv-Payment direct-payment
+// header). Most tests of this package's x402 surface are adversarial; these
+// show that a legitimate payer is never collateral damage from the
+// hardening: reading the body before reserving a pending place, the bounded
+// nonce mint, direct-payment input verification, and exact-topic resolution
+// and redaction all still let a real payer through to their own,
+// correctly-priced content, unredacted, and still deny it before payment.
 
 // TestHonestChallengeProofRoundTripUnlocksExactTopic: GET /data?topic=X on
 // a passthrough-priced topic — 402 with the topic's own price and payee,
@@ -71,10 +69,9 @@ func TestHonestChallengeProofRoundTripUnlocksExactTopic(t *testing.T) {
 // TestHonestDirectPaymentRoundTripUnlocksExactTopic: the same topic and
 // price, paid instead via a real signed transaction in the X-Bsv-Payment
 // header (Calhooon-compatible direct-payment flow, payment_verify.go) —
-// item 4's verifyDirectPaymentInputs must accept it on the strength of its
-// own genuine signature, same as the challenge/proof case above, and the
-// exact-topic paid context (item 6) must unlock exactly this topic's own
-// payload here too.
+// verifyDirectPaymentInputs must accept it on the strength of its own
+// genuine signature, same as the challenge/proof case above, and the
+// payment's outputs must unlock exactly this topic's own payload here too.
 func TestHonestDirectPaymentRoundTripUnlocksExactTopic(t *testing.T) {
 	srv := testServer(t)
 	seedEnvelope(t, srv.envelopeStore, "news:premium", &envelope.Monetization{

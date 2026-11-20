@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// The nonce mint budget (cold-review round 3, S7).
+// The nonce mint budget.
 //
 // Every 402 challenge takes a nonce (issueChallengeForPayees). A charging node
 // pops one from its UTXONoncePool, which refills from the wallet once it falls

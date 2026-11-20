@@ -20,8 +20,8 @@ import (
 //     told about it, asked for it or sent it; none of these says the node
 //     accepted it. Refused.
 //   - ACCEPTED_BY_NETWORK: "accepted by a connected Bitcoin node on the ZMQ
-//     interface", and never set when ARC has no ZMQ connection. Refused for
-//     now; whether to accept it is a question for review.
+//     interface", and never set when ARC has no ZMQ connection. Refused, as
+//     the narrower choice; accepting it is still an open question.
 //   - SEEN_IN_ORPHAN_MEMPOOL: sent to a node, but "parent transaction was not
 //     found", so an input may not exist. Refused. go-sdk's ARC broadcaster
 //     treats any status containing ORPHAN as a failure (go-sdk v1.7.7

@@ -5,10 +5,10 @@ import (
 	"time"
 )
 
-// Bounds on the challenges a PaymentGate keeps pending (cold-review round 3,
-// S7). A challenge stays in pendingChallenges until a proof uses it up or its
-// TTL passes, and it keeps the request's method, Host, path and query and the
-// payees' locking scripts, which the caller and a topic's publisher choose.
+// Bounds on the challenges a PaymentGate keeps pending. A challenge stays in
+// pendingChallenges until a proof uses it up or its TTL passes, and it keeps
+// the request's method, Host, path and query and the payees' locking scripts,
+// which the caller and a topic's publisher choose.
 
 // maxPendingChallenges caps pendingChallenges at 1,024, ten times the default
 // nonce pool. Every challenge takes a nonce, so the pool and the mint budget

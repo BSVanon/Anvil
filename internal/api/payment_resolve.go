@@ -70,14 +70,12 @@ func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGate
 	// Check if this request targets a topic with monetization metadata.
 	// Topic-level monetization (passthrough/split pricing, token gating)
 	// only ever applies on a content route (isAppContentRoute,
-	// content_route.go) — GET /data or GET /data/subscribe, the routes that
-	// actually serve that topic's content. On every other route, and on
-	// every write, ?topic= is passed straight through to this fall-through:
-	// only the node's own per-path price (nodePayee) ever applies, and
-	// tokenGated is always false, so no topic's declared pricing or token
-	// model can replace or waive the node's toll (cold review BL2(a), RISK
-	// 3) or, via Resolve's prefix-scanned result, waive it based on a
-	// different (sub-)topic's monetization (BL2(b)).
+	// content_route.go), the routes that actually serve that topic's
+	// content. On every other route, and on every write, only the node's
+	// own per-path price (nodePayee) ever applies, and tokenGated is always
+	// false, so no topic's declared pricing or token model can replace or
+	// waive the node's toll there. Resolve reads the topic's own envelopes
+	// only, so a sub-topic's monetization never applies either.
 	topic := r.URL.Query().Get("topic")
 	if pg.resolver == nil || topic == "" || !isAppContentRoute(r) {
 		if nodePayee != nil {

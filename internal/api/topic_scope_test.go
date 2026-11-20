@@ -49,11 +49,10 @@ func TestCheapTollDoesNotUnlockSiblingTopicPremiumPayload(t *testing.T) {
 	}
 }
 
-// --- Item 8 / cold review BL2(a): a self-issued app token (or a
-// self-created topic's own declared pricing) must never waive the node's
-// toll on a node route — only GET /data and GET /data/subscribe are content
-// routes (isAppContentRoute, content_route.go). ---
-
+// A self-issued app token (or a self-created topic's own declared pricing)
+// must never waive the node's toll on a node route: only GET and HEAD on
+// /data and /data/subscribe are content routes (isAppContentRoute,
+// content_route.go).
 func TestAppTokenNeverWaivesNodeTollOnNodeRoute(t *testing.T) {
 	srv := testServer(t)
 
@@ -80,7 +79,7 @@ func TestAppTokenNeverWaivesNodeTollOnNodeRoute(t *testing.T) {
 	}
 }
 
-// TestAppTokenNeverBlocksNodeRoute is BL2(a)'s other half: a token-gated
+// TestAppTokenNeverBlocksNodeRoute is the other half: a token-gated
 // topic must also never collaterally 401/403 a node route just because the
 // query string happens to name it — a legitimate caller with no token at
 // all must still reach /stats normally (node is free here).
@@ -163,9 +162,8 @@ func TestSubtopicEnvelopeDoesNotHijackParentTopicResolution(t *testing.T) {
 	}
 }
 
-// --- Item 8 / cold review RISK 3: passthrough self-pricing on a topic must
-// never replace the node's own toll on a write. ---
-
+// Passthrough self-pricing on a topic must never replace the node's own toll
+// on a write.
 func TestPassthroughNeverReplacesNodeTollOnWrite(t *testing.T) {
 	srv := testServer(t)
 	seedEnvelope(t, srv.envelopeStore, "evil:pt", &envelope.Monetization{
@@ -230,7 +228,7 @@ func TestTokenGatedSubtopicNotServedViaParentTopicQuery(t *testing.T) {
 func TestDataQueryAppTokenMismatchedTopicStaysRedacted(t *testing.T) {
 	srv := testServer(t) // no tokenGate configured — nothing but the redaction check itself can gate this
 
-	const topic = "data:risk5-exact-match"
+	const topic = "data:exact-match"
 	key, _ := ec.NewPrivateKey()
 	seedEnvelope(t, srv.envelopeStore, topic, &envelope.Monetization{
 		Model: envelope.MonetizationToken, AuthPubkey: hex.EncodeToString(key.PubKey().Compressed()),
@@ -241,7 +239,7 @@ func TestDataQueryAppTokenMismatchedTopicStaysRedacted(t *testing.T) {
 	// Simulate a validated app token for a DIFFERENT topic than the one
 	// being queried — unreachable through the real TokenGate.Middleware
 	// (see doc comment above).
-	req = req.WithContext(withAppTokenTopic(req.Context(), "data:risk5-other-topic"))
+	req = req.WithContext(withAppTokenTopic(req.Context(), "data:other-topic"))
 
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)

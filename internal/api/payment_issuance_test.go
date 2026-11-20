@@ -79,12 +79,11 @@ func TestX402ChallengeIssuance(t *testing.T) {
 		// /status and /headers/tip are node routes that don't serve
 		// probe:priced's content at all; /content/abc is always-free
 		// infrastructure (priceForPath); POST /data is a write. Before this
-		// rule (cold review BL2(a), RISK 3), a topic's own app price
-		// replaced the node's toll — free, here — on every one of these
-		// just because ?topic= named it, challenging routes whose response
-		// has nothing to do with that topic, and letting a topic's own
-		// price (or a token credential) waive what should be the node's
-		// unconditional toll on a write.
+		// rule, a topic's own app price replaced the node's toll — free,
+		// here — on every one of these just because ?topic= named it,
+		// challenging routes whose response has nothing to do with that
+		// topic, and letting a topic's own price (or a token credential)
+		// waive what should be the node's unconditional toll on a write.
 		{"default config: free node with a wallet", appModels, true, []row{
 			{"GET", "/data", false},
 			{"GET", "/data?topic=probe:free", false},

@@ -217,7 +217,7 @@ func verifyNonceInputSignature(tx *transaction.Transaction, nonce *NonceUTXO) er
 	// Refuse anything that cannot be a P2PKH spend before the interpreter
 	// sees it (payment_bounds.go).
 	if err := checkNonceUnlockingScript(&lockingScript, input.UnlockingScript); err != nil {
-		return err
+		return fmt.Errorf("nonce input: %w", err)
 	}
 
 	// Run the script interpreter: unlocking + locking script, under the
@@ -236,9 +236,9 @@ func verifyNonceInputSignature(tx *transaction.Transaction, nonce *NonceUTXO) er
 	return nil
 }
 
-// verifyDirectPayment handles the X-Bsv-Payment header: a raw or Extended
-// Format transaction, as hex or base64, that pays the declared payees, with no
-// challenge binding. It needs ARC: a node with no ARC client refuses every
+// verifyDirectPayment handles the X-Bsv-Payment header: an Extended Format
+// (BRC-30) transaction, as hex or base64, that pays the declared payees, with
+// no challenge binding. It needs ARC: a node with no ARC client refuses every
 // direct payment (errDirectPaymentUnavailable, payment_refusal.go).
 func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee) (*X402Receipt, error) {
 	if pg.arcClient == nil {

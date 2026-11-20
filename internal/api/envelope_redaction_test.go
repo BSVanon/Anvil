@@ -7,11 +7,11 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
-// TestMustRedactEnvelope covers every branch cold review's RISK 4 found
-// missing: a Model 4 (token-gated) envelope with no price set at all used
-// to fall through both handlers.go's and sse.go's redaction check entirely
-// (PriceSats > 0 was the only test), serving its payload unredacted to any
-// caller with no token whatsoever.
+// TestMustRedactEnvelope covers every branch, including the one a check on
+// price alone misses: a Model 4 (token-gated) envelope with no price set at
+// all used to fall through both handlers.go's and sse.go's redaction check
+// entirely (PriceSats > 0 was the only test), serving its payload unredacted
+// to any caller with no token whatsoever.
 func TestMustRedactEnvelope(t *testing.T) {
 	cases := []struct {
 		name string

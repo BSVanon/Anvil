@@ -477,9 +477,10 @@ header. There are two ways to pay:
   the challenge's nonce output and pays every payee the challenge names,
   then repeat the request with the proof in `X402-Proof`. One challenge pays
   for one request.
-- **`X-Bsv-Payment`** (direct, no challenge): send a raw or Extended Format
-  (BRC-30) transaction, as hex or base64, that pays the payees. Atomic BEEF
-  is not parsed.
+- **`X-Bsv-Payment`** (direct, no challenge): send an Extended Format
+  (BRC-30) transaction, as hex or base64, that pays the payees. Each input
+  must carry the output it spends, so a plain raw transaction is refused, and
+  Atomic BEEF is not parsed.
 
 **Direct payments need ARC.** The node broadcasts a direct payment and
 accepts it only when ARC reports that the network accepted it:

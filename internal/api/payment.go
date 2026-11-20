@@ -22,7 +22,7 @@ const (
 	HeaderX402Challenge = "X402-Challenge"
 	HeaderX402Proof     = "X402-Proof"
 	HeaderX402Receipt   = "X402-Receipt"
-	// Direct payment: a raw or Extended Format (BRC-30) tx, never Atomic BEEF.
+	// Direct payment: an Extended Format (BRC-30) tx; raw and Atomic BEEF are refused.
 	HeaderBSVPayment = "X-Bsv-Payment"
 )
 

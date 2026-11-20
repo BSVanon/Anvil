@@ -74,10 +74,10 @@ func readSSEUntilContains(resp *http.Response, marker string) string {
 // sentinel's own marker arrives (or resp's request context ends), and
 // returns everything accumulated so far.
 //
-// Cold review's RISK 10: the previous version of the two absence tests
-// below proved "the private envelope never arrived" solely by letting
-// subscribeSSE's fixed context timeout (500ms) run out and checking what
-// had accumulated by then — correct today, but the proof is only as good
+// The previous version of the two absence tests below proved "the private
+// envelope never arrived" solely by letting subscribeSSE's fixed context
+// timeout (500ms) run out and checking what had accumulated by then —
+// correct today, but the proof is only as good
 // as that guessed window; a slow CI runner or GC pause could let it expire
 // before a real leak had time to manifest, silently passing either way. A
 // subscriber's channel delivers in emission order (handleSubscribe,

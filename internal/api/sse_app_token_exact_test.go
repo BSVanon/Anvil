@@ -12,15 +12,14 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
-// TestSubscribeAppTokenMismatchedTopicStaysRedacted is cold review's RISK 5:
-// an SSE-level regression test for handleSubscribe's own app-token
-// redaction check (sse.go), distinct from
+// TestSubscribeAppTokenMismatchedTopicStaysRedacted: an SSE-level
+// regression test for the app-token redaction check on handleSubscribe's
+// event loop (sse.go, through envelopeForRequest), distinct from
 // TestAppTokenTopicMatchesExactTopicOnly (app_token_context_test.go), which
-// only covers appTokenTopicMatches itself in isolation. This exercises the
-// actual call site inside handleSubscribe's event loop — a mutation there
-// (e.g. swapping the exact-match helper for a prefix check, or dropping the
-// call entirely) would make this test fail even if the helper function's
-// own unit test still passed.
+// only covers appTokenTopicMatches itself in isolation. A mutation at the
+// call site (e.g. swapping the exact-match helper for a prefix check, or
+// dropping the call entirely) would make this test fail even if the helper
+// function's own unit test still passed.
 //
 // TokenGate.Middleware (token_gate.go) can never hand handleSubscribe a
 // context whose validated topic differs from the subscription's own query
@@ -44,7 +43,7 @@ import (
 // keeps this race-free despite using a ResponseRecorder.
 func TestSubscribeAppTokenMismatchedTopicStaysRedacted(t *testing.T) {
 	srv := testServer(t) // no tokenGate configured — nothing but the redaction check itself can gate this
-	const topic = "sse:risk5-exact-match"
+	const topic = "sse:exact-match"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -54,7 +53,7 @@ func TestSubscribeAppTokenMismatchedTopicStaysRedacted(t *testing.T) {
 	// subscription's own — unreachable through the real TokenGate.Middleware
 	// (see doc comment above), so this is the only way to reach the
 	// mismatched branch of handleSubscribe's own exact-match check.
-	req = req.WithContext(withAppTokenTopic(req.Context(), "sse:risk5-other-topic"))
+	req = req.WithContext(withAppTokenTopic(req.Context(), "sse:other-topic"))
 
 	w := httptest.NewRecorder()
 	done := make(chan struct{})

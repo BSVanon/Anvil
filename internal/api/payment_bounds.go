@@ -79,8 +79,9 @@ var nonceScriptTimeout = 2 * time.Second
 // errPaymentHeaderTooLarge marks a payment header refused by its size.
 var errPaymentHeaderTooLarge = errors.New("payment header too large")
 
-// errNonceUnlockingNotP2PKH marks a nonce input refused before the interpreter.
-var errNonceUnlockingNotP2PKH = errors.New("nonce unlocking script is not a P2PKH spend")
+// errNonceUnlockingNotP2PKH marks an input refused before the interpreter: the
+// nonce input of a proof, or any input of a direct payment.
+var errNonceUnlockingNotP2PKH = errors.New("unlocking script is not a P2PKH spend")
 
 // checkPaymentHeaderSize refuses a payment header value longer than
 // maxPaymentHeaderBytes. It reads only the length, so it runs before any
@@ -95,8 +96,7 @@ func checkPaymentHeaderSize(name, value string) error {
 // paymentRejectionStatus is the HTTP status for a rejected payment: 431 for a
 // header refused by its size, logged via refusallog (rate-limited, with r's
 // remote address) so an operator or the canary watching this node can see a
-// flood of oversized headers without one log line per request -- the 431
-// case cold review round 4's NITs flagged as unlogged -- and 402 for
+// flood of oversized headers without one log line per request, and 402 for
 // everything else, an ordinary payment-protocol outcome rather than the node
 // protecting itself, so left unlogged here as before.
 func paymentRejectionStatus(r *http.Request, err error) int {
@@ -145,7 +145,7 @@ func (pg *PaymentGate) endProofAttempt(hash string, pending *pendingChallenge, p
 // VerifySigPushOnly under Chronicle rules.
 func checkNonceUnlockingScript(locking, unlocking *bsvscript.Script) error {
 	if !locking.IsP2PKH() {
-		return fmt.Errorf("%w: the nonce locking script is not P2PKH", errNonceUnlockingNotP2PKH)
+		return fmt.Errorf("%w: the locking script it spends is not P2PKH", errNonceUnlockingNotP2PKH)
 	}
 	if len(*unlocking) > maxNonceUnlockingScriptBytes {
 		return fmt.Errorf("%w: %d bytes, the most a P2PKH spend needs is %d",
