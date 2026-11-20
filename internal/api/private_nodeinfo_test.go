@@ -191,3 +191,26 @@ func TestPrivateTopicAbsentFromAnvilManifest(t *testing.T) {
 		t.Fatalf("a public topic should still be advertised in GET /.well-known/anvil: %s", w.Body.String())
 	}
 }
+
+// TestPrivateTopicAbsentFromAppRedirect: GET /app/{name} (no auth layer
+// at all) never redirects based on a private anvil:catalog entry.
+func TestPrivateTopicAbsentFromAppRedirect(t *testing.T) {
+	srv := testServer(t)
+	const pub = "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"
+	srv.envelopeStore.StoreEphemeralDirect(&envelope.Envelope{
+		Type: "data", Topic: "anvil:catalog",
+		Payload:   `{"name":"SecretApp","content_origin":"secret-origin-abc"}`,
+		Pubkey:    pub,
+		Signature: "3045022100abcd", TTL: 60, Timestamp: 1700000000,
+		Private: true, Durable: true,
+	})
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/app/SecretApp", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("GET /app/{name} must not redirect via a private catalog entry, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "secret-origin-abc") {
+		t.Fatalf("private catalog content_origin leaked: %s", w.Body.String())
+	}
+}
