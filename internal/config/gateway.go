@@ -115,13 +115,18 @@ func finalizeGateway(cfg *Config, configPath string) error {
 	}
 
 	// D2: api_host is resolved from, and reconciled against, [node]
-	// public_url.
+	// public_url. With the gateway off, none of this can stop the node
+	// from starting (fix cycle 2, item 1): a disagreeing api_host/
+	// public_url and an api_host that happens to also be listed in the
+	// sites file are both only real problems once the gateway is
+	// actually serving anything — the same reasoning the "both empty"
+	// check below already applied.
 	apiHost := strings.TrimSpace(cfg.Gateway.APIHost)
 	publicHost := urlHost(cfg.Node.PublicURL)
 	switch {
 	case apiHost == "":
 		apiHost = publicHost
-	case publicHost != "" && !strings.EqualFold(apiHost, publicHost):
+	case cfg.Gateway.Enabled && publicHost != "" && !strings.EqualFold(apiHost, publicHost):
 		return fmt.Errorf("[gateway] api_host %q and [node] public_url's host %q disagree: overlay federation calls this node at public_url, so a mismatch would 404 it", apiHost, publicHost)
 	}
 	if apiHost == "" && cfg.Gateway.Enabled {
@@ -129,7 +134,7 @@ func finalizeGateway(cfg *Config, configPath string) error {
 	}
 	cfg.Gateway.APIHost = apiHost
 
-	if apiHost != "" && sitesFileListsDomain(cfg.Gateway.SitesFile, apiHost) {
+	if cfg.Gateway.Enabled && apiHost != "" && sitesFileListsDomain(cfg.Gateway.SitesFile, apiHost) {
 		return fmt.Errorf("[gateway] api_host %q must not also be listed as a site in the sites file (%s): the API always wins, so a conflicting domain entry there is refused", apiHost, cfg.Gateway.SitesFile)
 	}
 

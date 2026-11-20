@@ -193,6 +193,41 @@ api_host = "admin.example.org"
 	}
 }
 
+// TestLoadGatewayDisabledIgnoresAPIHostConflicts is fix cycle 2 item 1:
+// with [gateway] disabled, nothing gateway-related can stop a node from
+// starting — a disagreeing api_host/public_url and an api_host also
+// listed in the sites file are only real problems once the gateway is
+// actually serving anything, the same reasoning the "both empty" check
+// already applied. This combines both checks in one config, gateway off,
+// to confirm Load succeeds through both.
+func TestLoadGatewayDisabledIgnoresAPIHostConflicts(t *testing.T) {
+	dir := t.TempDir()
+	// The sites file lists the resolved host: since api_host is set
+	// explicitly and non-empty, it is never defaulted from public_url, so
+	// the "resolved" api_host stays "other.example.org" even though it
+	// disagrees with public_url.
+	sitesPath := filepath.Join(dir, "gateway-sites.conf")
+	if err := os.WriteFile(sitesPath, []byte("domain other.example.org\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	p := writeTestConfig(t, dir, `
+[node]
+name = "gw"
+public_url = "https://real.example.org"
+
+[gateway]
+api_host = "other.example.org"
+`)
+
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("expected Load to succeed with [gateway] disabled despite a disagreeing api_host and a sites-file overlap, got: %v", err)
+	}
+	if cfg.Gateway.APIHost != "other.example.org" {
+		t.Fatalf("expected api_host to stay %q, got %q", "other.example.org", cfg.Gateway.APIHost)
+	}
+}
+
 // TestLoadRejectsInvalidContentScope is D3: only "", "site" or "any" are
 // accepted for [gateway] content_scope; anything else fails Load, rather
 // than silently falling back to "site" as it used to.
