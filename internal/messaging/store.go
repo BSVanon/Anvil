@@ -53,12 +53,21 @@ type StoredMessage struct {
 	Message
 	AttestedBy string `json:"senderAttestedBy"`
 	ReceivedAt int64  `json:"-"`
+	// ExpiryBase is the "ex:" index timestamp (see copy_ttl.go): zero
+	// means "use ReceivedAt", which is both every pre-brick record's
+	// real value and the default for a record stored at ttl_seconds.
+	ExpiryBase int64 `json:"-"`
 }
 
 type diskRecord struct {
 	Message
 	AttestedBy string `json:"senderAttestedBy"`
 	ReceivedAt int64  `json:"receivedAt"`
+	// ExpiryBase is additive: absent on any record written before this
+	// brick, which decodes it to the Go zero value — quota.go's
+	// read/write sites treat that as "equals ReceivedAt" uniformly, so
+	// old records keep their original expiry with no migration.
+	ExpiryBase int64 `json:"expiryBase,omitempty"`
 }
 
 type Options struct {
@@ -106,13 +115,34 @@ func NewStore(path string, opts Options) (*Store, error) {
 }
 
 func (s *Store) Send(msg *Message, originNode string) (string, error) {
-	if err := validateMessage(msg, false); err != nil {
+	id, record, err := s.prepareSend(msg, originNode)
+	if err != nil {
 		return "", err
+	}
+	inserted, err := s.insertAndNotify(record)
+	if err != nil {
+		return "", err
+	}
+	if !inserted {
+		return "", errors.New("message ID already exists")
+	}
+	return id, nil
+}
+
+// prepareSend runs Send's validation and ID-minting. Shared with
+// SendElsewhere (copy_ttl.go): a locally-originated message goes through
+// the same checks regardless of which TTL or store decision the Home
+// Rule picks for its recipient. The returned record's ExpiryBase is left
+// zero (equals ReceivedAt, i.e. ttl_seconds); SendElsewhere overrides it
+// for the Elsewhere row of decision 3's table.
+func (s *Store) prepareSend(msg *Message, originNode string) (string, *StoredMessage, error) {
+	if err := validateMessage(msg, false); err != nil {
+		return "", nil, err
 	}
 	originNode = strings.ToLower(originNode)
 	if originNode != "" {
 		if _, err := parseCompressedKey(originNode); err != nil {
-			return "", ErrInvalidOriginNode
+			return "", nil, ErrInvalidOriginNode
 		}
 	}
 	msg.Sender = strings.ToLower(msg.Sender)
@@ -122,18 +152,11 @@ func (s *Store) Send(msg *Message, originNode string) (string, error) {
 	}
 	id, err := NewMessageID(msg, originNode)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	msg.MessageID = id
 	record := &StoredMessage{Message: *msg, AttestedBy: "local", ReceivedAt: s.now().Unix()}
-	inserted, err := s.insertAndNotify(record)
-	if err != nil {
-		return "", err
-	}
-	if !inserted {
-		return "", errors.New("message ID already exists")
-	}
-	return id, nil
+	return id, record, nil
 }
 
 func (s *Store) Deliver(msg *Message, attestedBy string) (bool, error) {
@@ -347,7 +370,10 @@ func parseCompressedKey(value string) (*ec.PublicKey, error) {
 }
 
 func encodeRecord(record *StoredMessage) ([]byte, error) {
-	return json.Marshal(diskRecord{Message: record.Message, AttestedBy: record.AttestedBy, ReceivedAt: record.ReceivedAt})
+	return json.Marshal(diskRecord{
+		Message: record.Message, AttestedBy: record.AttestedBy,
+		ReceivedAt: record.ReceivedAt, ExpiryBase: record.ExpiryBase,
+	})
 }
 
 func decodeRecord(data []byte) (*StoredMessage, error) {
@@ -355,5 +381,8 @@ func decodeRecord(data []byte) (*StoredMessage, error) {
 	if err := json.Unmarshal(data, &record); err != nil {
 		return nil, err
 	}
-	return &StoredMessage{Message: record.Message, AttestedBy: record.AttestedBy, ReceivedAt: record.ReceivedAt}, nil
+	return &StoredMessage{
+		Message: record.Message, AttestedBy: record.AttestedBy,
+		ReceivedAt: record.ReceivedAt, ExpiryBase: record.ExpiryBase,
+	}, nil
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -170,17 +171,51 @@ func (s *Server) resolveMessageCaller(w http.ResponseWriter, r *http.Request) (m
 	return messageCaller{}, false
 }
 
-// scopedRecipient resolves the inbox an authenticated caller may read/ack.
-// BRC-31 callers are strictly scoped to their own identity; the operator token
-// may target a body-supplied recipient (defaulting to the node identity).
-func (s *Server) scopedRecipient(caller messageCaller, bodyRecipient string) string {
+// scopedRecipient resolves the inbox an authenticated caller may
+// read/ack. BRC-31 callers are strictly scoped to their own identity,
+// unconditionally — unaffected by decision 5. The operator token may
+// target a body-supplied recipient (defaulting to the node identity)
+// when [messaging] operator_reads_all_boxes allows it (operatorBoxAllowed,
+// below); otherwise this writes a 403 and returns ok=false.
+func (s *Server) scopedRecipient(w http.ResponseWriter, caller messageCaller, bodyRecipient string) (string, bool) {
 	if caller.scoped {
-		return caller.identityHex
+		return caller.identityHex, true
+	}
+	if !s.operatorBoxAllowed(bodyRecipient) {
+		writeCodedError(w, http.StatusForbidden, "ERR_OPERATOR_BOX_RESTRICTED", operatorBoxRestrictedMsg)
+		return "", false
 	}
 	if bodyRecipient != "" {
-		return bodyRecipient
+		return bodyRecipient, true
 	}
-	return s.identityPub
+	return s.identityPub, true
+}
+
+// operatorBoxRestrictedMsg is the 403 body for every path decision 5
+// gates (scopedRecipient, above, and handleMessageSubscribe's operator
+// fallback, sse_messages.go).
+const operatorBoxRestrictedMsg = "the operator token may only access this node's own identity box; naming another recipient is disabled ([messaging] operator_reads_all_boxes = false)"
+
+// operatorBoxAllowed reports whether an operator-token caller may target
+// bodyRecipient (decision 5, B6 messaging-privacy spec): naming nothing,
+// or this node's own identity box, is always allowed — that is today's
+// default behaviour regardless of the switch. Naming any OTHER recipient
+// requires operatorReadsAll() (default true, today's behaviour).
+func (s *Server) operatorBoxAllowed(bodyRecipient string) bool {
+	if bodyRecipient == "" || strings.EqualFold(bodyRecipient, s.identityPub) {
+		return true
+	}
+	return s.operatorReadsAll()
+}
+
+// operatorReadsAll reports [messaging] operator_reads_all_boxes. nil
+// (never wired, or the config key absent) means the default: true,
+// today's behaviour.
+func (s *Server) operatorReadsAll() bool {
+	if s.operatorReadsAllBoxes == nil {
+		return true
+	}
+	return *s.operatorReadsAllBoxes
 }
 
 // handleMessageSession mints a short-lived SSE session token bound to the

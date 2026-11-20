@@ -53,6 +53,11 @@ func (m *Manager) allowUnstoredRelay() bool {
 	return false
 }
 
+// relayMessageForward relays an incoming forward to every OTHER connected
+// peer that decision 4's forward_peers allows (nil = every peer, today's
+// behaviour). Called only for forwards onMsgForward (handlers_msg.go)
+// decided to relay, per decision 3's table; this function does not
+// itself re-check Home or any budget.
 func (m *Manager) relayMessageForward(senderPKHex string, fwd MsgForwardPayload) {
 	if relayForwardTestHook != nil {
 		relayForwardTestHook(m, senderPKHex, fwd)
@@ -65,7 +70,7 @@ func (m *Manager) relayMessageForward(senderPKHex string, fwd MsgForwardPayload)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for pkHex, peer := range m.peers {
-		if pkHex != senderPKHex && peer.Peer != nil {
+		if pkHex != senderPKHex && peer.Peer != nil && m.peerAllowedForForward(pkHex) {
 			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
 		}
 	}

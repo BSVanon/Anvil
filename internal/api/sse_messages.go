@@ -159,11 +159,18 @@ func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "messageBox query parameter required")
 		return
 	}
-	// Scoped (session-token) callers stream only their own inbox; the operator
-	// fallback may target a query recipient, defaulting to the node identity.
+	// Scoped (session-token) callers stream only their own inbox; the
+	// operator fallback may target a query recipient, defaulting to the
+	// node identity, gated by decision 5's operator_reads_all_boxes
+	// switch (operatorBoxAllowed, brc31_messagebox.go) exactly like
+	// scopedRecipient gates /listMessages and /acknowledgeMessage.
 	recipient := identity
 	if !scoped {
 		if q := r.URL.Query().Get("recipient"); q != "" {
+			if !s.operatorBoxAllowed(q) {
+				writeCodedError(w, http.StatusForbidden, "ERR_OPERATOR_BOX_RESTRICTED", operatorBoxRestrictedMsg)
+				return
+			}
 			recipient = q
 		}
 	}

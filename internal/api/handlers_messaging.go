@@ -56,7 +56,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		Body:       req.Body,
 	}
 
-	id, err := s.msgStore.Send(msg, s.identityPub)
+	id, forward, err := s.sendHomeAware(msg)
 	if err != nil {
 		if writeMessagingError(w, err) {
 			s.logger.Error("messagebox send failed", "error", err)
@@ -64,9 +64,12 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Forward to mesh for cross-node delivery.
-	// ForwardMessage signs with the node's identity key.
-	if s.gossipMgr != nil {
+	// Forward to mesh for cross-node delivery — skipped when the Home
+	// Rule resolves the recipient as Home (decision 3's "API send, Home"
+	// row: the recipient's home node already has it, so flooding the mesh
+	// would be pointless). ForwardMessage signs with the node's identity
+	// key.
+	if forward && s.gossipMgr != nil {
 		s.gossipMgr.ForwardMessage(msg)
 	}
 
@@ -74,6 +77,66 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		"status":    "success",
 		"messageId": id,
 	})
+}
+
+// sendHomeAware applies decision 3's "API send" table rows for msg's
+// recipient (B6 messaging-privacy spec):
+//
+//	Home         -> store at ttl_seconds (Send), never forward.
+//	Unadvertised -> store at ttl_seconds (Send), forward (as today).
+//	Elsewhere    -> store at forward_copy_ttl when it is > 0
+//	                (SendElsewhere), or nothing when it is 0; forward
+//	                either way.
+//
+// forwardCopyPolicy's legacy case (decisions 2/3 never wired up at all)
+// reproduces the exact pre-brick behaviour: Send unconditionally, always
+// forward.
+func (s *Server) sendHomeAware(msg *messaging.Message) (id string, forward bool, err error) {
+	ttl, store, legacy := s.forwardCopyPolicy()
+	if legacy {
+		id, err = s.msgStore.Send(msg, s.identityPub)
+		return id, true, err
+	}
+	res, resErr := s.homeResolverOrDefault().Resolve(msg.Recipient)
+	if resErr != nil {
+		s.logger.Debug("home resolution failed, treating recipient as unadvertised", "error", resErr)
+		res = messaging.Resolution{State: messaging.Unadvertised}
+	}
+	switch res.State {
+	case messaging.Home:
+		id, err = s.msgStore.Send(msg, s.identityPub)
+		return id, false, err
+	case messaging.Elsewhere:
+		id, err = s.msgStore.SendElsewhere(msg, s.identityPub, ttl, store)
+		return id, true, err
+	default: // Unadvertised
+		id, err = s.msgStore.Send(msg, s.identityPub)
+		return id, true, err
+	}
+}
+
+// homeResolverOrDefault mirrors gossip.Manager's helper of the same
+// purpose: nil means the Home Rule was never wired up, which always
+// answers Unadvertised — "when this node doesn't host the topic"
+// (decision 2), and today's behaviour.
+func (s *Server) homeResolverOrDefault() messaging.HomeResolver {
+	if s.homeResolver != nil {
+		return s.homeResolver
+	}
+	return messaging.AlwaysUnadvertised
+}
+
+// forwardCopyPolicy mirrors gossip.Manager's helper of the same name:
+// forwardCopyTTLSeconds nil means decisions 2/3 were never wired up at
+// all (legacy=true), which the caller must handle by reproducing the
+// exact pre-brick behaviour rather than treating a bare zero as an
+// explicit forward_copy_ttl=0.
+func (s *Server) forwardCopyPolicy() (ttlSeconds int64, store bool, legacy bool) {
+	if s.forwardCopyTTLSeconds == nil {
+		return 0, false, true
+	}
+	ttl := *s.forwardCopyTTLSeconds
+	return ttl, ttl > 0, false
 }
 
 // handleListMessages handles POST /listMessages — retrieve messages for the
@@ -124,7 +187,10 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
-	recipient := s.scopedRecipient(caller, req.Recipient)
+	recipient, ok := s.scopedRecipient(w, caller, req.Recipient)
+	if !ok {
+		return
+	}
 
 	msgs, err := s.msgStore.ListN(recipient, req.MessageBox, limit)
 	if err != nil {
@@ -201,7 +267,10 @@ func (s *Server) handleAcknowledgeMessage(w http.ResponseWriter, r *http.Request
 		seenIDs[id] = struct{}{}
 		uniqueIDs = append(uniqueIDs, id)
 	}
-	recipient := s.scopedRecipient(caller, req.Recipient)
+	recipient, ok := s.scopedRecipient(w, caller, req.Recipient)
+	if !ok {
+		return
+	}
 
 	n, err := s.msgStore.Acknowledge(recipient, uniqueIDs)
 	if err != nil {
