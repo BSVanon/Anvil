@@ -45,11 +45,18 @@ var errDirectPaymentUnavailable = &paymentRefusal{
 		"send the request without a payment header to get an X402-Challenge, then pay it with an X402-Proof",
 }
 
-// writePaymentRejection answers a refused payment: 431 for a payment header
-// refused by its size (paymentRejectionStatus, payment_bounds.go), a coded
-// 402 for a paymentRefusal, and a plain 402 for any other payment failure.
-// prefix names the payment path in the message.
+// writePaymentRejection answers a refused payment: the body-read status for
+// a request body that could not be read (writePaymentBodyError,
+// payment_bodyread.go), 431 for a payment header refused by its size
+// (paymentRejectionStatus, payment_bounds.go), a coded 402 for a
+// paymentRefusal, and a plain 402 for any other payment failure. prefix names
+// the payment path in the message.
 func writePaymentRejection(w http.ResponseWriter, r *http.Request, prefix string, err error) {
+	var bodyErr *paymentBodyError
+	if errors.As(err, &bodyErr) {
+		writePaymentBodyError(w, r, bodyErr)
+		return
+	}
 	status := paymentRejectionStatus(r, err)
 	var refusal *paymentRefusal
 	if status == http.StatusPaymentRequired && errors.As(err, &refusal) {

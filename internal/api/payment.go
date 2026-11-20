@@ -277,7 +277,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		receipt, err := pg.verifyProof(r, proofHeader)
+		receipt, err := pg.verifyProof(w, r, proofHeader)
 		if err != nil {
 			writePaymentRejection(w, r, "payment rejected: ", err)
 			return

@@ -1,12 +1,10 @@
 package api
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -16,7 +14,7 @@ import (
 )
 
 // verifyProof validates a payment proof against the x402 spec.
-func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (receipt *X402Receipt, err error) {
+func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proofHeader string) (receipt *X402Receipt, err error) {
 	// Step 0: Refuse an oversized header before decoding it (payment_bounds.go).
 	if err := checkPaymentHeaderSize(HeaderX402Proof, proofHeader); err != nil {
 		return nil, err
@@ -59,10 +57,13 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (receipt
 	}
 
 	liveHeaderHash := canonicalHeaderHash(r)
-	liveBodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// Read under the payment-body bounds (payment_bodyread.go), which also
+	// leaves the body readable for the handler after the gate (e.g. POST /data).
+	liveBodyBytes, err := readPaymentBody(w, r)
+	if err != nil {
+		return nil, err
+	}
 	liveBodyHash := sha256Hex(liveBodyBytes)
-	// Restore the body so downstream handlers (e.g. POST /data) can read it.
-	r.Body = io.NopCloser(bytes.NewReader(liveBodyBytes))
 
 	if proof.Request.ReqHeadersSHA256 != challenge.ReqHeadersSHA256 {
 		return nil, fmt.Errorf("req_headers_sha256: proof does not match challenge")
