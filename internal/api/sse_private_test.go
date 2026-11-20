@@ -202,10 +202,10 @@ func TestSubscribeOperatorSeesPrivateEnvelope(t *testing.T) {
 }
 
 // TestSubscribePayerSeesUnredactedMonetizedContent: a verified payment
-// still unlocks monetized PUBLIC content over SSE, unredacted — the same
-// admission payment that already gated entry to the subscription. Strict
-// redaction that ignored isAuthedOrPaid would make a payer lose content
-// they already paid the node's toll for.
+// still unlocks monetized PUBLIC content over SSE, unredacted, when it covers
+// the envelope by the envelope's own monetization: one of its outputs pays
+// the envelope's own payee at least its own price. Here the envelope's payee
+// is the script the proof pays.
 func TestSubscribePayerSeesUnredactedMonetizedContent(t *testing.T) {
 	srv := testServerWithPaymentGate(t, 100)
 	ts := httptest.NewServer(srv.Handler())
@@ -228,7 +228,7 @@ func TestSubscribePayerSeesUnredactedMonetizedContent(t *testing.T) {
 	env := &envelope.Envelope{
 		Type: "data", Topic: topic, Payload: `{"premium":"payer-should-see-this"}`,
 		Timestamp:    time.Now().Unix(),
-		Monetization: &envelope.Monetization{Model: envelope.MonetizationPassthrough, PriceSats: 10},
+		Monetization: &envelope.Monetization{Model: envelope.MonetizationPassthrough, PayeeLockingScriptHex: testPayeeScript(t), PriceSats: 10},
 	}
 	env.Sign(key)
 	srv.NotifyEnvelope(env)

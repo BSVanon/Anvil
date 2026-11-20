@@ -78,12 +78,10 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// authed gates private-envelope omission; a verified payment
-	// additionally unlocks paid/monetized redaction, but only on the exact
-	// topic it was resolved and charged against — same authenticated/paid
-	// split and exact-topic rule as GET /data (handlers.go), so paying
-	// never unlocks a private envelope, or a sibling/child topic's own
-	// payload, over SSE either.
+	// authed gates private-envelope omission; a payment or an app token
+	// unredacts only the monetized envelopes it covers, each by its own rule
+	// (envelopeForRequest, envelope_redaction.go), the same as GET /data
+	// (handlers.go). Paying never unlocks a private envelope over SSE either.
 	authed := s.isAuthed(r)
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -126,20 +124,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			if env.Private && !authed {
 				continue
 			}
-			// Redact paid payloads unless authenticated, or paid on exactly
-			// this topic (paidTopicMatches — RISK 4: a toll paid on a
-			// parent topic must not unlock a child's own payload), or
-			// carrying a validated app token for this exact topic
-			// (appTokenTopicMatches — same rule as GET /data, handlers.go).
-			// mustRedactEnvelope also gates a Model 4 envelope with no
-			// token (envelope_redaction.go).
-			outEnv := env
-			paid := authed || (isPaid(r) && paidTopicMatches(r, env.Topic))
-			if !paid && !appTokenTopicMatches(r, env.Topic) && mustRedactEnvelope(env) {
-				redacted := *env
-				redacted.Payload = envelopeRedactionPlaceholder(env)
-				outEnv = &redacted
-			}
+			// The hub delivers only envelopes on exactly the subscribed topic
+			// (envelopeHub.notify), so every envelope here is on the topic
+			// this request's payment or token was checked against. Each is
+			// still served or redacted by its own monetization.
+			outEnv := envelopeForRequest(r, env, authed)
 
 			data, err := json.Marshal(outEnv)
 			if err != nil {

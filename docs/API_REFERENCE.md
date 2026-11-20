@@ -503,6 +503,27 @@ pay once more.
 A refused payment answers 402. When the refusal has a stable code, the body
 is `{"status":"error","code":"ERR_...","description":"...","error":"..."}`.
 
+### What a payment or app token unlocks
+
+A monetized envelope's payload is unlocked envelope by envelope, by that
+envelope's own rule, on `GET /data` and on the SSE subscription alike:
+
+- A priced envelope (passthrough or split) is unlocked by a payment with one
+  output that pays that envelope's own payee script at least its price,
+  capped at the node's `max_app_price_sats`: the price the 402 challenge asks
+  for it.
+- The node's own toll unlocks what the node prices, which is unmonetized
+  content. It never unlocks an envelope priced to an app's payee.
+- A token-model envelope is unlocked only by an `X-App-Token` validated on
+  its exact topic and signed by the `auth_pubkey` that envelope names. A
+  payment never unlocks one.
+
+Known limit: the newest envelope on a topic sets that topic's rule. A newer
+token-model envelope naming another key cannot unlock any older envelope
+that names a different key or payee, but while it is the newest, honest
+token holders and payers of that topic are refused (401 or 403). Closing
+this needs topic ownership.
+
 Get your auth token:
 ```bash
 sudo anvil token
@@ -517,11 +538,11 @@ curl -N "http://localhost:9333/data/subscribe?topic=oracle:rates:bsv"
 ```
 
 Each new envelope is pushed as a `data:` event with a monotonic `id:` field.
-Monetized payloads are redacted for a client that hasn't paid; a verified
-x402 payment unlocks that topic's monetized content for the paying client,
-the same as `GET /data`. A `private` envelope is never streamed to a client
-without the operator's bearer token — a payment never unlocks one here
-either.
+Monetized payloads are redacted unless the client's payment or app token
+covers each envelope by that envelope's own rule, the same as `GET /data`
+(see "What a payment or app token unlocks" above). A `private` envelope is
+never streamed to a client without the operator's bearer token — a payment
+never unlocks one here either.
 
 On reconnect, the browser's `EventSource` sends `Last-Event-ID` automatically.
 Use `GET /data?since=TIMESTAMP` to backfill any missed events.

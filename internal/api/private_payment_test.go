@@ -65,10 +65,11 @@ func TestPaidRequestOmitsPrivateEnvelope(t *testing.T) {
 }
 
 // TestPaidRequestStillUnlocksMonetizedPayload: preserves pre-split behavior —
-// a verified payment still unlocks a paid/monetized payload, exactly as
-// isAuthedOrPaid intends (the payment does not have to target this specific
-// envelope's own monetization; it is the same node-level admission payment
-// that already gated entry to the handler).
+// a verified payment still unlocks a paid/monetized payload. The payment
+// covers the envelope by its own monetization: one of its outputs pays the
+// envelope's own payee at least its own price (envelopeForRequest,
+// envelope_redaction.go). Here the envelope's payee is the script the proof
+// pays.
 func TestPaidRequestStillUnlocksMonetizedPayload(t *testing.T) {
 	srv := testServerWithPaymentGate(t, 100)
 	srv.envelopeStore.StoreEphemeralDirect(&envelope.Envelope{
@@ -80,8 +81,9 @@ func TestPaidRequestStillUnlocksMonetizedPayload(t *testing.T) {
 		TTL:       60,
 		Timestamp: 1700000000,
 		Monetization: &envelope.Monetization{
-			Model:     envelope.MonetizationPassthrough,
-			PriceSats: 50,
+			Model:                 envelope.MonetizationPassthrough,
+			PayeeLockingScriptHex: testPayeeScript(t),
+			PriceSats:             50,
 		},
 	})
 

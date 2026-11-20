@@ -114,14 +114,10 @@ func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGate
 			}
 			return nil, false
 		}
-		appPrice := mon.PriceSats
-		if pg.maxAppPriceSats > 0 && appPrice > pg.maxAppPriceSats {
-			appPrice = pg.maxAppPriceSats
-		}
 		return []Payee{{
 			Role:             "content",
 			LockingScriptHex: mon.PayeeLockingScriptHex,
-			AmountSats:       appPrice,
+			AmountSats:       capAppPrice(mon.PriceSats, pg.maxAppPriceSats),
 		}}, false
 
 	case envelope.MonetizationSplit:
@@ -131,14 +127,10 @@ func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGate
 			}
 			return nil, false
 		}
-		appPrice := mon.PriceSats
-		if pg.maxAppPriceSats > 0 && appPrice > pg.maxAppPriceSats {
-			appPrice = pg.maxAppPriceSats
-		}
 		appPayee := Payee{
 			Role:             "content",
 			LockingScriptHex: mon.PayeeLockingScriptHex,
-			AmountSats:       appPrice,
+			AmountSats:       capAppPrice(mon.PriceSats, pg.maxAppPriceSats),
 		}
 		if nodePayee != nil {
 			return []Payee{*nodePayee, appPayee}, false
@@ -169,4 +161,15 @@ func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGate
 		}
 		return nil, false
 	}
+}
+
+// capAppPrice is what this node charges for an app's declared price: at most
+// maxAppPriceSats (max_app_price_sats) when that is above 0. The 402
+// challenge asks for this price, and a payment unredacts an envelope only
+// when it pays at least this price (paymentCovers, paid_outputs_context.go).
+func capAppPrice(price, maxAppPriceSats int) int {
+	if maxAppPriceSats > 0 && price > maxAppPriceSats {
+		return maxAppPriceSats
+	}
+	return price
 }

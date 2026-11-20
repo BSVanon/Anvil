@@ -181,6 +181,7 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 		TxID:      txid,
 		Satoshis:  totalPaid,
 		Timestamp: time.Now().Unix(),
+		outputs:   paidOutputs(tx),
 	}, nil
 }
 
@@ -327,5 +328,6 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 		TxID:      txid,
 		Satoshis:  totalPaid,
 		Timestamp: time.Now().Unix(),
+		outputs:   paidOutputs(tx),
 	}, nil
 }

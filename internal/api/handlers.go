@@ -134,11 +134,9 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 
 	// authed gates `private` envelope omission below: operator bearer token
 	// ONLY — a verified x402 payment or a valid app token is never
-	// sufficient (docs/ANVIL_PRIVATE_FLAG_CONTRACT.md). A verified payment
-	// additionally unredacts a monetized payload, but only on the exact
-	// topic it was resolved and charged against — never a sibling or
-	// sub-topic the prefix scan below also returns (RISK 4, paidTopicMatches
-	// in paid_topic_context.go).
+	// sufficient (docs/ANVIL_PRIVATE_FLAG_CONTRACT.md). A payment or an app
+	// token unredacts only the monetized envelopes it covers, each by its own
+	// rule (envelopeForRequest, envelope_redaction.go).
 	authed := s.isAuthed(r)
 
 	// Track demand for this topic — operator reads never count, so the
@@ -193,29 +191,15 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		envs = envs[:limit]
 	}
 
-	// Clone envelopes for response — never mutate the in-memory store.
 	// Private envelopes were already dropped above for callers who are not
 	// authenticated, omitted entirely (not just payload-redacted) so
 	// neither the sealed blob nor its metadata (topic/pubkey/timestamp/size)
 	// leaks; operator bearer token callers see them in full. Paying never
-	// unlocks one.
+	// unlocks one. Each remaining envelope is served, or redacted into a copy
+	// (the in-memory store is never mutated), by its own monetization.
 	responseEnvs := make([]*envelope.Envelope, 0, len(envs))
 	for _, env := range envs {
-		// A validated app token (Model 4) additionally unredacts an envelope
-		// on EXACTLY the topic it was validated for — never a private
-		// envelope (dropped above regardless of this check).
-		// mustRedactEnvelope (envelope_redaction.go) also gates a Model 4
-		// envelope with no token, closing RISK 4's parent-query leak
-		// (PriceSats==0 token envelopes were never redacted before).
-		paid := authed || (isPaid(r) && paidTopicMatches(r, env.Topic))
-		if !paid && !appTokenTopicMatches(r, env.Topic) && mustRedactEnvelope(env) {
-			// Shallow copy + redact payload
-			redacted := *env
-			redacted.Payload = envelopeRedactionPlaceholder(env)
-			responseEnvs = append(responseEnvs, &redacted)
-		} else {
-			responseEnvs = append(responseEnvs, env)
-		}
+		responseEnvs = append(responseEnvs, envelopeForRequest(r, env, authed))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

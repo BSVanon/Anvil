@@ -85,12 +85,15 @@ func (tg *TokenGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Carry the validated topic as a request-context value — never
-		// a header, never "authenticated". A validated token is a credential
-		// for monetized PUBLIC content on exactly this topic; it is read by
-		// payment.go (toll skip) and by the redaction checks in handlers.go
-		// and sse.go, and it is NEVER consulted by isAuthed/isOperatorToken.
-		next(w, r.WithContext(withAppTokenTopic(r.Context(), topic)))
+		// Carry the validated topic and the key that issued the token as
+		// request-context values — never a header, never "authenticated". A
+		// validated token is a credential for token-model PUBLIC content on
+		// exactly this topic, issued by exactly this key; it is read by
+		// payment.go (toll skip) and by envelopeForRequest
+		// (envelope_redaction.go), and it is NEVER consulted by
+		// isAuthed/isOperatorToken.
+		ctx := withAppTokenIssuer(withAppTokenTopic(r.Context(), topic), mon.AuthPubkey)
+		next(w, r.WithContext(ctx))
 	}
 }
 

@@ -90,9 +90,10 @@ type ProofPayment struct {
 // --- Receipt (server → client) ---
 
 type X402Receipt struct {
-	TxID      string `json:"txid"`
-	Satoshis  int    `json:"satoshis"`
-	Timestamp int64  `json:"timestamp"`
+	TxID      string            `json:"txid"`
+	Satoshis  int               `json:"satoshis"`
+	Timestamp int64             `json:"timestamp"`
+	outputs   map[string]uint64 // what the payment paid, never sent (paid_outputs_context.go)
 }
 
 // --- NonceProvider interface ---
@@ -260,8 +261,8 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Calhooon compatibility: x-bsv-payment contains a raw/BEEF tx
-		// that pays the declared payees directly (no challenge-nonce binding).
+		// X-Bsv-Payment: a raw or Extended Format tx that pays the payees
+		// directly, with no challenge (verifyDirectPayment).
 		if bsvPayment != "" && proofHeader == "" {
 			receipt, err := pg.verifyDirectPayment(bsvPayment, payees)
 			if err != nil {
@@ -270,10 +271,8 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			}
 			receiptJSON, _ := json.Marshal(receipt)
 			w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
-			// Marks *paid*, not *authenticated* — a payment never unlocks a
-			// private envelope (paid_context.go, isAuthedOrPaid) — and only
-			// for this exact topic (paid_topic_context.go, RISK 4).
-			next(w, r.WithContext(withPaidTopic(withPaid(r.Context()), topic)))
+			// Paid, never authenticated (withPayment, paid_outputs_context.go).
+			next(w, r.WithContext(pg.withPayment(r.Context(), receipt)))
 			return
 		}
 
@@ -285,10 +284,8 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 
 		receiptJSON, _ := json.Marshal(receipt)
 		w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
-		// Marks *paid*, not *authenticated* — a payment never unlocks a
-		// private envelope (paid_context.go, isAuthedOrPaid) — and only for
-		// this exact topic (paid_topic_context.go, RISK 4).
-		next(w, r.WithContext(withPaidTopic(withPaid(r.Context()), topic)))
+		// Paid, never authenticated (withPayment, paid_outputs_context.go).
+		next(w, r.WithContext(pg.withPayment(r.Context(), receipt)))
 	}
 }
 
