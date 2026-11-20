@@ -194,6 +194,13 @@ func New(cfg *Config) (*engine.Engine, error) {
 		// publishes encrypted cross-device settings under this topic.
 		// See topics/kvstore.go header for port provenance.
 		topics.KVStoreTopicName: topics.KVStoreCanonical(lg),
+		// B6: canonical BRC-33 MessageBox host advertisement — Go port of
+		// the canonical overlay-express-examples MessageBoxTopicManager.
+		// Same transitional placement as UMP/Identity/KVStore. Backs
+		// messaging.HomeResolver (decision 2): a recipient's home host
+		// is whichever node its current tm_messagebox advert names. See
+		// topics/messagebox.go header for port provenance.
+		topics.MessageBoxTopicName: topics.MessageBoxCanonical(lg),
 	}
 
 	lookupServices := map[string]engine.LookupService{
@@ -204,6 +211,7 @@ func New(cfg *Config) (*engine.Engine, error) {
 		topics.UMPLookupServiceName:        lookups.NewUMPLookupService(cfg.LookupDB),
 		topics.IdentityLookupServiceName:   lookups.NewIdentityLookupService(cfg.LookupDB),
 		topics.KVStoreLookupServiceName:    lookups.NewKVStoreLookupService(cfg.LookupDB),
+		topics.MessageBoxLookupServiceName: lookups.NewMessageBoxLookupService(cfg.LookupDB),
 	}
 
 	// Canonical BRC-88 SHIP/SLAP topic managers + lookup services from

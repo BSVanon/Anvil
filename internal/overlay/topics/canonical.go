@@ -88,3 +88,14 @@ func KVStoreCanonical(logger *slog.Logger) engine.TopicManager {
 		Version:     canonicalVersion,
 	})
 }
+
+// MessageBoxCanonical returns the canonical engine.TopicManager for the
+// MessageBox host-advertisement publication topic (tm_messagebox). Same
+// transitional placement note as UMPCanonical applies.
+func MessageBoxCanonical(logger *slog.Logger) engine.TopicManager {
+	return NewAdapter(MessageBoxTopicName, NewMessageBoxTopicManager(WithLogger(logger)), &overlay.MetaData{
+		Name:        MessageBoxTopicName,
+		Description: "BRC-33 MessageBox host-advertisement publication",
+		Version:     canonicalVersion,
+	})
+}
