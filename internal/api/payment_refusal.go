@@ -13,6 +13,9 @@ const (
 	// codeDirectPaymentUnavailable: the node has no ARC client, so it takes
 	// no X-Bsv-Payment (errDirectPaymentUnavailable).
 	codeDirectPaymentUnavailable = "ERR_DIRECT_PAYMENT_UNAVAILABLE"
+	// codePaymentNotAccepted: ARC did not report the payment transaction as
+	// accepted by the network (checkARCAcceptance, payment_arc.go).
+	codePaymentNotAccepted = "ERR_PAYMENT_NOT_ACCEPTED"
 )
 
 // paymentRefusal is a payment refused with one of the codes above.

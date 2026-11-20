@@ -161,21 +161,17 @@ func (pg *PaymentGate) verifyProof(r *http.Request, proofHeader string) (receipt
 	}
 
 	// Step 9: Mempool acceptance via ARC.
-	// When requireMempool is true AND an ARC client is available,
-	// broadcast the proof tx and require SEEN_ON_NETWORK before accepting.
-	// This prevents attackers from submitting structurally valid but
-	// never-broadcast transactions.
+	// When requireMempool is true AND an ARC client is available, broadcast
+	// the proof tx and require a status that shows the network accepted it
+	// (arcAccepted, payment_arc.go). This prevents attackers from submitting
+	// structurally valid but never-broadcast transactions.
 	if challenge.RequireMempoolAccept && pg.arcClient != nil {
 		arcResp, err := pg.arcClient.Submit(txBytes)
 		if err != nil {
 			return nil, fmt.Errorf("ARC broadcast failed: %w", err)
 		}
-		// Accept SEEN_ON_NETWORK, MINED, or any success status
-		switch arcResp.Status {
-		case "SEEN_ON_NETWORK", "MINED", "SEEN_IN_ORPHAN_MEMPOOL":
-			// OK — miner has it
-		default:
-			return nil, fmt.Errorf("ARC rejected payment tx: status=%s", arcResp.Status)
+		if err := checkARCAcceptance(arcResp); err != nil {
+			return nil, err
 		}
 	}
 
@@ -309,11 +305,8 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 	if err != nil {
 		return nil, fmt.Errorf("ARC broadcast failed: %w", err)
 	}
-	switch arcResp.Status {
-	case "SEEN_ON_NETWORK", "MINED", "SEEN_IN_ORPHAN_MEMPOOL":
-		// OK
-	default:
-		return nil, fmt.Errorf("ARC rejected payment tx: status=%s", arcResp.Status)
+	if err := checkARCAcceptance(arcResp); err != nil {
+		return nil, err
 	}
 
 	return &X402Receipt{

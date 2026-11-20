@@ -482,9 +482,13 @@ header. There are two ways to pay:
   is not parsed.
 
 **Direct payments need ARC.** The node broadcasts a direct payment and
-accepts it only when ARC reports that the network accepted it. A node with
-no ARC client refuses every `X-Bsv-Payment` with 402 and code
-`ERR_DIRECT_PAYMENT_UNAVAILABLE`; pay such a node with `X402-Proof`.
+accepts it only when ARC reports that the network accepted it:
+`SEEN_ON_NETWORK` or `MINED`. Any other status, including
+`SEEN_IN_ORPHAN_MEMPOOL`, is refused with 402 and code
+`ERR_PAYMENT_NOT_ACCEPTED`. A node with no ARC client refuses every
+`X-Bsv-Payment` with 402 and code `ERR_DIRECT_PAYMENT_UNAVAILABLE`; pay such
+a node with `X402-Proof`. An `X402-Proof` whose challenge sets
+`require_mempool_accept` is held to the same two statuses.
 
 A refused payment answers 402. When the refusal has a stable code, the body
 is `{"status":"error","code":"ERR_...","description":"...","error":"..."}`.
