@@ -270,11 +270,18 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	m.seenOwners[dedup] = seenOwner
 	m.seenMu.Unlock()
 
-	// No store at all (a relay-only node) forwards unconditionally, past
-	// the per-peer entry bound already checked above — unchanged from
-	// before this brick. A node WITH a store applies decision 3's table
-	// via deliverForward (handlers_msg_policy.go).
-	relay := m.msgStore == nil
+	// No store at all (a relay-only node) still forwards, past the
+	// per-peer entry bound already checked above, but now ALSO through
+	// the same manager-wide allowUnstoredRelay budget a node with a
+	// store applies via deliverForward's quota/non-home branches (N7):
+	// before this fix it relayed every forward unconditionally, so a
+	// relay-only node's only cap on an unstored flood was the per-peer
+	// bucket, not the shared budget every other unstored-relay path
+	// respects. In practice every production node calls SetMsgStore, so
+	// this branch is unreachable there — this closes it regardless. A
+	// node WITH a store applies decision 3's table via deliverForward
+	// (handlers_msg_policy.go).
+	relay := m.msgStore == nil && m.allowUnstoredRelay()
 	clearSeen := false
 	if m.msgStore != nil {
 		attestedBy := "sender"

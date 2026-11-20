@@ -261,9 +261,13 @@ func TestDeliverForwardNonHomeForwardCopyTTLPositiveStoredAndRelayed(t *testing.
 // TestAllowUnstoredRelayBoundsForwardCopyTTLZeroFlood proves decision
 // 3's relay bound with forward_copy_ttl=0: a flood of distinct messages
 // this node never stores is NOT all relayed — the manager-wide
-// allowUnstoredRelay budget (burst 50) caps it well below the flood
-// size, even though the per-peer entry bucket (burst 100, default) lets
-// all of them through to onMsgForward in the first place.
+// allowUnstoredRelay budget caps it at exactly its burst size (N9 —
+// asserting only "fewer than the flood" would also pass for a bound
+// that had quietly drifted, so this pins the exact number), even though
+// the per-peer entry bucket (burst 100, default) lets all of them
+// through to onMsgForward in the first place. The loop runs fast enough
+// that no time-based refill meaningfully adds tokens back mid-flood, so
+// the full flood is run before any single read of *relays.
 func TestAllowUnstoredRelayBoundsForwardCopyTTLZeroFlood(t *testing.T) {
 	store := newForwardTestStore(t)
 	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
@@ -285,11 +289,8 @@ func TestAllowUnstoredRelayBoundsForwardCopyTTLZeroFlood(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if *relays >= flood {
-		t.Fatalf("relays = %d of %d forwards, want it bounded below the flood size (unstoredRelayBurst=%d)", *relays, flood, unstoredRelayBurst)
-	}
-	if *relays < 1 {
-		t.Fatalf("relays = %d, want at least the initial burst to go through", *relays)
+	if *relays != unstoredRelayBurst {
+		t.Fatalf("relays = %d of %d forwards, want exactly unstoredRelayBurst=%d", *relays, flood, unstoredRelayBurst)
 	}
 	if store.Count() != 0 {
 		t.Fatalf("store count = %d, want 0 (forward_copy_ttl=0 never stores)", store.Count())
@@ -333,13 +334,14 @@ func TestNewForwardPeerFilterEmptyListMeansEveryPeer(t *testing.T) {
 	}
 }
 
-// TestForwardPeersRestrictsForwardMessageToListedPeers is decision 4's
-// required end-to-end test ("a forward reaches only listed peers"),
-// using two real, independently-connected peers (mirroring
-// multi_peer_test.go's pattern) rather than the relayForwardTestHook,
-// since that hook short-circuits before the per-peer loop and so cannot
-// observe WHICH peer receives a send.
-func TestForwardPeersRestrictsForwardMessageToListedPeers(t *testing.T) {
+// newForwardPeerTestHub builds a hub Manager with its mesh WebSocket
+// server listening, and returns a connectPeer helper that connects a
+// fresh peer (its own identity, envelope store and message store) to
+// it. Shared scaffolding for forward_peers' two relay-path tests below:
+// the API-send path (ForwardMessage's own loop) and the
+// relay-received path (onMsgForward -> relayMessageForward's loop, F2).
+func newForwardPeerTestHub(t *testing.T) (hub *Manager, connectPeer func(name string) (identityHex string, msgStore *messaging.Store)) {
+	t.Helper()
 	hubDir, err := os.MkdirTemp("", "anvil-fp-hub-*")
 	if err != nil {
 		t.Fatal(err)
@@ -355,19 +357,19 @@ func TestForwardPeersRestrictsForwardMessageToListedPeers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgrHub := NewManager(ManagerConfig{
+	hub = NewManager(ManagerConfig{
 		Wallet:         wallet.NewTestWalletForRandomKey(t),
 		Store:          hubEnv,
 		LocalInterests: []string{""},
 		MaxSeen:        100,
 		IdentityKey:    hubKey,
 	})
-	t.Cleanup(func() { mgrHub.Stop() })
-	ts := httptest.NewServer(mgrHub.MeshHandler())
+	t.Cleanup(func() { hub.Stop() })
+	ts := httptest.NewServer(hub.MeshHandler())
 	t.Cleanup(ts.Close)
 	wsURL := "ws" + ts.URL[len("http"):]
 
-	connectPeer := func(name string) (identityHex string, msgStore *messaging.Store) {
+	connectPeer = func(name string) (identityHex string, msgStore *messaging.Store) {
 		dir, err := os.MkdirTemp("", "anvil-fp-"+name+"-*")
 		if err != nil {
 			t.Fatal(err)
@@ -402,22 +404,34 @@ func TestForwardPeersRestrictsForwardMessageToListedPeers(t *testing.T) {
 		}
 		return identityHex, msgStore
 	}
+	return hub, connectPeer
+}
 
+// TestForwardPeersRestrictsForwardMessageToListedPeers is decision 4's
+// required end-to-end test ("a forward reaches only listed peers"),
+// using two real, independently-connected peers (mirroring
+// multi_peer_test.go's pattern) rather than the relayForwardTestHook,
+// since that hook short-circuits before the per-peer loop and so cannot
+// observe WHICH peer receives a send. This covers ForwardMessage's own
+// loop — the API-send path; F2's sibling test below covers the OTHER
+// forward_peers-respecting loop, relayMessageForward's.
+func TestForwardPeersRestrictsForwardMessageToListedPeers(t *testing.T) {
+	hub, connectPeer := newForwardPeerTestHub(t)
 	allowedHex, allowedStore := connectPeer("allowed")
 	_, deniedStore := connectPeer("denied")
 
 	time.Sleep(600 * time.Millisecond)
-	if mgrHub.PeerCount() != 2 {
-		t.Fatalf("expected 2 peers on hub, got %d", mgrHub.PeerCount())
+	if hub.PeerCount() != 2 {
+		t.Fatalf("expected 2 peers on hub, got %d", hub.PeerCount())
 	}
 
-	mgrHub.SetMessagingPolicy(MessagingPolicy{ForwardPeers: NewForwardPeerFilter([]string{allowedHex})})
+	hub.SetMessagingPolicy(MessagingPolicy{ForwardPeers: NewForwardPeerFilter([]string{allowedHex})})
 
 	_, senderHex := newID(t)
 	_, recipientHex := newID(t)
 	msg := sampleMsg(senderHex, recipientHex)
 	msg.MessageID = "forward-peers-e2e"
-	mgrHub.ForwardMessage(msg)
+	hub.ForwardMessage(msg)
 
 	time.Sleep(600 * time.Millisecond)
 
@@ -426,5 +440,83 @@ func TestForwardPeersRestrictsForwardMessageToListedPeers(t *testing.T) {
 	}
 	if deniedStore.Count() != 0 {
 		t.Fatalf("denied peer store count = %d, want 0 (forward_peers must exclude it)", deniedStore.Count())
+	}
+}
+
+// TestForwardPeersRestrictsRelayMessageForwardToListedPeers is F2: the
+// cold review's own M2b mutation (drop the forward_peers filter in the
+// relay loop) survived because the only existing coverage used
+// relayForwardTestHook, which returns before the peer loop
+// (relay_budget.go's relayMessageForward) and so cannot see which peer
+// actually receives a send. This drives a message through that OTHER
+// loop instead — the one a RECEIVED forward takes on its way back out
+// (onMsgForward -> deliverForward -> relayMessageForward) — with two
+// real, independently-connected peers, exactly like the sibling test
+// above covers ForwardMessage's own loop (the API-send path).
+func TestForwardPeersRestrictsRelayMessageForwardToListedPeers(t *testing.T) {
+	hub, connectPeer := newForwardPeerTestHub(t)
+	allowedHex, allowedStore := connectPeer("allowed")
+	_, deniedStore := connectPeer("denied")
+
+	time.Sleep(600 * time.Millisecond)
+	if hub.PeerCount() != 2 {
+		t.Fatalf("expected 2 peers on hub, got %d", hub.PeerCount())
+	}
+
+	hub.SetMessagingPolicy(MessagingPolicy{ForwardPeers: NewForwardPeerFilter([]string{allowedHex})})
+
+	// The hub itself never calls SetMsgStore, so onMsgForward's
+	// relay-only branch fires (bounded only by the manager-wide
+	// allowUnstoredRelay budget, N7, which a single message here is
+	// nowhere near) — relayMessageForward is reached exactly as it
+	// would be for a real received forward.
+	senderKey, senderHex := newID(t)
+	_, recipientHex := newID(t)
+	msg := sampleMsg(senderHex, recipientHex)
+	msg.MessageID = "relay-forward-peers-e2e"
+	raw, err := json.Marshal(legacyForward(t, senderKey, msg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.onMsgForward("not-a-connected-peer", raw); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(600 * time.Millisecond)
+
+	if allowedStore.Count() != 1 {
+		t.Fatalf("allowed peer store count = %d, want 1", allowedStore.Count())
+	}
+	if deniedStore.Count() != 0 {
+		t.Fatalf("denied peer store count = %d, want 0 (forward_peers must exclude it)", deniedStore.Count())
+	}
+}
+
+// TestRelayOnlyNodeBoundByUnstoredRelayBudget is N7: a node with no
+// message store at all (SetMsgStore never called) used to relay every
+// forward unconditionally, bypassing the manager-wide allowUnstoredRelay
+// budget that every OTHER unstored-relay path (a stored node's
+// non-home/quota branches) already respects. It must share the same
+// bound.
+func TestRelayOnlyNodeBoundByUnstoredRelayBudget(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Logger: slog.Default()}) // no SetMsgStore: relay-only
+	relays := observeForwardRelays(t, mgr)
+
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	const flood = unstoredRelayBurst + 20
+	for i := 0; i < flood; i++ {
+		msg := sampleMsg(sender, recipient)
+		msg.MessageID = fmt.Sprintf("relay-only-flood-%d", i)
+		raw, err := json.Marshal(legacyForward(t, senderKey, msg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.onMsgForward("peer", raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if *relays != unstoredRelayBurst {
+		t.Fatalf("relay-only node: relays = %d of %d forwards, want exactly unstoredRelayBurst=%d", *relays, flood, unstoredRelayBurst)
 	}
 }
