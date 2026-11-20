@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
@@ -49,11 +50,79 @@ const (
 // is waiting on — open indefinitely.
 const scopeScanTimeout = 2 * time.Minute
 
+// scopeIncompleteCacheTTL and scopeFailedFetchTTL are fix cycle 2's
+// amplification bound (item 2). Before this, an incomplete result was
+// never cached at all, so a site that references one persistently
+// failing outpoint paid for a full breadth-first rescan — up to
+// scopeScanTimeout and scopeMaxOutpoints fetches — on every single
+// request; if the failure was a transient upstream 429, every one of
+// those repeat scans' fetches fed back into the very rate limit causing
+// it. Now: an incomplete result (a fetch error or the scan timing out) is
+// cached too, just for this much shorter window, bounding the cost to at
+// most one rescan per window rather than one per request. The specific
+// outpoint that failed is also, separately, negatively cached for the
+// same window, so a second site that happens to reference the very same
+// broken outpoint doesn't pay for its own independent retry of it (see
+// negativeCachingFetcher). Both default to the same value but are named
+// separately since nothing requires them to always match.
+const (
+	scopeIncompleteCacheTTL = 60 * time.Second
+	scopeFailedFetchTTL     = 60 * time.Second
+)
+
 // contentFetcher is the subset of *content.Server the scope scanner and
 // SiteHandler need — narrow so tests can fake content without a real
 // content.Server (which needs a live fetch source).
 type contentFetcher interface {
 	Inscription(ctx context.Context, txid string, vout int) (data []byte, contentType string, err error)
+}
+
+// errOutpointRecentlyFailed is returned in place of a real fetch error
+// when negativeCachingFetcher short-circuits a known-recently-failing
+// outpoint. scanScope treats it exactly like any other fetch error — the
+// node stays in scope (it WAS referenced) but isn't expanded further, and
+// the result is marked incomplete — so nothing else needs to know this
+// cache exists.
+var errOutpointRecentlyFailed = errors.New("outpoint fetch failed recently; still within its negative-cache window")
+
+// negativeCachingFetcher wraps a contentFetcher with the per-outpoint
+// half of fix cycle 2's amplification bound: a fetch that failed within
+// the last scopeFailedFetchTTL is not retried at all — it's reported as
+// still failing without ever reaching inner — because a persistently
+// failing reference's fetch failures otherwise compound across every
+// scan that reaches it, including one for a completely different site's
+// origin that happens to reference the same outpoint. The failed map is
+// shared across every scan scopeCache runs (constructed once, in
+// newScopeCache), not scoped to one (origin, latestOutpoint) key — two
+// different sites referencing the same broken outpoint share one
+// suppressed fetch, not two independent ones.
+type negativeCachingFetcher struct {
+	inner contentFetcher
+	now   func() time.Time
+
+	mu     sync.Mutex
+	failed map[string]time.Time // outpoint -> when its negative cache expires
+}
+
+func (f *negativeCachingFetcher) Inscription(ctx context.Context, txid string, vout int) ([]byte, string, error) {
+	outpoint := txid + "_" + strconv.Itoa(vout)
+	now := f.now()
+
+	f.mu.Lock()
+	expires, failing := f.failed[outpoint]
+	f.mu.Unlock()
+	if failing && now.Before(expires) {
+		return nil, "", errOutpointRecentlyFailed
+	}
+
+	data, contentType, err := f.inner.Inscription(ctx, txid, vout)
+	if err != nil {
+		f.mu.Lock()
+		f.failed[outpoint] = now.Add(scopeFailedFetchTTL)
+		f.mu.Unlock()
+		return nil, "", err
+	}
+	return data, contentType, nil
 }
 
 // scopeRefRe matches a literal "/content/<64 hex>_<digits>" reference
@@ -69,15 +138,19 @@ var scopeRefRe = regexp.MustCompile(`/content/([0-9a-fA-F]{64})_([0-9]+)`)
 // caching gate: true for a scan that ran to its natural end — exhausting
 // its queue, or stopping at the deterministic scopeMaxOutpoints/
 // scopeMaxBytes/scopeMaxDepth bounds, all of which are complete, correct
-// answers by design — false for one cut short by its context (a timeout,
-// or a cancellation — though R4's detached context means no caller's own
-// cancellation can reach it any more) or by a fetch error. Only a complete
-// result may ever be cached (see InScope); an incomplete one is still
-// returned to its own caller (the best answer available right now), just
-// never memoized for anyone else.
+// answers by design — false for one cut short by its context (a timeout)
+// or by a fetch error (R4's detached context means no caller's own
+// cancellation can reach it any more, so those are the only two ways left
+// to end up incomplete). expires is fix cycle 2's addition: zero for a
+// complete result (cached with no TTL, exactly as before); set to
+// scopeIncompleteCacheTTL past when it was cached for an incomplete one,
+// so a persistently failing reference is bounded to one rescan per
+// window rather than one per request, while still eventually trying
+// again rather than wedging a site's scope incomplete forever.
 type scopeResult struct {
 	set      map[string]struct{}
 	complete bool
+	expires  time.Time
 }
 
 func (r *scopeResult) has(outpoint string) bool {
@@ -88,17 +161,28 @@ func (r *scopeResult) has(outpoint string) bool {
 // scopeCache is decision 6's "cache the result per (origin, latest
 // outpoint)" plus "one scan per site at a time", combined: singleflight
 // already gives both — concurrent callers for the same key share one
-// scan, and its result is memoized under that key.
+// scan, and its result is memoized under that key. content wraps
+// whatever was passed to newScopeCache in a negativeCachingFetcher (fix
+// cycle 2), so every scan sharing this scopeCache also shares one
+// per-outpoint negative-fetch cache. now is overridable in tests, the
+// same way Resolver's is.
 type scopeCache struct {
 	content contentFetcher
 	sf      singleflight.Group
+	now     func() time.Time
 
 	mu    sync.Mutex
 	byKey map[string]*scopeResult
 }
 
 func newScopeCache(content contentFetcher) *scopeCache {
-	return &scopeCache{content: content, byKey: make(map[string]*scopeResult)}
+	sc := &scopeCache{byKey: make(map[string]*scopeResult), now: time.Now}
+	sc.content = &negativeCachingFetcher{
+		inner:  content,
+		now:    func() time.Time { return sc.now() },
+		failed: make(map[string]time.Time),
+	}
+	return sc
 }
 
 // InScope reports whether target (a txid_vout outpoint) is in origin's
@@ -113,35 +197,28 @@ func newScopeCache(content contentFetcher) *scopeCache {
 // cancellation — so a caller disconnecting mid-scan can neither truncate
 // the scan nor, by extension, ever poison the cache with a truncated
 // result for every other caller sharing the same (origin, latestOutpoint)
-// key. Only a complete scopeResult (scanScope's complete field) is ever
-// stored in byKey; an incomplete one is still the right answer for the
-// caller that's waiting on it right now, just never memoized.
+// key. Every scopeResult (complete or not) is stored in byKey; cacheGet
+// is what makes an incomplete one's residency temporary (fix cycle 2).
 func (c *scopeCache) InScope(ctx context.Context, origin, latestOutpoint, target string) bool {
 	if target == origin || target == latestOutpoint {
 		return true
 	}
 	key := origin + "|" + latestOutpoint
 
-	c.mu.Lock()
-	cached := c.byKey[key]
-	c.mu.Unlock()
-	if cached != nil {
+	if cached := c.cacheGet(key); cached != nil {
 		return cached.has(target)
 	}
 
 	v, _, _ := c.sf.Do(key, func() (interface{}, error) {
-		c.mu.Lock()
-		if cached := c.byKey[key]; cached != nil {
-			c.mu.Unlock()
+		if cached := c.cacheGet(key); cached != nil {
 			return cached, nil
 		}
-		c.mu.Unlock()
 
 		scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scopeScanTimeout)
 		defer cancel()
 		result := scanScope(scanCtx, c.content, origin, latestOutpoint)
 		if !result.complete {
-			return result, nil
+			result.expires = c.now().Add(scopeIncompleteCacheTTL)
 		}
 
 		c.mu.Lock()
@@ -154,6 +231,25 @@ func (c *scopeCache) InScope(ctx context.Context, origin, latestOutpoint, target
 		return false
 	}
 	return result.has(target)
+}
+
+// cacheGet returns key's cached result if present and not expired. A
+// complete result's expires is the zero Time, which is never "after" c's
+// current time, so it never expires (unchanged from before fix cycle 2);
+// an incomplete result's non-zero expires does, once c.now() passes it —
+// cacheGet then returns nil, same as a plain cache miss, letting InScope
+// rescan.
+func (c *scopeCache) cacheGet(key string) *scopeResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cached, ok := c.byKey[key]
+	if !ok {
+		return nil
+	}
+	if !cached.expires.IsZero() && c.now().After(cached.expires) {
+		return nil
+	}
+	return cached
 }
 
 type frontierNode struct {

@@ -328,34 +328,3 @@ func TestScopeCache_CallerCancellationDoesNotTruncateOrPoisonCache(t *testing.T)
 		t.Fatal("expected the second caller to get the correct answer from cache")
 	}
 }
-
-// TestScopeCache_IncompleteResultIsNeverCached isolates R4's caching rule
-// from the context-detachment mechanism above: a fetch error alone (no
-// cancellation at all, plain context.Background() throughout) is enough
-// to mark a scan incomplete, and an incomplete result must never be
-// cached, regardless of why it was incomplete.
-func TestScopeCache_IncompleteResultIsNeverCached(t *testing.T) {
-	g := newGraphContent()
-	root := testOutpoint(810, 0)
-	missing := testOutpoint(811, 0) // referenced, but never g.set: its fetch errors
-	g.set(root, "<html>"+ref(missing)+"</html>")
-
-	sc := newScopeCache(g)
-
-	sc.InScope(context.Background(), root, root, missing)
-	g.mu.Lock()
-	callsAfterFirst := g.calls[root]
-	g.mu.Unlock()
-
-	// A second call for the same (origin, latestOutpoint) key must re-scan
-	// (re-fetching root) rather than reuse a cached-but-incomplete result.
-	sc.InScope(context.Background(), root, root, missing)
-	g.mu.Lock()
-	callsAfterSecond := g.calls[root]
-	g.mu.Unlock()
-
-	if callsAfterSecond <= callsAfterFirst {
-		t.Fatalf("expected the second call to re-scan rather than reuse a cached incomplete result: root fetches after first call=%d, after second=%d",
-			callsAfterFirst, callsAfterSecond)
-	}
-}
