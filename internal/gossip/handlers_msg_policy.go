@@ -8,7 +8,7 @@ package gossip
 //	| The recipient is          | Store?                  | TTL              | Relay?                                   |
 //	|----------------------------|--------------------------|-------------------|-------------------------------------------|
 //	| Home                       | yes                      | ttl_seconds       | only if it also advertises another host  |
-//	| Unadvertised or Elsewhere  | if forward_copy_ttl > 0  | forward_copy_ttl  | always                                    |
+//	| Unadvertised or Elsewhere  | if forward_copy_ttl > 0  | forward_copy_ttl  | only if the store call succeeded         |
 //
 // Either way, a relay of a message this node did NOT just store goes
 // through the manager-wide allowUnstoredRelay budget (relay_budget.go) on
