@@ -118,6 +118,7 @@ func serveGateMeasured(pg *PaymentGate, header, value string) (*httptest.Respons
 // is decoded, even when its content would pay; one at the cap is decoded.
 func TestPaymentHeaderSizeCap(t *testing.T) {
 	pg := testGate(t, 100)
+	pg.arcClient = mockARCServer(t) // direct payments need ARC
 	payee := testPayeeScript(t)
 	proof := func(pad int) string {
 		ch := gateChallenge(t, pg, "/status")
@@ -283,6 +284,7 @@ func TestX402ReachableOnFreeNodeThroughPublishedTopic(t *testing.T) {
 		AllowPassthrough: true,
 		AllowSplit:       true,
 		MaxAppPriceSats:  10000,
+		ARCClient:        mockARCServer(t), // direct payments need ARC
 	})
 	srv.mux = http.NewServeMux()
 	srv.routes()

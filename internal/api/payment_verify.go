@@ -238,11 +238,14 @@ func verifyNonceInputSignature(tx *transaction.Transaction, nonce *NonceUTXO) er
 	return nil
 }
 
-// verifyDirectPayment handles the x-bsv-payment header format.
-// Accepts a raw BSV transaction (hex or base64) and verifies it pays the
-// declared payees. No challenge-nonce binding — simpler but less
-// replay-resistant than the full x402 challenge-proof flow.
+// verifyDirectPayment handles the X-Bsv-Payment header: a raw or Extended
+// Format transaction, as hex or base64, that pays the declared payees, with no
+// challenge binding. It needs ARC: a node with no ARC client refuses every
+// direct payment (errDirectPaymentUnavailable, payment_refusal.go).
 func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee) (*X402Receipt, error) {
+	if pg.arcClient == nil {
+		return nil, errDirectPaymentUnavailable
+	}
 	// Refuse an oversized header before decoding it (payment_bounds.go).
 	if err := checkPaymentHeaderSize(HeaderBSVPayment, paymentHeader); err != nil {
 		return nil, err
@@ -289,31 +292,28 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 		}
 	}
 
-	// Verify every input's script and signature (payment_direct_verify.go) —
-	// the same go-sdk interpreter path the challenge-proof nonce spend uses,
-	// run unconditionally here whether or not ARC is configured below. Without
-	// this, a direct payment with correct outputs but no valid input
-	// signatures (or none at all) was served like a real payment whenever no
-	// ARC client was configured to implicitly reject it at broadcast time.
+	// Verify every input's script and signature against the source output the
+	// client supplied (payment_direct_verify.go), before ARC is asked. The
+	// check proves the signatures match those outputs, not that the outputs
+	// exist; ARC's answer below is what shows that.
 	if err := verifyDirectPaymentInputs(tx); err != nil {
 		return nil, fmt.Errorf("direct payment input verification failed: %w", err)
 	}
 
 	txid := tx.TxID().String()
 
-	// Broadcast to ARC if available (direct payments aren't challenge-bound,
-	// so mempool acceptance is important for settlement assurance)
-	if pg.arcClient != nil {
-		arcResp, err := pg.arcClient.Submit(txBytes)
-		if err != nil {
-			return nil, fmt.Errorf("ARC broadcast failed: %w", err)
-		}
-		switch arcResp.Status {
-		case "SEEN_ON_NETWORK", "MINED", "SEEN_IN_ORPHAN_MEMPOOL":
-			// OK
-		default:
-			return nil, fmt.Errorf("ARC rejected payment tx: status=%s", arcResp.Status)
-		}
+	// Broadcast the payment: a direct payment has no challenge binding, so
+	// only the network's acceptance shows that its inputs exist and are
+	// unspent.
+	arcResp, err := pg.arcClient.Submit(txBytes)
+	if err != nil {
+		return nil, fmt.Errorf("ARC broadcast failed: %w", err)
+	}
+	switch arcResp.Status {
+	case "SEEN_ON_NETWORK", "MINED", "SEEN_IN_ORPHAN_MEMPOOL":
+		// OK
+	default:
+		return nil, fmt.Errorf("ARC rejected payment tx: status=%s", arcResp.Status)
 	}
 
 	return &X402Receipt{

@@ -22,7 +22,8 @@ const (
 	HeaderX402Challenge = "X402-Challenge"
 	HeaderX402Proof     = "X402-Proof"
 	HeaderX402Receipt   = "X402-Receipt"
-	// Calhooon x402 compatibility: direct payment in Atomic BEEF format.
+	// Direct payment: a raw or Extended Format (BRC-30) transaction, as hex
+	// or base64 (verifyDirectPayment). Atomic BEEF (BRC-95) is not parsed.
 	HeaderBSVPayment = "X-Bsv-Payment"
 )
 
@@ -260,7 +261,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		if bsvPayment != "" && proofHeader == "" {
 			receipt, err := pg.verifyDirectPayment(bsvPayment, payees)
 			if err != nil {
-				writeError(w, paymentRejectionStatus(r, err), "direct payment rejected: "+err.Error())
+				writePaymentRejection(w, r, "direct payment rejected: ", err)
 				return
 			}
 			receiptJSON, _ := json.Marshal(receipt)
@@ -274,7 +275,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 
 		receipt, err := pg.verifyProof(r, proofHeader)
 		if err != nil {
-			writeError(w, paymentRejectionStatus(r, err), "payment rejected: "+err.Error())
+			writePaymentRejection(w, r, "payment rejected: ", err)
 			return
 		}
 

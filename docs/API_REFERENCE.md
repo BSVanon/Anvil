@@ -468,6 +468,27 @@ proves authorship, but it does not replace bearer auth or x402 payment for
 data write endpoints. Messagebox authentication is described above and does
 not use x402.
 
+### Paying a request
+
+A priced request without payment answers 402 with an `X402-Challenge`
+header. There are two ways to pay:
+
+- **`X402-Proof`** (bound to the challenge): build a transaction that spends
+  the challenge's nonce output and pays every payee the challenge names,
+  then repeat the request with the proof in `X402-Proof`. One challenge pays
+  for one request.
+- **`X-Bsv-Payment`** (direct, no challenge): send a raw or Extended Format
+  (BRC-30) transaction, as hex or base64, that pays the payees. Atomic BEEF
+  is not parsed.
+
+**Direct payments need ARC.** The node broadcasts a direct payment and
+accepts it only when ARC reports that the network accepted it. A node with
+no ARC client refuses every `X-Bsv-Payment` with 402 and code
+`ERR_DIRECT_PAYMENT_UNAVAILABLE`; pay such a node with `X402-Proof`.
+
+A refused payment answers 402. When the refusal has a stable code, the body
+is `{"status":"error","code":"ERR_...","description":"...","error":"..."}`.
+
 Get your auth token:
 ```bash
 sudo anvil token

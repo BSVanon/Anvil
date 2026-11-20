@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -599,6 +600,7 @@ func TestDirectPaymentRejectsEmptyHeader(t *testing.T) {
 		PriceSats:      100,
 		PayeeScriptHex: payeeScript,
 		NonceProvider:  &DevNonceProvider{},
+		ARCClient:      mockARCServer(t), // direct payments need ARC
 	})
 
 	_, err := pg.verifyDirectPayment("", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
@@ -616,6 +618,7 @@ func TestDirectPaymentRejectsGarbage(t *testing.T) {
 		PriceSats:      100,
 		PayeeScriptHex: payeeScript,
 		NonceProvider:  &DevNonceProvider{},
+		ARCClient:      mockARCServer(t), // direct payments need ARC
 	})
 
 	_, err := pg.verifyDirectPayment("not-a-transaction", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
@@ -630,6 +633,7 @@ func TestDirectPaymentRejectsInsufficientOutputs(t *testing.T) {
 		PriceSats:      100,
 		PayeeScriptHex: payeeScript,
 		NonceProvider:  &DevNonceProvider{},
+		ARCClient:      mockARCServer(t), // direct payments need ARC
 	})
 
 	// Build a raw tx paying a WRONG script
@@ -660,21 +664,18 @@ func buildRawTx(lockingScript []byte, satoshis uint64) []byte {
 	return tx.Bytes()
 }
 
-// TestDirectPaymentAcceptsValidTx: a genuinely signed direct payment (real
-// P2PKH input, embedded source output, valid signature — see
-// buildSignedDirectPaymentTx, payment_direct_verify_test.go) is accepted.
-// Before verifyDirectPaymentInputs existed, this test built its "valid" tx
-// via buildRawTx, which has no unlocking script and no embedded source
-// output at all — i.e. it asserted an UNSIGNED transaction should be
-// accepted. See TestDirectPaymentRejectsUnsignedTxNoARC
-// (payment_direct_verify_test.go) for that exact case, now rejected.
-func TestDirectPaymentAcceptsValidTx(t *testing.T) {
+// TestDirectPaymentRefusedWithoutARC: with no ARC client, a validly signed
+// direct payment is refused with ERR_DIRECT_PAYMENT_UNAVAILABLE. Its signature
+// checks out against the source output it carries, but that output is the
+// client's own claim (buildSignedDirectPaymentTx spends a parent that was
+// never broadcast), and without ARC nothing shows that it exists.
+func TestDirectPaymentRefusedWithoutARC(t *testing.T) {
 	payeeScript := testPayeeScript(t)
 	pg := NewPaymentGate(PaymentGateConfig{
 		PriceSats:      100,
 		PayeeScriptHex: payeeScript,
 		NonceProvider:  &DevNonceProvider{},
-		// No ARC client — skip broadcast
+		// No ARC client.
 	})
 
 	tx := buildSignedDirectPaymentTx(t, payeeScript, 100)
@@ -683,16 +684,12 @@ func TestDirectPaymentAcceptsValidTx(t *testing.T) {
 		t.Fatalf("serialize extended format: %v", err)
 	}
 	receipt, err := pg.verifyDirectPayment(efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
-	if err != nil {
-		t.Fatalf("should accept valid direct payment: %v", err)
+	if err == nil {
+		t.Fatalf("a direct payment must be refused when the node has no ARC client, got receipt %+v", receipt)
 	}
-	if receipt.Satoshis != 100 {
-		t.Fatalf("expected 100 sats in receipt, got %d", receipt.Satoshis)
+	if !errors.Is(err, errDirectPaymentUnavailable) {
+		t.Fatalf("want errDirectPaymentUnavailable, got %v", err)
 	}
-	if receipt.TxID == "" {
-		t.Fatal("receipt should have a txid")
-	}
-	t.Logf("direct payment accepted: txid=%s sats=%d", receipt.TxID[:16], receipt.Satoshis)
 }
 
 // helper to suppress unused import

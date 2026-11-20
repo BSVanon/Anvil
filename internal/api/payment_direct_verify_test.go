@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -85,26 +86,24 @@ func mockARCServer(t *testing.T) *txrelay.ARCClient {
 	return txrelay.NewARCClient(srv.URL, "")
 }
 
-// TestDirectPaymentRejectsUnsignedTxNoARC: cold review's exact finding —
-// X-Bsv-Payment with correct outputs but NO input signature at all used to
-// be accepted whenever no ARC client was configured (nothing downstream to
-// implicitly reject it either). verifyDirectPaymentInputs now refuses it.
+// TestDirectPaymentRejectsUnsignedTxNoARC: an X-Bsv-Payment with correct
+// outputs but no input signature at all, on a node with no ARC client, is
+// refused before it is decoded: such a node takes no direct payment.
 func TestDirectPaymentRejectsUnsignedTxNoARC(t *testing.T) {
 	payeeScript := testPayeeScript(t)
 	pg := NewPaymentGate(PaymentGateConfig{
 		PriceSats:      100,
 		PayeeScriptHex: payeeScript,
 		NonceProvider:  &DevNonceProvider{},
-		// No ARC client — this is the exact configuration the bug report names.
+		// No ARC client.
 	})
 
 	payeeBytes, _ := hex.DecodeString(payeeScript)
 	txHex := hex.EncodeToString(buildRawTx(payeeBytes, 100)) // no unlocking script, no embedded source output
 	_, err := pg.verifyDirectPayment(txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
-	if err == nil {
-		t.Fatal("an unsigned transaction with correct outputs must be rejected, even with no ARC client configured")
+	if !errors.Is(err, errDirectPaymentUnavailable) {
+		t.Fatalf("an unsigned direct payment on a node with no ARC client: want errDirectPaymentUnavailable, got %v", err)
 	}
-	t.Logf("correctly rejected unsigned tx: %v", err)
 }
 
 // TestDirectPaymentRejectsUnsignedTxWithARC: the same unsigned transaction
@@ -157,13 +156,14 @@ func TestDirectPaymentAcceptsSignedTxWithARC(t *testing.T) {
 
 // TestDirectPaymentRejectsForgedSignature: correct outputs and an embedded
 // source output, but a garbage unlocking script in place of a real
-// signature, must be rejected.
+// signature, must be rejected, even by a node whose ARC would accept it.
 func TestDirectPaymentRejectsForgedSignature(t *testing.T) {
 	payeeScript := testPayeeScript(t)
 	pg := NewPaymentGate(PaymentGateConfig{
 		PriceSats:      100,
 		PayeeScriptHex: payeeScript,
 		NonceProvider:  &DevNonceProvider{},
+		ARCClient:      mockARCServer(t),
 	})
 
 	tx := buildSignedDirectPaymentTx(t, payeeScript, 100)
