@@ -39,9 +39,9 @@ func payerGet(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder
 // TestPayerSeesPublicOnlyDiscovery: a verified payment does not
 // widen what GET /topics, GET /topics/{topic}, or GET /identity/{pubkey}
 // show — a payer sees exactly the same public-only view an anonymous caller
-// does. These routes gate on isAuthed (operator only), never
-// isAuthedOrPaid; swapping to isAuthedOrPaid would let a payer see a
-// private topic's name/count/timestamp or a private identity payload.
+// does. These routes gate on isAuthed (operator only), never on a payment;
+// letting isPaid widen them would let a payer see a private topic's
+// name/count/timestamp or a private identity payload.
 func TestPayerSeesPublicOnlyDiscovery(t *testing.T) {
 	srv := testServerWithPaymentGate(t, 100)
 	storePrivate(t, srv, `{"secret":"sealed"}`) // lacriada:household-x

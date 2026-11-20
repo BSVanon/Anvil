@@ -109,23 +109,11 @@ func (s *Server) requireAuthSSE(next http.HandlerFunc) http.HandlerFunc {
 // operator token, checked in constant time (isOperatorToken, above) — the
 // ONLY signal that gates `private` envelope data and metadata. A verified
 // x402 payment (isPaid, paid_context.go) and a validated app token
-// (appTokenTopic, app_token_context.go) are never sufficient on their own;
-// see isAuthedOrPaid for the payment-inclusive check used by paid/monetized
-// payload redaction, and appTokenTopicMatches for the per-topic app-token
-// credential.
+// (appTokenTopic, app_token_context.go) are never sufficient on their own.
+// What either one unlocks of a monetized payload is decided per envelope, by
+// envelopeCovered (envelope_redaction.go).
 func (s *Server) isAuthed(r *http.Request) bool {
 	return s.isOperatorToken(r)
-}
-
-// isAuthedOrPaid reports whether the request is authenticated (isAuthed) or
-// carries a verified x402 payment for this request (isPaid, paid_context.go).
-// Use this to gate paid/monetized payloads, which a payment alone may
-// unlock. Never use it to gate a `private` envelope or its metadata; use
-// isAuthed for that. A validated app token does NOT widen this check — it
-// only unredacts an envelope whose topic it was validated for
-// (appTokenTopicMatches).
-func (s *Server) isAuthedOrPaid(r *http.Request) bool {
-	return s.isAuthed(r) || isPaid(r)
 }
 
 // latestVisibleEnvelope returns the newest envelope on a topic that the caller
