@@ -17,10 +17,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/BSVanon/Anvil/internal/headers"
@@ -33,7 +30,6 @@ import (
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
-	sdkstorage "github.com/bsv-blockchain/go-sdk/storage"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/pushdrop"
 	"github.com/bsv-blockchain/go-sdk/util"
@@ -268,127 +264,9 @@ func TestUHRPEngine_PureRevocationDeletesStorageRow(t *testing.T) {
 	}
 }
 
-// uhrpStorageDownloaderOracleJS mirrors ts-sdk's StorageDownloader.ts
-// resolve() decode loop exactly (reviewer scratch ts/sd.mjs, reused not
-// re-derived): PushDrop-decode, then read the expiry varint and URL
-// field the same way resolve() does. A throw means a real client would
-// drop the output — must never happen for a {uhrpUrl} answer, since
-// those are BRC-26-only (spec item 1 / B1).
-const uhrpStorageDownloaderOracleJS = `
-const sdk = await import(process.env.SDK)
-const { PushDrop, Utils, LockingScript } = sdk
-const items = process.argv.slice(2)
-for (const hex of items) {
-  try {
-    const { fields } = PushDrop.decode(LockingScript.fromHex(hex))
-    const expiryTime = new Utils.Reader(fields[3]).readVarIntNum()
-    const url = Utils.toUTF8(fields[2])
-    console.log('OK expiry=' + expiryTime + ' url=' + url)
-  } catch (e) {
-    console.log('THROWS (resolve() rejects): ' + (e && e.message || e))
-  }
-}
-`
-
-// findLocalBSVSDK locates a local @bsv/sdk ESM build to run the oracle
-// against, preferring the same SDK version/path set the cold review's
-// own TS vectors were generated from. Returns "" if none is found.
-func findLocalBSVSDK() string {
-	for _, p := range []string{
-		"/home/robert/Documents/SendBSV-Foundry/node_modules/@bsv/sdk/dist/esm/mod.js",
-		"/home/robert/Documents/Anvil-Swap/node_modules/@bsv/sdk/dist/esm/mod.js",
-	} {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}
-
-// TestUHRPEngine_UhrpUrlAnswersDecodeInCanonicalStorageDownloader is the
-// spec item 6 oracle requirement: admit two fresh BRC-26 adverts through
-// the real engine, resolve each by its canonical uhrp:// URL (hydrating
-// genuine BEEF via Storage, not test-built bytes), and feed every
-// resulting locking script to a Node process running the real @bsv/sdk.
-// Skips, never fails, when node or a local @bsv/sdk build isn't available.
-func TestUHRPEngine_UhrpUrlAnswersDecodeInCanonicalStorageDownloader(t *testing.T) {
-	nodePath, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not on PATH — skipping canonical TS oracle cross-check")
-	}
-	sdkPath := findLocalBSVSDK()
-	if sdkPath == "" {
-		t.Skip("no local @bsv/sdk ESM build found — skipping canonical TS oracle cross-check")
-	}
-
-	ctx := context.Background()
-	eng := newFixPassTestEngine(t)
-
-	fixtures := []struct {
-		hash []byte
-		url  string
-	}{
-		{freshHash32(0x81), "https://oracle1.example.test/a"},
-		{freshHash32(0x82), "https://oracle2.example.test/b"},
-	}
-	var uhrpURLs []string
-	for _, fx := range fixtures {
-		advert := buildFreshBRC26Advert(t, fx.hash, fx.url)
-		tx := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: advert.script, Satoshis: 1000})
-		steak := submitUHRPTx(t, eng, tx)
-		if inst, ok := steak[topics.UHRPTopicName]; !ok || inst == nil || len(inst.OutputsToAdmit) != 1 {
-			t.Fatalf("expected fixture advert admitted, got %+v", inst)
-		}
-		b58, err := sdkstorage.GetURLForHash(fx.hash)
-		if err != nil {
-			t.Fatalf("GetURLForHash: %v", err)
-		}
-		uhrpURLs = append(uhrpURLs, "uhrp://"+b58)
-	}
-
-	var scriptHexes []string
-	for _, u := range uhrpURLs {
-		q, err := json.Marshal(topics.UHRPLookupQuery{UhrpUrl: u})
-		if err != nil {
-			t.Fatalf("marshal query: %v", err)
-		}
-		answer, err := eng.Lookup(ctx, &lookup.LookupQuestion{Service: topics.UHRPLookupServiceName, Query: q})
-		if err != nil {
-			t.Fatalf("lookup %q: %v", u, err)
-		}
-		if len(answer.Outputs) == 0 {
-			t.Fatalf("lookup %q: expected at least one hydrated output, got none", u)
-		}
-		for _, o := range answer.Outputs {
-			_, tx, _, err := transaction.ParseBeef(o.Beef)
-			if err != nil {
-				t.Fatalf("parse hydrated beef for %q: %v", u, err)
-			}
-			if tx == nil || int(o.OutputIndex) >= len(tx.Outputs) {
-				t.Fatalf("hydrated beef for %q: no output at index %d", u, o.OutputIndex)
-			}
-			ls := tx.Outputs[o.OutputIndex].LockingScript
-			if ls == nil {
-				t.Fatalf("hydrated beef for %q: output %d has no locking script", u, o.OutputIndex)
-			}
-			scriptHexes = append(scriptHexes, hex.EncodeToString(ls.Bytes()))
-		}
-	}
-
-	oraclePath := filepath.Join(t.TempDir(), "uhrp_storage_downloader_oracle.mjs")
-	if err := os.WriteFile(oraclePath, []byte(uhrpStorageDownloaderOracleJS), 0o600); err != nil {
-		t.Fatalf("write oracle script: %v", err)
-	}
-	cmd := exec.Command(nodePath, append([]string{oraclePath}, scriptHexes...)...) // #nosec G204 -- nodePath from exec.LookPath, args are hex we just encoded
-	cmd.Env = append(os.Environ(), "SDK="+sdkPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("node oracle: %v\n%s", err, out)
-	}
-	if strings.Contains(string(out), "THROWS") {
-		t.Fatalf("canonical StorageDownloader.resolve logic rejected a {uhrpUrl} answer:\n%s", out)
-	}
-	if got := strings.Count(string(out), "OK expiry="); got != len(scriptHexes) {
-		t.Fatalf("expected %d canonical-decodes, got %d:\n%s", len(scriptHexes), got, out)
-	}
-}
+// The TS-oracle cross-check for {uhrpUrl} answers (the positive BRC-26
+// case plus the LEGACY-format negative case) lives in
+// uhrp_engine_oracle_test.go — split out once the fix pass's negative-case
+// addition (re-review RISKS item 4) would have pushed this file past the
+// package's established per-file size norm; no behaviour change to
+// either half.
