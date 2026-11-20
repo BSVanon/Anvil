@@ -10,8 +10,8 @@ import (
 )
 
 // fakeReplayNonceProvider always fails with go-sdk's auth.ErrReplayedNonce,
-// to test writeMintNonceError's classification without depending on any
-// real NonceProvider actually reaching that error today.
+// to pin how writeMintNonceError answers that error if a NonceProvider ever
+// returns it.
 type fakeReplayNonceProvider struct{}
 
 func (*fakeReplayNonceProvider) MintNonce() (*NonceUTXO, error) {
@@ -32,11 +32,11 @@ type opaqueMintFailure struct{}
 
 func (*opaqueMintFailure) Error() string { return "opaque wallet failure" }
 
-// TestReplayedNonceMapsTo402NotServerError: go-sdk's auth.ErrReplayedNonce
-// from MintNonce must answer 402 (BRC-121 S5 step 5: a replayed payment is
-// the client's failure, answered with a fresh 402), never the generic 500 a
-// NonceProvider's other failures get.
-func TestReplayedNonceMapsTo402NotServerError(t *testing.T) {
+// TestReplayedNonceMintFailureStaysServerError: go-sdk's auth.ErrReplayedNonce
+// from MintNonce answers 500, like any other mint failure. A mint runs while the
+// node issues a challenge, before any payment exists, so the failure is the
+// node's own, never a payment refusal (402).
+func TestReplayedNonceMintFailureStaysServerError(t *testing.T) {
 	gate := NewPaymentGate(PaymentGateConfig{
 		PriceSats:      100,
 		PayeeScriptHex: testPayeeScript(t),
@@ -56,14 +56,14 @@ func TestReplayedNonceMapsTo402NotServerError(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
-	if w.Code != http.StatusPaymentRequired {
-		t.Fatalf("a replayed-nonce MintNonce error must map to 402, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("a replayed-nonce MintNonce error is a node failure and must answer 500, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-// TestOpaqueMintFailureStillMapsTo500: an unclassified MintNonce failure
-// (anything but *mintBudgetError or auth.ErrReplayedNonce) keeps answering
-// 500 — this is a genuine node-side failure, not a payment-protocol outcome.
+// TestOpaqueMintFailureStillMapsTo500: a MintNonce failure other than
+// *mintBudgetError keeps answering 500. It is a node-side failure, not a
+// payment-protocol outcome.
 func TestOpaqueMintFailureStillMapsTo500(t *testing.T) {
 	gate := NewPaymentGate(PaymentGateConfig{
 		PriceSats:      100,

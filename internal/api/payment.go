@@ -317,7 +317,7 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 	nonce, err := pg.nonceProvider.MintNonce()
 	if err != nil {
 		// Classified in payment_nonce_errors.go: budget-exceeded gets 503,
-		// a replayed nonce gets 402 (BRC-121), anything else gets 500.
+		// anything else gets 500.
 		writeMintNonceError(w, r, err)
 		return
 	}
