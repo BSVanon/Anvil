@@ -370,7 +370,7 @@ func TestBoundedFacilitator_DecodePanicBecomesError(t *testing.T) {
 // makes go-sdk's own facilitator panic inside the resolver's goroutine, where
 // nothing can recover it, must only fail that host's lookup.
 func TestResolver_HostileAnswerIsAnErrorNotACrash(t *testing.T) {
-	r := NewResolver(overlay.NetworkMainnet, nil)
+	r := NewResolver(overlay.NetworkMainnet, nil, nil)
 	hygiene, ok := r.inner.Facilitator.(*Facilitator)
 	if !ok {
 		t.Fatalf("resolver must use the backoff wrapper, got %T", r.inner.Facilitator)

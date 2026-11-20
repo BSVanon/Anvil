@@ -289,3 +289,7 @@ func TestResolveFederationTrackers_UnsetPreservesOriginalBehavior(t *testing.T) 
 		})
 	}
 }
+
+// wireV3Federation itself (B5 fix pass, review BLOCKER 1) is covered by
+// federation_wiring_test.go, split out to keep this file under the
+// project's line-count cap.

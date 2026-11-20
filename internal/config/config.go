@@ -301,16 +301,25 @@ type OverlayConfig struct {
 	SLAPTrackers []string `toml:"slap_trackers"`
 
 	// NamedPeers is a closed-network allowlist of overlay base URLs.
-	// Empty means today's behaviour. When set, every outbound overlay
-	// call this node makes — GASP sync (every topic, not just
-	// tm_ship/tm_slap), lookup federation, submit propagation to
-	// interested hosts, and SHIP/SLAP resolution — targets only these
-	// peers. ship_trackers / slap_trackers and go-sdk's
-	// DEFAULT_SLAP_TRACKERS fallback are not consulted in this mode, and
-	// the baked-in default header-fallback peer is not appended either
-	// (see ensureHeaderFallbackPeers). The advertiser still runs under
-	// its existing gate ([node] public_url set), but anything it
-	// propagates also reaches only these peers.
+	// Empty means today's behaviour, including the public_url
+	// requirement below. Entries are trimmed; blank entries are
+	// skipped (cmd/anvil's sanitizeNamedPeers), so a stray blank string
+	// doesn't count as "set".
+	//
+	// When set, GASP sync wiring (lookup federation, SHIP/SLAP
+	// resolution, and sync for every topic — not just tm_ship/tm_slap)
+	// is wired regardless of [node] public_url, so a node can peer with
+	// named nodes and run GASP catch-up with no public_url at all.
+	// ship_trackers / slap_trackers and go-sdk's DEFAULT_SLAP_TRACKERS
+	// fallback are not consulted in this mode, and the baked-in default
+	// header-fallback peer is not appended either (see
+	// ensureHeaderFallbackPeers).
+	//
+	// The SHIP/SLAP Advertiser is NEVER constructed when NamedPeers is
+	// set, even if public_url is also set: an advert transaction would
+	// still reach the configured Broadcaster/ARC and permanently link
+	// this node's identity on-chain — the exact outcome closed-network
+	// mode exists to prevent. See cmd/anvil's wireV3Federation.
 	NamedPeers []string `toml:"named_peers"`
 
 	// GASPSyncIntervalSecs is how often we pull canonical federation

@@ -24,17 +24,31 @@ type Resolver struct {
 	inner *lookup.LookupResolver
 }
 
-// NewResolver builds a hygiene-wrapped lookup resolver for the given network.
-// logger may be nil. Per-host lookups go through BoundedFacilitator instead of
-// go-sdk's HTTPSOverlayLookupFacilitator, whose unbounded read and
-// wire-sized allocations let any advertised host crash the node.
-func NewResolver(network overlay.Network, logger *slog.Logger) *Resolver {
+// NewResolver builds a hygiene-wrapped lookup resolver for the given network,
+// with trackers applied directly at construction. logger may be nil.
+// Per-host lookups go through BoundedFacilitator instead of go-sdk's
+// HTTPSOverlayLookupFacilitator, whose unbounded read and wire-sized
+// allocations let any advertised host crash the node.
+//
+// trackers is taken as-given: pass nil to get go-sdk's network-default SLAP
+// trackers (lookup.NewLookupResolver backfills only when SLAPTrackers is
+// nil), or a non-nil slice — including an empty one — to pin the resolver to
+// exactly those trackers from the start. This exists because the
+// construct-then-SetSLAPTrackers two-step this replaced was fragile: go-sdk's
+// own SetSLAPTrackers (mirrored by this package's own, see SetSLAPTrackers
+// below) silently no-ops on an empty slice, so a call site that always
+// intends to override could, if trackers were ever computed as empty, end up
+// silently keeping whatever NewLookupResolver had already defaulted to.
+// Passing the real tracker set at construction removes that ambiguity: there
+// is no separate step where the override can be skipped. SetSLAPTrackers
+// remains for a resolver already in use that needs its trackers changed
+// later; it is unrelated to this constructor-time fix.
+func NewResolver(network overlay.Network, trackers []string, logger *slog.Logger) *Resolver {
 	cfg := &lookup.LookupResolver{
 		Facilitator:   NewFacilitator(&BoundedFacilitator{Client: http.DefaultClient}, logger),
 		NetworkPreset: network,
+		SLAPTrackers:  trackers,
 	}
-	// NewLookupResolver preserves a non-nil cfg.Facilitator and applies the
-	// network's default SLAP trackers.
 	return &Resolver{inner: lookup.NewLookupResolver(cfg)}
 }
 

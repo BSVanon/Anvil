@@ -89,12 +89,17 @@ enable_gasp_sync = true
 # ship_trackers = ["https://overlay-us-1.bsvb.tech"]
 # slap_trackers = ["https://overlay-us-1.bsvb.tech"]
 # named_peers = ["https://overlay-a.example.com", "https://overlay-b.example.com"]
-# Closed-network mode: when set, every outbound overlay call this node makes
-# -- GASP sync, lookup federation, submit propagation, and SHIP/SLAP
-# resolution -- targets only these peers. ship_trackers / slap_trackers and
-# the built-in public defaults are not consulted, and the baked-in Anvil
-# header-fallback peer (see [bsv] above) is not appended either. Leave
-# unset (the default) for the normal federated-overlay behavior.
+# Closed-network mode: when set, GASP sync (every topic), lookup federation,
+# submit propagation, and SHIP/SLAP resolution all target only these peers,
+# regardless of whether [node] public_url is set below -- this is how a node
+# peers with named nodes and keeps GASP catch-up working with no public_url
+# at all. ship_trackers / slap_trackers and the built-in public defaults are
+# not consulted, and the baked-in Anvil header-fallback peer (see [bsv]
+# above) is not appended either. The SHIP/SLAP advertiser never runs while
+# named_peers is set, even if public_url is also set -- an advert still
+# broadcasts through ARC to the public network, which would permanently
+# link this node's identity on-chain. Leave unset (the default) for the
+# normal federated-overlay behavior.
 
 [envelopes]
 max_ephemeral_ttl = 3600
