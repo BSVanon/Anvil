@@ -156,9 +156,9 @@ func TestReadBody_IdleBodyIsCutAtTheGrace(t *testing.T) {
 }
 
 // TestReadBody_StalledBodyIsCutByTheRate: a body that starts and then stalls
-// is cut when it falls below bodyread.MinReadRate, at ReadGrace plus the time
-// its bytes so far earn it, with ErrBodyTooSlow; it is answered 408 on a
-// closed connection, and what it reserved is returned.
+// is cut when it falls below MinBodyRate, at ReadGrace plus the time its
+// bytes so far earn it, with ErrBodyTooSlow; it is answered 408 on a closed
+// connection, and what it reserved is returned.
 func TestReadBody_StalledBodyIsCutByTheRate(t *testing.T) {
 	const pool = 1 << 20
 	g := New(pool, 1, 1, testWait)
@@ -166,7 +166,10 @@ func TestReadBody_StalledBodyIsCutByTheRate(t *testing.T) {
 	srv, results := bodyServer(t, g, route, 0, 0)
 	conn := rawPost(t, srv, 50_000, make([]byte, 1000))
 	res := nextResult(t, results, bodyread.ReadGrace+3*time.Second)
-	due := bodyread.ReadGrace + 1000*time.Second/bodyread.MinReadRate
+	if rate := route.MinRate(50_000); rate != MinBodyRate {
+		t.Fatalf("a 50,000-byte body's rate is %d, want the floor %d", rate, MinBodyRate)
+	}
+	due := bodyread.ReadGrace + 1000*time.Second/time.Duration(MinBodyRate)
 	if !errors.Is(res.err, ErrBodyTooSlow) {
 		t.Fatalf("a stalled body: %v, want ErrBodyTooSlow", res.err)
 	}
@@ -186,9 +189,9 @@ func TestReadBody_StalledBodyIsCutByTheRate(t *testing.T) {
 }
 
 // TestReadBody_TrickleBelowTheRateIsCut: a body that keeps arriving, but at
-// an eighth of bodyread.MinReadRate, is cut with ErrBodyTooSlow when its
-// average falls short, about ReadGrace / (1 - 1/8) after the read began,
-// long before its route's read timeout.
+// an eighth of MinBodyRate, is cut with ErrBodyTooSlow when its average falls
+// short, about ReadGrace / (1 - 1/8) after the read began, long before its
+// route's read timeout.
 func TestReadBody_TrickleBelowTheRateIsCut(t *testing.T) {
 	g := New(1<<20, 1, 1, testWait)
 	route := Route{MaxBody: 1 << 20, Expansion: 1, ReadTimeout: 10 * time.Second}
@@ -196,7 +199,7 @@ func TestReadBody_TrickleBelowTheRateIsCut(t *testing.T) {
 	conn := rawPost(t, srv, 100_000, nil)
 	stop := make(chan struct{})
 	defer close(stop)
-	go trickleTo(conn, bodyread.MinReadRate/80, 100*time.Millisecond, stop) // 1/8 of the rate
+	go trickleTo(conn, int(MinBodyRate/80), 100*time.Millisecond, stop) // 1/8 of the rate
 	res := nextResult(t, results, route.ReadTimeout)
 	want := bodyread.ReadGrace * 8 / 7
 	if !errors.Is(res.err, ErrBodyTooSlow) {
@@ -205,12 +208,11 @@ func TestReadBody_TrickleBelowTheRateIsCut(t *testing.T) {
 	if res.elapsed < bodyread.ReadGrace || res.elapsed > want+time.Second {
 		t.Fatalf("the trickle was cut after %v, want about %v", res.elapsed, want)
 	}
-	t.Logf("trickle at %d bytes a second cut after %v (expected about %v)", bodyread.MinReadRate/8, res.elapsed, want)
+	t.Logf("trickle at %d bytes a second cut after %v (expected about %v)", MinBodyRate/8, res.elapsed, want)
 }
 
-// TestReadBody_BodyAboveTheRateIsRead: a body that keeps up two and a half
-// times bodyread.MinReadRate is read in full though it takes longer than
-// ReadGrace.
+// TestReadBody_BodyAboveTheRateIsRead: a body that keeps up five times
+// MinBodyRate is read in full though it takes longer than ReadGrace.
 func TestReadBody_BodyAboveTheRateIsRead(t *testing.T) {
 	g := New(1<<20, 1, 1, testWait)
 	route := Route{MaxBody: 1 << 20, Expansion: 1, ReadTimeout: 10 * time.Second}

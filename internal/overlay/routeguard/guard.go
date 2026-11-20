@@ -9,13 +9,15 @@
 //     arrives a request holds nothing else, so connections that send only
 //     headers hold no heap, no big-body slot and no JSON slot. The permit is
 //     returned once the body is in.
-//   - Connection time. The body must start within bodyread.ReadGrace, then
-//     keep up bodyread.MinReadRate on average, the limits bodyread applies to
-//     the replies this node reads, and arrive within its route's ReadTimeout.
-//     The connection's read deadline, set through http.ResponseController and
-//     moved forward as bytes arrive, enforces them, and is cleared once the
-//     body is in, so the node's other routes, the SSE streams among them, keep
-//     the server's own timeouts. A body cut short is answered 408.
+//   - Connection time. The body must start within bodyread.ReadGrace, the
+//     grace bodyread gives the replies this node reads, then arrive at
+//     MinBodyRate on average, or at the rate that brings it all in within its
+//     route's ReadTimeout when that is faster (Route.MinRate), and all of it
+//     within that timeout. The connection's read deadline, set through
+//     http.ResponseController and moved forward as bytes arrive, enforces
+//     them, and is cleared once the body is in, so the node's other routes,
+//     the SSE streams among them, keep the server's own timeouts. A body cut
+//     short is answered 408.
 //   - Bodies over BigBody. Once the first byte is in, a body that may pass
 //     BigBody takes the one big-body slot, so senders of large bodies, slow
 //     ones included, cannot take the heap the routes' small requests need.
@@ -39,6 +41,22 @@
 //     also takes the one execution slot, which carries ExecAllowance of the
 //     budget, and the guard collects garbage before the engine verifies such
 //     a submit again and before it hands the slot on.
+//
+// No one client may hold more than its share of these. A client is the key
+// internal/clientkey gives the address the API's rate limits count a request
+// under, with the trust_proxy settings Guard.TrustProxy passes on: one IPv4
+// address, or one IPv6 /64. A client holds at most ClientReadPermits read
+// permits, ClientJSONSlots JSON slots, ClientCPUSlots CPU slots (fewer on a
+// small guard), the big-body slot and the execution slot, and a third of the
+// heap pool or one reservation larger than that. It takes each from a
+// semaphore of its own before the guard's, within one Wait, and returns the
+// guard's first: its requests beyond its share wait among themselves rather
+// than ahead of other clients' in the guard's queues, and a share used up
+// refuses only its own client. A request from a loopback, private or shared
+// address (clientkey.Shared), through a proxy that does not name its client
+// or one the node does not trust, may stand for many clients; only the
+// guard's own limits count it, and the guard logs the first such address,
+// and the first public one whose proxy headers it does not use.
 //
 // A client that sends Expect: 100-continue gets its 100 Continue from the
 // first read of its body, before the guard decides the big-body slot and the
@@ -71,7 +89,8 @@ const (
 	// does not count: at the default GOGC, one submit verifying 50,000
 	// instructions had 67 to 77 MiB of heap in use against the 45.8 MiB it
 	// reserved, though it held under 10 MiB live. Only a process memory limit
-	// (GOMEMLIMIT) bounds that part.
+	// bounds that part: the node sets one at startup, 70% of the memory it
+	// may use, unless GOMEMLIMIT is set (cmd/anvil, configureAdmission).
 	MemoryBudget int64 = 384 << 20
 
 	// Wait is how long a request waits for heap or a slot before it is
@@ -96,7 +115,8 @@ const (
 	// it starts sending, and then it holds a reservation too, which the heap
 	// budget bounds. 256 is four times JSONSlots, so JSON requests reach their
 	// slots while 192 idle connections are open, and holding every permit
-	// takes 256 / 2 s = 128 new connections each second.
+	// takes 256 / 2 s = 128 new connections each second, from 32 clients or
+	// more (ClientReadPermits).
 	ReadPermits = 256
 
 	// BigBody is the body length past which a request takes the one big-body
@@ -129,16 +149,19 @@ type Guard struct {
 	read *semaphore.Weighted
 	wait time.Duration
 
-	// The pace a body must keep: bodyread.ReadGrace and bodyread.MinReadRate
-	// (bytes a second), which the package's tests shorten.
+	clients *clientSet
+
+	// The pace a body must keep: bodyread.ReadGrace and MinBodyRate (bytes a
+	// second), which the package's tests change.
 	grace   time.Duration
 	minRate int64
 }
 
 // New returns a Guard with its own budgets: pool bytes of heap that requests
 // may hold reserved at once, beside the execution slot's ExecAllowance, the
-// given slot counts and ReadPermits read permits. Production code shares
-// Default; tests use New for budgets of their own.
+// given slot counts and ReadPermits read permits, and each client's share of
+// them. Production code shares Default; tests use New for budgets of their
+// own.
 func New(pool, cpuSlots, jsonSlots int64, wait time.Duration) *Guard {
 	return &Guard{
 		mem:     semaphore.NewWeighted(pool),
@@ -149,8 +172,9 @@ func New(pool, cpuSlots, jsonSlots int64, wait time.Duration) *Guard {
 		json:    semaphore.NewWeighted(jsonSlots),
 		read:    semaphore.NewWeighted(ReadPermits),
 		wait:    wait,
+		clients: newClientSet(pool, cpuSlots, jsonSlots),
 		grace:   bodyread.ReadGrace,
-		minRate: bodyread.MinReadRate,
+		minRate: MinBodyRate,
 	}
 }
 
@@ -178,6 +202,12 @@ type Ticket struct {
 	held      [5]bool
 	jsonRoute bool // ReadBody takes a JSON slot once the body is in
 	closed    bool
+
+	// The client ReadBody bound the ticket to, nil when none; which of the
+	// held slots hold the client's too; and what mem holds of its share.
+	cl    *client
+	own   [5]bool
+	clMem int64
 }
 
 // The slots a ticket may hold, indexing Ticket.held.
@@ -205,30 +235,40 @@ func (g *Guard) Begin(jsonRoute bool) (*Ticket, error) {
 	return t, nil
 }
 
-// Reserve adds n bytes to the ticket's heap reservation, waiting at most the
-// guard's Wait, and no longer than ctx allows. It fails with ErrBusy when the
-// bytes are not free in time, or at once when the ticket would hold more than
-// the whole pool, and with ctx's error when ctx ends first.
+// Reserve adds n bytes to the ticket's heap reservation, and what that adds
+// to the ticket's hold on its client's share, waiting at most the guard's
+// Wait, and no longer than ctx allows. It fails with ErrBusy when the bytes
+// are not free in time, or at once when the ticket would hold more than the
+// whole pool, and with ctx's error when ctx ends first.
 func (t *Ticket) Reserve(ctx context.Context, n int64) error {
 	if n <= 0 {
 		return nil
 	}
 	t.mu.Lock()
 	over := t.closed || t.mem+n > t.g.pool
+	var own *semaphore.Weighted
+	var share int64
+	if t.cl != nil {
+		own, share = t.cl.mem, min(t.mem+n, t.cl.cap)-t.clMem
+	}
 	t.mu.Unlock()
 	if over {
 		return ErrBusy
 	}
-	if err := acquire(ctx, t.g.mem, n, t.g.wait); err != nil {
+	if err := acquireBoth(ctx, own, share, t.g.mem, n, t.g.wait); err != nil {
 		return err
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		t.g.mem.Release(n)
+		release(t.g.mem, n, own, share)
 		return ErrBusy
 	}
 	t.mem += n
+	if own != nil {
+		t.clMem += max(share, 0)
+		t.settle()
+	}
 	return nil
 }
 
@@ -243,6 +283,7 @@ func (t *Ticket) Unreserve(n int64) {
 	t.mem -= n
 	t.headroom = min(t.headroom, t.mem)
 	t.g.mem.Release(n)
+	t.settle()
 }
 
 // Reserved reports the bytes the ticket holds reserved.
@@ -252,65 +293,8 @@ func (t *Ticket) Reserved() int64 {
 	return t.mem
 }
 
-// take takes slot i, waiting at most the guard's Wait: ErrBusy when it is not
-// free in time. A ticket holds each slot at most once.
-func (t *Ticket) take(ctx context.Context, i int) error {
-	t.mu.Lock()
-	held, closed := t.held[i], t.closed
-	t.mu.Unlock()
-	if closed {
-		return ErrBusy
-	}
-	if held {
-		return nil
-	}
-	if err := acquire(ctx, t.g.slot(i), 1, t.g.wait); err != nil {
-		return err
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.closed {
-		t.g.slot(i).Release(1)
-		return ErrBusy
-	}
-	t.held[i] = true
-	return nil
-}
-
-// tryTake takes slot i without waiting: ErrBusy when it is not free.
-func (t *Ticket) tryTake(i int) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	switch {
-	case t.closed:
-		return ErrBusy
-	case t.held[i]:
-		return nil
-	case !t.g.slot(i).TryAcquire(1):
-		return ErrBusy
-	}
-	t.held[i] = true
-	return nil
-}
-
-// leave returns slot i, if the ticket holds it.
-func (t *Ticket) leave(i int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.held[i] {
-		t.held[i] = false
-		t.g.slot(i).Release(1)
-	}
-}
-
-// EnterCPU takes a verification CPU slot: ErrBusy when none is free within
-// the guard's Wait.
-func (t *Ticket) EnterCPU(ctx context.Context) error { return t.take(ctx, slotCPU) }
-
-// LeaveCPU returns the ticket's CPU slot, if it holds one.
-func (t *Ticket) LeaveCPU() { t.leave(slotCPU) }
-
-// Close returns everything the ticket holds.
+// Close returns everything the ticket holds, the guard's before its
+// client's.
 func (t *Ticket) Close() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -322,29 +306,11 @@ func (t *Ticket) Close() {
 		t.g.mem.Release(t.mem)
 		t.mem, t.headroom = 0, 0
 	}
-	for i, held := range t.held {
-		if held {
-			t.held[i] = false
-			t.g.slot(i).Release(1)
-		}
+	t.settle()
+	for i := range t.held {
+		t.drop(i)
 	}
-}
-
-// acquire takes n from s, waiting at most wait. A wait that runs out is
-// ErrBusy; ctx ending first is ctx's error.
-func acquire(ctx context.Context, s *semaphore.Weighted, n int64, wait time.Duration) error {
-	if s.TryAcquire(n) {
-		return nil
-	}
-	wctx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-	if err := s.Acquire(wctx, n); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return ErrBusy
-	}
-	return nil
+	t.unbind()
 }
 
 // SetRetryAfter stamps the Retry-After header a 503 from the guard carries.

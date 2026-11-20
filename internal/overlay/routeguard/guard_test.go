@@ -78,9 +78,12 @@ func TestTicket_ContextEndsTheWait(t *testing.T) {
 }
 
 // readSmallBody reads a two-byte body through tk's ReadBody, as a route's
-// handler does, with no connection behind it.
+// handler does, with no connection behind it, from the loopback address, so
+// that only the guard's own limits count it (clients_test.go tests a
+// client's).
 func readSmallBody(tk *Ticket) error {
 	r := httptest.NewRequest(http.MethodPost, "/lookup", strings.NewReader(`{}`))
+	r.RemoteAddr = "127.0.0.1:1234"
 	_, err := tk.ReadBody(httptest.NewRecorder(), r, Route{MaxBody: 1 << 10, Expansion: 1, ReadTimeout: time.Second})
 	return err
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"time"
@@ -11,16 +12,47 @@ import (
 	"github.com/BSVanon/Anvil/internal/netguard/bodyread"
 )
 
+// MinBodyRate is the least average rate, in bytes a second, at which a
+// request body must arrive once bodyread.ReadGrace has passed. It is half
+// bodyread.MinReadRate, the rate this node asks of the replies it reads, so
+// that a body of 1 MB sent at 200 kbit/s (25,000 bytes a second), which that
+// rate cut off after 8.4 s (cold review round 4 RISK 6), is read in 40 s,
+// within the 63 s its length allows (TestPacing_RealTime).
+const MinBodyRate int64 = 16 << 10
+
 // ErrBodyTooSlow means the body did not start within bodyread.ReadGrace, or
-// fell below bodyread.MinReadRate on average after it. It wraps
-// ErrReadTimeout, so the route answers 408.
-var ErrBodyTooSlow = fmt.Errorf("%w: a body must start within %v and then arrive at %d bytes a second or more",
-	ErrReadTimeout, bodyread.ReadGrace, bodyread.MinReadRate)
+// fell below its pace after it (Route.MinRate). It wraps ErrReadTimeout, so
+// the route answers 408.
+var ErrBodyTooSlow = fmt.Errorf("%w: a body must start within %v and then arrive at %d bytes a second or more, "+
+	"or faster when it is too long to arrive within the route's read timeout at that rate",
+	ErrReadTimeout, bodyread.ReadGrace, MinBodyRate)
+
+// MinRate is the average rate, in bytes a second, at which a body of n bytes
+// must arrive on route r once bodyread.ReadGrace has passed: MinBodyRate, or
+// the rate that brings all n bytes in by the route's ReadTimeout when that is
+// faster. A body that declares no length is paced as one of MaxBody bytes, as
+// it is reserved.
+func (r Route) MinRate(n int64) int64 {
+	return paceRate(n, r.ReadTimeout, bodyread.ReadGrace, MinBodyRate)
+}
+
+// paceRate is the average rate, in bytes a second, at which a body of n bytes
+// must arrive once grace has passed on a route whose bodies must arrive
+// within timeout: floor, or n over the time from grace to timeout when that
+// is faster. Without that second term a body could be sent at floor for as
+// long as timeout allows, and hold the reservation of all n bytes while it
+// sent a fraction of them.
+func paceRate(n int64, timeout, grace time.Duration, floor int64) int64 {
+	span := timeout - grace
+	if span <= 0 || n <= 0 {
+		return floor
+	}
+	return max(floor, int64(math.Ceil(float64(n)/span.Seconds())))
+}
 
 // pacer reads a request body under the connection's read deadline, which it
 // sets before each read: by grace + n/minRate after start, more than n bytes
-// must have arrived, and all of the body by end. These are bodyread's limits
-// for the replies this node reads, applied to the requests it serves.
+// must have arrived, and all of the body by end.
 type pacer struct {
 	r       io.Reader
 	rc      *http.ResponseController // nil once the writer has refused a deadline
@@ -33,9 +65,11 @@ type pacer struct {
 	eof     bool      // the body has ended
 }
 
-// newPacer starts pacing body, which the guard g reads for w's request, now,
-// with timeout for all of it.
-func newPacer(g *Guard, w http.ResponseWriter, body io.Reader, timeout time.Duration) *pacer {
+// newPacer starts pacing body, n bytes long, which the guard g reads for w's
+// request, now, with timeout for all of it: after g's grace it must arrive at
+// g's rate, or at the rate that brings n bytes in by timeout when that is
+// faster.
+func newPacer(g *Guard, w http.ResponseWriter, body io.Reader, n int64, timeout time.Duration) *pacer {
 	start := time.Now()
 	return &pacer{
 		r:       body,
@@ -43,7 +77,7 @@ func newPacer(g *Guard, w http.ResponseWriter, body io.Reader, timeout time.Dura
 		start:   start,
 		end:     start.Add(timeout),
 		grace:   g.grace,
-		minRate: g.minRate,
+		minRate: paceRate(n, timeout, g.grace, g.minRate),
 	}
 }
 
