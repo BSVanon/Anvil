@@ -341,6 +341,8 @@ type APIConfig struct {
 	PaymentSatoshis     int              `toml:"payment_satoshis"` // default per-request price; 0 = free
 	RequireMempool      bool             `toml:"require_mempool"`  // require ARC SEEN_ON_NETWORK before accepting x402 payment
 	EndpointPrices      map[string]int   `toml:"endpoint_prices"`  // per-endpoint price overrides (path → sats)
+	X402MintBurst       int              `toml:"x402_mint_burst"`
+	X402MintsPerMinute  int              `toml:"x402_mints_per_minute"`
 	AppPayments         AppPaymentConfig `toml:"app_payments"`
 	ExplorerOrigin      string           `toml:"explorer_origin"` // fallback content_origin for /explorer (survives catalog expiry)
 	// NoncePoolSize is the target number of pre-minted x402 nonce UTXOs kept warm
@@ -349,14 +351,6 @@ type APIConfig struct {
 	// covers the pool. A FREE node never pre-mints (it mints on demand) to avoid
 	// burning fees on nonces it may never use. 0 or unset → default 100.
 	NoncePoolSize int `toml:"nonce_pool_size"`
-	// X402MintBurst and X402MintsPerMinute configure the process-wide nonce
-	// mint budget (api.ConfigureMintBudget) that bounds every 402 challenge's
-	// wallet mint, on a charging or a free (app-priced-topic) node alike. 0 or
-	// unset on either → the compiled-in defaults, 10 burst and 2/minute — see
-	// anvil.example.toml for the worst-case spend per hour at the default and
-	// how to recompute it for a different value here.
-	X402MintBurst      int `toml:"x402_mint_burst"`
-	X402MintsPerMinute int `toml:"x402_mints_per_minute"`
 }
 
 // AppPaymentConfig controls which non-custodial payment models apps can use.
@@ -443,8 +437,6 @@ func Load(path string) (*Config, error) {
 			MessageboxRateLimit: 20,
 			MessageboxRateBurst: 40,
 			NoncePoolSize:       100,
-			X402MintBurst:       10,
-			X402MintsPerMinute:  2,
 			AppPayments: AppPaymentConfig{
 				AllowPassthrough: true,
 				AllowSplit:       true,

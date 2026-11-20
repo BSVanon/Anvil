@@ -45,8 +45,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.API.MessageboxRateLimit != 20 || cfg.API.MessageboxRateBurst != 40 || cfg.API.TrustProxyHops != 1 {
 		t.Fatalf("unexpected messagebox defaults: %+v", cfg.API)
 	}
-	if cfg.API.X402MintBurst != 10 || cfg.API.X402MintsPerMinute != 2 {
-		t.Fatalf("expected default x402 mint budget 10/2, got burst=%d per_minute=%d", cfg.API.X402MintBurst, cfg.API.X402MintsPerMinute)
+	if cfg.API.X402MintBurst != 0 || cfg.API.X402MintsPerMinute != 0 {
+		t.Fatalf("an unset x402 mint budget should stay 0, for api.ConfigureMintBudget to apply its defaults; got burst=%d per_minute=%d", cfg.API.X402MintBurst, cfg.API.X402MintsPerMinute)
 	}
 }
 

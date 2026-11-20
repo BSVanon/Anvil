@@ -64,24 +64,6 @@ const (
 // NewPaymentGate apply.
 var defaultMintBudget = newMintBudget(mintBurst, mintsPerMinute, time.Now)
 
-// ConfigureMintBudget replaces defaultMintBudget with one allowing burst
-// mints at once, refilling at perMinute mints a minute — the
-// [api] x402_mint_burst / x402_mints_per_minute config keys
-// (anvil.example.toml has the worst-case-spend-per-hour formula). burst or
-// perMinute below 1 is ignored, leaving the compiled-in defaults (mintBurst,
-// mintsPerMinute above) in place.
-//
-// Call once, at startup, before constructing any PaymentGate or
-// UTXONoncePool: both capture defaultMintBudget by reference at
-// construction time (withMintBudget), so a call after that point does not
-// reach an already-built gate or pool.
-func ConfigureMintBudget(burst, perMinute int) {
-	if burst < 1 || perMinute < 1 {
-		return
-	}
-	defaultMintBudget = newMintBudget(burst, perMinute, time.Now)
-}
-
 // mintBudget is a token bucket of nonce mints, kept as the time its next mint
 // is due (the generic cell rate algorithm), so that it counts in whole
 // durations, never in fractions of a token. It is safe for concurrent use.

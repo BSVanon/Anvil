@@ -108,8 +108,12 @@ payment_satoshis = 0              # x402 price per request (0 = free, experiment
 # in fees (one P2PKH input/output up to three inputs, wallet-toolbox's default
 # fee model — see payment_budget.go) plus 1 sat locked in the nonce output
 # itself, so the worst-case hourly cost at the default is roughly
-# 130 sats (nonce outputs) + 130 * 23..76 sats (fees) = 3,120..9,880 sats/hour.
+# 130 sats (nonce outputs) + 130 * 23..76 sats (fees) = 3,120..10,010 sats/hour.
 # Recompute both terms with your own values before raising them.
+# Each key is bounded: a negative value takes its default, and a value above
+# its ceiling (1000 burst, 60/minute) takes the ceiling; both are logged as a
+# warning, and the budget in effect is logged at startup. At the ceilings the
+# worst hour is 4,600 mints: 110,400..354,200 sats.
 x402_mint_burst = 10               # mints allowed at once before the per-minute rate applies
 x402_mints_per_minute = 2          # sustained mint rate once the burst is spent
 
