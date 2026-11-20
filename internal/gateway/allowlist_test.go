@@ -104,7 +104,7 @@ func TestAllowlist_HotReloadAddAndRemove(t *testing.T) {
 	path := filepath.Join(dir, "gateway-sites.conf")
 	writeAt(t, path, "domain one.example.org\n", time.Now())
 
-	a := NewAllowlist(path, slog.Default())
+	a := NewAllowlist(path, "", slog.Default())
 	if !a.Snapshot().HasDomain("one.example.org") {
 		t.Fatal("expected one.example.org to be allowed on initial load")
 	}
@@ -138,7 +138,7 @@ func TestAllowlist_BadFileKeepsLastGoodSnapshot(t *testing.T) {
 
 	var logCount int
 	logger := slog.New(countingHandler{count: &logCount})
-	a := NewAllowlist(path, logger)
+	a := NewAllowlist(path, "", logger)
 	if !a.Snapshot().HasDomain("good.example.org") {
 		t.Fatal("expected good.example.org to be allowed on initial load")
 	}
@@ -173,12 +173,55 @@ func TestAllowlist_MissingFileIsNotAnError(t *testing.T) {
 
 	var logCount int
 	logger := slog.New(countingHandler{count: &logCount})
-	a := NewAllowlist(path, logger)
+	a := NewAllowlist(path, "", logger)
 	if a.Snapshot().HasAnyOrigin() || a.Snapshot().HasDomain("anything") {
 		t.Fatal("expected an empty snapshot for a missing sites file")
 	}
 	if logCount != 0 {
 		t.Fatalf("expected no warning for a simply-missing file, got %d", logCount)
+	}
+}
+
+// TestAllowlist_APIHostDomainEntryIgnoredOnReload is D2's hot-reload
+// overlap rule: a "domain" entry equal to api_host is stripped from the
+// snapshot on load (and on every subsequent reload), with exactly one
+// warning per bad mtime, rather than silently sitting in the snapshot as
+// an "allowed" site that Router's api_host-first ordering happens to
+// shadow.
+func TestAllowlist_APIHostDomainEntryIgnoredOnReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gateway-sites.conf")
+	writeAt(t, path, "domain admin.example.org\ndomain site.example.org\n", time.Now())
+
+	var logCount int
+	logger := slog.New(countingHandler{count: &logCount})
+	a := NewAllowlist(path, "admin.example.org", logger)
+
+	if a.Snapshot().HasDomain("admin.example.org") {
+		t.Fatal("expected the api_host domain entry to be ignored on initial load")
+	}
+	if !a.Snapshot().HasDomain("site.example.org") {
+		t.Fatal("expected the other domain entry to remain allowed")
+	}
+	if logCount != 1 {
+		t.Fatalf("expected exactly 1 warning for the overlap, got %d", logCount)
+	}
+
+	// Reload with the SAME bad overlap (same mtime): must not log again.
+	a.Reload()
+	if logCount != 1 {
+		t.Fatalf("expected no additional warning for the same mtime, got %d total", logCount)
+	}
+
+	// A fresh edit (new mtime) that still lists api_host as a domain logs
+	// again — and the entry is still ignored.
+	writeAt(t, path, "domain admin.example.org\n", time.Now().Add(time.Second))
+	a.Reload()
+	if a.Snapshot().HasDomain("admin.example.org") {
+		t.Fatal("expected the api_host domain entry to still be ignored after reload")
+	}
+	if logCount != 2 {
+		t.Fatalf("expected a second warning for the new mtime's overlap, got %d total", logCount)
 	}
 }
 

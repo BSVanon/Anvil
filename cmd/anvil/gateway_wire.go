@@ -38,7 +38,7 @@ func wireGateway(cfg *config.Config, srv *api.Server, logger *slog.Logger) http.
 	// so both must increment the same instance.
 	counters := &gateway.Counters{}
 
-	allow := gateway.NewAllowlist(cfg.Gateway.SitesFile, logger)
+	allow := gateway.NewAllowlist(cfg.Gateway.SitesFile, cfg.Gateway.APIHost, logger)
 	resolver := gateway.NewResolver(gateway.ResolverConfig{
 		PositiveTTL: time.Duration(cfg.Gateway.TXTCacheTTL) * time.Second,
 		StaleGrace:  time.Duration(cfg.Gateway.TXTStaleGrace) * time.Second,

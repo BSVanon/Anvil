@@ -51,16 +51,19 @@ func (s *Snapshot) HasAnyOrigin() bool {
 // Allowlist is the sites file's live, hot-reloaded state (decision 7). The
 // zero value is not usable; construct with NewAllowlist.
 type Allowlist struct {
-	path   string
-	logger *slog.Logger
+	path    string
+	apiHost string // normalised; a "domain" entry equal to this is ignored on reload (D2)
+	logger  *slog.Logger
 
 	current atomic.Pointer[Snapshot]
 
-	// mtime/loggedBadAt are only touched from Reload. cmd/anvil's wiring
-	// calls Reload from a single ticker goroutine, so no lock is needed;
-	// tests call it directly and synchronously for the same reason.
-	mtime       time.Time
-	loggedBadAt time.Time
+	// mtime/loggedBadAt/loggedOverlapAt are only touched from Reload.
+	// cmd/anvil's wiring calls Reload from a single ticker goroutine, so
+	// no lock is needed; tests call it directly and synchronously for the
+	// same reason.
+	mtime           time.Time
+	loggedBadAt     time.Time
+	loggedOverlapAt time.Time
 }
 
 // NewAllowlist loads path once and returns an Allowlist reflecting it. A
@@ -69,11 +72,22 @@ type Allowlist struct {
 // means nothing is allowed yet. Call Reload periodically (cmd/anvil's
 // wiring runs it off a 5s ticker, per decision 7) to pick up edits with no
 // restart.
-func NewAllowlist(path string, logger *slog.Logger) *Allowlist {
+//
+// apiHost (internal/config's resolved [gateway] api_host) is never allowed
+// as a site: D2's "the API always wins over a site entry" is already
+// structurally guaranteed by Router (it checks api_host before ever
+// consulting Sites), but a "domain" entry equal to apiHost is additionally
+// stripped from every snapshot outright, on load and on every reload, with
+// one warning per bad mtime — so an operator sees the misconfiguration
+// instead of a silently-ineffective sites-file line. internal/config's
+// Load separately refuses this same overlap outright at config load time;
+// this is the hot-reload-time half of D2's overlap rule, for an entry
+// added after the node is already running.
+func NewAllowlist(path, apiHost string, logger *slog.Logger) *Allowlist {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	a := &Allowlist{path: path, logger: logger}
+	a := &Allowlist{path: path, apiHost: normalizeHost(apiHost), logger: logger}
 	a.current.Store(&Snapshot{})
 	a.Reload()
 	return a
@@ -120,6 +134,12 @@ func (a *Allowlist) Reload() {
 		a.logBad(info.ModTime(), err)
 		return
 	}
+	if a.apiHost != "" {
+		if _, ok := snap.domains[a.apiHost]; ok {
+			delete(snap.domains, a.apiHost)
+			a.logOverlap(info.ModTime())
+		}
+	}
 	a.mtime = info.ModTime()
 	a.current.Store(snap)
 }
@@ -130,6 +150,18 @@ func (a *Allowlist) logBad(mtime time.Time, err error) {
 	}
 	a.loggedBadAt = mtime
 	a.logger.Warn("gateway sites file invalid, keeping last good snapshot", "path", a.path, "error", err)
+}
+
+// logOverlap warns, once per distinct mtime, that the sites file lists
+// api_host as a "domain" entry — D2's overlap rule — and that the entry
+// was ignored rather than silently shadowed by Router's api_host-first
+// ordering.
+func (a *Allowlist) logOverlap(mtime time.Time) {
+	if mtime.Equal(a.loggedOverlapAt) {
+		return
+	}
+	a.loggedOverlapAt = mtime
+	a.logger.Warn("gateway sites file lists api_host as a domain entry, ignoring it", "path", a.path, "api_host", a.apiHost)
 }
 
 // parseSitesFile parses the whole file at once, all-or-nothing: either

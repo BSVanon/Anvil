@@ -102,7 +102,7 @@ func (sh *SiteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	sh.counters.Requests.Add(1)
 
-	host := hostOnly(r.Host)
+	host := normalizeHost(r.Host)
 	origin, ok := sh.policy.Allowed(r.Context(), host)
 	if !ok {
 		sh.counters.NotFound.Add(1)

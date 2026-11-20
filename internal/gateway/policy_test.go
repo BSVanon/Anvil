@@ -20,7 +20,7 @@ func newTestPolicy(t *testing.T, body string, fake *fakeTXTLookup) (*Policy, *Al
 			t.Fatal(err)
 		}
 	}
-	allow := NewAllowlist(path, slog.Default())
+	allow := NewAllowlist(path, "", slog.Default())
 	clock := time.Now()
 	r := newTestResolver(fake, &clock)
 	return NewPolicy(allow, r), allow, r

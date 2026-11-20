@@ -23,7 +23,7 @@ func TestSiteHandler_Counters(t *testing.T) {
 	if err := os.WriteFile(sitesPath, []byte("domain allowed.example.org\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	allow := NewAllowlist(sitesPath, slog.Default())
+	allow := NewAllowlist(sitesPath, "", slog.Default())
 
 	fake := &fakeTXTLookup{records: []string{"ordfs=" + origin}}
 	clock := time.Now()

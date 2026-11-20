@@ -88,14 +88,15 @@ func TestRouter_AnythingElseIs404(t *testing.T) {
 	}
 }
 
-// TestRouter_EmptyAPIHostIsWildcard pins the design decision that makes
-// decision 2's "On today's API listener (:9333), every Host except an
-// allowed site keeps today's behaviour" true: an empty APIHost is the
-// wildcard the :9333 wiring uses, so local tools, mesh peers and tests —
-// which send all kinds of Host headers — keep reaching the API exactly as
-// they do today, while an allowed site (and only an allowed site) still
-// peels off to Sites.
-func TestRouter_EmptyAPIHostIsWildcard(t *testing.T) {
+// TestRouter_EmptyAPIHostOnlyLoopbackReachesAPI pins D1's fixed rule, in
+// place of what this test used to pin under its old name
+// (TestRouter_EmptyAPIHostIsWildcard): an empty APIHost is NEVER a
+// wildcard. With no APIHost configured, an arbitrary, non-loopback Host
+// that isn't an allowed site must fail closed to Sites' own 404 — not
+// fall through to the API the way the pre-fix router.go's
+// `rt.APIHost == "" || host == rt.APIHost` did. Only a loopback Host still
+// reaches the API unconditionally (TestRouter_LoopbackNamesReachAPI).
+func TestRouter_EmptyAPIHostOnlyLoopbackReachesAPI(t *testing.T) {
 	sites := newTestSiteHandler(t, "site.example.org", testOutpoint(33, 0))
 	rt := &Router{API: stubAPIHandler(), Sites: sites, APIHost: ""}
 
@@ -104,8 +105,101 @@ func TestRouter_EmptyAPIHostIsWildcard(t *testing.T) {
 	w := httptest.NewRecorder()
 	rt.ServeHTTP(w, req)
 
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected an empty APIHost to fail closed (404) for an arbitrary, non-loopback Host, got %d %q", w.Code, w.Body.String())
+	}
+}
+
+// TestHostile_EmptyAPIHost_ConfiguredSiteStillHitsAPI makes the review's
+// proven B1 repro permanent. Before the fix, router.go's
+// `rt.APIHost == "" || host == rt.APIHost` sent EVERY Host to the API
+// whenever APIHost was empty — including an allowed, configured site,
+// which should have reached Sites instead. With the fix: an allowed site
+// still reaches Sites, an unrecognised Host still 404s, and a loopback
+// Host (the one thing an empty APIHost still lets through) still reaches
+// the API.
+func TestHostile_EmptyAPIHost_ConfiguredSiteStillHitsAPI(t *testing.T) {
+	origin := testOutpoint(35, 0)
+	sites := newTestSiteHandler(t, "site.example.org", origin)
+	rt := &Router{API: stubAPIHandler(), Sites: sites, APIHost: ""}
+
+	req1 := httptest.NewRequest("GET", "http://site.example.org/", nil)
+	req1.Host = "site.example.org"
+	w1 := httptest.NewRecorder()
+	rt.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK || w1.Body.String() != "hello" {
+		t.Fatalf("expected the allowed site to reach Sites even with APIHost empty, got %d %q", w1.Code, w1.Body.String())
+	}
+
+	req2 := httptest.NewRequest("GET", "http://unknown.example.org/", nil)
+	req2.Host = "unknown.example.org"
+	w2 := httptest.NewRecorder()
+	rt.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusNotFound {
+		t.Fatalf("expected an unrecognised Host to 404 even with APIHost empty, got %d", w2.Code)
+	}
+
+	req3 := httptest.NewRequest("GET", "http://placeholder.invalid/status", nil)
+	req3.Host = "127.0.0.1"
+	w3 := httptest.NewRecorder()
+	rt.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK || w3.Body.String() != "API" {
+		t.Fatalf("expected a loopback Host to reach the API even with APIHost empty, got %d %q", w3.Code, w3.Body.String())
+	}
+}
+
+// TestRouter_APIHostCaseInsensitive is review R1's case-sensitivity risk,
+// made permanent: a Host header differing only in case from the
+// configured api_host must still match.
+func TestRouter_APIHostCaseInsensitive(t *testing.T) {
+	rt := &Router{API: stubAPIHandler(), Sites: nil, APIHost: "Admin.Example.ORG"}
+
+	req := httptest.NewRequest("GET", "http://placeholder.invalid/status", nil)
+	req.Host = "ADMIN.EXAMPLE.ORG"
+	w := httptest.NewRecorder()
+	rt.ServeHTTP(w, req)
+
 	if w.Code != http.StatusOK || w.Body.String() != "API" {
-		t.Fatalf("expected an empty APIHost to default any non-site Host to the API, got %d %q", w.Code, w.Body.String())
+		t.Fatalf("expected a case-variant Host to match api_host, got %d %q", w.Code, w.Body.String())
+	}
+}
+
+// TestRouter_APIHostTrailingDot is review R2's trailing-dot risk, made
+// permanent: a Host header with one trailing dot must still match an
+// api_host configured without one.
+func TestRouter_APIHostTrailingDot(t *testing.T) {
+	rt := &Router{API: stubAPIHandler(), Sites: nil, APIHost: "admin.example.org"}
+
+	req := httptest.NewRequest("GET", "http://placeholder.invalid/status", nil)
+	req.Host = "admin.example.org."
+	w := httptest.NewRecorder()
+	rt.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || w.Body.String() != "API" {
+		t.Fatalf("expected a trailing-dot Host to match api_host, got %d %q", w.Code, w.Body.String())
+	}
+}
+
+// TestRouter_LoopbackNamesReachAPI covers D1's loopback rule: localhost
+// (any case), an IPv4 literal anywhere in 127.0.0.0/8, and ::1 (bracketed
+// or bare, with or without a port) all reach the API even though none of
+// them equals the configured api_host — including a loopback Host WITH a
+// port, item 1's explicit test requirement.
+func TestRouter_LoopbackNamesReachAPI(t *testing.T) {
+	rt := &Router{API: stubAPIHandler(), Sites: nil, APIHost: "admin.example.org"}
+
+	for _, host := range []string{
+		"localhost", "LOCALHOST", "localhost:9333",
+		"127.0.0.1", "127.0.0.1:9333", "127.5.5.5",
+		"::1", "[::1]", "[::1]:9333",
+	} {
+		req := httptest.NewRequest("GET", "http://placeholder.invalid/status", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+		rt.ServeHTTP(w, req)
+		if w.Code != http.StatusOK || w.Body.String() != "API" {
+			t.Fatalf("Host %q: expected a loopback Host to reach the API, got %d %q", host, w.Code, w.Body.String())
+		}
 	}
 }
 
