@@ -107,6 +107,59 @@ max_durable_size = 65536
 max_durable_store_mb = 10240
 warn_at_percent = 80
 
+# BRC-31 MessageBox store — the per-recipient inbox used by /sendMessage,
+# /listMessages, /acknowledgeMessage and the mesh forward-relay path.
+[messaging]
+# ttl_seconds = 604800              # how long a stored message lives before expiry (default 7 days)
+# max_pair_messages = 1000          # cap on messages between one sender/recipient pair
+# max_pair_bytes = 67108864         # cap on bytes between one sender/recipient pair (default 64 MiB)
+# max_inbox_messages = 0            # cap on one recipient's whole inbox (0 = unlimited)
+# max_inbox_bytes = 0               # cap on one recipient's whole inbox, in bytes (0 = unlimited)
+# max_store_messages = 1000000      # cap on messages across the whole store
+# max_store_bytes = 2147483648      # cap on bytes across the whole store (default 2 GiB)
+#
+# Messaging privacy (home-aware store/relay, forward scoping, operator
+# box access). See docs/operator/messaging-privacy.md for the full model.
+#
+# home_hosts lists the public host(s) this node is the HOME for, in
+# addition to [node] public_url below. A recipient is "Home" on this
+# node when its newest tm_messagebox advert names one of these hosts;
+# "Elsewhere" when it advertises a different host; "Unadvertised" when
+# it has no advert at all (or this node doesn't host tm_messagebox /
+# ls_messagebox). Only https:// hosts qualify; localhost, 127.0.0.1,
+# 0.0.0.0, ::1 and *.local / *.example.com / *.test / *.invalid /
+# *.localhost never make a recipient Home or Elsewhere.
+# home_hosts = ["https://my-anvil.example.com"]
+#
+# forward_copy_ttl controls how long a forwarded copy — stored for a
+# recipient who is Elsewhere or Unadvertised — lives in this node's
+# store, as opposed to a Home copy, which always keeps the full
+# ttl_seconds above. Must be below ttl_seconds (clamped down if not).
+# 0 means a forwarded copy is relayed but never stored at all.
+# BEHAVIOR CHANGE: before messaging privacy, a forwarded copy was kept
+# for the full ttl_seconds (7 days by default), the same as a Home
+# copy. The default below (86400 = 24 hours) is shorter; set it higher
+# to restore the old retention.
+# forward_copy_ttl = 86400
+#
+# forward_peers restricts mesh message-forwarding to only these peer
+# identity public keys (hex). Leave unset (the default) to forward to
+# every connected peer, as today. Combine with [mesh] allowed_peers and
+# forward_copy_ttl = 0 to run a closed messaging network that relays
+# traffic for its members without ever storing a copy it's not the
+# home for.
+# forward_peers = [
+#   "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+# ]
+#
+# operator_reads_all_boxes controls whether the node operator's own API
+# token (any token that is not a per-recipient scoped token) can list
+# or acknowledge messages in ANY recipient's box, or only this node's
+# own identity box. Default true (today's behavior, unchanged). Set
+# false to restrict the operator token to its own box — naming another
+# recipient then gets a 403.
+# operator_reads_all_boxes = true
+
 [api]
 # auth_token is auto-derived from identity.wif — you don't need to set it.
 # If you want a custom token, set it here (overrides the derived one).

@@ -450,6 +450,7 @@ func main() {
 		}
 	}
 
+	homeResolver, forwardCopyTTL, operatorReadsAll := wireMessagingPrivacy(cfg, v3Eng)
 	var bondCheck *bond.Checker
 	var nodeWallet *anvilwallet.NodeWallet
 	if cfg.Identity.WIF != "" {
@@ -566,6 +567,7 @@ func main() {
 			}(),
 		})
 		gossipMgr.SetMsgStore(msgStore)
+		wireGossipMessagingPolicy(gossipMgr, cfg, homeResolver, forwardCopyTTL)
 		defer gossipMgr.Stop()
 
 		// Connect to seed peers (auto-reconnect on disconnect, 30s retry)
@@ -836,11 +838,14 @@ func main() {
 			}
 			return nil
 		}(),
-		ProofFetcher:   spv.NewProofFetcher(arcClient, logger),
-		P2PTxSource:    p2pTxFetcher,
-		P2PBlockSource: p2pBlockFetcher,
-		MsgStore:       msgStore,
-		SigningKey:     identityPrivKey,
+		ProofFetcher:          spv.NewProofFetcher(arcClient, logger),
+		P2PTxSource:           p2pTxFetcher,
+		P2PBlockSource:        p2pBlockFetcher,
+		MsgStore:              msgStore,
+		HomeResolver:          homeResolver,
+		ForwardCopyTTLSeconds: forwardCopyTTL,
+		OperatorReadsAllBoxes: operatorReadsAll,
+		SigningKey:            identityPrivKey,
 		Wallet: func() sdkwallet.Interface {
 			if nodeWallet != nil {
 				return nodeWallet.Wallet()
