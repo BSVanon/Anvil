@@ -1,14 +1,12 @@
 package api
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -287,11 +285,12 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// issueChallengeForPayees builds and returns a 402 challenge. Everything that
-// can refuse the challenge runs before it takes a nonce: the size of what the
-// challenge keeps, the cap on pending challenges (payment_pending.go), and the
-// body read. A nonce the mint budget refuses (payment_budget.go) answers 503
-// with Retry-After.
+// issueChallengeForPayees builds and returns a 402 challenge. The body is
+// read first, under its own size cap and deadline (payment_bodyread.go) —
+// RISK 2: reservePending used to run before this read, so a stalled body
+// held a pending-place slot indefinitely — then the challenge's footprint
+// cap, the pending-challenge cap (payment_pending.go), and the nonce mint
+// (budget-bounded, payment_budget.go, 503 with Retry-After) run in order.
 func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Request, payees []Payee) {
 	if n := challengeFootprint(r, payees); n > maxChallengeFootprint {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf(
@@ -299,6 +298,12 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 			n, maxChallengeFootprint))
 		return
 	}
+	bodyBytes, ok := readChallengeBody(w, r)
+	if !ok {
+		return
+	}
+	bodyHash := sha256Hex(bodyBytes)
+	headerHash := canonicalHeaderHash(r)
 	place, wait, ok := pg.reservePending()
 	if !ok {
 		refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonPendingCapExceeded)
@@ -306,12 +311,6 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 		return
 	}
 	defer place.release()
-
-	bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	bodyHash := sha256Hex(bodyBytes)
-	// Restore body for downstream handlers
-	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	headerHash := canonicalHeaderHash(r)
 
 	nonce, err := pg.nonceProvider.MintNonce()
 	if err != nil {
