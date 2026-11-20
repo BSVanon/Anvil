@@ -1,6 +1,9 @@
 package messaging
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func sourceFor(hosts ...string) AdvertSource {
 	ads := make([]Advert, 0, len(hosts))
@@ -154,6 +157,101 @@ func TestHomeResolver_SeveralAdvertsAtOnce(t *testing.T) {
 	}
 	if res.State != Elsewhere {
 		t.Fatalf("expected Elsewhere, got %s", res.State)
+	}
+}
+
+// TestQualifyAndNormalise_K8HostFilterTable is the reviewer's R5 probe
+// (scratchpad/repro/messaging_zz_review_test.go.txt) made permanent as a
+// real assertion test: every row of the review's K8 host-filter table,
+// proved against Node 22's WHATWG `URL`.
+func TestQualifyAndNormalise_K8HostFilterTable(t *testing.T) {
+	// IPv4 numeric forms: three different spellings of the loopback
+	// address must all be excluded, matching canon ("excluded, hostname
+	// becomes 127.0.0.1" — K8 table row 1). 127.0.0.1 itself is the
+	// pre-existing baseline, unaffected by this fix, included so the
+	// alternate spellings are seen converging on the same answer.
+	for _, h := range []string{"https://127.1", "https://0x7f000001", "https://2130706433", "https://127.0.0.1"} {
+		if _, ok := qualifyAndNormalise(h); ok {
+			t.Errorf("%s: expected excluded (an alternate spelling of the loopback address), got qualified", h)
+		}
+	}
+
+	// [::1]: canon COUNTS this — a canon bug, since isLocalHostname's
+	// own IPv6 check never strips the brackets from the string it's
+	// actually given (host.ts:28-29), so the literal "::1" comparison
+	// never fires. The overseer decision is to keep excluding it here
+	// anyway, a deliberate, documented divergence (K8 table row 2).
+	if _, ok := qualifyAndNormalise("https://[::1]"); ok {
+		t.Error("https://[::1]: expected excluded (Anvil's deliberate divergence from the canon bug), got qualified")
+	}
+
+	// Ports: ":0443" must drop exactly like ":443" (K8 table row 3 —
+	// parsed as a number, not string-compared against the literal
+	// "443").
+	withLeadingZero, ok := qualifyAndNormalise("https://node-a.example.org:0443")
+	if !ok {
+		t.Fatal("https://node-a.example.org:0443: expected to qualify")
+	}
+	plain, ok := qualifyAndNormalise("https://node-a.example.org:443")
+	if !ok {
+		t.Fatal("https://node-a.example.org:443: expected to qualify")
+	}
+	if withLeadingZero != plain || withLeadingZero != "https://node-a.example.org" {
+		t.Fatalf(":0443 should normalise identically to :443 (both the default port): got %q and %q", withLeadingZero, plain)
+	}
+
+	// IDN hosts: converted to ASCII/punycode, matching canon, so both
+	// spellings of the same hostname normalise to the same string (K8
+	// table row 4).
+	idn, ok := qualifyAndNormalise("https://bücher.example")
+	if !ok {
+		t.Fatal("https://bücher.example: expected to qualify")
+	}
+	punycode, ok := qualifyAndNormalise("https://xn--bcher-kva.example")
+	if !ok {
+		t.Fatal("https://xn--bcher-kva.example: expected to qualify")
+	}
+	if idn != punycode || idn != "https://xn--bcher-kva.example" {
+		t.Fatalf("an IDN host should normalise to the same punycode form as its already-ASCII spelling: got %q and %q", idn, punycode)
+	}
+
+	// IPv6 brackets: dropping them on normalise made two DIFFERENT hosts
+	// collide (the review's own example, cited alongside the table).
+	// They must stay distinct, and the normalised form must still be
+	// bracketed.
+	a, ok := qualifyAndNormalise("https://[a::1]:8443")
+	if !ok {
+		t.Fatal("https://[a::1]:8443: expected to qualify")
+	}
+	b, ok := qualifyAndNormalise("https://[a::1:8443]")
+	if !ok {
+		t.Fatal("https://[a::1:8443]: expected to qualify")
+	}
+	if a == b {
+		t.Fatalf("[a::1]:8443 and [a::1:8443] must stay distinct hosts, both normalised to %q", a)
+	}
+	if !strings.HasPrefix(a, "https://[") {
+		t.Fatalf("expected IPv6 brackets preserved in the normalised form, got %q", a)
+	}
+}
+
+// TestHomeResolver_HostsDedupedAfterNormalise (K6): two raw advert host
+// strings that normalise to the SAME qualifying host count as one host,
+// not two — the recipient must still answer Home (not just "some other
+// host"), and HasOtherHost must not be set from a duplicate of this
+// node's own host arriving under a different raw spelling.
+func TestHomeResolver_HostsDedupedAfterNormalise(t *testing.T) {
+	r := NewHomeResolver([]string{"https://anvil.example"},
+		sourceFor("https://anvil.example", "https://ANVIL.EXAMPLE/", "https://anvil.example:443"))
+	res, err := r.Resolve("deadbeef")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.State != Home {
+		t.Fatalf("expected Home, got %s", res.State)
+	}
+	if res.HasOtherHost {
+		t.Fatal("expected HasOtherHost=false: all three adverts normalise to this node's own single host")
 	}
 }
 

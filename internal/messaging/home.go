@@ -11,8 +11,12 @@ package messaging
 // decision 4's ForwardPeerFilter is the seam for certified peers.
 
 import (
+	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 // HomeState is the three-way answer decision 2 defines.
@@ -127,6 +131,7 @@ func (r *lookupHomeResolver) Resolve(recipientIdentityHex string) (Resolution, e
 	hasAny := false
 	isHome := false
 	hasOther := false
+	seen := make(map[string]bool, len(adverts)) // K6: dedupe hosts after normalisation
 	for _, a := range adverts {
 		nh, ok := qualifyAndNormalise(a.Host)
 		if !ok {
@@ -134,6 +139,14 @@ func (r *lookupHomeResolver) Resolve(recipientIdentityHex string) (Resolution, e
 			// count (decision 2, "Which adverts count").
 			continue
 		}
+		if seen[nh] {
+			// K6: two raw advert forms (differing only by case, a
+			// trailing slash, or textual IPv4/IDN encoding — see
+			// qualifyAndNormalise) can normalise to the same qualifying
+			// host; count each distinct host once.
+			continue
+		}
+		seen[nh] = true
 		hasAny = true
 		if r.ownsHost(nh) {
 			isHome = true
@@ -162,12 +175,70 @@ func (r *lookupHomeResolver) ownsHost(normalisedHost string) bool {
 }
 
 // qualifyAndNormalise applies the canonical client's host filter
-// (MessageBoxClient.ts:507-531 — https only, and none of localhost,
-// 127.0.0.1, 0.0.0.0, ::1, *.local, *.example.com, *.test, *.invalid, or
-// *.localhost) and, if it passes, returns the normalised form: lowercase
-// scheme and host, default port dropped, trailing slash dropped, path
-// kept. Returns ("", false) for a host that fails the filter or doesn't
-// parse as a URL.
+// (host.ts:43-59 isLocalHostname, reached through
+// normalizeOverlayMessageBoxHost at host.ts:102-111 — https only, and
+// none of localhost, 127.0.0.1, 0.0.0.0, ::1, *.local, *.example.com,
+// *.test, or *.invalid, or *.localhost) and, if it passes, returns the
+// normalised form: lowercase scheme and host, default port dropped,
+// trailing slash dropped, path kept. Returns ("", false) for a host that
+// fails the filter or doesn't parse as a URL.
+//
+// K8 (review's host-filter table, proved against Node 22's WHATWG `URL`)
+// closes three divergences from the canonical client, which normalises
+// every host through a real WHATWG `URL` before this package's exclusion
+// checks ever run:
+//
+//   - IPv4 numeric forms ("127.1", "0x7f000001", "2130706433", octal
+//     parts): WHATWG's host parser recognises a hostname that "ends in a
+//     number" and re-parses the WHOLE hostname through its IPv4 parser,
+//     so all three example forms arrive as the literal string
+//     "127.0.0.1" before canon's own exclusion check runs — hand-ported
+//     below as parseWHATWGIPv4/parseWHATWGIPv4Number
+//     (url.spec.whatwg.org #ends-in-a-number-checker,
+//     #concept-ipv4-parser, #ipv4-number-parser, collapsed into one pass:
+//     see parseWHATWGIPv4's own comment for why a separate
+//     "ends in a number" pre-check isn't needed here). No Go stdlib
+//     function or existing dependency implements this —
+//     net.ParseIP rejects every one of these forms.
+//   - Ports: "the default port, written with a leading zero" (":0443")
+//     must drop exactly like ":443" does — parsed as a number, not
+//     string-compared (normalisedPort, below).
+//   - IDN hosts: converted to ASCII (punycode) via golang.org/x/net/idna's
+//     Lookup profile (already a direct dependency at v0.62.0, so this
+//     needs no go.mod/go.sum change) — "the recommended profile for
+//     looking up domain names, according to Section 5 of RFC 5891"
+//     (idna.go:266-271), non-transitional since Go 1.18 per
+//     transitionalLookup's own comment (idna.go:264-266) — UTS #46
+//     non-transitional processing, the closest match to WHATWG's own
+//     domain-to-ASCII step (both are UTS #46, non-transitional). Matching
+//     the real host parser's order (url.spec.whatwg.org
+//     #concept-host-parser steps 5 and 8), IDNA conversion runs before
+//     the numeric-IPv4 attempt, not after — an already-ASCII numeric
+//     label passes through idna.Lookup.ToASCII unchanged (digits and
+//     lowercase hex letters are valid LDH characters), so running it
+//     unconditionally first never disturbs the three IPv4 forms above.
+//
+// A hostname that "ends in a number" but fails the full WHATWG IPv4
+// parse (too many parts, a part over 255, or the last part too wide —
+// e.g. "1.2.3.4.5.6") hard-fails the ENTIRE URL under the real standard;
+// this port instead just falls back to treating it as an ordinary
+// domain, same as the current behaviour for a bare string of letters.
+// That's a deliberate, narrow leniency, not a loophole: every host that
+// WOULD parse to a loopback/private form under WHATWG still does here
+// (the three table rows above), and a malformed numeric-looking label
+// was never going to coincidentally equal "127.0.0.1" or match an
+// exclusion suffix either way.
+//
+// `[::1]` stays excluded here, a deliberate divergence from a canon bug
+// (isLocalHostname's own IPv6 check strips any leading `[` or trailing
+// `]` from its OWN variable before comparing, host.ts:28-29 — but
+// normalizeMessageBoxHost's caller passes it the bracketed
+// `url.hostname`, which for `new URL("https://[::1]")` is NOT
+// bracket-stripped by WHATWG's URL serializer, so the comparison this
+// package's canon actually runs against never fires; see the claims'
+// divergence table). Go's own url.URL.Hostname() already strips brackets
+// before this function ever sees the hostname, so "::1" matches the
+// existing switch case with no extra code either way.
 func qualifyAndNormalise(raw string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -188,6 +259,18 @@ func qualifyAndNormalise(raw string) (string, bool) {
 		return "", false
 	}
 	hostname := strings.ToLower(u.Hostname())
+	isIPv6 := strings.Contains(hostname, ":") // bracket-stripped by Hostname(), so ':' only ever appears in an IPv6 literal
+	if !isIPv6 {
+		// K8: IDNA first, matching the real host parser's step order —
+		// then attempt the numeric-IPv4 re-parse on its (possibly
+		// unchanged) ASCII result.
+		if ascii, err := idna.Lookup.ToASCII(hostname); err == nil {
+			hostname = ascii
+		}
+		if dotted, ok := parseWHATWGIPv4(hostname); ok {
+			hostname = dotted
+		}
+	}
 	switch hostname {
 	case "localhost", "127.0.0.1", "0.0.0.0", "::1":
 		return "", false
@@ -200,11 +283,119 @@ func qualifyAndNormalise(raw string) (string, bool) {
 
 	// Drop the default port (443 for https) and a trailing slash; keep
 	// the path exactly as given (case preserved — URL paths are
-	// conventionally case-sensitive, unlike scheme/host).
+	// conventionally case-sensitive, unlike scheme/host). K8: re-bracket
+	// an IPv6 host, so "[a::1]:8443" and "[a::1:8443]" stay distinct
+	// instead of colliding once the brackets are gone.
 	host := hostname
-	if port := u.Port(); port != "" && port != "443" {
+	if isIPv6 {
+		host = "[" + host + "]"
+	}
+	if port := normalisedPort(u); port != "" {
 		host = host + ":" + port
 	}
 	path := strings.TrimSuffix(u.Path, "/")
 	return "https://" + host + path, true
+}
+
+// normalisedPort returns u's port, or "" when it's absent or equal to
+// the default https port (443) once parsed AS A NUMBER (K8: ":0443" is
+// the default port written with a leading zero, and must drop exactly
+// like ":443" — a string compare against the literal "443" misses it).
+// A port that fails to parse as a number at all (shouldn't happen —
+// net/url already validates the port is digits-only) is kept as-is.
+func normalisedPort(u *url.URL) string {
+	p := u.Port()
+	if p == "" {
+		return ""
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil {
+		return p
+	}
+	if n == 443 {
+		return ""
+	}
+	return p
+}
+
+// parseWHATWGIPv4 re-parses host as an IPv4 address exactly the way the
+// WHATWG URL Standard's host parser does for a domain that "ends in a
+// number" (url.spec.whatwg.org/#concept-ipv4-parser), returning its
+// canonical dotted-quad form. ok is false if host has more than four
+// dot-separated parts, any part fails parseWHATWGIPv4Number, a non-last
+// part exceeds 255, or the last part is too wide for the bits its
+// position leaves it (256^(5-numParts) — a single bare part like
+// "2130706433" leaves all 4 bytes/32 bits, four explicit parts leave
+// just the last 8 bits, and so on).
+//
+// The real standard first runs a separate "ends in a number" checker
+// (url.spec.whatwg.org/#ends-in-a-number-checker) on just the LAST part,
+// and only attempts this full parse if that returns true; a plain
+// domain label fails that checker before ever reaching here. This port
+// collapses the two into one pass: attempting the full parse directly
+// and reporting ok=false on any failure reaches an identical place
+// (treat host as an ordinary domain) for every input that matters here,
+// without a hostname ever being misread as numeric when it isn't — the
+// per-part parseWHATWGIPv4Number call is exactly as strict as the
+// checker's own "contains only ASCII digits, or itself parses as an
+// IPv4 number" test, just run eagerly on every part instead of only the
+// last.
+func parseWHATWGIPv4(host string) (string, bool) {
+	parts := strings.Split(host, ".")
+	if len(parts) > 1 && parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1] // a trailing "." (absolute FQDN notation)
+	}
+	if len(parts) == 0 || len(parts) > 4 {
+		return "", false
+	}
+	numbers := make([]uint64, len(parts))
+	for i, p := range parts {
+		n, ok := parseWHATWGIPv4Number(p)
+		if !ok {
+			return "", false
+		}
+		numbers[i] = n
+	}
+	for i := 0; i < len(numbers)-1; i++ {
+		if numbers[i] > 255 {
+			return "", false
+		}
+	}
+	last := numbers[len(numbers)-1]
+	maxLast := uint64(1) << uint(8*(5-len(numbers)))
+	if last >= maxLast {
+		return "", false
+	}
+	ipv4 := last
+	for i := 0; i < len(numbers)-1; i++ {
+		ipv4 += numbers[i] << uint(8*(3-i))
+	}
+	return fmt.Sprintf("%d.%d.%d.%d", byte(ipv4>>24), byte(ipv4>>16), byte(ipv4>>8), byte(ipv4)), true
+}
+
+// parseWHATWGIPv4Number parses one dot-separated part per the WHATWG URL
+// Standard's IPv4 number parser (#ipv4-number-parser): a leading "0x" or
+// "0X" selects hex, a leading "0" (with more digits following) selects
+// octal, otherwise decimal. ok is false if what remains after stripping
+// a radix prefix contains a digit invalid for that radix (ASCII hex
+// digits for 0-15, exactly as the standard specifies).
+func parseWHATWGIPv4Number(part string) (uint64, bool) {
+	if part == "" {
+		return 0, false
+	}
+	radix := 10
+	switch {
+	case len(part) >= 2 && (part[:2] == "0x" || part[:2] == "0X"):
+		part, radix = part[2:], 16
+	case len(part) >= 2 && part[0] == '0':
+		part, radix = part[1:], 8
+	}
+	if part == "" {
+		return 0, true // a bare "0", or "0x"/"0X" with nothing after — the standard returns (0, true), not failure
+	}
+	n, err := strconv.ParseUint(part, radix, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
