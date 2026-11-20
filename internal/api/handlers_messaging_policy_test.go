@@ -121,6 +121,44 @@ func TestSendHomeAwareElsewhereForwardCopyTTLZero(t *testing.T) {
 	}
 }
 
+// TestSendHomeAwareElsewhereStoresAtForwardCopyTTLNotTTLSeconds is F3:
+// the cold review's mutation M5c (swap forward_copy_ttl for the store's
+// ttl_seconds at this call site, handlers_messaging.go's sendHomeAware
+// Elsewhere row, ":128") survived because no existing test inspected
+// the stored copy's actual expiry basis, only that a copy existed
+// (TestSendHomeAwareElsewhereForwardCopyTTLZero, above, covers
+// forward_copy_ttl=0, where there is nothing to store at all). ttl_seconds
+// is set explicitly (604800) rather than relying on the store's internal
+// default so this test does not depend on that constant staying put;
+// forward_copy_ttl (86400) is deliberately far from it so the two bases
+// are numerically distinguishable — see the gossip-side sibling test,
+// internal/gossip/handlers_msg_policy_test.go's
+// TestDeliverForwardNonHomeForwardCopyTTLUsedNotStoreTTLSeconds, for the
+// same check on the other call site the fix spec names.
+func TestSendHomeAwareElsewhereStoresAtForwardCopyTTLNotTTLSeconds(t *testing.T) {
+	const ttlSeconds = int64(604800)
+	const forwardCopyTTL = int64(86400)
+	srv, _ := messageHandlerServer(t, messaging.Options{TTLSeconds: ttlSeconds})
+	srv.forwardCopyTTLSeconds = apiTTLPtr(forwardCopyTTL)
+	srv.homeResolver = stubHomeResolverAPI{state: messaging.Elsewhere}
+	_, sender, _ := newKeyWallet(t)
+	_, recipient, _ := newKeyWallet(t)
+	msg := &messaging.Message{Sender: sender, Recipient: recipient, MessageBox: "box", Body: "hi"}
+
+	if _, _, stored, err := srv.sendHomeAware(msg); err != nil || !stored {
+		t.Fatalf("sendHomeAware: stored=%v err=%v", stored, err)
+	}
+	msgs, err := srv.msgStore.List(recipient, "box")
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("expected 1 stored copy: msgs=%+v err=%v", msgs, err)
+	}
+	want := msgs[0].ReceivedAt + forwardCopyTTL - ttlSeconds
+	if msgs[0].ExpiryBase != want {
+		t.Fatalf("ExpiryBase = %d, want %d (forward_copy_ttl-based; the store's ttl_seconds-based value would wrongly give %d)",
+			msgs[0].ExpiryBase, want, msgs[0].ReceivedAt)
+	}
+}
+
 // TestSendHomeAwareLegacyWhenForwardCopyTTLUnset confirms the "decisions
 // 2/3 never wired up" fallback reproduces the exact pre-brick behaviour:
 // store at ttl_seconds, always forward.

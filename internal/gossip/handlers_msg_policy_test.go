@@ -258,6 +258,56 @@ func TestDeliverForwardNonHomeForwardCopyTTLPositiveStoredAndRelayed(t *testing.
 	}
 }
 
+// TestDeliverForwardNonHomeForwardCopyTTLUsedNotStoreTTLSeconds is F3:
+// the cold review's mutation M5b (swap forward_copy_ttl for the store's
+// ttl_seconds at this call site, handlers_msg_policy.go's
+// deliverNonHomeForward ":197") survived because no test inspected the
+// stored copy's actual expiry basis, only that a copy existed (the
+// sibling test above). forward_copy_ttl here (86400) is deliberately far
+// from the store's ttl_seconds (604800, set explicitly rather than
+// relying on quota.go's default so this test does not depend on that
+// constant staying put) so the two bases are numerically
+// distinguishable: copy_ttl.go's expiryBaseFor formula
+// (ReceivedAt + forward_copy_ttl - ttl_seconds) gives ReceivedAt-518400
+// when correct, and exactly ReceivedAt — the same value Home/Deliver's
+// full-ttl_seconds row always produces — if the mutation swapped
+// ttl_seconds back in.
+func TestDeliverForwardNonHomeForwardCopyTTLUsedNotStoreTTLSeconds(t *testing.T) {
+	const ttlSeconds = int64(604800)
+	const forwardCopyTTL = int64(86400)
+	store, err := messaging.NewStore(t.TempDir(), messaging.Options{TTLSeconds: ttlSeconds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
+	mgr.SetMsgStore(store)
+	mgr.SetMessagingPolicy(MessagingPolicy{ForwardCopyTTLSeconds: ttlPtr(forwardCopyTTL)})
+	senderKey, sender := newID(t)
+	_, recipient := newID(t)
+	msg := sampleMsg(sender, recipient)
+	msg.MessageID = "copy-ttl-expiry-basis"
+	raw, err := json.Marshal(legacyForward(t, senderKey, msg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.onMsgForward("peer", raw); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := store.List(recipient, "dex.swap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("stored messages = %d, want 1", len(msgs))
+	}
+	want := msgs[0].ReceivedAt + forwardCopyTTL - ttlSeconds
+	if msgs[0].ExpiryBase != want {
+		t.Fatalf("ExpiryBase = %d, want %d (forward_copy_ttl-based; the store's ttl_seconds-based value would wrongly give %d)",
+			msgs[0].ExpiryBase, want, msgs[0].ReceivedAt)
+	}
+}
+
 // TestAllowUnstoredRelayBoundsForwardCopyTTLZeroFlood proves decision
 // 3's relay bound with forward_copy_ttl=0: a flood of distinct messages
 // this node never stores is NOT all relayed — the manager-wide
