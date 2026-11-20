@@ -17,6 +17,7 @@ type unstoredRelayBucket struct {
 	lastRefill time.Time
 	dropped    int
 	lastWarn   time.Time
+	nowFunc    func() time.Time // injectable clock for tests; nil means time.Now
 }
 
 var relayForwardTestHook func(*Manager, string, MsgForwardPayload)
@@ -29,7 +30,11 @@ func (m *Manager) allowUnstoredRelay() bool {
 	bucket := relayBucketFor(m)
 	bucket.mu.Lock()
 	defer bucket.mu.Unlock()
-	now := time.Now()
+	nowFunc := bucket.nowFunc
+	if nowFunc == nil {
+		nowFunc = time.Now
+	}
+	now := nowFunc()
 	if bucket.lastRefill.IsZero() {
 		bucket.tokens, bucket.lastRefill = unstoredRelayBurst, now
 	}
