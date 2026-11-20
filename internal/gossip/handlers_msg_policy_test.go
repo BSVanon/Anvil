@@ -308,16 +308,29 @@ func TestDeliverForwardNonHomeForwardCopyTTLUsedNotStoreTTLSeconds(t *testing.T)
 	}
 }
 
+// relayBudgetJitterSlack bounds how many extra tokens a real-time
+// allowUnstoredRelay bucket (relay_budget.go, unstoredRelayRate=10/s)
+// can plausibly refill mid-flood during these tests' synchronous
+// unstoredRelayBurst+20 call loops, under -race or a loaded machine —
+// generous enough to absorb real scheduling jitter, tight enough that a
+// budget check that quietly went unbounded (which relays the full
+// flood) is still caught unambiguously.
+const relayBudgetJitterSlack = 15
+
 // TestAllowUnstoredRelayBoundsForwardCopyTTLZeroFlood proves decision
 // 3's relay bound with forward_copy_ttl=0: a flood of distinct messages
 // this node never stores is NOT all relayed — the manager-wide
-// allowUnstoredRelay budget caps it at exactly its burst size (N9 —
+// allowUnstoredRelay budget caps it close to its burst size (N9 —
 // asserting only "fewer than the flood" would also pass for a bound
-// that had quietly drifted, so this pins the exact number), even though
-// the per-peer entry bucket (burst 100, default) lets all of them
-// through to onMsgForward in the first place. The loop runs fast enough
-// that no time-based refill meaningfully adds tokens back mid-flood, so
-// the full flood is run before any single read of *relays.
+// that had quietly drifted, so this pins a tight window around the
+// burst, not just "some"), even though the per-peer entry bucket (burst
+// 100, default) lets all of them through to onMsgForward in the first
+// place. The bucket refills over real wall-clock time, so an
+// exact-equality assertion here used to flake under -race (observed
+// 52-53 of 70 on a loaded machine, not exactly 50) once the synchronous
+// loop itself took long enough for a token or two to legitimately
+// refill mid-flood; relayBudgetJitterSlack absorbs that without
+// weakening what the test actually guards against.
 func TestAllowUnstoredRelayBoundsForwardCopyTTLZeroFlood(t *testing.T) {
 	store := newForwardTestStore(t)
 	mgr := NewManager(ManagerConfig{Logger: slog.Default()})
@@ -339,8 +352,9 @@ func TestAllowUnstoredRelayBoundsForwardCopyTTLZeroFlood(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if *relays != unstoredRelayBurst {
-		t.Fatalf("relays = %d of %d forwards, want exactly unstoredRelayBurst=%d", *relays, flood, unstoredRelayBurst)
+	if *relays < unstoredRelayBurst || *relays > unstoredRelayBurst+relayBudgetJitterSlack {
+		t.Fatalf("relays = %d of %d forwards, want in [%d, %d] (unstoredRelayBurst=%d plus wall-clock refill slack)",
+			*relays, flood, unstoredRelayBurst, unstoredRelayBurst+relayBudgetJitterSlack, unstoredRelayBurst)
 	}
 	if store.Count() != 0 {
 		t.Fatalf("store count = %d, want 0 (forward_copy_ttl=0 never stores)", store.Count())
@@ -547,7 +561,10 @@ func TestForwardPeersRestrictsRelayMessageForwardToListedPeers(t *testing.T) {
 // forward unconditionally, bypassing the manager-wide allowUnstoredRelay
 // budget that every OTHER unstored-relay path (a stored node's
 // non-home/quota branches) already respects. It must share the same
-// bound.
+// bound. Same relayBudgetJitterSlack reasoning as
+// TestAllowUnstoredRelayBoundsForwardCopyTTLZeroFlood above: the bucket
+// refills over real wall-clock time, so the window (not an exact
+// number) is what's deliberate here.
 func TestRelayOnlyNodeBoundByUnstoredRelayBudget(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Logger: slog.Default()}) // no SetMsgStore: relay-only
 	relays := observeForwardRelays(t, mgr)
@@ -566,7 +583,8 @@ func TestRelayOnlyNodeBoundByUnstoredRelayBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if *relays != unstoredRelayBurst {
-		t.Fatalf("relay-only node: relays = %d of %d forwards, want exactly unstoredRelayBurst=%d", *relays, flood, unstoredRelayBurst)
+	if *relays < unstoredRelayBurst || *relays > unstoredRelayBurst+relayBudgetJitterSlack {
+		t.Fatalf("relay-only node: relays = %d of %d forwards, want in [%d, %d] (unstoredRelayBurst=%d plus wall-clock refill slack)",
+			*relays, flood, unstoredRelayBurst, unstoredRelayBurst+relayBudgetJitterSlack, unstoredRelayBurst)
 	}
 }
