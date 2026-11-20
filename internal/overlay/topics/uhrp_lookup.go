@@ -42,15 +42,19 @@ type UHRPLookupQuery struct {
 	// elsewhere use "_", but this field is what an external canonical
 	// client sends). When set, every other key on this struct is ignored.
 	Outpoint string `json:"outpoint,omitempty"`
-	// HostIdentityKey is canonical's exact-match filter on an
-	// advertisement's identity key (hex, case-insensitive). AND-combines
-	// with every other key supplied, per the struct doc comment above.
+	// HostIdentityKey is Anvil's filter on an advertisement's identity key
+	// (hex), matched case-insensitively. AND-combines with every other key
+	// supplied, per the struct doc comment above. Deliberate divergence
+	// from canonical, which matches case-sensitively against lowercase hex
+	// — see uhrpQueryFilter.matches's doc comment (uhrp_filter.go, fix
+	// pass, re-review RISKS item 3) for the exact canonical citation.
 	HostIdentityKey string `json:"hostIdentityKey,omitempty"`
 	// ExpiryTime is canonical's exact-match filter on an advertisement's
-	// absolute Unix-seconds expiry. AND-combines the same way
-	// HostIdentityKey does. Zero means "not supplied": a stored
-	// advertisement's expiry is always >= 1 (admission enforces it), so
-	// zero can never be a real value worth querying for.
+	// absolute Unix-seconds expiry — a strict equality, never a range (see
+	// uhrpQueryFilter.matches's doc comment for the canonical citation).
+	// AND-combines the same way HostIdentityKey does. Zero means "not
+	// supplied": a stored advertisement's expiry is always >= 1 (admission
+	// enforces it), so zero can never be a real value worth querying for.
 	ExpiryTime int64 `json:"expiryTime,omitempty"`
 	// List returns all UHRP entries. Values: "all", "hashes". Anvil-only.
 	List string `json:"list,omitempty"`

@@ -74,6 +74,24 @@ func (f uhrpQueryFilter) active() bool {
 
 // matches reports whether a record satisfies every field this filter has
 // set. The zero value (no fields set) matches every record.
+//
+// expiryTime is a strict equality comparison (it.Expiry != f.expiryTime),
+// matching canonical UHRPLookupService.ts:71's `records.find(query)`
+// exactly: Mongo's find() with a plain field:value pair is itself an
+// equality match, and canonical never substitutes a range operator here —
+// no divergence (fix pass, re-review RISKS item 3).
+//
+// hostIdentityKey deliberately diverges from canonical. Canonical's find
+// compares the query value byte-for-byte against the stored field, and
+// that stored field is always Utils.toHex(...)-produced lowercase hex
+// (UHRPLookupService.ts:32, written at admission; :71, the find(query)
+// comparison) — so canonical is, in effect, a case-sensitive match
+// against lowercase hex. Anvil instead uses strings.EqualFold below: a
+// deliberate, more permissive choice (fix pass, re-review RISKS item 3) —
+// a canonical client sending lowercase hex still gets the canonical
+// answer, and an Anvil-only or hand-typed caller that sends uppercase hex
+// isn't punished for it. Strictly more lenient than canonical, never less
+// correct.
 func (f uhrpQueryFilter) matches(it uhrpItem) bool {
 	if f.hostIdentityKey != "" && !strings.EqualFold(it.IdentityKey, f.hostIdentityKey) {
 		return false
