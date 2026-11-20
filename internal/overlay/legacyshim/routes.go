@@ -474,6 +474,9 @@ func (s *Shim) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.Context().Err() != nil { // the client left: don't hydrate an answer for nobody
+		return
+	}
 	legacy, err := s.canonicalToLegacyAnswer(r.Context(), q.Service, answer)
 	if err != nil {
 		writeLegacyError(w, http.StatusInternalServerError, err.Error())

@@ -24,7 +24,7 @@ func (s *Shim) guard() *routeguard.Guard { return routeguard.Or(s.Guard) }
 // has answered the request and returns false; on success the caller owns the
 // ticket.
 func (s *Shim) readGuarded(w http.ResponseWriter, r *http.Request, route routeguard.Route, jsonRoute bool) (*routeguard.Ticket, []byte, bool) {
-	t, err := s.guard().Begin(jsonRoute)
+	t, err := s.guard().Begin(w, r, jsonRoute)
 	if err != nil {
 		writeLegacyGuardError(w, r, err)
 		return nil, nil, false

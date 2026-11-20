@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/clientkey"
 	"golang.org/x/sync/semaphore"
@@ -66,19 +67,46 @@ type clientSet struct {
 	mem   int64
 	proxy atomic.Pointer[proxyTrust]
 
-	shared, ignored sync.Once
-	warn            func(msg string, args ...any)
+	warnings *hourlyWarn
+	warn     func(msg string, args ...any)
 }
 
 // newClientSet sets the caps for a guard of the given pool and slot counts.
 func newClientSet(pool, cpuSlots, jsonSlots int64) *clientSet {
-	s := &clientSet{byKey: map[string]*client{}, mem: max(1, pool/ClientMemoryShare), warn: slog.Warn}
+	s := &clientSet{byKey: map[string]*client{}, mem: max(1, pool/ClientMemoryShare), warn: slog.Warn, warnings: newHourlyWarn()}
 	s.slots[slotRead] = min(ClientReadPermits, ReadPermits)
 	s.slots[slotJSON] = min(ClientJSONSlots, max(1, jsonSlots-1))
 	s.slots[slotCPU] = min(ClientCPUSlots, max(1, cpuSlots-1))
 	s.slots[slotBig] = 1
 	s.slots[slotExec] = 1
 	return s
+}
+
+// hourlyWarn tracks, per condition key, when it last let a warning through:
+// at most once an hour each, rather than a sync.Once's forever (cold review
+// round 4 RISK 8, "a later misconfiguration is never logged"). now is
+// time.Now, overridden in tests.
+type hourlyWarn struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+	now  func() time.Time
+}
+
+func newHourlyWarn() *hourlyWarn {
+	return &hourlyWarn{last: map[string]time.Time{}, now: time.Now}
+}
+
+// allow reports whether key may warn now: the first time it is asked, or
+// once an hour has passed since the last time it was let through.
+func (h *hourlyWarn) allow(key string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := h.now()
+	if last, ok := h.last[key]; ok && now.Sub(last) < time.Hour {
+		return false
+	}
+	h.last[key] = now
+	return true
 }
 
 // TrustProxy sets how the guard finds the client of a request, as the API's
@@ -90,30 +118,38 @@ func (g *Guard) TrustProxy(trust bool, hops int) {
 	g.clients.proxy.Store(&proxyTrust{trust: trust, hops: hops})
 }
 
-// keyOf is the key of r's client, or false when r comes from an address that
-// may stand for many clients (clientkey.Shared), whose requests only the
-// node's own limits count. Either case it meets first for the guard's life is
-// logged once.
+// keyOf is the key of r's client, or false when r's chosen address is the
+// TCP peer address itself (not one trust_proxy took from X-Forwarded-For)
+// and that address may stand for many clients (clientkey.Shared), whose
+// requests only the node's own limits count. A key trust_proxy took from
+// X-Forwarded-For never falls back this way, forged private or loopback or
+// not: it is the client's own word, and lifting the cap on it would let any
+// direct client escape by claiming one (cold review round 4 RISK 9). Either
+// case it meets first for the guard's life is logged once.
 func (s *clientSet) keyOf(r *http.Request) (string, bool) {
 	trust, hops := false, 1
 	if p := s.proxy.Load(); p != nil {
 		trust, hops = p.trust, p.hops
 	}
 	ip := clientkey.IP(r, trust, hops)
-	if clientkey.Shared(ip) {
-		s.shared.Do(func() {
+	if ip == clientkey.Peer(r) && clientkey.Shared(ip) {
+		if s.warnings.allow("shared") {
 			s.warn("overlay routes: per-client limits do not apply to requests from this address, a loopback, private or shared one that may stand for many clients; only the node's own limits count them. "+
-				"Expected for local tools. If a proxy sends the node its traffic, have it name each client in X-Forwarded-For, with api.trust_proxy and api.trust_proxy_hops set unless it runs on this host. Logged once.",
+				"Expected for local tools. If a proxy sends the node its traffic, have it name each client in X-Forwarded-For, with api.trust_proxy and api.trust_proxy_hops set unless it runs on this host. Logged at most once an hour.",
 				"address", ip, "forwarded", clientkey.Forwarded(r))
-		})
+		}
 		return "", false
 	}
-	if clientkey.Forwarded(r) && ip == clientkey.Peer(r) {
-		s.ignored.Do(func() {
-			s.warn("overlay routes: requests from this address name other clients in proxy headers the node does not use, so the per-client limits count all of them as one client. "+
-				"If it is a proxy of yours, set api.trust_proxy and api.trust_proxy_hops; if not, nothing needs doing. Logged once.",
+	if clientkey.Forwarded(r) && ip == clientkey.Peer(r) && s.warnings.allow("ignored") {
+		if clientkey.HasXFF(r) {
+			s.warn("overlay routes: requests from this address name other clients in X-Forwarded-For, which the node does not use, so the per-client limits count all of them as one client. "+
+				"If it is a proxy of yours, set api.trust_proxy and api.trust_proxy_hops; if not, nothing needs doing. Logged at most once an hour.",
 				"address", ip, "trust_proxy", trust)
-		})
+		} else {
+			s.warn("overlay routes: requests from this address name a client in X-Real-IP or Forwarded, which trust_proxy cannot use: it reads only X-Forwarded-For. "+
+				"If it is a proxy of yours, have it send X-Forwarded-For instead (or as well), with api.trust_proxy and api.trust_proxy_hops set; if not, nothing needs doing. Logged at most once an hour.",
+				"address", ip, "trust_proxy", trust)
+		}
 	}
 	return clientkey.Key(ip), true
 }
@@ -163,33 +199,37 @@ func (s *clientSet) size() int {
 	return len(s.byKey)
 }
 
-// bind counts the ticket's holds against r's client from now on, and takes
-// the client's read permit beside the guard's one the ticket holds, without
-// waiting: ErrBusy when the client holds ClientReadPermits already. A request
-// from an address that may stand for many clients is bound to none.
-func (t *Ticket) bind(r *http.Request) error {
-	cl := t.g.clients.ref(r)
+// takeClientRead finds r's client (keyOf) and, when r declares a body, takes
+// that client's read-permit share: ErrBusy, with r's body refused unread
+// (refuse), when the client holds ClientReadPermits already. own reports
+// whether a share was taken, false for an empty body or an address that may
+// stand for many clients, which is still returned (with a reference taken)
+// so Begin can bind the ticket to it. The caller takes the guard's own read
+// permit next, the same order as every other slot (slots.go), and must give
+// this back (giveBackRead) if that fails.
+func (s *clientSet) takeClientRead(w http.ResponseWriter, r *http.Request) (cl *client, own bool, err error) {
+	cl = s.ref(r)
+	if cl == nil || r.ContentLength == 0 {
+		return cl, false, nil
+	}
+	if !cl.slot[slotRead].TryAcquire(1) {
+		s.unref(cl)
+		refuse(w, r)
+		return nil, false, ErrBusy
+	}
+	return cl, true, nil
+}
+
+// giveBackRead undoes takeClientRead when the guard's own read permit was
+// not free to complete the pair: own's share, if any, and cl's reference.
+func (s *clientSet) giveBackRead(cl *client, own bool) {
 	if cl == nil {
-		return nil
+		return
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	switch {
-	case t.closed:
-		t.g.clients.unref(cl)
-		return ErrBusy
-	case t.cl != nil:
-		t.g.clients.unref(cl)
-		return nil
+	if own {
+		cl.slot[slotRead].Release(1)
 	}
-	t.cl = cl
-	if t.held[slotRead] && r.ContentLength != 0 {
-		if !cl.slot[slotRead].TryAcquire(1) {
-			return ErrBusy
-		}
-		t.own[slotRead] = true
-	}
-	return nil
+	s.unref(cl)
 }
 
 // ownSlot is the client's semaphore for slot i, nil when the ticket is bound

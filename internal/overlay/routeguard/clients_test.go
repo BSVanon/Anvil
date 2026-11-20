@@ -3,90 +3,10 @@ package routeguard
 import (
 	"context"
 	"errors"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
-
-// Two clients, by the TEST-NET-3 addresses the guard counts as public.
-const clientA, clientB = "203.0.113.1", "203.0.113.2"
-
-// warnings counts the guard's once-only warnings.
-type warnings struct{ n atomic.Int32 }
-
-func (w *warnings) warn(string, ...any) { w.n.Add(1) }
-
-// quiet returns g with its warnings counted rather than logged.
-func quiet(g *Guard) (*Guard, *warnings) {
-	w := &warnings{}
-	g.clients.warn = w.warn
-	return g, w
-}
-
-// requestFrom is a POST with a body of n bytes declared, from remote, with the
-// X-Forwarded-For values xff.
-func requestFrom(remote string, n int64, xff ...string) *http.Request {
-	r := httptest.NewRequest(http.MethodPost, "/lookup", nil)
-	r.RemoteAddr = net.JoinHostPort(remote, "5555")
-	r.ContentLength = n
-	for _, v := range xff {
-		r.Header.Add("X-Forwarded-For", v)
-	}
-	return r
-}
-
-// begin starts a ticket and binds it to r's client, as ReadBody does first.
-func begin(t *testing.T, g *Guard, r *http.Request) (*Ticket, error) {
-	t.Helper()
-	tk, err := g.Begin(false)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	if err := tk.bind(r); err != nil {
-		tk.Close()
-		return nil, err
-	}
-	return tk, nil
-}
-
-// ticketOf is a ticket of client ip whose body is in: begun, bound to ip, and
-// its read permits returned.
-func ticketOf(g *Guard, ip string) (*Ticket, error) {
-	tk, err := g.Begin(false)
-	if err != nil {
-		return nil, err
-	}
-	if err := tk.bind(requestFrom(ip, 10)); err != nil {
-		tk.Close()
-		return nil, err
-	}
-	tk.leave(slotRead)
-	return tk, nil
-}
-
-// beginAs is ticketOf, failing the test when it fails.
-func beginAs(t *testing.T, g *Guard, ip string) *Ticket {
-	t.Helper()
-	tk, err := ticketOf(g, ip)
-	if err != nil {
-		t.Fatalf("a ticket of %s: %v", ip, err)
-	}
-	return tk
-}
-
-// refsOf is how many tickets and hand-offs refer to client key.
-func refsOf(g *Guard, key string) int {
-	g.clients.mu.Lock()
-	defer g.clients.mu.Unlock()
-	if c := g.clients.byKey[key]; c != nil {
-		return c.refs
-	}
-	return 0
-}
 
 // TestClient_ReadPermitsArePerClient: one client holds at most
 // ClientReadPermits read permits, the next of its requests is refused at once,
@@ -313,5 +233,107 @@ func TestClient_OneSlotTakesTurnsAcrossClients(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+// TestClient_PartwayRefusalReleasesTheShare_TryTake (cold review round 4
+// CLAIM CHECK "Mutations"): tryTake takes a slot from the client first, then
+// the guard (slots.go). When the client's own succeeds but the guard's is
+// not free, the client's share must be given back, not left held: fill the
+// guard's JSON slots from loopback, so client A's tryTake is refused partway
+// (it holds no guard slot afterwards, but must not be left holding its own
+// either), and once the guard's slots are free again A must still get its
+// full per-client share, not one short.
+func TestClient_PartwayRefusalReleasesTheShare_TryTake(t *testing.T) {
+	const jsonSlots = 3
+	g, _ := quiet(New(1<<20, 4, jsonSlots, testWait))
+	perClient := g.clients.slots[slotJSON]
+	if perClient < 2 {
+		t.Fatalf("test needs a per-client JSON share of at least 2, got %d", perClient)
+	}
+	var fill []*Ticket
+	for i := range jsonSlots {
+		tk, err := begin(t, g, requestFrom("127.0.0.1", 10))
+		if err != nil {
+			t.Fatalf("filling the guard's JSON slots from loopback, slot %d: %v", i, err)
+		}
+		if err := tk.tryTake(slotJSON); err != nil {
+			t.Fatalf("loopback slot %d: %v", i, err)
+		}
+		fill = append(fill, tk)
+	}
+
+	a := beginAs(t, g, clientA)
+	if err := a.tryTake(slotJSON); !errors.Is(err, ErrBusy) {
+		t.Fatalf("client A's tryTake with every guard JSON slot held by loopback: %v, want ErrBusy", err)
+	}
+
+	for _, tk := range fill {
+		tk.Close()
+	}
+	var held []*Ticket
+	for i := range perClient {
+		tk := beginAs(t, g, clientA)
+		if err := tk.tryTake(slotJSON); err != nil {
+			t.Fatalf("client A's JSON slot %d of its share %d, after its earlier refusal: %v (its own share was not given back)", i, perClient, err)
+		}
+		held = append(held, tk)
+	}
+	a.Close()
+	for _, tk := range held {
+		tk.Close()
+	}
+}
+
+// TestClient_PartwayRefusalReleasesTheShare_Wait (cold review round 4 CLAIM
+// CHECK "Mutations"): take (slots.go's acquireBoth) takes a slot from the
+// client first, then waits for the guard's. When the client's own succeeds
+// but the guard's wait runs out, the client's share must be given back: fill
+// the guard's CPU slots from loopback, so client A's EnterCPU is refused
+// partway after waiting the guard's Wait, and once the guard's slots are
+// free again A must still get its full per-client share.
+func TestClient_PartwayRefusalReleasesTheShare_Wait(t *testing.T) {
+	const cpuSlots = 3
+	g, _ := quiet(New(1<<20, cpuSlots, 64, testWait))
+	perClient := g.clients.slots[slotCPU]
+	if perClient < 2 {
+		t.Fatalf("test needs a per-client CPU share of at least 2, got %d", perClient)
+	}
+	var fill []*Ticket
+	for i := range cpuSlots {
+		tk := beginAs(t, g, "127.0.0.1")
+		if err := tk.EnterCPU(t.Context()); err != nil {
+			t.Fatalf("filling the guard's CPU slots from loopback, slot %d: %v", i, err)
+		}
+		fill = append(fill, tk)
+	}
+
+	a := beginAs(t, g, clientA)
+	start := time.Now()
+	if err := a.EnterCPU(t.Context()); !errors.Is(err, ErrBusy) {
+		t.Fatalf("client A's EnterCPU with every guard CPU slot held by loopback: %v, want ErrBusy", err)
+	}
+	if waited := time.Since(start); waited < testWait {
+		t.Fatalf("refused after %v, before the guard's Wait of %v: the wait path (slots.go acquireBoth) was not exercised", waited, testWait)
+	}
+
+	for _, tk := range fill {
+		tk.Close()
+	}
+	var held []*Ticket
+	for i := range perClient {
+		tk := beginAs(t, g, clientA)
+		start := time.Now()
+		if err := tk.EnterCPU(t.Context()); err != nil {
+			t.Fatalf("client A's CPU slot %d of its share %d, after its earlier refusal: %v (its own share was not given back)", i, perClient, err)
+		}
+		if waited := time.Since(start); waited > testWait/2 {
+			t.Fatalf("client A's CPU slot %d of its own share took %v: want at once, its own semaphore free", i, waited)
+		}
+		held = append(held, tk)
+	}
+	a.Close()
+	for _, tk := range held {
+		tk.Close()
 	}
 }

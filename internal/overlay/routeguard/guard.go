@@ -4,11 +4,13 @@
 // Every guarded request holds a Ticket from one process-wide Guard and takes
 // what it needs in this order:
 //
-//   - Read permits. Begin takes one of ReadPermits without waiting; when none
-//     is free the request is answered 503 at once. Until its body's first byte
-//     arrives a request holds nothing else, so connections that send only
-//     headers hold no heap, no big-body slot and no JSON slot. The permit is
-//     returned once the body is in.
+//   - Read permits. Begin takes its client's read-permit share first, then one
+//     of the guard's ReadPermits, neither waiting: when either is not free the
+//     request is answered 503 at once, its client's share given back if the
+//     guard's was the one not free. Until its body's first byte arrives a
+//     request holds nothing else, so connections that send only headers hold
+//     no heap, no big-body slot and no JSON slot. The permit is returned once
+//     the body is in.
 //   - Connection time. The body must start within bodyread.ReadGrace, the
 //     grace bodyread gives the replies this node reads, then arrive at
 //     MinBodyRate on average (BigBodyRate over BigBody), or at the rate that
@@ -55,8 +57,8 @@
 // refuses only its own client. A request from a loopback, private or shared
 // address (clientkey.Shared), through a proxy that does not name its client
 // or one the node does not trust, may stand for many clients; only the
-// guard's own limits count it, and the guard logs the first such address,
-// and the first public one whose proxy headers it does not use.
+// guard's own limits count it, and the guard logs such an address, and a
+// public one whose proxy headers it does not use, at most once an hour each.
 //
 // A client that sends Expect: 100-continue gets its 100 Continue from the
 // first read of its body, before the guard decides the big-body slot and the
@@ -224,15 +226,27 @@ func (g *Guard) slot(i int) *semaphore.Weighted {
 	return [...]*semaphore.Weighted{g.json, g.big, g.exec, g.cpu, g.read}[i]
 }
 
-// Begin starts a ticket holding one of the guard's read permits, taken
-// without waiting: ErrBusy when all ReadPermits are taken. jsonRoute marks a
-// JSON route's ticket, whose ReadBody takes a JSON slot once the body is in.
-func (g *Guard) Begin(jsonRoute bool) (*Ticket, error) {
+// Begin starts a ticket, taking first the read-permit share of r's client,
+// when r declares a body and names one that is capped (clients.go), and then
+// one of the guard's ReadPermits: the same order every other slot is taken
+// in (slots.go), so a client already at its own cap never touches the
+// guard's shared pool even briefly (cold review round 4 nit, "the read
+// permit is taken from the guard first, then the client"). Neither waits:
+// ErrBusy, with r's body refused unread, when the client is at its cap;
+// ErrBusy alone, r's body left for the caller, when all ReadPermits are
+// taken. jsonRoute marks a JSON route's ticket, whose ReadBody takes a JSON
+// slot once the body is in.
+func (g *Guard) Begin(w http.ResponseWriter, r *http.Request, jsonRoute bool) (*Ticket, error) {
+	cl, own, err := g.clients.takeClientRead(w, r)
+	if err != nil {
+		return nil, err
+	}
 	if !g.read.TryAcquire(1) {
+		g.clients.giveBackRead(cl, own)
 		return nil, ErrBusy
 	}
-	t := &Ticket{g: g, jsonRoute: jsonRoute}
-	t.held[slotRead] = true
+	t := &Ticket{g: g, jsonRoute: jsonRoute, cl: cl}
+	t.held[slotRead], t.own[slotRead] = true, own
 	return t, nil
 }
 

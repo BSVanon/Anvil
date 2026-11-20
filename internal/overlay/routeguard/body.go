@@ -42,49 +42,48 @@ func (r Route) Reservation(n int64) (total, headroom int64) {
 // timeout. The route answers 408.
 var ErrReadTimeout = errors.New("request body not received in time")
 
-// ReadBody reads r's body for route under the ticket, in this order:
+// ReadBody reads r's body for route under the ticket, in this order. The
+// ticket is already bound to r's client and holds its and the guard's read
+// permit by the time ReadBody is called (Begin, which refuses a declared
+// length over MaxBody or a client at its cap unread, before either is taken):
 //
-//  1. A declared length over MaxBody fails at once.
-//  2. It binds the ticket to r's client, whose read permit it takes beside
-//     the guard's one the ticket holds, without waiting.
-//  3. It waits for the body's first byte holding nothing but the read
+//  1. A declared length over MaxBody fails at once, the body refused unread
+//     as Begin's own refusals are.
+//  2. It waits for the body's first byte holding nothing but the read
 //     permits. The body must start within bodyread.ReadGrace. The first read
 //     sends 100 Continue to a client that asked for it, so such a client
-//     starts sending before the guard decides steps 4 and 6.
-//  4. Once the first byte is in, a body that may pass BigBody takes the
+//     starts sending before the guard decides steps 3 and 5.
+//  3. Once the first byte is in, a body that may pass BigBody takes the
 //     big-body slot, and the ticket reserves route's whole reservation for
 //     the declared length, or for MaxBody when the request declares none. An
 //     empty body takes neither.
-//  5. It reads the rest, which must keep up route.MinRate(n) on average for
-//     the n bytes step 4 reserved for (by ReadGrace + k/rate after the read
-//     began, not counting the guard's own waits in step 4, more than k bytes
+//  4. It reads the rest, which must keep up route.MinRate(n) on average for
+//     the n bytes step 3 reserved for (by ReadGrace + k/rate after the read
+//     began, not counting the guard's own waits in step 3, more than k bytes
 //     must have arrived), all of it within the route's ReadTimeout. The
 //     connection's read deadline, set through http.ResponseController and
 //     moved forward as bytes arrive, enforces both.
-//  6. Once the body is in it clears the read deadline, so the server's own
+//  5. Once the body is in it clears the read deadline, so the server's own
 //     timeouts govern the rest of the exchange, returns the read permits and
 //     what a shorter undeclared body does not need, and, on a JSON route's
 //     ticket, takes a JSON slot without waiting.
 //
-// Errors: ErrBusy (503) when the client holds all its read permits, when the
-// big-body slot or the heap is not free within the guard's Wait, or when no
-// JSON slot is free; ErrBodyTooSlow, which wraps ErrReadTimeout (408), when
-// the body does not start within ReadGrace or falls below its rate;
-// ErrReadTimeout (408) when the route's ReadTimeout passes; an
-// *http.MaxBytesError (400, as before) for a body over MaxBody; any other read
-// error as it came (400). A body ReadBody stops reading once it has begun, cut
-// short or refused the big-body slot or the heap, is abandoned (see abandon),
-// and one refused in step 2 is too, unread: its read deadline is left passed,
-// and the server answers with Connection: close and closes the connection
-// once the client has had time to read the answer.
+// Errors: ErrBusy (503) when the big-body slot or the heap is not free
+// within the guard's Wait, or when no JSON slot is free; ErrBodyTooSlow,
+// which wraps ErrReadTimeout (408), when the body does not start within
+// ReadGrace or falls below its rate; ErrReadTimeout (408) when the route's
+// ReadTimeout passes; an *http.MaxBytesError (400, as before) for a body over
+// MaxBody; any other read error as it came (400). A body ReadBody stops
+// reading once it has begun, cut short or refused the big-body slot or the
+// heap, is abandoned (see abandon); one over MaxBody (step 1) is refused
+// unread instead, as Begin's own refusals are: its read deadline is left
+// passed, and the server answers with Connection: close and closes the
+// connection once the client has had time to read the answer.
 func (t *Ticket) ReadBody(w http.ResponseWriter, r *http.Request, route Route) ([]byte, error) {
 	defer t.leave(slotRead)
 	if r.ContentLength > route.MaxBody {
-		return nil, &http.MaxBytesError{Limit: route.MaxBody}
-	}
-	if err := t.bind(r); err != nil {
 		refuse(w, r)
-		return nil, err
+		return nil, &http.MaxBytesError{Limit: route.MaxBody}
 	}
 	buf, err := t.read(w, r, route)
 	if err != nil {

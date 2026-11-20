@@ -31,7 +31,7 @@ func bodyServer(t *testing.T, g *Guard, route Route, n int, linger time.Duration
 	results := make(chan bodyResult, 16)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /read", func(w http.ResponseWriter, r *http.Request) {
-		tk, err := g.Begin(false)
+		tk, err := g.Begin(w, r, false)
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			results <- bodyResult{err: err}
@@ -112,7 +112,7 @@ func TestReadBody_SlowSenderIsCutAtTheDeadline(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a trickling sender was not cut off within 5 s")
 	}
-	tk, _ := g.Begin(false)
+	tk, _ := beginLoopback(g, false)
 	defer tk.Close()
 	if err := tk.Reserve(t.Context(), 1<<20); err != nil {
 		t.Fatalf("the cut request's reservation was not returned: %v", err)
@@ -173,7 +173,7 @@ func TestReadBody_DeadlineIsClearedOnceTheBodyIsIn(t *testing.T) {
 // has sent its body by the time the refusal comes.
 func TestReadBody_ReservesOnceTheBodyStarts(t *testing.T) {
 	g := New(3000, 1, 1, testWait)
-	holder, _ := g.Begin(false)
+	holder, _ := beginLoopback(g, false)
 	_ = holder.Reserve(t.Context(), 2000)
 	defer holder.Close()
 	route := Route{MaxBody: 1 << 20, Expansion: 10, ReadTimeout: 5 * time.Second}
@@ -225,7 +225,7 @@ func TestReadBody_UnknownLengthReservesTheCapThenShrinks(t *testing.T) {
 	if want := route.Allowance + 4*1000; res.held != want {
 		t.Fatalf("held %d bytes for a 1000-byte chunked body, want %d", res.held, want)
 	}
-	holder, _ := g.Begin(false)
+	holder, _ := beginLoopback(g, false)
 	defer holder.Close()
 	if err := holder.Reserve(t.Context(), 1); err != nil {
 		t.Fatal(err)
@@ -241,7 +241,7 @@ func TestReadBody_UnknownLengthReservesTheCapThenShrinks(t *testing.T) {
 func TestReadBody_OneBigBodyAtATime(t *testing.T) {
 	g := New(1<<30, 1, 1, testWait)
 	route := Route{MaxBody: 4 * BigBody, Expansion: 1, ReadTimeout: 5 * time.Second}
-	first, _ := g.Begin(false)
+	first, _ := beginLoopback(g, false)
 	if err := first.take(t.Context(), slotBig); err != nil {
 		t.Fatal(err)
 	}
@@ -315,6 +315,49 @@ func TestReadBody_OverTheCapIsRefusedUnread(t *testing.T) {
 		if !chunked && res.held != 0 {
 			t.Fatalf("a declared over-cap body reserved %d bytes", res.held)
 		}
+	}
+}
+
+// TestReadBody_OverTheCapClosesTheConnection (cold review round 4 nit, "the
+// over-cap 400 must go through refuse"): a declared length over MaxBody is
+// refused through refuse, not just with a 400 on an otherwise ordinary
+// response: the connection is told Connection: close and closed, as every
+// other refusal before a read is, rather than left open for the client's
+// unread body to confuse a later request on the same connection.
+func TestReadBody_OverTheCapClosesTheConnection(t *testing.T) {
+	g := New(1<<30, 1, 1, testWait)
+	route := Route{MaxBody: 1000, Expansion: 1, ReadTimeout: 5 * time.Second}
+	srv, results := bodyServer(t, g, route, 0, 0)
+	conn := rawPost(t, srv, 1001, nil)
+	code, br := answerOn(t, conn, 3*time.Second)
+	if closed := closedAfter(conn, br); code != http.StatusBadRequest || !closed {
+		t.Fatalf("a declared over-cap body: %d, closed %v; want 400 and the connection closed", code, closed)
+	}
+	res := <-results
+	var tooLarge *http.MaxBytesError
+	if !errors.As(res.err, &tooLarge) {
+		t.Fatalf("a declared over-cap body: %v, want *http.MaxBytesError", res.err)
+	}
+}
+
+// TestCloseAfter_ClosesTheConnection (cold review round 4 NIT, "refuse's
+// closeAfter is untested: removing it leaves the test passing"): closeAfter
+// alone, isolated from refuse's SetReadDeadline (whose own effect on an idle
+// connection could otherwise make a test pass without closeAfter doing
+// anything), tells the server to close the connection once its answer is
+// read.
+func TestCloseAfter_ClosesTheConnection(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /close", func(w http.ResponseWriter, r *http.Request) {
+		closeAfter(w)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	conn := rawRequest(t, srv, "GET /close HTTP/1.1\r\nHost: x\r\n\r\n")
+	code, br := answerOn(t, conn, 3*time.Second)
+	if closed := closedAfter(conn, br); code != http.StatusOK || !closed {
+		t.Fatalf("a handler that calls closeAfter: %d, closed %v; want 200 and the connection closed", code, closed)
 	}
 }
 

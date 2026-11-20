@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,7 +149,7 @@ func TestReadBody_IdleBodyIsCutAtTheGrace(t *testing.T) {
 		t.Fatalf("the idle connection was answered %d, closed %v; want 408 and closed", code, closed)
 	}
 	t.Logf("idle body cut after %v, answered %d, connection closed", res.elapsed, code)
-	tk, err := g.Begin(false)
+	tk, err := beginLoopback(g, false)
 	if err != nil {
 		t.Fatalf("the cut request kept its read permit: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestReadBody_StalledBodyIsCutByTheRate(t *testing.T) {
 		t.Fatalf("the stalled connection was answered %d, closed %v; want 408 and closed", code, closed)
 	}
 	t.Logf("body stalled after 1000 bytes: cut after %v (due %v), answered %d", res.elapsed, due, code)
-	tk, _ := g.Begin(false)
+	tk, _ := beginLoopback(g, false)
 	defer tk.Close()
 	if err := tk.Reserve(t.Context(), pool); err != nil {
 		t.Fatalf("the stalled request's reservation was not returned: %v", err)
@@ -209,6 +210,36 @@ func TestReadBody_TrickleBelowTheRateIsCut(t *testing.T) {
 		t.Fatalf("the trickle was cut after %v, want about %v", res.elapsed, want)
 	}
 	t.Logf("trickle at %d bytes a second cut after %v (expected about %v)", MinBodyRate/8, res.elapsed, want)
+}
+
+// TestReadBody_TooSlowNamesTheRateThatApplied (cold review round 4 nit,
+// "quote the rate that applied"): ErrBodyTooSlow's text names the exact rate
+// the body was held to, not always MinBodyRate, so an operator reading the
+// refusal can tell what pace was actually required. A declared body long
+// enough that its length, not the floor, sets the rate (paceRate's length
+// term, Route.MinRate) is sent under that rate and cut with that number, not
+// MinBodyRate's, in its error.
+func TestReadBody_TooSlowNamesTheRateThatApplied(t *testing.T) {
+	g := New(1<<20, 1, 1, testWait)
+	route := Route{MaxBody: 1 << 20, Expansion: 1, ReadTimeout: 3 * time.Second}
+	const n = 200_000
+	want := route.MinRate(n)
+	if want == MinBodyRate {
+		t.Fatalf("test setup: %d bytes in %v computed the floor %d, want a length-driven rate above it", n, route.ReadTimeout, MinBodyRate)
+	}
+	srv, results := bodyServer(t, g, route, 0, 0)
+	conn := rawPost(t, srv, n, nil)
+	stop := make(chan struct{})
+	defer close(stop)
+	go trickleTo(conn, int(want/160), 50*time.Millisecond, stop) // 1/8 of the length-driven rate
+	res := nextResult(t, results, route.ReadTimeout)
+	if !errors.Is(res.err, ErrBodyTooSlow) {
+		t.Fatalf("a body held to a length-driven rate: %v, want ErrBodyTooSlow", res.err)
+	}
+	wantText := fmt.Sprintf("(%d bytes a second)", want)
+	if !strings.Contains(res.err.Error(), wantText) {
+		t.Fatalf("ErrBodyTooSlow's text %q does not name the rate that applied, want it to contain %q", res.err.Error(), wantText)
+	}
 }
 
 // TestReadBody_BodyAboveTheRateIsRead: a body that keeps up five times
@@ -241,7 +272,7 @@ func TestReadBody_GuardWaitsDoNotCountAgainstTheSender(t *testing.T) {
 	g := New(pool, 1, 1, time.Second)
 	g.grace = 200 * time.Millisecond
 	route := Route{MaxBody: pool, Expansion: 1, ReadTimeout: 10 * time.Second}
-	holder, _ := g.Begin(false)
+	holder, _ := beginLoopback(g, false)
 	if err := holder.Reserve(t.Context(), pool); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +294,7 @@ func TestReadBody_GuardWaitsDoNotCountAgainstTheSender(t *testing.T) {
 // closed, rather than the server waiting to read the rest before it answers.
 func TestReadBody_RefusedBodyIsAbandoned(t *testing.T) {
 	g := New(1000, 1, 1, testWait)
-	holder, _ := g.Begin(false)
+	holder, _ := beginLoopback(g, false)
 	defer holder.Close()
 	if err := holder.Reserve(t.Context(), 1000); err != nil {
 		t.Fatal(err)
@@ -290,7 +321,7 @@ func TestReadBody_RefusedBodyIsAbandoned(t *testing.T) {
 // waits for neither the big-body slot nor the heap, and reserves nothing.
 func TestReadBody_EmptyBodyHoldsNothing(t *testing.T) {
 	g := New(1000, 1, 1, time.Minute)
-	holder, _ := g.Begin(false)
+	holder, _ := beginLoopback(g, false)
 	defer holder.Close()
 	if err := holder.Reserve(t.Context(), 1000); err != nil {
 		t.Fatal(err)

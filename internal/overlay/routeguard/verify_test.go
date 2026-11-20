@@ -37,12 +37,13 @@ func spendBEEF(t *testing.T, lock script.Script) []byte {
 // verifies nothing.
 func preVerified(t *testing.T, g *Guard, beef []byte) (*Ticket, *Submit, error) {
 	t.Helper()
-	tk, err := g.Begin(false)
+	r := httptest.NewRequest("POST", "/submit", bytes.NewReader(beef))
+	w := httptest.NewRecorder()
+	tk, err := g.Begin(w, r, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest("POST", "/submit", bytes.NewReader(beef))
-	if _, err := tk.ReadBody(httptest.NewRecorder(), r, BEEFRoute); err != nil {
+	if _, err := tk.ReadBody(w, r, BEEFRoute); err != nil {
 		t.Fatal(err)
 	}
 	sub, err := tk.PreVerify(context.Background(), nil, func(string) bool { return true }, beef, []string{"tm_test"})
@@ -128,12 +129,13 @@ func TestPreVerify_CollectsAfterScriptsThatWrite(t *testing.T) {
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))
 	g := New(1<<30, 4, 4, testWait)
 	writer := spendBEEF(t, script.Script{script.Op1, script.Op1, script.OpCAT})
-	tk, err := g.Begin(false)
+	r := httptest.NewRequest("POST", "/submit", bytes.NewReader(writer))
+	w := httptest.NewRecorder()
+	tk, err := g.Begin(w, r, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest("POST", "/submit", bytes.NewReader(writer))
-	if _, err := tk.ReadBody(httptest.NewRecorder(), r, BEEFRoute); err != nil {
+	if _, err := tk.ReadBody(w, r, BEEFRoute); err != nil {
 		t.Fatal(err)
 	}
 	before := collections()

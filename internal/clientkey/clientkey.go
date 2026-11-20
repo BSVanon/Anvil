@@ -101,6 +101,13 @@ func Forwarded(r *http.Request) bool {
 	return false
 }
 
+// HasXFF reports whether r carries X-Forwarded-For, the only header IP
+// reads: Forwarded can be true from X-Real-IP or Forwarded alone, naming a
+// client that trust_proxy cannot use (cold review round 4 RISK 8).
+func HasXFF(r *http.Request) bool {
+	return len(r.Header.Values("X-Forwarded-For")) > 0
+}
+
 func xForwardedForEntries(values []string) []string {
 	var entries []string
 	for _, value := range values {

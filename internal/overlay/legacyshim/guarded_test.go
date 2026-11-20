@@ -71,12 +71,21 @@ func readQuestion(tk *routeguard.Ticket, question []byte) error {
 	return err
 }
 
+// beginLoopback begins a ticket for a request with no real connection behind
+// it, from the loopback address, so that only the guard's own limits count
+// it (routeguard's own clients_test.go tests a client's).
+func beginLoopback(g *routeguard.Guard, jsonRoute bool) (*routeguard.Ticket, error) {
+	r := httptest.NewRequest(http.MethodPost, "/overlay/query", nil)
+	r.RemoteAddr = "127.0.0.1:1234"
+	return g.Begin(httptest.NewRecorder(), r, jsonRoute)
+}
+
 // assertIdle fails unless g has every byte and slot back: nothing a finished
 // request held is still held. A JSON ticket takes its JSON slot once its body
 // is in, so the probe reads one.
 func assertIdle(t *testing.T, g *routeguard.Guard) {
 	t.Helper()
-	tk, err := g.Begin(true)
+	tk, err := beginLoopback(g, true)
 	if err == nil {
 		err = readQuestion(tk, []byte(`{}`))
 		if err == nil {
@@ -160,7 +169,7 @@ func TestLegacyQuery_BusyWhenEveryJSONSlotIsTaken(t *testing.T) {
 	url := guardedShimServer(t, newWiredShim(t), g)
 	question := []byte(`{"service":"ls_uhrp","query":{"uhrpUrl":"none"}}`)
 
-	held, err := g.Begin(true)
+	held, err := beginLoopback(g, true)
 	if err != nil {
 		t.Fatal(err)
 	}
