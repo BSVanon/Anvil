@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -27,6 +28,7 @@ type Config struct {
 	Mempool      MempoolConfig      `toml:"mempool"`
 	API          APIConfig          `toml:"api"`
 	Capabilities CapabilitiesConfig `toml:"capabilities"`
+	Gateway      GatewayConfig      `toml:"gateway"`
 }
 
 // CapabilitiesConfig lets operators declare capabilities beyond the built-in
@@ -72,6 +74,16 @@ type NodeConfig struct {
 	Listen    string `toml:"listen"`
 	APIListen string `toml:"api_listen"`
 	PublicURL string `toml:"public_url"` // public-facing API URL for overlay registration (e.g. "https://anvil.sendbsv.com")
+
+	// Mode is "standard" (the default) or "gateway". It only changes what
+	// an installer writes — the defaults it picks and whether it turns on
+	// [gateway] — see internal/gateway and architecture decision 1 of the
+	// B7 gateway brick. No mechanism in this package or internal/gateway
+	// branches on Mode at runtime; every one of them is generic and keyed
+	// off the specific settings it owns instead, so Mode is validated
+	// here (validateNodeMode) but otherwise just carried through for the
+	// installer and CLI (B7b) to read.
+	Mode string `toml:"mode"`
 }
 
 type IdentityConfig struct {
@@ -482,6 +494,12 @@ func Load(path string) (*Config, error) {
 				MaxAppPriceSats:  10000, // reasonable default cap
 			},
 		},
+		Gateway: GatewayConfig{
+			TXTCacheTTL:   defaultGatewayTXTCacheTTL,
+			TXTStaleGrace: defaultGatewayTXTStaleGrace,
+			RootMaxAge:    defaultGatewayRootMaxAge,
+			ContentScope:  defaultGatewayContentScope,
+		},
 	}
 
 	if err := toml.Unmarshal(data, cfg); err != nil {
@@ -519,6 +537,28 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Messaging.MaxInboxBytes < 0 {
 		cfg.Messaging.MaxInboxBytes = 0
+	}
+
+	if err := validateNodeMode(cfg.Node.Mode); err != nil {
+		return nil, err
+	}
+	if cfg.Gateway.TXTCacheTTL <= 0 {
+		cfg.Gateway.TXTCacheTTL = defaultGatewayTXTCacheTTL
+	}
+	if cfg.Gateway.TXTStaleGrace <= 0 {
+		cfg.Gateway.TXTStaleGrace = defaultGatewayTXTStaleGrace
+	}
+	if cfg.Gateway.RootMaxAge <= 0 {
+		cfg.Gateway.RootMaxAge = defaultGatewayRootMaxAge
+	}
+	if cfg.Gateway.ContentScope == "" {
+		cfg.Gateway.ContentScope = defaultGatewayContentScope
+	}
+	if cfg.Gateway.SitesFile == "" {
+		// "the config dir" (decision 7) is wherever this node's own config
+		// file lives, whatever it's named — not a hardcoded path — so a
+		// gateway's sites file always sits next to its anvil.toml.
+		cfg.Gateway.SitesFile = filepath.Join(filepath.Dir(path), "gateway-sites.conf")
 	}
 
 	// Merge deprecated [foundry] into [mesh] for backward compatibility

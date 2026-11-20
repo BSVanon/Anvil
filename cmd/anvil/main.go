@@ -928,7 +928,7 @@ func main() {
 	}
 
 	go func() {
-		handler := srv.Handler()
+		handler := wireGateway(cfg, srv, logger)
 		if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
 			log.Printf("REST API listening on %s (TLS)", cfg.Node.APIListen)
 			tlsSrv := &http.Server{
