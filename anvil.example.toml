@@ -123,13 +123,16 @@ warn_at_percent = 80
 #
 # home_hosts lists the public host(s) this node is the HOME for, in
 # addition to [node] public_url below. A recipient is "Home" on this
-# node when its newest tm_messagebox advert names one of these hosts;
-# "Elsewhere" when it advertises a different host; "Unadvertised" when
-# it has no advert at all (or this node doesn't host tm_messagebox /
-# ls_messagebox). Only https:// hosts qualify; localhost, 127.0.0.1,
-# 0.0.0.0, ::1 and *.local / *.example.com / *.test / *.invalid /
-# *.localhost never make a recipient Home or Elsewhere.
-# home_hosts = ["https://my-anvil.example.com"]
+# node when ANY of its current (live, unrevoked) tm_messagebox adverts
+# names one of these hosts — not just the newest one; "Elsewhere" when
+# every current advert names a different host; "Unadvertised" when it
+# has no current advert at all (or this node doesn't host
+# tm_messagebox / ls_messagebox). Only https:// hosts qualify;
+# localhost, 127.0.0.1, 0.0.0.0, ::1 and *.local / *.example.com /
+# *.test / *.invalid / *.localhost never make a recipient Home or
+# Elsewhere — note *.example.com is itself excluded, so don't copy that
+# TLD into a real home_hosts/public_url entry.
+# home_hosts = ["https://my-anvil.example.org"]
 #
 # forward_copy_ttl controls how long a forwarded copy — stored for a
 # recipient who is Elsewhere or Unadvertised — lives in this node's

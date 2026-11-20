@@ -49,10 +49,12 @@ Forwarded copies are now kept for `forward_copy_ttl` instead — 24 hours by def
 7 days. If you relied on the old 7-day retention for in-transit copies, set
 `forward_copy_ttl` back up to (just under) your `ttl_seconds`.
 
-A relay of a message this node is not storing a fresh copy of (the `forward_copy_ttl = 0`
-case, and the Home-row "relay only if the recipient also advertises elsewhere" case when that
-condition fails) still goes through the existing mesh-wide relay budget, so an attacker can't
-use "never gets stored" traffic to flood a node's outbound bandwidth for free.
+A relay of a message this node has no fresh copy of to fall back on — the `forward_copy_ttl
+= 0` case, and a stored node's quota-rejection fallback — still goes through the existing
+mesh-wide relay budget, so an attacker can't use "never gets stored" traffic to flood a
+node's outbound bandwidth for free. A Home recipient with no other advertised host is a
+different case, not a budget one: such a message is never relayed at all, because there is
+no other node for it to reach.
 
 ## What a relay actually sees
 
@@ -111,11 +113,64 @@ but the recipient's actual home node:
 3. `[messaging] forward_copy_ttl = 0` — never keep a copy of a message this node is only
    relaying, only the Home copies it's actually the destination for.
 
+With `forward_copy_ttl = 0`, a recipient needs a `tm_messagebox` advert naming one of the
+closed network's nodes as their home, or nothing in the mesh ever stores their mail for
+them. An Unadvertised recipient's message is still stored in full, at `ttl_seconds`, on
+whichever node the `/sendMessage` call originated from (decision 3's Unadvertised row
+always stores, independent of `forward_copy_ttl`) — but it goes no further than that one
+node; it is never relayed-and-stored anywhere else. Advertise a home node for every
+recipient who needs their mail to land somewhere they can reliably poll.
+
+Every relay this mode performs is unstored — there is no local copy to fall back on if the
+relay itself fails — so it draws from the same manager-wide budget every other unstored
+relay shares: 10 messages/second with a burst of 50 (`internal/gossip/relay_budget.go`).
+That is one allowance for the whole node, not per-sender or per-recipient; see "Known
+limits" below.
+
+## Known limits
+
+- **A revoked advert can be replayed.** Nothing stops a third party from re-broadcasting an
+  identity's own, previously-valid-but-now-revoked `tm_messagebox` advert transaction — the
+  signature is still valid, and BRC-33 doesn't bind an advert to a one-time nonce. This is
+  inherited from the canonical admission rules, not something Anvil's Home Rule introduces:
+  under deterministic signing (RFC 6979), a genuine re-anointment of the same host is
+  byte-identical to a replay of the old transaction, so there is no way to tell them apart.
+  Because of this, Anvil never forwards on an API `/sendMessage` Home-row send — a Home
+  recipient's message is only ever stored locally, never relayed — and canonical BRC-33
+  clients already poll the union of every host ever seen advertised for an identity, not
+  just the current one, so a Home delivery still reaches them even under a replay.
+- **The non-Home relay budget (10 msg/s, burst 50) is one allowance for the whole node**,
+  shared across every sender/recipient pair that needs an unstored relay. A node under heavy
+  unstored-relay load from many different senders gets no bigger a budget than one being hit
+  from a single source — there is no per-peer or per-recipient fairness within it.
+- **A stored copy's expiry is fixed at write time.** Changing `ttl_seconds` or
+  `forward_copy_ttl` in your config only affects messages stored after the change; a copy
+  already on disk keeps counting down against whichever TTL was in force when it arrived.
+
 ## Defaults if you set nothing
 
-Everything above behaves exactly as it did before this feature, with one exception: a
-forwarded (non-Home) copy is now retained for `forward_copy_ttl`'s default of 24 hours
-instead of the full `ttl_seconds`. Every node remains reachable for every recipient by
-default — `forward_peers` unset forwards to every peer, `operator_reads_all_boxes` defaults
-to `true`, and a node with no `home_hosts` configured still becomes Home for any recipient
-whose advert names its `[node] public_url`.
+Everything above behaves almost exactly as it did before this feature. The differences:
+
+- **Any non-Home copy's retention drops from 7 days to 24 hours.** This covers both
+  non-Home rows in the table above: a copy this node relays onward for an
+  Unadvertised-or-Elsewhere recipient after receiving it from a peer, AND the origin's own
+  copy when a client calls `/sendMessage` on THIS node for a recipient who resolves
+  Elsewhere. That second case is not a "forward" in the receive sense, but it still uses
+  `forward_copy_ttl`, not `ttl_seconds` — only a Home copy, on either path, keeps the full
+  `ttl_seconds`.
+- **Every node not running the closed-network `[overlay] named_peers` mode now mints its
+  own `tm_messagebox`/`ls_messagebox` SHIP and SLAP adverts from its node wallet**, so other
+  operators' nodes can discover that this node hosts messaging. If the wallet can't cover
+  the cost (a few sats isn't enough), nothing crashes or retries in a tight loop: the node
+  logs the shortfall clearly and tries again on its normal advertise interval (default 30
+  minutes).
+- **It also GASP-syncs `tm_messagebox` adverts from public overlays it discovers through
+  SHIP**, when `[overlay] enable_gasp_sync` is on (the default) — so a node's own
+  `ls_messagebox` index is not guaranteed to hold only locally-originated adverts, even on a
+  node that never calls `/sendMessage` itself.
+
+Otherwise every node remains reachable for every recipient by default — `forward_peers`
+unset forwards to every peer, `operator_reads_all_boxes` defaults to `true` (this only ever
+gates the node operator's own unscoped API token; it never restricts a recipient-scoped
+token or `/sendMessage` itself), and a node with no `home_hosts` configured still becomes
+Home for any recipient whose advert names its `[node] public_url`.
