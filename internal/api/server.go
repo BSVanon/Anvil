@@ -920,21 +920,6 @@ func (s *Server) NotifyMessage(msg *messaging.StoredMessage) {
 }
 func (s *Server) Mux() *http.ServeMux { return s.mux }
 
-// ContentServer exposes the node's shared on-chain content server — its
-// existing fetch, txid check and cache (internal/content.Server) — so the
-// gateway mechanism (internal/gateway, wired in cmd/anvil) serves a custom
-// domain's inscriptions from the exact same warm cache /content/ already
-// uses, rather than a second, cold one.
-func (s *Server) ContentServer() *content.Server { return s.contentServer }
-
-// SetGatewayStats registers a callback whose returned counters are merged
-// into GET /stats under "gateway" when non-nil — the hook decision 8's
-// aggregate gateway counters (internal/gateway) surface through, without
-// this package depending on internal/gateway. Call at most once; the last
-// call wins. A nil or empty-map result omits the "gateway" field entirely
-// (e.g. gateway mode off).
-func (s *Server) SetGatewayStats(fn func() map[string]int64) { s.gatewayStatsFn = fn }
-
 func (s *Server) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireAuth(next)
 }
