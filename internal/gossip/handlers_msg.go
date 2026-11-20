@@ -147,25 +147,34 @@ func messageForwardDigest(msg *messaging.Message, originNode string) [32]byte {
 // home node needs no flood. ForwardMessage itself does not re-check Home;
 // it unconditionally broadcasts to every connected peer that decision 4's
 // forward_peers allows (nil = every peer, today's behaviour).
-func (m *Manager) ForwardMessage(msg *messaging.Message) {
+//
+// K5: returns how many peers it actually sent to (ToPeer returning no
+// error), not merely how many it attempted — the caller needs the real
+// count to decide whether a message that wasn't stored anywhere was
+// also never sent anywhere, the condition that must not come back 200.
+func (m *Manager) ForwardMessage(msg *messaging.Message) int {
 	if msg == nil {
-		return
+		return 0
 	}
 	fwd := m.signedForwardPayload(msg)
 	payload, err := Encode(MsgForward, fwd)
 	if err != nil {
 		m.logger.Warn("failed to encode message forward", "error", err)
-		return
+		return 0
 	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	sent := 0
 	for pkHex, peer := range m.peers {
 		if peer.Peer != nil && m.peerAllowedForForward(pkHex) {
-			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
+			if err := peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000); err == nil {
+				sent++
+			}
 		}
 	}
+	return sent
 }
 
 func (m *Manager) signedForwardPayload(msg *messaging.Message) MsgForwardPayload {

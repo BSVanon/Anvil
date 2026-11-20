@@ -48,18 +48,50 @@ func TestSendHomeAware(t *testing.T) {
 			_, recipient, _ := newKeyWallet(t)
 			msg := &messaging.Message{Sender: sender, Recipient: recipient, MessageBox: "box", Body: "hi"}
 
-			id, forward, err := srv.sendHomeAware(msg)
+			id, forward, stored, err := srv.sendHomeAware(msg)
 			if err != nil || id == "" {
 				t.Fatalf("sendHomeAware = %q, %v", id, err)
 			}
 			if forward != c.wantForward {
 				t.Fatalf("forward = %v, want %v", forward, c.wantForward)
 			}
+			if !stored {
+				t.Fatal("expected stored=true: both Home and Unadvertised always store here")
+			}
 			msgs, err := srv.msgStore.List(recipient, "box")
 			if err != nil || len(msgs) != 1 {
 				t.Fatalf("expected the message stored either way: msgs=%+v err=%v", msgs, err)
 			}
 		})
+	}
+}
+
+// TestHandleSendMessageUndeliveredReturns503 is K5's required guard: a
+// message that lands nowhere — nothing stored at this node, AND the
+// forward (when attempted) reaches zero peers — must not come back 200.
+// Elsewhere with forward_copy_ttl=0 and no gossipMgr wired reproduces
+// exactly this: sendHomeAware reports stored=false, and
+// handleSendMessage never even tries ForwardMessage (gossipMgr is nil),
+// so sentTo stays 0 too.
+func TestHandleSendMessageUndeliveredReturns503(t *testing.T) {
+	srv, _ := messageHandlerServer(t, messaging.Options{})
+	srv.forwardCopyTTLSeconds = apiTTLPtr(0)
+	srv.homeResolver = stubHomeResolverAPI{state: messaging.Elsewhere}
+	// srv.gossipMgr is left nil: forward is skipped entirely, so a
+	// nonzero ForwardMessage count can never mask the missing store.
+	_, recipient, _ := newKeyWallet(t)
+
+	response, body := callMessageHandler(t, srv.handleSendMessage, map[string]string{
+		"recipient": recipient, "messageBox": "box", "body": "hi",
+	})
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: body=%v", response.Code, http.StatusServiceUnavailable, body)
+	}
+	if code, _ := body["code"].(string); code != "ERR_MESSAGE_UNDELIVERED" {
+		t.Fatalf("code = %q, want ERR_MESSAGE_UNDELIVERED: body=%v", code, body)
+	}
+	if msgs, _ := srv.msgStore.List(recipient, "box"); len(msgs) != 0 {
+		t.Fatalf("expected nothing stored, got %+v", msgs)
 	}
 }
 
@@ -73,12 +105,15 @@ func TestSendHomeAwareElsewhereForwardCopyTTLZero(t *testing.T) {
 	_, recipient, _ := newKeyWallet(t)
 	msg := &messaging.Message{Sender: sender, Recipient: recipient, MessageBox: "box", Body: "hi"}
 
-	id, forward, err := srv.sendHomeAware(msg)
+	id, forward, stored, err := srv.sendHomeAware(msg)
 	if err != nil || id == "" {
 		t.Fatalf("sendHomeAware = %q, %v", id, err)
 	}
 	if !forward {
 		t.Fatal("Elsewhere must still forward even when forward_copy_ttl=0")
+	}
+	if stored {
+		t.Fatal("expected stored=false: K5's signal that this specific send landed only via the forward, not a local copy")
 	}
 	msgs, err := srv.msgStore.List(recipient, "box")
 	if err != nil || len(msgs) != 0 {
@@ -96,12 +131,15 @@ func TestSendHomeAwareLegacyWhenForwardCopyTTLUnset(t *testing.T) {
 	_, recipient, _ := newKeyWallet(t)
 	msg := &messaging.Message{Sender: sender, Recipient: recipient, MessageBox: "box", Body: "hi"}
 
-	id, forward, err := srv.sendHomeAware(msg)
+	id, forward, stored, err := srv.sendHomeAware(msg)
 	if err != nil || id == "" {
 		t.Fatalf("sendHomeAware = %q, %v", id, err)
 	}
 	if !forward {
 		t.Fatal("the unwired legacy path must always forward, as before this brick")
+	}
+	if !stored {
+		t.Fatal("expected stored=true: the legacy path always stores")
 	}
 	msgs, err := srv.msgStore.List(recipient, "box")
 	if err != nil || len(msgs) != 1 {
@@ -186,6 +224,7 @@ func TestHandleSendMessageHomeRealEndToEnd(t *testing.T) {
 
 	_, homeRecipient, _ := newKeyWallet(t)
 	_, elsewhereRecipient, _ := newKeyWallet(t)
+	_, unadvertisedRecipient, _ := newKeyWallet(t)
 	srv.homeResolver = fixedStatesHomeResolver{
 		homeRecipient:      homeRecipient,
 		unadvertisedState:  messaging.Unadvertised,
@@ -199,20 +238,59 @@ func TestHandleSendMessageHomeRealEndToEnd(t *testing.T) {
 		t.Fatalf("home send = %d, %v", response.Code, body)
 	}
 
-	// Unadvertised: must forward, and the peer should receive and store it.
+	// Elsewhere, forward_copy_ttl>0 (N8 — a REAL Elsewhere case: before
+	// the fix, fixedStatesHomeResolver never actually returned Elsewhere
+	// for any recipient, so this send exercised Unadvertised under an
+	// Elsewhere-sounding name): stored locally at the shorter TTL AND
+	// forwarded.
 	if response, body := callMessageHandler(t, srv.handleSendMessage, map[string]string{
-		"recipient": elsewhereRecipient, "messageBox": "box", "body": "unadvertised copy",
+		"recipient": elsewhereRecipient, "messageBox": "box", "body": "elsewhere copy, ttl>0",
+	}); response.Code != http.StatusOK {
+		t.Fatalf("elsewhere send = %d, %v", response.Code, body)
+	}
+
+	// Unadvertised (a genuinely different, unnamed recipient): stored
+	// locally AND forwarded — same observable outcome as the Elsewhere
+	// case above, but through the resolver's default branch rather than
+	// its explicit Elsewhere case.
+	if response, body := callMessageHandler(t, srv.handleSendMessage, map[string]string{
+		"recipient": unadvertisedRecipient, "messageBox": "box", "body": "unadvertised copy",
 	}); response.Code != http.StatusOK {
 		t.Fatalf("unadvertised send = %d, %v", response.Code, body)
 	}
 
+	// Elsewhere again, now with forward_copy_ttl=0 (relay-only): this is
+	// the one case that actually DISTINGUISHES Elsewhere from
+	// Unadvertised — Unadvertised always stores regardless of TTL, so
+	// this send would still show up in srv.msgStore under the
+	// pre-N8-fix resolver bug. Forwarded either way.
+	srv.forwardCopyTTLSeconds = apiTTLPtr(0)
+	if response, body := callMessageHandler(t, srv.handleSendMessage, map[string]string{
+		"recipient": elsewhereRecipient, "messageBox": "box", "body": "elsewhere copy, ttl=0",
+	}); response.Code != http.StatusOK {
+		t.Fatalf("elsewhere (ttl=0) send = %d, %v", response.Code, body)
+	}
+
 	time.Sleep(600 * time.Millisecond)
 
-	if peerMsgStore.Count() != 1 {
-		t.Fatalf("peer store count = %d, want 1 (only the unadvertised-recipient forward)", peerMsgStore.Count())
+	if msgs, _ := srv.msgStore.List(homeRecipient, "box"); len(msgs) != 1 {
+		t.Fatalf("home recipient origin-side store = %d, want 1", len(msgs))
+	}
+	if msgs, _ := srv.msgStore.List(elsewhereRecipient, "box"); len(msgs) != 1 {
+		t.Fatalf("elsewhere recipient origin-side store = %d, want 1 (only the ttl>0 send; the ttl=0 send must not add a second row)", len(msgs))
+	}
+	if msgs, _ := srv.msgStore.List(unadvertisedRecipient, "box"); len(msgs) != 1 {
+		t.Fatalf("unadvertised recipient origin-side store = %d, want 1", len(msgs))
+	}
+
+	if peerMsgStore.Count() != 3 {
+		t.Fatalf("peer store count = %d, want 3 (elsewhere ttl>0, unadvertised, elsewhere ttl=0 — everything but the home send)", peerMsgStore.Count())
 	}
 	if msgs, _ := peerMsgStore.List(homeRecipient, "box"); len(msgs) != 0 {
 		t.Fatalf("the Home-recipient message must never reach the peer: %+v", msgs)
+	}
+	if msgs, _ := peerMsgStore.List(elsewhereRecipient, "box"); len(msgs) != 2 {
+		t.Fatalf("elsewhere recipient peer-side store = %d, want 2 (both the ttl>0 and ttl=0 forwards)", len(msgs))
 	}
 }
 
@@ -226,10 +304,18 @@ type fixedStatesHomeResolver struct {
 }
 
 func (f fixedStatesHomeResolver) Resolve(recipient string) (messaging.Resolution, error) {
-	if recipient == f.homeRecipient {
+	switch recipient {
+	case f.homeRecipient:
 		return messaging.Resolution{State: messaging.Home}, nil
+	case f.elsewhereRecipient:
+		// N8: this case used to be unreachable — recipient never matched
+		// here, so elsewhereRecipient silently fell through to
+		// unadvertisedState below, and the end-to-end test's "Elsewhere"
+		// send was actually exercising Unadvertised the whole time.
+		return messaging.Resolution{State: messaging.Elsewhere}, nil
+	default:
+		return messaging.Resolution{State: f.unadvertisedState}, nil
 	}
-	return messaging.Resolution{State: f.unadvertisedState}, nil
 }
 
 // TestOperatorBoxAllowed is a direct unit test of decision 5's

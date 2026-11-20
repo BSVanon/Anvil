@@ -56,7 +56,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		Body:       req.Body,
 	}
 
-	id, forward, err := s.sendHomeAware(msg)
+	id, forward, stored, err := s.sendHomeAware(msg)
 	if err != nil {
 		if writeMessagingError(w, err) {
 			s.logger.Error("messagebox send failed", "error", err)
@@ -69,8 +69,20 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// row: the recipient's home node already has it, so flooding the mesh
 	// would be pointless). ForwardMessage signs with the node's identity
 	// key.
+	sentTo := 0
 	if forward && s.gossipMgr != nil {
-		s.gossipMgr.ForwardMessage(msg)
+		sentTo = s.gossipMgr.ForwardMessage(msg)
+	}
+
+	// K5: a message that landed NOWHERE — nothing stored at this node,
+	// and the forward (if attempted at all) reached zero peers — must
+	// not come back 200. This only arises for an Elsewhere recipient
+	// under forward_copy_ttl=0 (relay-only mode) with no peer currently
+	// reachable; Home and Unadvertised always store here first.
+	if !stored && sentTo == 0 {
+		writeCodedError(w, http.StatusServiceUnavailable, "ERR_MESSAGE_UNDELIVERED",
+			"The message could not be stored or forwarded to any peer.")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -91,11 +103,17 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 // forwardCopyPolicy's legacy case (decisions 2/3 never wired up at all)
 // reproduces the exact pre-brick behaviour: Send unconditionally, always
 // forward.
-func (s *Server) sendHomeAware(msg *messaging.Message) (id string, forward bool, err error) {
+//
+// stored reports whether a row was actually persisted at THIS node
+// (K5) — false only for Elsewhere with forward_copy_ttl=0, where
+// SendElsewhere deliberately persists nothing (relay-only). The caller
+// uses it together with how many peers the forward actually reached to
+// decide whether the message landed nowhere at all.
+func (s *Server) sendHomeAware(msg *messaging.Message) (id string, forward bool, stored bool, err error) {
 	ttl, store, legacy := s.forwardCopyPolicy()
 	if legacy {
 		id, err = s.msgStore.Send(msg, s.identityPub)
-		return id, true, err
+		return id, true, err == nil, err
 	}
 	res, resErr := s.homeResolverOrDefault().Resolve(msg.Recipient)
 	if resErr != nil {
@@ -105,13 +123,13 @@ func (s *Server) sendHomeAware(msg *messaging.Message) (id string, forward bool,
 	switch res.State {
 	case messaging.Home:
 		id, err = s.msgStore.Send(msg, s.identityPub)
-		return id, false, err
+		return id, false, err == nil, err
 	case messaging.Elsewhere:
 		id, err = s.msgStore.SendElsewhere(msg, s.identityPub, ttl, store)
-		return id, true, err
+		return id, true, store && err == nil, err
 	default: // Unadvertised
 		id, err = s.msgStore.Send(msg, s.identityPub)
-		return id, true, err
+		return id, true, err == nil, err
 	}
 }
 
