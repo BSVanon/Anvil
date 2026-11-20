@@ -234,10 +234,11 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		topic := r.URL.Query().Get("topic")
 		payees, tokenGated := pg.resolvePayees(r)
 		// Skip the toll only when THIS request's token gate already
 		// validated a token for this exact topic; payment.go sets no auth signal.
-		if tokenGated && appTokenTopicMatches(r, r.URL.Query().Get("topic")) {
+		if tokenGated && appTokenTopicMatches(r, topic) {
 			next(w, r)
 			return
 		}
@@ -265,8 +266,9 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			receiptJSON, _ := json.Marshal(receipt)
 			w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
 			// Marks *paid*, not *authenticated* — a payment never unlocks a
-			// private envelope (see paid_context.go, isAuthedOrPaid).
-			next(w, r.WithContext(withPaid(r.Context())))
+			// private envelope (paid_context.go, isAuthedOrPaid) — and only
+			// for this exact topic (paid_topic_context.go, RISK 4).
+			next(w, r.WithContext(withPaidTopic(withPaid(r.Context()), topic)))
 			return
 		}
 
@@ -279,8 +281,9 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		receiptJSON, _ := json.Marshal(receipt)
 		w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
 		// Marks *paid*, not *authenticated* — a payment never unlocks a
-		// private envelope (see paid_context.go, isAuthedOrPaid).
-		next(w, r.WithContext(withPaid(r.Context())))
+		// private envelope (paid_context.go, isAuthedOrPaid) — and only for
+		// this exact topic (paid_topic_context.go, RISK 4).
+		next(w, r.WithContext(withPaidTopic(withPaid(r.Context()), topic)))
 	}
 }
 

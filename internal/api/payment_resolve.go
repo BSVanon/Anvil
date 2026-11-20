@@ -28,6 +28,19 @@ func NewTopicMonetizationResolver(store *envelope.Store) *TopicMonetizationResol
 // oracle for a private-only topic: a private-only monetized topic must
 // answer exactly like a topic that doesn't exist at all (no payee, no
 // price, no token requirement to probe for).
+//
+// QueryByTopic's durable path is a prefix scan (envelope/store.go:218),
+// documented for LISTING (docs/ANVIL_CAPABILITIES.md: "Prefix matching for
+// subscriptions") — so envs can hold sub-topic envelopes like "topic:x"
+// alongside topic's own. A money or access decision must never pick up a
+// different topic's monetization this way: cold review's BL2(b) found a
+// newer sub-topic envelope (e.g. "prem:x", token-gated) hijacking the
+// parent's own pricing/token-gating ("prem") for both the 402 toll and the
+// token requirement, since the old code returned the first non-private
+// envelope QueryByTopic's prefix scan happened to surface, regardless of
+// its own Topic. Skipping anything whose own Topic isn't an exact match
+// confines this resolution to topic's own declared monetization, same as
+// the ephemeral store's exact-match query path (envelope/store.go:236).
 func (r *TopicMonetizationResolver) Resolve(topic string) *envelope.Monetization {
 	if r == nil || topic == "" {
 		return nil
@@ -37,6 +50,9 @@ func (r *TopicMonetizationResolver) Resolve(topic string) *envelope.Monetization
 		return nil
 	}
 	for _, env := range envs {
+		if env.Topic != topic {
+			continue
+		}
 		if env.Private {
 			continue
 		}
@@ -63,9 +79,19 @@ func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGate
 		}
 	}
 
-	// Check if this request targets a topic with monetization metadata
+	// Check if this request targets a topic with monetization metadata.
+	// Topic-level monetization (passthrough/split pricing, token gating)
+	// only ever applies on a content route (isAppContentRoute,
+	// content_route.go) — GET /data or GET /data/subscribe, the routes that
+	// actually serve that topic's content. On every other route, and on
+	// every write, ?topic= is passed straight through to this fall-through:
+	// only the node's own per-path price (nodePayee) ever applies, and
+	// tokenGated is always false, so no topic's declared pricing or token
+	// model can replace or waive the node's toll (cold review BL2(a), RISK
+	// 3) or, via Resolve's prefix-scanned result, waive it based on a
+	// different (sub-)topic's monetization (BL2(b)).
 	topic := r.URL.Query().Get("topic")
-	if pg.resolver == nil || topic == "" {
+	if pg.resolver == nil || topic == "" || !isAppContentRoute(r) {
 		if nodePayee != nil {
 			return []Payee{*nodePayee}, false
 		}

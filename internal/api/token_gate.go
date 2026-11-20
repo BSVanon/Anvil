@@ -53,8 +53,16 @@ func (tg *TokenGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A token requirement, like app pricing (payment_resolve.go), only
+		// ever applies on a topic's own content route (isAppContentRoute,
+		// content_route.go) — GET /data or GET /data/subscribe. A node
+		// route's ?topic= is irrelevant to what it serves, so a token-model
+		// topic must never 401/403 it just because the query string happens
+		// to name that topic (cold review BL2(a): this collateral 401 on
+		// /stats, /headers/tip etc. was itself part of the hijack's
+		// surface, alongside the toll it let a token waive).
 		topic := r.URL.Query().Get("topic")
-		if topic == "" {
+		if topic == "" || !isAppContentRoute(r) {
 			next(w, r)
 			return
 		}

@@ -134,11 +134,12 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 
 	// authed gates `private` envelope omission below: operator bearer token
 	// ONLY — a verified x402 payment or a valid app token is never
-	// sufficient (docs/ANVIL_PRIVATE_FLAG_CONTRACT.md). authedOrPaid
-	// additionally accepts a verified payment and gates paid/monetized
-	// payload redaction, unchanged from before the split.
+	// sufficient (docs/ANVIL_PRIVATE_FLAG_CONTRACT.md). A verified payment
+	// additionally unredacts a monetized payload, but only on the exact
+	// topic it was resolved and charged against — never a sibling or
+	// sub-topic the prefix scan below also returns (RISK 4, paidTopicMatches
+	// in paid_topic_context.go).
 	authed := s.isAuthed(r)
-	authedOrPaid := s.isAuthedOrPaid(r)
 
 	// Track demand for this topic — operator reads never count, so the
 	// operator's own reads can't be mistaken for mesh-wide demand.
@@ -203,10 +204,14 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		// A validated app token (Model 4) additionally unredacts an envelope
 		// on EXACTLY the topic it was validated for — never a private
 		// envelope (dropped above regardless of this check).
-		if !authedOrPaid && !appTokenTopicMatches(r, env.Topic) && env.Monetization != nil && env.Monetization.PriceSats > 0 {
+		// mustRedactEnvelope (envelope_redaction.go) also gates a Model 4
+		// envelope with no token, closing RISK 4's parent-query leak
+		// (PriceSats==0 token envelopes were never redacted before).
+		paid := authed || (isPaid(r) && paidTopicMatches(r, env.Topic))
+		if !paid && !appTokenTopicMatches(r, env.Topic) && mustRedactEnvelope(env) {
 			// Shallow copy + redact payload
 			redacted := *env
-			redacted.Payload = "[paid content — access via HTTP 402]"
+			redacted.Payload = envelopeRedactionPlaceholder(env)
 			responseEnvs = append(responseEnvs, &redacted)
 		} else {
 			responseEnvs = append(responseEnvs, env)

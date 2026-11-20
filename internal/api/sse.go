@@ -78,12 +78,13 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// authed gates private-envelope omission; authedOrPaid additionally
-	// accepts a verified payment and gates paid/monetized redaction — same
-	// authenticated/paid split as GET /data (handlers.go), so paying never
-	// unlocks a private envelope over SSE either.
+	// authed gates private-envelope omission; a verified payment
+	// additionally unlocks paid/monetized redaction, but only on the exact
+	// topic it was resolved and charged against — same authenticated/paid
+	// split and exact-topic rule as GET /data (handlers.go), so paying
+	// never unlocks a private envelope, or a sibling/child topic's own
+	// payload, over SSE either.
 	authed := s.isAuthed(r)
-	authedOrPaid := s.isAuthedOrPaid(r)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -125,13 +126,18 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			if env.Private && !authed {
 				continue
 			}
-			// Redact paid payloads unless authenticated, paid, or carrying a
-			// validated app token for this exact topic (appTokenTopicMatches
-			// — same rule as GET /data, handlers.go).
+			// Redact paid payloads unless authenticated, or paid on exactly
+			// this topic (paidTopicMatches — RISK 4: a toll paid on a
+			// parent topic must not unlock a child's own payload), or
+			// carrying a validated app token for this exact topic
+			// (appTokenTopicMatches — same rule as GET /data, handlers.go).
+			// mustRedactEnvelope also gates a Model 4 envelope with no
+			// token (envelope_redaction.go).
 			outEnv := env
-			if !authedOrPaid && !appTokenTopicMatches(r, env.Topic) && env.Monetization != nil && env.Monetization.PriceSats > 0 {
+			paid := authed || (isPaid(r) && paidTopicMatches(r, env.Topic))
+			if !paid && !appTokenTopicMatches(r, env.Topic) && mustRedactEnvelope(env) {
 				redacted := *env
-				redacted.Payload = "[paid content — access via HTTP 402]"
+				redacted.Payload = envelopeRedactionPlaceholder(env)
 				outEnv = &redacted
 			}
 

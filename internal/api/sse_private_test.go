@@ -69,6 +69,37 @@ func readSSEUntilContains(resp *http.Response, marker string) string {
 	}
 }
 
+// readSSEUntilSentinel publishes a fresh public envelope on topic — AFTER
+// every event the caller has already notified — then blocks until that
+// sentinel's own marker arrives (or resp's request context ends), and
+// returns everything accumulated so far.
+//
+// Cold review's RISK 10: the previous version of the two absence tests
+// below proved "the private envelope never arrived" solely by letting
+// subscribeSSE's fixed context timeout (500ms) run out and checking what
+// had accumulated by then — correct today, but the proof is only as good
+// as that guessed window; a slow CI runner or GC pause could let it expire
+// before a real leak had time to manifest, silently passing either way. A
+// subscriber's channel delivers in emission order (handleSubscribe,
+// sse.go), so observing a sentinel published after the event under test
+// proves that event has already been delivered or permanently skipped —
+// the pipeline's own progress is the proof, not a guess at how long that
+// takes.
+func readSSEUntilSentinel(t *testing.T, srv *Server, resp *http.Response, topic string) string {
+	t.Helper()
+	marker := fmt.Sprintf("sentinel-%d", time.Now().UnixNano())
+	key, _ := ec.NewPrivateKey()
+	sentinel := &envelope.Envelope{Type: "data", Topic: topic, Payload: `{"sentinel":"` + marker + `"}`, Timestamp: time.Now().Unix()}
+	sentinel.Sign(key)
+	srv.NotifyEnvelope(sentinel)
+
+	body := readSSEUntilContains(resp, marker)
+	if !strings.Contains(body, marker) {
+		t.Fatalf("sentinel envelope never arrived over SSE — cannot prove the earlier event's absence this way; got:\n%s", body)
+	}
+	return body
+}
+
 // subscribeSSE issues a GET /data/subscribe request against a real server,
 // asserts 200, and returns the response for the caller to read from. host
 // MUST be "localhost" to match a challenge obtained via getChallenge (which
@@ -136,7 +167,7 @@ func TestSubscribePayerOmitsPrivateEnvelope(t *testing.T) {
 	privEnv.Sign(privKey)
 	srv.NotifyEnvelope(privEnv)
 
-	if body := readSSEUntilContains(resp, "sse-leak-check"); strings.Contains(body, "sse-leak-check") {
+	if body := readSSEUntilSentinel(t, srv, resp, topic); strings.Contains(body, "sse-leak-check") {
 		t.Fatal("a verified payment must not stream a private envelope over /data/subscribe")
 	}
 }
@@ -262,7 +293,7 @@ func TestSubscribeAppTokenOmitsPrivateEnvelope(t *testing.T) {
 	privEnv.Sign(privKey)
 	srv.NotifyEnvelope(privEnv)
 
-	if body := readSSEUntilContains(resp, "app-token-sse-leak-check"); strings.Contains(body, "app-token-sse-leak-check") {
+	if body := readSSEUntilSentinel(t, srv, resp, topic); strings.Contains(body, "app-token-sse-leak-check") {
 		t.Fatal("a validated app token must not stream a private envelope over /data/subscribe")
 	}
 }
