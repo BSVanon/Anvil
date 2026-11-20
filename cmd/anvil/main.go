@@ -450,7 +450,7 @@ func main() {
 		}
 	}
 
-	homeResolver, forwardCopyTTL, operatorReadsAll := wireMessagingPrivacy(cfg, v3Eng)
+	homeResolver, forwardCopyTTL, operatorReadsAll := wireMessagingPrivacy(cfg, v3Eng, overlayDir)
 	var bondCheck *bond.Checker
 	var nodeWallet *anvilwallet.NodeWallet
 	if cfg.Identity.WIF != "" {

@@ -12,6 +12,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/config"
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
 	anvilmsg "github.com/BSVanon/Anvil/internal/messaging"
+	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/overlay/lookups"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
@@ -29,13 +30,19 @@ import (
 // the gossip-side half (decisions 3/4's forward scoping) using the same
 // HomeResolver and TTL returned here, so both layers agree on who is
 // Home.
-func wireMessagingPrivacy(cfg *config.Config, v3Eng *engine.Engine) (home anvilmsg.HomeResolver, forwardCopyTTLSeconds *int64, operatorReadsAllBoxes *bool) {
+//
+// overlayDir is the same *anviloverlay.Directory main.go opens for the
+// v3 engine's LookupDB (nil exactly when overlay is disabled, matching
+// v3Eng == nil): messageBoxAdvertSource reads ls_messagebox's own
+// LevelDB index directly through it. See that function's doc comment
+// for why it does not go through v3Eng instead.
+func wireMessagingPrivacy(cfg *config.Config, v3Eng *engine.Engine, overlayDir *anviloverlay.Directory) (home anvilmsg.HomeResolver, forwardCopyTTLSeconds *int64, operatorReadsAllBoxes *bool) {
 	ownHosts := make([]string, 0, 1+len(cfg.Messaging.HomeHosts))
 	if cfg.Node.PublicURL != "" {
 		ownHosts = append(ownHosts, cfg.Node.PublicURL)
 	}
 	ownHosts = append(ownHosts, cfg.Messaging.HomeHosts...)
-	home = anvilmsg.NewHomeResolver(ownHosts, messageBoxAdvertSource(v3Eng))
+	home = anvilmsg.NewHomeResolver(ownHosts, messageBoxAdvertSource(v3Eng, overlayDir))
 	return home, cfg.Messaging.ForwardCopyTTLSeconds, cfg.Messaging.OperatorReadsAllBoxes
 }
 
@@ -54,28 +61,43 @@ func wireGossipMessagingPolicy(gossipMgr *anvilgossip.Manager, cfg *config.Confi
 	})
 }
 
-// messageBoxAdvertSource adapts the v3 engine's already-registered
-// ls_messagebox lookup service (internal/overlay/lookups/messagebox.go)
-// to messaging.AdvertSource via its native CurrentHosts side-channel,
-// reusing the single registered instance — engine.Engine.GetLookupService
-// is the canonical thread-safe accessor — rather than opening a second
-// lookup service against the same LevelDB handle. Returns nil when
-// overlay is disabled (v3Eng == nil) or tm_messagebox/ls_messagebox
-// isn't registered, which makes every Resolve answer Unadvertised
-// (messaging.AdvertSource's documented nil behaviour) — the correct
-// answer for "this node doesn't host the topic" (decision 2).
-func messageBoxAdvertSource(v3Eng *engine.Engine) anvilmsg.AdvertSource {
-	if v3Eng == nil {
+// messageBoxAdvertSource adapts ls_messagebox's own LevelDB index
+// (internal/overlay/lookups/messagebox.go) to messaging.AdvertSource.
+//
+// Blocker B1 (fixed here). This used to fetch the v3 engine's registered
+// lookup service via engine.Engine.GetLookupService and type-assert it
+// to *lookups.MessageBoxLookupService. That assertion always failed:
+// v3engine.New wraps every registered lookup service in an internal
+// detachedLookup/countingLookup pair (internal/overlay/v3engine/engine.go)
+// for health-registry notification bookkeeping, so GetLookupService
+// never returns the concrete type a type-assertion could reach. The
+// adapter therefore always returned nil, and the Home rule never ran in
+// production — every recipient resolved Unadvertised regardless of its
+// actual advert.
+//
+// Fix: build a second lookups.NewMessageBoxLookupService(overlayDir.DB())
+// reader directly against the SAME shared overlay LevelDB handle main.go
+// already opened for v3engine.Config.LookupDB, instead of reaching
+// through the engine's wrapper. This is correct because the type holds
+// no mutable state beyond the db handle itself and CurrentHosts only
+// reads, and it is the smaller change: the alternative (adding an
+// Unwrap() escape hatch to the v3engine wrapper types) would touch
+// v3engine itself, outside this brick's file list.
+//
+// Still confirms v3Eng has the topic registered before building the
+// reader, preserving the documented "nil when overlay is disabled or
+// tm_messagebox/ls_messagebox isn't registered" contract — a disabled
+// topic's LevelDB key family would just stay permanently empty, but
+// checking explicitly keeps the nil-AdvertSource signal precise and
+// avoids opening a reader that can never find anything.
+func messageBoxAdvertSource(v3Eng *engine.Engine, overlayDir *anviloverlay.Directory) anvilmsg.AdvertSource {
+	if v3Eng == nil || overlayDir == nil {
 		return nil
 	}
-	svc, ok := v3Eng.GetLookupService(topics.MessageBoxLookupServiceName)
-	if !ok {
+	if _, ok := v3Eng.GetLookupService(topics.MessageBoxLookupServiceName); !ok {
 		return nil
 	}
-	mb, ok := svc.(*lookups.MessageBoxLookupService)
-	if !ok {
-		return nil
-	}
+	mb := lookups.NewMessageBoxLookupService(overlayDir.DB())
 	return func(identityKeyHex string) ([]anvilmsg.Advert, error) {
 		hosts, err := mb.CurrentHosts(identityKeyHex)
 		if err != nil {
