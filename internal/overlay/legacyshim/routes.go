@@ -465,7 +465,7 @@ func (s *Shim) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer, err := s.Engine.Lookup(r.Context(), &lookup.LookupQuestion{
+	answer, err := s.Engine.Lookup(overlayctx.ReadOnly(r.Context()), &lookup.LookupQuestion{
 		Service: q.Service,
 		Query:   q.Query,
 	})
