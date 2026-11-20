@@ -20,6 +20,13 @@ seeds = [
 # ]
 # Use local_pubkeys for fast local publishers that should not trigger
 # double-publish slashing on this node (for example, a local oracle feed).
+# allowed_peers = [
+#   "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+# ]
+# Closed-network mode: when set, a mesh peer (inbound or outbound) whose
+# authenticated identity public key is not listed here is refused right
+# after the handshake, before any of its messages are processed. Leave
+# unset (the default) to accept any peer, as today.
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333"]
@@ -81,6 +88,13 @@ topics = ["anvil:mainnet"]
 enable_gasp_sync = true
 # ship_trackers = ["https://overlay-us-1.bsvb.tech"]
 # slap_trackers = ["https://overlay-us-1.bsvb.tech"]
+# named_peers = ["https://overlay-a.example.com", "https://overlay-b.example.com"]
+# Closed-network mode: when set, every outbound overlay call this node makes
+# -- GASP sync, lookup federation, submit propagation, and SHIP/SLAP
+# resolution -- targets only these peers. ship_trackers / slap_trackers and
+# the built-in public defaults are not consulted, and the baked-in Anvil
+# header-fallback peer (see [bsv] above) is not appended either. Leave
+# unset (the default) for the normal federated-overlay behavior.
 
 [envelopes]
 max_ephemeral_ttl = 3600

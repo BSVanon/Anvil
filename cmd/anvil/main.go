@@ -33,7 +33,6 @@ import (
 	"github.com/BSVanon/Anvil/internal/overlay/federation"
 	"github.com/BSVanon/Anvil/internal/overlay/gaspstatus"
 	"github.com/BSVanon/Anvil/internal/overlay/legacyshim"
-	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
 	"github.com/BSVanon/Anvil/internal/overlay/v3engine"
 	"github.com/BSVanon/Anvil/internal/p2p"
@@ -44,7 +43,6 @@ import (
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	sdkwallet "github.com/bsv-blockchain/go-sdk/wallet"
 
-	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
@@ -479,47 +477,10 @@ func main() {
 			// Advertiser + LookupResolver + GASP SyncConfiguration.
 			// Federation participation is opt-out via
 			// cfg.Overlay.EnableGASPSync = false.
-			if v3Eng != nil && cfg.Overlay.EnableGASPSync && cfg.Node.PublicURL != "" {
-				slapTrackers := cfg.Overlay.SLAPTrackers
-				if len(slapTrackers) == 0 {
-					// Fall back to go-sdk's canonical defaults
-					// (overlay-us-1.bsvb.tech, overlay-eu-1.bsvb.tech,
-					// overlay-ap-1.bsvb.tech, users.bapp.dev). Operators
-					// can override via anvil.toml [overlay] slap_trackers.
-					slapTrackers = append(slapTrackers, lookup.DEFAULT_SLAP_TRACKERS...)
-				}
-				shipTrackers := cfg.Overlay.SHIPTrackers
-				if len(shipTrackers) == 0 {
-					shipTrackers = append(shipTrackers, lookup.DEFAULT_SLAP_TRACKERS...)
-				}
-				adv := federation.NewAdvertiser(nodeWallet.Wallet(), cfg.Node.PublicURL, shipStore, slapStore, anvilStore)
-				// peerhygiene.NewResolver mirrors engine.NewLookupResolverWithNetwork
-				// but routes every per-host lookup through a hygiene Facilitator, so
-				// dead SLAP/SHIP peers get skipped/backed-off instead of re-queried on
-				// every GASP sync + lookup resolution (the federation thrash the DEX saw).
-				resolver := peerhygiene.NewResolver(overlayNetworkFromBSV(cfg), logger)
-				resolver.SetSLAPTrackers(slapTrackers)
-				v3Eng.Advertiser = adv
-				v3Eng.LookupResolver = resolver
-				v3Eng.SHIPTrackers = shipTrackers
-				v3Eng.SLAPTrackers = slapTrackers
-				v3Eng.SyncConfiguration = buildSyncConfiguration(v3Eng)
-				log.Printf("v3 federation wired: %d topics syncable via canonical SHIP/SLAP (trackers=%d)",
-					len(v3Eng.SyncConfiguration), len(slapTrackers))
-
-				// Periodic federation work. SyncAdvertisements
-				// reconciles our on-chain ad set with the topics we
-				// currently host; StartGASPSync pulls peer state for
-				// each subscribed topic. Both gated on
-				// EnableGASPSync, both safe to run periodically.
-				go runSyncAdvertisements(context.Background(), v3Eng, logger, cfg.Overlay.AdvertiseIntervalSecs)
-				if gaspTracker != nil {
-					gaspTracker.MarkEnabled()
-				}
-				go runGASPSync(context.Background(), v3Eng, logger, cfg.Overlay.GASPSyncIntervalSecs, gaspTracker)
-			} else if v3Eng != nil && !cfg.Overlay.EnableGASPSync {
-				log.Printf("v3 federation disabled (cfg.Overlay.EnableGASPSync = false); GASP routes still serve inbound requests")
-			}
+			// W-10.3 federation wiring + B5 [overlay] named_peers
+			// closed-network override both live in wireV3Federation
+			// (federation_loops.go) so this file doesn't grow.
+			wireV3Federation(cfg, v3Eng, gaspTracker, shipStore, slapStore, anvilStore, nodeWallet, logger)
 
 			// W-10.5: Bespoke on-chain SHIP publish retired. The
 			// canonical federation Advertiser wired above publishes
@@ -578,6 +539,7 @@ func main() {
 			MaxSeen:        10000,
 			OverlayDir:     overlayDir,
 			BondChecker:    bondCheck,
+			AllowedPeers:   cfg.Mesh.AllowedPeers,
 			LocalPubkeys:   localPKs,
 			ConnectionLog:  connLog,
 			IdentityKey:    identityPrivKey,

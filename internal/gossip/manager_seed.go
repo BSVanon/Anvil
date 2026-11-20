@@ -58,6 +58,13 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 			}
 			m.mu.Unlock()
 
+			// [mesh] allowed_peers: refuse an outbound seed whose identity
+			// isn't listed, right after the handshake and before any bond
+			// check or message processing.
+			if needsBondCheck && !m.checkAllowedPeer(pkHex, "outbound", endpoint) {
+				return fmt.Errorf("peer identity not in allowed_peers")
+			}
+
 			if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
 				balance, err := m.bondChecker.VerifyBond(senderPK)
 				if err != nil {

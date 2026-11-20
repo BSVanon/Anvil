@@ -75,6 +75,10 @@ type Manager struct {
 	// bond checker (nil = no bond required)
 	bondChecker *bond.Checker
 
+	// allowlist enforces [mesh] allowed_peers (nil/empty set = no
+	// restriction, today's behaviour)
+	allowlist *peerAllowlist
+
 	// per-peer gossip rate limiting (loose defaults: 30/s burst 100)
 	peerRates  map[string]*peerRate
 	peerRateMu sync.Mutex
@@ -166,6 +170,10 @@ type ManagerConfig struct {
 	OnEnvelope     func(*envelope.Envelope)
 	OverlayDir     OverlayDirectory
 	BondChecker    *bond.Checker
+	// AllowedPeers restricts mesh peering ([mesh] allowed_peers) to these
+	// identity public key hexes, inbound and outbound. Empty means no
+	// restriction — today's behaviour.
+	AllowedPeers []string
 	// CatchUpTopics are topics to request from peers on connect.
 	// Ensures new nodes receive critical data (catalog, feeds) immediately.
 	CatchUpTopics []string
@@ -208,6 +216,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		onEnvelope:     cfg.OnEnvelope,
 		overlayDir:     cfg.OverlayDir,
 		bondChecker:    cfg.BondChecker,
+		allowlist:      newPeerAllowlist(cfg.AllowedPeers),
 		peerRates:      make(map[string]*peerRate),
 		ratePerSec:     cfgRatePerSec(cfg.RatePerSec),
 		rateBurst:      cfgRateBurst(cfg.RateBurst),
@@ -262,6 +271,13 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 			needsBondCheck = true
 		}
 		m.mu.Unlock()
+
+		// [mesh] allowed_peers: refuse an outbound seed whose identity
+		// isn't listed, right after the handshake and before any bond
+		// check or message processing.
+		if needsBondCheck && !m.checkAllowedPeer(pkHex, "outbound", endpoint) {
+			return fmt.Errorf("peer identity not in allowed_peers")
+		}
 
 		// Verify bond on first message (identity just revealed)
 		if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
@@ -383,6 +399,13 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 			needsBondCheck = true
 		}
 		m.mu.Unlock()
+
+		// [mesh] allowed_peers: refuse an inbound peer whose identity isn't
+		// listed, right after the handshake and before any bond check or
+		// message processing.
+		if needsBondCheck && !m.checkAllowedPeer(pkHex, "inbound", transport.RemoteAddr()) {
+			return fmt.Errorf("peer identity not in allowed_peers")
+		}
 
 		// Verify bond on first message (identity just revealed)
 		if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
