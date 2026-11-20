@@ -138,7 +138,7 @@ func (s *Server) latestVisibleEnvelope(topic string, isAuthed bool) *envelope.En
 	if s.envelopeStore == nil {
 		return nil
 	}
-	envs, _ := s.envelopeStore.QueryByTopic(topic, 0) // newest-first
+	envs, _ := s.envelopeStore.QueryExactTopic(topic, 0) // newest-first
 	for _, e := range envs {
 		if isAuthed || !e.Private {
 			return e

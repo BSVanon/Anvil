@@ -171,12 +171,10 @@ func TestAppTokenNeverUnlocksPrivateOrOtherTopics(t *testing.T) {
 
 // TestAppTokenDoesNotUnredactPrefixSubtopic: a validated app token for
 // topic A does not unredact a DIFFERENT, merely-prefix-related topic B's
-// monetized content, even when the same GET /data query returns both in
-// one response. The store's prefix scan (QueryByTopic) returns B alongside
-// A when B's name happens to extend A's with ":" — a separate, already
-// known gap this test treats as a given, not something it fixes — but
-// appTokenTopicMatches must still do an exact comparison per envelope, so
-// B's own price stays enforced regardless of A's validated token.
+// monetized content. A GET /data query on A returns A's own envelopes only,
+// never B's, even when B's name extends A's with ":"; and a direct query on
+// B, carrying A's token, leaves B's payload redacted, because an app token
+// unlocks only its own exact topic, so B's own price stays enforced.
 func TestAppTokenDoesNotUnredactPrefixSubtopic(t *testing.T) {
 	srv := testServer(t)
 
@@ -203,40 +201,33 @@ func TestAppTokenDoesNotUnredactPrefixSubtopic(t *testing.T) {
 	sig, _ := appKey.Sign(digest[:])
 	token := hex.EncodeToString(sig.Serialize()) + ":" + ts
 
-	req := httptest.NewRequest("GET", "/data?topic="+parent+"&limit=10", nil)
-	req.Host = "localhost"
-	req.Header.Set("X-App-Token", token)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 (token validates on its own topic), got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp struct {
-		Count     int                      `json:"count"`
-		Envelopes []map[string]interface{} `json:"envelopes"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Count != 2 {
-		t.Fatalf("expected the prefix scan to return both the parent and child envelope (a known, separate gap this test treats as a given), got count=%d", resp.Count)
-	}
-
-	for _, e := range resp.Envelopes {
-		topic, _ := e["topic"].(string)
-		payload, _ := e["payload"].(string)
-		switch topic {
-		case parent:
-			if strings.Contains(payload, "paid content") {
-				t.Fatalf("the parent envelope, on the token's own validated topic, should not be redacted: %v", e)
-			}
-		case child:
-			if !strings.Contains(payload, "paid content") {
-				t.Fatalf("a token validated for %q must not unredact the differently-named topic %q, even though the same query returned it: %v", parent, child, e)
-			}
-		default:
-			t.Fatalf("unexpected topic in response: %q", topic)
+	query := func(topic string) []map[string]interface{} {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/data?topic="+topic+"&limit=10", nil)
+		req.Host = "localhost"
+		req.Header.Set("X-App-Token", token)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /data?topic=%s: expected 200, got %d: %s", topic, w.Code, w.Body.String())
 		}
+		var resp struct {
+			Count     int                      `json:"count"`
+			Envelopes []map[string]interface{} `json:"envelopes"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Count != 1 || len(resp.Envelopes) != 1 || resp.Envelopes[0]["topic"] != topic {
+			t.Fatalf("GET /data?topic=%s must return that topic's one envelope only, got count=%d envelopes=%v", topic, resp.Count, resp.Envelopes)
+		}
+		return resp.Envelopes
+	}
+
+	if payload, _ := query(parent)[0]["payload"].(string); strings.Contains(payload, "paid content") {
+		t.Fatalf("the parent envelope, on the token's own validated topic, should not be redacted: %s", payload)
+	}
+	if payload, _ := query(child)[0]["payload"].(string); !strings.Contains(payload, "paid content") {
+		t.Fatalf("a token validated for %q must not unredact the differently-named topic %q: %s", parent, child, payload)
 	}
 }

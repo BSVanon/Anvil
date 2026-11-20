@@ -128,10 +128,10 @@ func TestHonestDirectPaymentRoundTripUnlocksExactTopic(t *testing.T) {
 	}
 }
 
-// TestHonestPaymentDoesNotLeakSiblingTopic closes the loop between item 5's
-// round trip and item 6's own isolation guarantee in one place: the SAME
-// payment flow that just unlocked news:premium above must still leave an
-// unrelated, pricier sibling topic fully redacted.
+// TestHonestPaymentDoesNotLeakSiblingTopic: the same payment flow that
+// unlocked news:premium above, made for topic news, unlocks news's own
+// payload and never serves the pricier sub-topic news:premium: a read of
+// topic news returns news only.
 func TestHonestPaymentDoesNotLeakSiblingTopic(t *testing.T) {
 	srv := testServer(t)
 	seedEnvelope(t, srv.envelopeStore, "news", &envelope.Monetization{
@@ -152,19 +152,10 @@ func TestHonestPaymentDoesNotLeakSiblingTopic(t *testing.T) {
 	proofB64 := buildProof(t, ch, 5, testPayeeScript(t))
 	_, envs := queryWithProof(t, srv, path, ch, proofB64)
 
-	var newsPayload, premiumPayload string
-	for _, e := range envs {
-		switch e["topic"] {
-		case "news":
-			newsPayload, _ = e["payload"].(string)
-		case "news:premium":
-			premiumPayload, _ = e["payload"].(string)
-		}
+	if len(envs) != 1 || envs[0]["topic"] != "news" {
+		t.Fatalf("a read of topic news must return news's own envelope only, never news:premium; got: %v", envs)
 	}
-	if strings.Contains(newsPayload, "paid content") {
+	if newsPayload, _ := envs[0]["payload"].(string); strings.Contains(newsPayload, "paid content") {
 		t.Fatalf("the honest 5-sat payment must unlock news's own payload, got: %s", newsPayload)
-	}
-	if !strings.Contains(premiumPayload, "paid content") {
-		t.Fatalf("the 5-sat toll paid for 'news' must not unlock news:premium's own 250-sat payload, got: %s", premiumPayload)
 	}
 }

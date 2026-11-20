@@ -524,6 +524,15 @@ that names a different key or payee, but while it is the newest, honest
 token holders and payers of that topic are refused (401 or 403). Closing
 this needs topic ownership.
 
+### Topics are exact
+
+`GET /data?topic=X` returns only topic `X`; durable topics used to match
+`X:*` too. The other reads that name a topic are exact in the same way:
+`GET /topics/{topic}`, `GET /identity/{pubkey}` (topic `identity:<pubkey>`),
+`/app/{name}` and `/explorer` (topic `anvil:catalog`) and `/mesh/nodes`
+(topic `mesh:heartbeat`). The SSE subscription was always exact. Mesh peers
+still subscribe to each other by topic prefix.
+
 Get your auth token:
 ```bash
 sudo anvil token

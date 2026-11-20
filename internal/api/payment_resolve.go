@@ -29,30 +29,18 @@ func NewTopicMonetizationResolver(store *envelope.Store) *TopicMonetizationResol
 // answer exactly like a topic that doesn't exist at all (no payee, no
 // price, no token requirement to probe for).
 //
-// QueryByTopic's durable path is a prefix scan (envelope/store.go:218),
-// documented for LISTING (docs/ANVIL_CAPABILITIES.md: "Prefix matching for
-// subscriptions") — so envs can hold sub-topic envelopes like "topic:x"
-// alongside topic's own. A money or access decision must never pick up a
-// different topic's monetization this way: cold review's BL2(b) found a
-// newer sub-topic envelope (e.g. "prem:x", token-gated) hijacking the
-// parent's own pricing/token-gating ("prem") for both the 402 toll and the
-// token requirement, since the old code returned the first non-private
-// envelope QueryByTopic's prefix scan happened to surface, regardless of
-// its own Topic. Skipping anything whose own Topic isn't an exact match
-// confines this resolution to topic's own declared monetization, same as
-// the ephemeral store's exact-match query path (envelope/store.go:236).
+// It reads topic's own envelopes only (QueryExactTopic), never a sub-topic's
+// such as "topic:x", so a newer envelope on a sub-topic cannot replace the
+// topic's own pricing or token rule.
 func (r *TopicMonetizationResolver) Resolve(topic string) *envelope.Monetization {
 	if r == nil || topic == "" {
 		return nil
 	}
-	envs, err := r.store.QueryByTopic(topic, 0)
+	envs, err := r.store.QueryExactTopic(topic, 0)
 	if err != nil {
 		return nil
 	}
 	for _, env := range envs {
-		if env.Topic != topic {
-			continue
-		}
 		if env.Private {
 			continue
 		}

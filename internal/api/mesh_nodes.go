@@ -110,7 +110,7 @@ func (s *Server) handleMeshNodes(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Heartbeat envelopes — canonical for liveness
 	if s.envelopeStore != nil {
-		envs, err := s.envelopeStore.QueryByTopic("mesh:heartbeat", 100)
+		envs, err := s.envelopeStore.QueryExactTopic("mesh:heartbeat", 100)
 		if err == nil {
 			// Dedup: keep newest heartbeat per pubkey
 			seen := make(map[string]bool)

@@ -49,7 +49,7 @@ func (s *Server) handleAppRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envs, err := s.envelopeStore.QueryByTopic("anvil:catalog", 100)
+	envs, err := s.envelopeStore.QueryExactTopic("anvil:catalog", 100)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "catalog query failed")
 		return
@@ -74,7 +74,7 @@ func (s *Server) handleAppRedirectWithFallback(w http.ResponseWriter, r *http.Re
 	appName := r.PathValue("name")
 
 	if s.envelopeStore != nil {
-		envs, err := s.envelopeStore.QueryByTopic("anvil:catalog", 100)
+		envs, err := s.envelopeStore.QueryExactTopic("anvil:catalog", 100)
 		if err == nil {
 			if origin := findCatalogRedirect(envs, appName); origin != "" {
 				target := "/content/" + origin

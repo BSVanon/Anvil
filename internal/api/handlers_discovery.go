@@ -85,7 +85,7 @@ func (s *Server) handleGetTopic(w http.ResponseWriter, r *http.Request) {
 	// private history never leaks via count/timestamp/publisher — and a topic
 	// with no public envelopes is indistinguishable from a nonexistent one
 	// (404). Authenticated callers see the full aggregate.
-	envs, _ := s.envelopeStore.QueryByTopic(topic, 0)
+	envs, _ := s.envelopeStore.QueryExactTopic(topic, 0)
 
 	count := 0
 	var lastUpdated int64

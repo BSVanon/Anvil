@@ -167,7 +167,7 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 	// returned count shift. Fetching unlimited and dropping private
 	// envelopes immediately removes that signal; limit and since then
 	// apply only to what the caller may actually see.
-	envs, err := s.envelopeStore.QueryByTopic(topic, 0)
+	envs, err := s.envelopeStore.QueryExactTopic(topic, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query error: %v", err))
 		return

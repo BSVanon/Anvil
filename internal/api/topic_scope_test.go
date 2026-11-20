@@ -13,22 +13,18 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
-// --- Item 6 / cold review RISK 4: a toll paid against one topic must not
-// unredact a different topic's own, separately-priced payload, even when
-// envelope/store.go's prefix-scanned listing (documented for listing,
-// docs/ANVIL_CAPABILITIES.md:77) happens to return both in the same
-// response. An honest payment for a topic's OWN price must still unlock
-// that topic's own content. ---
-
+// A toll paid for one topic never unlocks another topic's own,
+// separately-priced payload. A read of topic "a" returns topic "a" only
+// (QueryExactTopic), so "a:premium" is not in the response at all, and an
+// honest payment for a's own price still unlocks a's own content.
 func TestCheapTollDoesNotUnlockSiblingTopicPremiumPayload(t *testing.T) {
 	srv := testServer(t)
 	// "a" is cheap, priced to the node's own test payee.
 	seedEnvelope(t, srv.envelopeStore, "a", &envelope.Monetization{
 		Model: envelope.MonetizationPassthrough, PayeeLockingScriptHex: testPayeeScript(t), PriceSats: 1,
 	})
-	// "a:premium" is expensive, priced to a different app payee — only the
-	// durable prefix scan (topic "a" matches keys "d:a:...") ever puts it in
-	// the same /data?topic=a response as "a" itself.
+	// "a:premium" is expensive, priced to a different app payee. Its durable
+	// key starts "d:a:", as a's own keys do.
 	seedEnvelope(t, srv.envelopeStore, "a:premium", &envelope.Monetization{
 		Model: envelope.MonetizationPassthrough, PayeeLockingScriptHex: appPayeeScript(), PriceSats: 1000,
 	})
@@ -45,26 +41,11 @@ func TestCheapTollDoesNotUnlockSiblingTopicPremiumPayload(t *testing.T) {
 	proofB64 := buildProof(t, ch, 1, testPayeeScript(t))
 	_, envs := queryWithProof(t, srv, path, ch, proofB64)
 
-	var sawA, sawPremium bool
-	var aPayload, premiumPayload string
-	for _, e := range envs {
-		switch e["topic"] {
-		case "a":
-			sawA = true
-			aPayload, _ = e["payload"].(string)
-		case "a:premium":
-			sawPremium = true
-			premiumPayload, _ = e["payload"].(string)
-		}
+	if len(envs) != 1 || envs[0]["topic"] != "a" {
+		t.Fatalf("a read of topic a must return a's own envelope only, never a:premium; got envelopes: %v", envs)
 	}
-	if !sawA || !sawPremium {
-		t.Fatalf("expected both 'a' and 'a:premium' in the prefix-scanned listing for topic=a, got envelopes: %v", envs)
-	}
-	if strings.Contains(aPayload, "paid content") {
+	if aPayload, _ := envs[0]["payload"].(string); strings.Contains(aPayload, "paid content") {
 		t.Fatalf("an honest payment for topic a's own 1-sat price must unlock a's own payload, got: %s", aPayload)
-	}
-	if !strings.Contains(premiumPayload, "paid content") {
-		t.Fatalf("a 1-sat toll paid against topic 'a' must not unlock a:premium's own 1000-sat payload, got: %s", premiumPayload)
 	}
 }
 
@@ -125,23 +106,18 @@ func TestAppTokenNeverBlocksNodeRoute(t *testing.T) {
 	}
 }
 
-// --- Item 8 / cold review BL2(b): a newer sub-topic envelope must not
-// hijack the parent topic's own pricing or token-gating. Resolve
-// (payment_resolve.go) now skips any envelope whose own Topic isn't an
-// exact match. ---
-
+// A newer sub-topic envelope must not hijack the parent topic's own pricing
+// or token gating: Resolve (payment_resolve.go) reads the topic's own
+// envelopes only.
 func TestSubtopicEnvelopeDoesNotHijackParentTopicResolution(t *testing.T) {
 	srv := testServer(t)
 
-	// QueryByTopic (envelope/store.go) returns every durable envelope
-	// whose own Topic matches the prefix scan, newest-first by timestamp —
-	// so the realistic hijack is the attacker's sub-topic envelope landing
-	// at a LATER timestamp than the legitimate topic's own, which is what
-	// made it surface first before Resolve's exact-match fix. seedEnvelope
-	// (noncustodial_test.go) stamps time.Now() implicitly, which is only
-	// second-resolution and ties for two calls microseconds apart — too
-	// close to reliably exercise that ordering, so both envelopes are
-	// seeded here directly with explicit, clearly-ordered timestamps.
+	// A prefix scan of the durable store returns the sub-topic's envelopes
+	// too, newest first, so the hijack to test is the attacker's sub-topic
+	// envelope at a LATER timestamp than the topic's own. seedEnvelope
+	// (noncustodial_test.go) stamps time.Now(), whose one-second resolution
+	// ties two calls microseconds apart, so both envelopes are seeded here
+	// with explicit, clearly ordered timestamps.
 	seedEnvelopeAt := func(topic string, mon *envelope.Monetization, ts int64) {
 		t.Helper()
 		key, _ := ec.NewPrivateKey()
@@ -206,11 +182,10 @@ func TestPassthroughNeverReplacesNodeTollOnWrite(t *testing.T) {
 	}
 }
 
-// --- Item 8 / cold review RISK 4 (via content route, parent-topic query):
-// a token-gated sub-topic's payload must stay redacted when it surfaces
-// through a query on its parent topic, for a caller with no token at all. ---
-
-func TestTokenGatedSubtopicStaysRedactedViaParentTopicQuery(t *testing.T) {
+// A token-gated sub-topic's envelope is not served through a query on its
+// parent topic, which returns the parent's own envelopes only, to a caller
+// with no token at all.
+func TestTokenGatedSubtopicNotServedViaParentTopicQuery(t *testing.T) {
 	srv := testServer(t)
 
 	appKey, _ := ec.NewPrivateKey()
@@ -237,39 +212,21 @@ func TestTokenGatedSubtopicStaysRedactedViaParentTopicQuery(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode /data response: %v", err)
 	}
-	found := false
-	for _, e := range resp.Envelopes {
-		if e["topic"] != "P:tok" {
-			continue
-		}
-		found = true
-		payload, _ := e["payload"].(string)
-		if !strings.Contains(payload, "token-gated content") {
-			t.Fatalf("P:tok must be redacted with the token-gated placeholder when surfaced via a query on parent topic P with no X-App-Token; got payload: %s", payload)
-		}
-	}
-	if !found {
-		t.Fatal("expected P:tok to be returned by the prefix-scanned listing for topic=P")
+	if len(resp.Envelopes) != 0 {
+		t.Fatalf("a query on parent topic P, which has no envelopes of its own, must not return P:tok's; got: %v", resp.Envelopes)
 	}
 }
 
-// TestDataQueryAppTokenMismatchedTopicStaysRedacted is cold review's RISK 5
-// for the GET /data path — handlers.go's sibling of
-// TestSubscribeAppTokenMismatchedTopicStaysRedacted (sse_app_token_exact_test.go).
-// Both redaction loops share the identical condition
-// (!paid && !appTokenTopicMatches(r, env.Topic) && mustRedactEnvelope(env)),
-// so both call sites need their own regression coverage: a mutation
-// specific to handlers.go's copy (e.g. weakening the check to "is any app
-// token present on this connection" instead of "is it valid for THIS
-// envelope's own topic") would not be caught by
-// TestTokenGatedTopicAcceptsValidCredential (noncustodial_test.go) or
-// TestTokenGatedSubtopicStaysRedactedViaParentTopicQuery above, since
-// neither ever presents a validated token whose topic differs from the
-// envelope being evaluated. As with the SSE case, TokenGate.Middleware can
-// never hand handlers.go such a mismatched context itself (verifyToken
-// binds the signature to the topic it is checked against), so creating it
-// directly is the only way to exercise this call site's own exact-match
-// requirement.
+// TestDataQueryAppTokenMismatchedTopicStaysRedacted is the GET /data sibling
+// of TestSubscribeAppTokenMismatchedTopicStaysRedacted
+// (sse_app_token_exact_test.go): an app token validated for one topic does
+// not unlock a token-model envelope on another. Both routes decide this
+// through envelopeForRequest (envelope_redaction.go), and each needs its own
+// test of a token whose topic differs from the envelope's, which
+// TestTokenGatedTopicAcceptsValidCredential (noncustodial_test.go) never
+// presents. TokenGate.Middleware cannot produce such a context itself
+// (verifyToken binds the signature to the topic it checks), so the test sets
+// the context value directly.
 func TestDataQueryAppTokenMismatchedTopicStaysRedacted(t *testing.T) {
 	srv := testServer(t) // no tokenGate configured — nothing but the redaction check itself can gate this
 
