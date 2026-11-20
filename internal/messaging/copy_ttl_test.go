@@ -46,7 +46,7 @@ func TestExpiryBaseForArithmetic(t *testing.T) {
 
 // TestDecodeRecordWithoutExpiryBaseFallsBackToReceivedAt pins the
 // no-migration guarantee at the decode layer: JSON with no "expiryBase"
-// field at all (every record written before this brick) decodes
+// field at all (every record written before per-copy expiry existed) decodes
 // ExpiryBase to zero, and effectiveExpiryBase then falls back to
 // ReceivedAt — exactly the timestamp that record's "ex:" key was
 // originally written under.
@@ -57,7 +57,7 @@ func TestDecodeRecordWithoutExpiryBaseFallsBackToReceivedAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if record.ExpiryBase != 0 {
-		t.Fatalf("ExpiryBase = %d, want 0 (absent from pre-brick JSON)", record.ExpiryBase)
+		t.Fatalf("ExpiryBase = %d, want 0 (absent from an older record's JSON)", record.ExpiryBase)
 	}
 	if got := effectiveExpiryBase(record); got != record.ReceivedAt {
 		t.Fatalf("effectiveExpiryBase = %d, want ReceivedAt %d", got, record.ReceivedAt)

@@ -15,13 +15,13 @@ import (
 	sdkwallet "github.com/bsv-blockchain/go-sdk/wallet"
 )
 
-// sendHomeAware's decision-3 "API send" table (handlers_messaging.go):
+// sendHomeAware's "API send" table (handlers_messaging.go):
 // what happens when a client POSTs a message, for each HomeState the
 // recipient resolves to. The operator read-all-boxes switch has its own
 // tests in handlers_messaging_operator_test.go.
 
 // stubHomeResolverAPI is a fixed-answer messaging.HomeResolver for
-// decision 3's API-send table tests, below.
+// the API-send table tests, below.
 type stubHomeResolverAPI struct{ state messaging.HomeState }
 
 func (s stubHomeResolverAPI) Resolve(string) (messaging.Resolution, error) {
@@ -31,7 +31,7 @@ func (s stubHomeResolverAPI) Resolve(string) (messaging.Resolution, error) {
 func apiTTLPtr(v int64) *int64 { return &v }
 func apiBoolPtr(v bool) *bool  { return &v }
 
-// TestSendHomeAware is decision 3's API-send table test: Home stores and
+// TestSendHomeAware is the Home Rule's API-send table test: Home stores and
 // never forwards; Unadvertised stores and forwards (today's behaviour).
 func TestSendHomeAware(t *testing.T) {
 	cases := []struct {
@@ -69,7 +69,7 @@ func TestSendHomeAware(t *testing.T) {
 	}
 }
 
-// TestHandleSendMessageUndeliveredReturns503 is K5's required guard: a
+// TestHandleSendMessageUndeliveredReturns503 is a required guard: a
 // message that lands nowhere — nothing stored at this node, AND the
 // forward (when attempted) reaches zero peers — must not come back 200.
 // Elsewhere with forward_copy_ttl=0 and no gossipMgr wired reproduces
@@ -116,7 +116,7 @@ func TestSendHomeAwareElsewhereForwardCopyTTLZero(t *testing.T) {
 		t.Fatal("Elsewhere must still forward even when forward_copy_ttl=0")
 	}
 	if stored {
-		t.Fatal("expected stored=false: K5's signal that this specific send landed only via the forward, not a local copy")
+		t.Fatal("expected stored=false: the signal that this specific send landed only via the forward, not a local copy")
 	}
 	msgs, err := srv.msgStore.List(recipient, "box")
 	if err != nil || len(msgs) != 0 {
@@ -124,9 +124,9 @@ func TestSendHomeAwareElsewhereForwardCopyTTLZero(t *testing.T) {
 	}
 }
 
-// TestSendHomeAwareElsewhereStoresAtForwardCopyTTLNotTTLSeconds is F3:
-// the cold review's mutation M5c (swap forward_copy_ttl for the store's
-// ttl_seconds at this call site, handlers_messaging.go's sendHomeAware
+// TestSendHomeAwareElsewhereStoresAtForwardCopyTTLNotTTLSeconds covers a
+// bug a review found: swapping forward_copy_ttl for the store's
+// ttl_seconds at this call site (handlers_messaging.go's sendHomeAware
 // Elsewhere row, ":128") survived because no existing test inspected
 // the stored copy's actual expiry basis, only that a copy existed
 // (TestSendHomeAwareElsewhereForwardCopyTTLZero, above, covers
@@ -137,7 +137,7 @@ func TestSendHomeAwareElsewhereForwardCopyTTLZero(t *testing.T) {
 // are numerically distinguishable — see the gossip-side sibling test,
 // internal/gossip/handlers_msg_policy_test.go's
 // TestDeliverForwardNonHomeForwardCopyTTLUsedNotStoreTTLSeconds, for the
-// same check on the other call site the fix spec names.
+// same check on the other call site.
 func TestSendHomeAwareElsewhereStoresAtForwardCopyTTLNotTTLSeconds(t *testing.T) {
 	const ttlSeconds = int64(604800)
 	const forwardCopyTTL = int64(86400)
@@ -162,8 +162,8 @@ func TestSendHomeAwareElsewhereStoresAtForwardCopyTTLNotTTLSeconds(t *testing.T)
 	}
 }
 
-// TestSendHomeAwareLegacyWhenForwardCopyTTLUnset confirms the "decisions
-// 2/3 never wired up" fallback reproduces the exact pre-brick behaviour:
+// TestSendHomeAwareLegacyWhenForwardCopyTTLUnset confirms the "never
+// wired up" fallback reproduces the exact original behaviour:
 // store at ttl_seconds, always forward.
 func TestSendHomeAwareLegacyWhenForwardCopyTTLUnset(t *testing.T) {
 	srv, _ := messageHandlerServer(t, messaging.Options{})
@@ -177,7 +177,7 @@ func TestSendHomeAwareLegacyWhenForwardCopyTTLUnset(t *testing.T) {
 		t.Fatalf("sendHomeAware = %q, %v", id, err)
 	}
 	if !forward {
-		t.Fatal("the unwired legacy path must always forward, as before this brick")
+		t.Fatal("the unwired legacy path must always forward, as it always has")
 	}
 	if !stored {
 		t.Fatal("expected stored=true: the legacy path always stores")
@@ -202,7 +202,7 @@ func (f fixedStatesHomeResolver) Resolve(recipient string) (messaging.Resolution
 	case f.homeRecipient:
 		return messaging.Resolution{State: messaging.Home}, nil
 	case f.elsewhereRecipient:
-		// N8: this case used to be unreachable — recipient never matched
+		// This case used to be unreachable — recipient never matched
 		// here, so elsewhereRecipient silently fell through to
 		// unadvertisedState below, and the end-to-end test's "Elsewhere"
 		// send was actually exercising Unadvertised the whole time.
@@ -213,7 +213,7 @@ func (f fixedStatesHomeResolver) Resolve(recipient string) (messaging.Resolution
 }
 
 // TestHandleSendMessageHomeRealEndToEnd is the HTTP-handler-level version
-// of decision 3's "no forward when Home" row, using a real connected
+// of the Home Rule's "no forward when Home" row, using a real connected
 // mesh peer (mirroring internal/gossip's own end-to-end forward_peers
 // test) rather than just the sendHomeAware unit tests above, so the
 // mutation check ("drop the Home check on the API path, so forwards
@@ -303,7 +303,7 @@ func TestHandleSendMessageHomeRealEndToEnd(t *testing.T) {
 		t.Fatalf("home send = %d, %v", response.Code, body)
 	}
 
-	// Elsewhere, forward_copy_ttl>0 (N8 — a REAL Elsewhere case: before
+	// Elsewhere, forward_copy_ttl>0 (a REAL Elsewhere case: before
 	// the fix, fixedStatesHomeResolver never actually returned Elsewhere
 	// for any recipient, so this send exercised Unadvertised under an
 	// Elsewhere-sounding name): stored locally at the shorter TTL AND
@@ -328,7 +328,7 @@ func TestHandleSendMessageHomeRealEndToEnd(t *testing.T) {
 	// the one case that actually DISTINGUISHES Elsewhere from
 	// Unadvertised — Unadvertised always stores regardless of TTL, so
 	// this send would still show up in srv.msgStore under the
-	// pre-N8-fix resolver bug. Forwarded either way.
+	// old resolver bug. Forwarded either way.
 	srv.messagingPolicy.ForwardCopyTTLSeconds = apiTTLPtr(0)
 	if response, body := callMessageHandler(t, srv.handleSendMessage, map[string]string{
 		"recipient": elsewhereRecipient, "messageBox": "box", "body": "elsewhere copy, ttl=0",

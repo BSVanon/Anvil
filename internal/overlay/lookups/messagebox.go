@@ -2,7 +2,7 @@ package lookups
 
 // Canonical upstream primitive — MessageBox Lookup Service (ls_messagebox).
 //
-// Port source (re-pinned, N1): ts-stack
+// Port source (re-pinned): ts-stack
 // `packages/overlays/topics/src/message-box/MessageBoxLookupService.ts` +
 // `MessageBoxStorage.ts` (MCP-verified via brc100-mcp read_file against
 // /home/robert/Documents/BRC100-MCP/lib/sources/ts-stack). The prior pin,
@@ -41,7 +41,7 @@ package lookups
 //     either (MessageBoxStorage.ts:78-94) — a live advert set per
 //     identity is small (bounded by how many adverts that identity
 //     hasn't spent yet), so this port originally returned every match,
-//     unbounded, exactly like canon; K6 now caps CurrentHosts's own scan
+//     unbounded, exactly like canon; a cap now limits CurrentHosts's own scan
 //     at the newest maxCurrentHostsScan adverts (documented there) —
 //     Lookup's own LookupFormula answer (this file's exported contract)
 //     stays unbounded, matching canon exactly.
@@ -68,17 +68,17 @@ const (
 	mbItemPrefix = "lk_messagebox:item:" // lk_messagebox:item:<txid>:<vout> -> JSON messageboxRecord
 	// mbIDPrefix indexes
 	// lk_messagebox:id:<hex(identityKeyLower)>:<invertedTime>:<txid>:<vout> -> nil.
-	// K6: the inverted-time segment (mbInvertedTimeWidth fixed-width
+	// The inverted-time segment (mbInvertedTimeWidth fixed-width
 	// digits of math.MaxInt64-AdmittedAt) makes a forward lexicographic
 	// scan visit the newest record first, for free — see
 	// maxCurrentHostsScan and currentRecords below.
 	mbIDPrefix = "lk_messagebox:id:"
 
 	// maxCurrentHostsScan bounds how many of an identity's newest live
-	// adverts CurrentHosts decodes (K6). Resolve runs on every message
+	// adverts CurrentHosts decodes. Resolve runs on every message
 	// send and forward (handlers_messaging.go, handlers_msg_policy.go),
 	// so an identity that keeps accumulating cheap adverts (one satoshi
-	// each, and K1 no longer force-retains spent ones but an owner can
+	// each, and coin retention no longer force-retains spent ones but an owner can
 	// still hold arbitrarily many live, unspent ones) must not make
 	// every message to it cost O(N) Gets and JSON decodes. 32 is a
 	// generous ceiling for a real recipient's genuinely live host count
@@ -238,7 +238,7 @@ func (s *MessageBoxLookupService) Lookup(ctx context.Context, question *lookup.L
 
 	// Lookup is the external BRC-33 contract: unbounded, matching canon
 	// (see this file's header comment). Only CurrentHosts, the internal
-	// Home-rule hot path, is bounded (K6).
+	// Home-rule hot path, is bounded.
 	recs, err := s.currentRecords(strings.ToLower(q.IdentityKey), 0)
 	if err != nil {
 		return nil, err

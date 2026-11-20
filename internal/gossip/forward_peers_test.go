@@ -17,13 +17,13 @@ import (
 	"github.com/BSVanon/Anvil/internal/messaging"
 )
 
-// Decision 4's forward_peers seam (handlers_msg_policy.go,
+// The forward_peers seam (handlers_msg_policy.go,
 // NewForwardPeerFilter/peerAllowedForForward): a nil filter allows every
 // connected peer (today's default); a populated one restricts both
 // relay paths — the API-send loop (ForwardMessage) and the
-// relay-received loop (onMsgForward -> relayMessageForward, F2).
+// relay-received loop (onMsgForward -> relayMessageForward, tested below).
 
-// TestPeerAllowedForForward is a direct unit test of decision 4's
+// TestPeerAllowedForForward is a direct unit test of the forward_peers
 // predicate: nil (no forward_peers configured) allows everyone; a
 // configured filter allows only listed hex identity keys, matched
 // case-insensitively.
@@ -50,7 +50,7 @@ func TestPeerAllowedForForward(t *testing.T) {
 
 // TestNewForwardPeerFilterEmptyListMeansEveryPeer pins
 // NewForwardPeerFilter's "empty means every connected peer, as today"
-// contract (decision 4) at the constructor level.
+// contract at the constructor level.
 func TestNewForwardPeerFilterEmptyListMeansEveryPeer(t *testing.T) {
 	if f := NewForwardPeerFilter(nil); f != nil {
 		t.Fatal("nil hexKeys should produce a nil filter")
@@ -65,7 +65,7 @@ func TestNewForwardPeerFilterEmptyListMeansEveryPeer(t *testing.T) {
 // fresh peer (its own identity, envelope store and message store) to
 // it. Shared scaffolding for forward_peers' two relay-path tests below:
 // the API-send path (ForwardMessage's own loop) and the
-// relay-received path (onMsgForward -> relayMessageForward's loop, F2).
+// relay-received path (onMsgForward -> relayMessageForward's loop, tested below).
 func newForwardPeerTestHub(t *testing.T) (hub *Manager, connectPeer func(name string) (identityHex string, msgStore *messaging.Store)) {
 	t.Helper()
 	hubDir, err := os.MkdirTemp("", "anvil-fp-hub-*")
@@ -133,13 +133,13 @@ func newForwardPeerTestHub(t *testing.T) (hub *Manager, connectPeer func(name st
 	return hub, connectPeer
 }
 
-// TestForwardPeersRestrictsForwardMessageToListedPeers is decision 4's
-// required end-to-end test ("a forward reaches only listed peers"),
+// TestForwardPeersRestrictsForwardMessageToListedPeers is the
+// forward_peers seam's required end-to-end test ("a forward reaches only listed peers"),
 // using two real, independently-connected peers (mirroring
 // multi_peer_test.go's pattern) rather than the relayForwardTestHook,
 // since that hook short-circuits before the per-peer loop and so cannot
 // observe WHICH peer receives a send. This covers ForwardMessage's own
-// loop — the API-send path; F2's sibling test below covers the OTHER
+// loop — the API-send path; the sibling test below covers the OTHER
 // forward_peers-respecting loop, relayMessageForward's.
 func TestForwardPeersRestrictsForwardMessageToListedPeers(t *testing.T) {
 	hub, connectPeer := newForwardPeerTestHub(t)
@@ -169,8 +169,8 @@ func TestForwardPeersRestrictsForwardMessageToListedPeers(t *testing.T) {
 	}
 }
 
-// TestForwardPeersRestrictsRelayMessageForwardToListedPeers is F2: the
-// cold review's own M2b mutation (drop the forward_peers filter in the
+// TestForwardPeersRestrictsRelayMessageForwardToListedPeers covers a bug
+// a review found: a mutation test (drop the forward_peers filter in the
 // relay loop) survived because the only existing coverage used
 // relayForwardTestHook, which returns before the peer loop
 // (relay_budget.go's relayMessageForward) and so cannot see which peer
@@ -193,7 +193,7 @@ func TestForwardPeersRestrictsRelayMessageForwardToListedPeers(t *testing.T) {
 
 	// The hub itself never calls SetMsgStore, so onMsgForward's
 	// relay-only branch fires (bounded only by the manager-wide
-	// allowUnstoredRelay budget, N7, which a single message here is
+	// allowUnstoredRelay budget, which a single message here is
 	// nowhere near) — relayMessageForward is reached exactly as it
 	// would be for a real received forward.
 	senderKey, senderHex := newID(t)

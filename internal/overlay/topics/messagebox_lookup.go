@@ -16,7 +16,7 @@ type MessageBoxLookupQuery struct {
 	// Host, given, narrows to adverts with this EXACT host string
 	// (MessageBoxStorage.ts:61-78 — a raw Mongo equality filter, not
 	// normalised). messaging.HomeResolver does its own normalisation on
-	// top of the unfiltered per-identityKey result (decision 2); this
+	// top of the unfiltered per-identityKey result (the Home Rule); this
 	// query-level filter stays a byte-exact match for canon fidelity.
 	Host string `json:"host,omitempty"`
 }

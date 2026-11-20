@@ -20,8 +20,8 @@ const (
 	testCompressedKey2 = "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-// TestMessagingPrivacyDefaultsAndOverrides covers decisions 2-5's four
-// new [messaging] keys directly: default-when-absent (at the *default*
+// TestMessagingPrivacyDefaultsAndOverrides covers the four new
+// [messaging] keys directly: default-when-absent (at the *default*
 // ttl_seconds, where forward_copy_ttl's own default does NOT need
 // clamping — the clamp-at-small-ttl_seconds case is
 // TestMessagingPrivacy_ClampAgainstSmallTTLSeconds below), explicit
@@ -30,8 +30,8 @@ const (
 // value, and forward_peers/home_hosts TOML list round-tripping verbatim
 // (case-folding/normalisation happens downstream in
 // gossip.NewForwardPeerFilter and messaging.HomeResolver, not at config
-// load). Moved out of config_test.go (F7 — that file was over the
-// 600-line cap).
+// load). Moved out of config_test.go, which was over the
+// 600-line cap.
 func TestMessagingPrivacyDefaultsAndOverrides(t *testing.T) {
 	// Absent [messaging] section entirely: every default applies,
 	// including forward_copy_ttl's default 24h against the default
@@ -54,8 +54,8 @@ func TestMessagingPrivacyDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("forward_peers/home_hosts should default empty: %+v / %+v", cfg.Messaging.ForwardPeers, cfg.Messaging.HomeHosts)
 	}
 
-	// Explicit forward_copy_ttl=0 ("never store but still relay" per
-	// decision 3) must be preserved, not treated as absent-and-defaulted.
+	// Explicit forward_copy_ttl=0 ("never store but still relay")
+	// must be preserved, not treated as absent-and-defaulted.
 	f2, _ := os.CreateTemp("", "anvil-cfg-msgpriv-zero-*.toml")
 	f2.WriteString("[messaging]\nforward_copy_ttl = 0\noperator_reads_all_boxes = false\n")
 	f2.Close()
@@ -72,8 +72,7 @@ func TestMessagingPrivacyDefaultsAndOverrides(t *testing.T) {
 	}
 
 	// Explicit forward_copy_ttl >= ttl_seconds (not the defaulted value)
-	// is clamped to ttl_seconds-1, per decision 3's "must be below
-	// ttl_seconds".
+	// is clamped to ttl_seconds-1: it must be below ttl_seconds.
 	f3, _ := os.CreateTemp("", "anvil-cfg-msgpriv-clamp-*.toml")
 	f3.WriteString("[messaging]\nttl_seconds = 50\nforward_copy_ttl = 100\n")
 	f3.Close()
@@ -105,8 +104,8 @@ func TestMessagingPrivacyDefaultsAndOverrides(t *testing.T) {
 }
 
 // TestMessagingPrivacy_ClampAgainstSmallTTLSeconds is the interaction
-// case moved out of TestMessagingDefaultsAndOverrides in config_test.go
-// (F7): forward_copy_ttl's DEFAULT (24h) clamps below an explicitly
+// case moved out of TestMessagingDefaultsAndOverrides in config_test.go:
+// forward_copy_ttl's DEFAULT (24h) clamps below an explicitly
 // overridden, small ttl_seconds, exactly as an explicit forward_copy_ttl
 // value would.
 func TestMessagingPrivacy_ClampAgainstSmallTTLSeconds(t *testing.T) {
@@ -129,7 +128,7 @@ func TestMessagingPrivacy_ClampAgainstSmallTTLSeconds(t *testing.T) {
 	}
 }
 
-// TestMessagingPrivacy_NegativeForwardCopyTTLIsConfigError (N5): a
+// TestMessagingPrivacy_NegativeForwardCopyTTLIsConfigError: a
 // negative forward_copy_ttl used to be silently accepted and then
 // behave like 0 downstream (every store-gate is `ttl > 0`), with no
 // indication why. Load now refuses it outright.
@@ -143,7 +142,7 @@ func TestMessagingPrivacy_NegativeForwardCopyTTLIsConfigError(t *testing.T) {
 	}
 }
 
-// TestMessagingPrivacy_ClampLogsAWarning (N5): the forward_copy_ttl>=
+// TestMessagingPrivacy_ClampLogsAWarning: the forward_copy_ttl>=
 // ttl_seconds clamp now logs a warning line when it actually fires,
 // instead of silently reinterpreting the operator's intent (the
 // previously-unannounced path to an accidental relay-only node).
@@ -165,7 +164,7 @@ func TestMessagingPrivacy_ClampLogsAWarning(t *testing.T) {
 	}
 }
 
-// TestMessagingPrivacy_InvalidForwardPeerIsConfigError (K5): an entry
+// TestMessagingPrivacy_InvalidForwardPeerIsConfigError: an entry
 // that isn't a valid compressed public key in hex refuses the whole
 // config at load with a clear message, rather than silently never
 // matching any real peer (a quietly-useless allow-list).

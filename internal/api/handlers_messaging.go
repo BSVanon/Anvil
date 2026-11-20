@@ -65,16 +65,15 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward to mesh for cross-node delivery — skipped when the Home
-	// Rule resolves the recipient as Home (decision 3's "API send, Home"
-	// row: the recipient's home node already has it, so flooding the mesh
-	// would be pointless). ForwardMessage signs with the node's identity
-	// key.
+	// Rule resolves the recipient as Home (the recipient's home node
+	// already has it, so flooding the mesh would be pointless).
+	// ForwardMessage signs with the node's identity key.
 	sentTo := 0
 	if forward && s.gossipMgr != nil {
 		sentTo = s.gossipMgr.ForwardMessage(msg)
 	}
 
-	// K5: a message that landed NOWHERE — nothing stored at this node,
+	// A message that landed NOWHERE — nothing stored at this node,
 	// and the forward (if attempted at all) reached zero peers — must
 	// not come back 200. This only arises for an Elsewhere recipient
 	// under forward_copy_ttl=0 (relay-only mode) with no peer currently
@@ -91,11 +90,11 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// MessagingPolicy bundles decisions 2/3/5's (B6 messaging-privacy spec)
-// API-layer configuration — the Home resolver, the per-copy forward
-// TTL, and the operator-box-read switch — as one value, so Server and
-// ServerConfig each carry a single field instead of three (F7). A zero
-// MessagingPolicy (every field nil) reproduces forwardCopyPolicy's and
+// MessagingPolicy bundles the Home/forward/operator-box messaging
+// policy's API-layer configuration — the Home resolver, the per-copy
+// forward TTL, and the operator-box-read switch — as one value, so
+// Server and ServerConfig each carry a single field instead of three.
+// A zero MessagingPolicy (every field nil) reproduces forwardCopyPolicy's and
 // homeResolverOrDefault's documented "never wired up at all" legacy
 // fallback, exactly as three separate nil fields did before.
 type MessagingPolicy struct {
@@ -104,8 +103,8 @@ type MessagingPolicy struct {
 	OperatorReadsAllBoxes *bool
 }
 
-// sendHomeAware applies decision 3's "API send" table rows for msg's
-// recipient (B6 messaging-privacy spec):
+// sendHomeAware applies the Home Rule's "API send" rows for msg's
+// recipient:
 //
 //	Home         -> store at ttl_seconds (Send), never forward.
 //	Unadvertised -> store at ttl_seconds (Send), forward (as today).
@@ -113,12 +112,12 @@ type MessagingPolicy struct {
 //	                (SendElsewhere), or nothing when it is 0; forward
 //	                either way.
 //
-// forwardCopyPolicy's legacy case (decisions 2/3 never wired up at all)
-// reproduces the exact pre-brick behaviour: Send unconditionally, always
+// forwardCopyPolicy's legacy case (the Home Rule never wired up at all)
+// reproduces the exact original behaviour: Send unconditionally, always
 // forward.
 //
-// stored reports whether a row was actually persisted at THIS node
-// (K5) — false only for Elsewhere with forward_copy_ttl=0, where
+// stored reports whether a row was actually persisted at THIS node —
+// false only for Elsewhere with forward_copy_ttl=0, where
 // SendElsewhere deliberately persists nothing (relay-only). The caller
 // uses it together with how many peers the forward actually reached to
 // decide whether the message landed nowhere at all.
@@ -148,8 +147,8 @@ func (s *Server) sendHomeAware(msg *messaging.Message) (id string, forward bool,
 
 // homeResolverOrDefault mirrors gossip.Manager's helper of the same
 // purpose: nil means the Home Rule was never wired up, which always
-// answers Unadvertised — "when this node doesn't host the topic"
-// (decision 2), and today's behaviour.
+// answers Unadvertised — "when this node doesn't host the topic",
+// and today's behaviour.
 func (s *Server) homeResolverOrDefault() messaging.HomeResolver {
 	if s.messagingPolicy.Home != nil {
 		return s.messagingPolicy.Home
@@ -158,10 +157,10 @@ func (s *Server) homeResolverOrDefault() messaging.HomeResolver {
 }
 
 // forwardCopyPolicy mirrors gossip.Manager's helper of the same name:
-// forwardCopyTTLSeconds nil means decisions 2/3 were never wired up at
-// all (legacy=true), which the caller must handle by reproducing the
-// exact pre-brick behaviour rather than treating a bare zero as an
-// explicit forward_copy_ttl=0.
+// forwardCopyTTLSeconds nil means the Home/forward policy was never
+// wired up at all (legacy=true), which the caller must handle by
+// reproducing the exact original behaviour rather than treating a bare
+// zero as an explicit forward_copy_ttl=0.
 func (s *Server) forwardCopyPolicy() (ttlSeconds int64, store bool, legacy bool) {
 	if s.messagingPolicy.ForwardCopyTTLSeconds == nil {
 		return 0, false, true

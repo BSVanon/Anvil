@@ -372,7 +372,7 @@ type MessagingConfig struct {
 	MaxStoreBytes    int64 `toml:"max_store_bytes"`
 	MaxInboxMessages int64 `toml:"max_inbox_messages"`
 	MaxInboxBytes    int64 `toml:"max_inbox_bytes"`
-	// Decisions 2-5 (B6 spec); defaults/validation in messaging_privacy.go.
+	// Defaults/validation for the fields below are in messaging_privacy.go.
 	ForwardCopyTTLSeconds *int64   `toml:"forward_copy_ttl"`
 	ForwardPeers          []string `toml:"forward_peers"`
 	OperatorReadsAllBoxes *bool    `toml:"operator_reads_all_boxes"`

@@ -140,15 +140,15 @@ func messageForwardDigest(msg *messaging.Message, originNode string) [32]byte {
 // identity; this node signs the forward so peers can verify the
 // attestation.
 //
-// Decision 3 (B6 messaging-privacy spec): this is the "API send" half of
+// This is the "API send" half of
 // the store/relay table. The caller (handlers_messaging.go) must resolve
 // the recipient's Home state FIRST and skip calling ForwardMessage
 // entirely when it is Home — a message already stored at its recipient's
 // home node needs no flood. ForwardMessage itself does not re-check Home;
-// it unconditionally broadcasts to every connected peer that decision 4's
-// forward_peers allows (nil = every peer, today's behaviour).
+// it unconditionally broadcasts to every connected peer that the
+// forward_peers filter allows (nil = every peer, today's behaviour).
 //
-// K5: returns how many peers it actually sent to (ToPeer returning no
+// Returns how many peers it actually sent to (ToPeer returning no
 // error), not merely how many it attempted — the caller needs the real
 // count to decide whether a message that wasn't stored anywhere was
 // also never sent anywhere, the condition that must not come back 200.
@@ -201,7 +201,7 @@ func (m *Manager) signedForwardPayload(msg *messaging.Message) MsgForwardPayload
 // onMsgForward handles an incoming forwarded message from a peer,
 // verifying its signature before accepting.
 //
-// Decision 3 (B6 messaging-privacy spec): this is the "Forward received"
+// This is the "Forward received"
 // half of the store/relay table (handlers_msg_policy.go's
 // deliverForward): Home stores at ttl_seconds and relays only when the
 // recipient also advertises a host that isn't this node; Unadvertised or
@@ -282,14 +282,14 @@ func (m *Manager) onMsgForward(senderPKHex string, raw json.RawMessage) error {
 	// No store at all (a relay-only node) still forwards, past the
 	// per-peer entry bound already checked above, but now ALSO through
 	// the same manager-wide allowUnstoredRelay budget a node with a
-	// store applies via deliverForward's quota/non-home branches (N7):
-	// before this fix it relayed every forward unconditionally, so a
+	// store applies via deliverForward's quota/non-home branches:
+	// a prior version relayed every forward unconditionally, so a
 	// relay-only node's only cap on an unstored flood was the per-peer
 	// bucket, not the shared budget every other unstored-relay path
 	// respects. In practice every production node calls SetMsgStore, so
 	// this branch is unreachable there — this closes it regardless. A
-	// node WITH a store applies decision 3's table via deliverForward
-	// (handlers_msg_policy.go).
+	// node WITH a store applies the "Forward received" table via
+	// deliverForward (handlers_msg_policy.go).
 	relay := m.msgStore == nil && m.allowUnstoredRelay()
 	clearSeen := false
 	if m.msgStore != nil {

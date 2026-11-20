@@ -11,14 +11,14 @@ import (
 	"github.com/BSVanon/Anvil/internal/messaging"
 )
 
-// Decision 5's operator read-all-boxes switch: when
+// The operator read-all-boxes switch: when
 // OperatorReadsAllBoxes is true, an operator-token caller (not a BRC-31
 // identity) may read any recipient's inbox instead of being scoped to
 // its own; when false or unset, every caller is scoped to itself. Covers
 // the POST read path (scopedRecipient), the SSE subscribe path
 // (handleMessageSubscribe), and operatorBoxAllowed directly.
 
-// TestOperatorBoxAllowed is a direct unit test of decision 5's
+// TestOperatorBoxAllowed is a direct unit test of the operator-box
 // predicate: naming nothing or the node's own box is always allowed;
 // naming another box depends on operator_reads_all_boxes.
 func TestOperatorBoxAllowed(t *testing.T) {
@@ -46,8 +46,8 @@ func TestOperatorBoxAllowed(t *testing.T) {
 	}
 }
 
-// TestScopedRecipientOperatorSwitch exercises decision 5's required
-// test: "listing or acknowledging another box gets a 403 when the
+// TestScopedRecipientOperatorSwitch exercises the operator-box switch's
+// required test: "listing or acknowledging another box gets a 403 when the
 // switch is false, and nothing changes when it is true."
 func TestScopedRecipientOperatorSwitch(t *testing.T) {
 	srv, nodeHex := messageHandlerServer(t, messaging.Options{})
@@ -89,7 +89,7 @@ func TestScopedRecipientOperatorSwitch(t *testing.T) {
 	}
 }
 
-// TestHandleMessageSubscribeOperatorSwitch is decision 5's SSE path:
+// TestHandleMessageSubscribeOperatorSwitch is the operator-box switch's SSE path:
 // the operator fallback's ?recipient= query override is gated the same
 // way as scopedRecipient.
 //

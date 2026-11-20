@@ -3,7 +3,7 @@ package topics
 // Canonical upstream primitive — MessageBox host advertisement
 // (tm_messagebox).
 //
-// Port source (re-pinned, N1): ts-stack
+// Port source (re-pinned): ts-stack
 // `packages/overlays/topics/src/message-box/MessageBoxTopicManager.ts`
 // (MCP-verified via brc100-mcp read_file against
 // /home/robert/Documents/BRC100-MCP/lib/sources/ts-stack). The prior pin,
@@ -17,13 +17,13 @@ package topics
 // PushDrop-decode (:48) -> pop the trailing field as the signature, the
 // rest destructured as [identityKeyBuf, hostBuf] (:51-52) -> both fields
 // required non-empty (:54-60) -> host decoded permissively, matching
-// canon's own non-fatal Utils.toUTF8 (:62-67, N4) -> verify the
+// canon's own non-fatal Utils.toUTF8 (:62-67) -> verify the
 // signature with the canonical "anyone" ProtoWallet over the flattened
 // remaining fields (:69-70, :73), counterparty = hex(field[0]) (:69,
 // :75), protocolID = [1, "messagebox advertisement"] (:76), keyID = "1"
 // (:77).
 //
-// Coin retention (K1, corrected from a stale pin). The overlay-express-examples
+// Coin retention, corrected from a stale pin. The overlay-express-examples
 // @481c42e pin this port originally followed retained every previous coin
 // (`coinsToRetain: previousCoins`, that repo's MessageBoxTopicManager.ts:111-114).
 // Current ts-stack does the opposite: `coinsToRetain: [], coinsRemoved:
@@ -41,7 +41,7 @@ package topics
 // Divergences (interop-priority rule: executable interop with the
 // canonical MessageBoxClient.ts wins):
 //
-//   - UTF-8 strictness (N4, corrected from a stricter prior pass). Canon's
+//   - UTF-8 strictness, corrected from a stricter prior pass. Canon's
 //     host decode (Utils.toUTF8, MessageBoxTopicManager.ts:62-67) wraps a
 //     non-fatal TextDecoder (ts-sdk `toUTF8`, primitives/utils.ts —
 //     confirmed non-fatal): canon never refuses invalid UTF-8 for this.
@@ -127,7 +127,7 @@ type MessageBoxAdvertEntry struct {
 	// canon's exact Mongo filter (MessageBoxStorage.ts:78-94, the filter
 	// itself built at :79-82);
 	// messaging.HomeResolver does its own normalisation on top of the
-	// unfiltered per-identityKey result (decision 2).
+	// unfiltered per-identityKey result (the Home Rule).
 	Host string `json:"host"`
 }
 
@@ -200,11 +200,11 @@ func (m *MessageBoxTopicManager) Admit(txData []byte, previousUTXOs []anviloverl
 		outputsToAdmit = append(outputsToAdmit, i)
 	}
 
-	// K1 (corrected from a stale pin): canon removes every previous coin
+	// Corrected from a stale pin: canon removes every previous coin
 	// (coinsToRetain: [], coinsRemoved: previousCoins,
 	// MessageBoxTopicManager.ts:95-96) so that outputSpent always fires
 	// for a spent advert and the lookup-side storage row is cleaned up —
-	// see this file's header comment for the full K1 history. An
+	// see this file's header comment for the full history. An
 	// identity may still hold more than one live advert at once; nothing
 	// here force-removes a DIFFERENT, still-unspent advert output, only
 	// the ones previousUTXOs already names as spent by this transaction.
@@ -264,7 +264,7 @@ func (m *MessageBoxTopicManager) verifySignature(ctx context.Context, d *mbDecod
 	for _, f := range d.dataFields {
 		data = append(data, f...)
 	}
-	// N3: go-sdk's ProtoWallet.VerifySignature never returns a result with
+	// go-sdk's ProtoWallet.VerifySignature never returns a result with
 	// Valid==false — on an invalid signature it returns (nil,
 	// ErrInvalidSignature) instead (go-sdk@v1.7.7 wallet/proto_wallet.go,
 	// matching the TS reference's throw-rather-than-return-invalid
@@ -344,7 +344,7 @@ func decodeMessageBoxAdvert(scriptBytes []byte) (*mbDecoded, error) {
 		// "[ADMISSIBILITY] Output skipped due to empty field(s)" skip.
 		return nil, nil
 	}
-	// N4: admission does NOT refuse invalid UTF-8 in the host field —
+	// Admission does NOT refuse invalid UTF-8 in the host field —
 	// matching canon's own non-fatal decode (see the header comment).
 	// hostBuf is kept and stored as-is, valid or not; a host that
 	// doesn't survive re-parsing as a URL simply isn't counted later

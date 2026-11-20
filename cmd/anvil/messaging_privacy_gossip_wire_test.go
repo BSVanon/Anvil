@@ -76,15 +76,15 @@ func TestWireGossipMessagingPolicyAppliesToRealManager(t *testing.T) {
 	wireGossipMessagingPolicy(mgr, cfg, nil, nil, msgStore)
 }
 
-// TestDefaultsAcceptanceConfigLoadCatchesB2 is F4: the review's required
-// "Defaults acceptance test" — config.Load's real defaults, then
+// TestDefaultsAcceptanceDoesNotRelayDuplicateHomeForward is the review's
+// required "Defaults acceptance test" — config.Load's real defaults, then
 // wireMessagingPrivacy and wireGossipMessagingPolicy, into a real
 // gossip.Manager, with a real v3engine.New advert behind the
 // HomeResolver (the same production construction
-// TestReviewR1ProductionEngineHomeRule uses).
+// TestHomeRuleRealProductionEngine uses).
 //
-// The review's point (F4): every existing B2 regression test
-// (internal/gossip/handlers_msg_policy_test.go's
+// The review's point: every existing regression test for the duplicate-
+// home-forward bug (internal/gossip/handlers_msg_policy_test.go's
 // TestDeliverForward*DuplicateAlreadyStoredNotRelayedAgain) builds
 // MessagingPolicy BY HAND with ForwardCopyTTLSeconds already non-nil —
 // so they prove the fix works once wired, but nothing proves cmd/anvil's
@@ -94,22 +94,24 @@ func TestWireGossipMessagingPolicyAppliesToRealManager(t *testing.T) {
 // default ForwardCopyTTLSeconds to 86400 — not nil — which is exactly
 // what routes deliverForward into deliverHomeForward/deliverNonHomeForward
 // (the fixed, ok-gated functions) rather than deliverLegacyForward
-// (handlers_msg_policy.go:137-151, the pre-decision-3 fallback, which
+// (handlers_msg_policy.go:137-151, the older fallback path, which
 // happens to relay correctly today but is a DIFFERENT code path and was
-// never the one B2 broke). This test fails before B2's fix and would
-// also fail if the wiring ever stopped reaching the fixed path.
+// never the one with the duplicate-forward bug). This test fails before
+// that bug's fix and would also fail if the wiring ever stopped reaching
+// the fixed path.
 //
 // onMsgForward is unexported, so the only way to drive a real incoming
 // forward from outside package gossip is a real mesh connection
 // (mirroring internal/gossip's own newForwardPeerTestHub): a hub
 // (production-wired, as above) with two connected peers — forwarder,
 // which forwards a message the hub already has stored under the same
-// MessageID (so Deliver returns ok=false, B2's exact bug shape), and
-// observer, which must receive nothing if the hub's relay is correctly
-// gated on ok. The recipient's advert names the hub's own public_url
-// (Home) plus a second host (hasOtherHost=true), so a pre-fix hub would
-// relay (hasOtherHost alone) while a fixed hub must not (ok is false).
-func TestDefaultsAcceptanceConfigLoadCatchesB2(t *testing.T) {
+// MessageID (so Deliver returns ok=false, the exact shape that triggered
+// the bug), and observer, which must receive nothing if the hub's relay
+// is correctly gated on ok. The recipient's advert names the hub's own
+// public_url (Home) plus a second host (hasOtherHost=true), so a pre-fix
+// hub would relay (hasOtherHost alone) while a fixed hub must not (ok is
+// false).
+func TestDefaultsAcceptanceDoesNotRelayDuplicateHomeForward(t *testing.T) {
 	root := t.TempDir()
 	dir, err := anviloverlay.NewDirectory(filepath.Join(root, "overlay"))
 	if err != nil {
@@ -173,7 +175,7 @@ func TestDefaultsAcceptanceConfigLoadCatchesB2(t *testing.T) {
 
 	// A real admitted advert naming the hub's own public_url (Home) plus
 	// a second host (hasOtherHost=true), through the real Submit
-	// pipeline — same shape as TestReviewR1ProductionEngineHomeRule.
+	// pipeline — same shape as TestHomeRuleRealProductionEngine.
 	recipientPriv, err := ec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("new priv: %v", err)
@@ -235,7 +237,7 @@ func TestDefaultsAcceptanceConfigLoadCatchesB2(t *testing.T) {
 		Recipient:  recipientHex,
 		MessageBox: "dex.swap",
 		Body:       "offer-already-here",
-		MessageID:  "defaults-acceptance-b2",
+		MessageID:  "defaults-acceptance-duplicate",
 		Timestamp:  1700000000,
 	}
 	if ok, err := hubMsgStore.Deliver(msg, "pre-stored"); err != nil || !ok {
@@ -284,7 +286,7 @@ func TestDefaultsAcceptanceConfigLoadCatchesB2(t *testing.T) {
 	time.Sleep(600 * time.Millisecond)
 
 	if observerMsgStore.Count() != 0 {
-		t.Fatalf("observer store count = %d, want 0: a duplicate (already-stored) Home forward with hasOtherHost=true must not be relayed (B2), even through the config.Load-wired production path", observerMsgStore.Count())
+		t.Fatalf("observer store count = %d, want 0: a duplicate (already-stored) Home forward with hasOtherHost=true must not be relayed, even through the config.Load-wired production path", observerMsgStore.Count())
 	}
 }
 

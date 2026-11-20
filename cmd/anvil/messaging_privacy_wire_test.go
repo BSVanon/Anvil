@@ -25,7 +25,7 @@ import (
 // registers a MessageBoxLookupService directly via engine.NewEngine and
 // pokes OutputAdmittedByTopic without going through signature
 // verification, so it is a lighter stand-in for a real admitted advert —
-// see TestReviewR1ProductionEngineHomeRule (messaging_privacy_test.go) for
+// see TestHomeRuleRealProductionEngine (messaging_privacy_test.go) for
 // the full production-engine path.
 
 // wiringTestAdvert builds a real *anviloverlay.Directory, a real
@@ -38,7 +38,7 @@ import (
 // packages). It registers the service directly via engine.NewEngine and
 // pokes OutputAdmittedByTopic without going through signature
 // verification, so it is NOT a substitute for a real admitted advert —
-// see TestReviewR1ProductionEngineHomeRule below for that. It exists so
+// see TestHomeRuleRealProductionEngine below for that. It exists so
 // the lighter tests in this file can exercise wireMessagingPrivacy's own
 // adaptation logic (pointer threading, nil handling) without paying for
 // a full v3engine.New + Submit round trip every time.

@@ -47,7 +47,7 @@ func lockMessageBoxFields(t *testing.T, w wallet.Interface, fields [][]byte) []b
 		messageBoxProtocol,
 		messageBoxKeyID,
 		wallet.Counterparty{Type: wallet.CounterpartyTypeAnyone},
-		true, // forSelf, matching canonical anointHost (MessageBoxClient.ts:1553) — N2
+		true, // forSelf, matching canonical anointHost (MessageBoxClient.ts:1553)
 		true, // includeSignature
 		pushdrop.LockBefore,
 	)
@@ -101,7 +101,7 @@ func assertNotAdmitted(t *testing.T, inst *anviloverlay.AdmittanceInstructions) 
 
 // TestMessageBoxAdmit_AnointHostShapeAdmitted pins the canonical port's
 // primary contract: an advert built exactly the way anointHost builds it
-// is admitted (spec decision 1 / Tests: "an advert built exactly the way
+// is admitted (Tests: "an advert built exactly the way
 // anointHost builds it is admitted and found" — the "found" half is
 // lookups/messagebox_test.go).
 func TestMessageBoxAdmit_AnointHostShapeAdmitted(t *testing.T) {
@@ -152,8 +152,8 @@ func TestMessageBoxAdmit_EmptyIdentityKeyRejected(t *testing.T) {
 	assertNotAdmitted(t, admitOne(t, scriptBytes, nil))
 }
 
-// TestMessageBoxAdmit_InvalidUTF8HostAdmitted (N4, corrected from a
-// stricter prior pass): a host field containing a byte sequence that
+// TestMessageBoxAdmit_InvalidUTF8HostAdmitted, corrected from a
+// stricter prior pass: a host field containing a byte sequence that
 // cannot be valid UTF-8 ({0xff, 0xfe, 0xfd}) is still admitted — canon's
 // own host decode (Utils.toUTF8) is a non-fatal TextDecoder that never
 // refuses this, so admission doesn't either. The host simply never
@@ -170,12 +170,12 @@ func TestMessageBoxAdmit_InvalidUTF8HostAdmitted(t *testing.T) {
 	}
 }
 
-// TestMessageBoxAdmit_RemovesPreviousCoins confirms the K1-corrected
+// TestMessageBoxAdmit_RemovesPreviousCoins confirms the corrected
 // canonical coinsToRetain: [], coinsRemoved: previousCoins semantic
 // (MessageBoxTopicManager.ts:95-96): every previously-admitted coin a
 // submission spends is reported as removed, never retained, so a
 // revocation's OutputSpent always fires and the lookup-side storage row
-// is cleaned up (see messagebox.go's header comment for the full K1
+// is cleaned up (see messagebox.go's header comment for the full
 // history). An identity may still hold several live adverts at once —
 // this governs only the coins THIS transaction's inputs actually spend.
 func TestMessageBoxAdmit_RemovesPreviousCoins(t *testing.T) {

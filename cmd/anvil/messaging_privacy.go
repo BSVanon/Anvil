@@ -1,9 +1,9 @@
 package main
 
-// Decisions 2-5 (B6 messaging-privacy spec): wiring that turns the
-// loaded config and the already-constructed v3 overlay engine into the
-// HomeResolver + forward-copy-TTL + forward-peer-filter +
-// operator-box-switch values internal/api and internal/gossip consume.
+// Wiring that turns the loaded config and the already-constructed v3
+// overlay engine into the HomeResolver + forward-copy-TTL +
+// forward-peer-filter + operator-box-switch values internal/api and
+// internal/gossip consume.
 // Lives in its own file, same reason federation_loops.go does for
 // wireV3Federation: so main.go's call sites stay a one-line call each
 // instead of growing with this logic inline.
@@ -19,8 +19,8 @@ import (
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 )
 
-// wireMessagingPrivacy builds the api.MessagingPolicy (F7: one struct,
-// not three separate values) that internal/api's ServerConfig needs
+// wireMessagingPrivacy builds the api.MessagingPolicy — one struct,
+// not three separate values — that internal/api's ServerConfig needs
 // verbatim: the HomeResolver plus the two already-normalised config
 // pointers (config.Load's normalizeMessagingPrivacy guarantees both are
 // non-nil). Computed unconditionally — independent of whether
@@ -51,8 +51,8 @@ func wireMessagingPrivacy(cfg *config.Config, v3Eng *engine.Engine, overlayDir *
 }
 
 // wireGossipMessagingPolicy builds the messaging policy (wireMessagingPrivacy)
-// and applies it everywhere it's needed (F7): gossipMgr's message store
-// and decisions 3/4's Home/TTL/forward_peers policy when gossipMgr is
+// and applies it everywhere it's needed: gossipMgr's message store
+// and its Home/TTL/forward_peers policy when gossipMgr is
 // non-nil (mesh enabled), always returning the policy so the caller can
 // also hand it to internal/api's ServerConfig — one call standing in
 // for what used to be a standalone wireMessagingPrivacy call plus a
@@ -76,9 +76,9 @@ func wireGossipMessagingPolicy(gossipMgr *anvilgossip.Manager, cfg *config.Confi
 // messageBoxAdvertSource adapts ls_messagebox's own LevelDB index
 // (internal/overlay/lookups/messagebox.go) to messaging.AdvertSource.
 //
-// Blocker B1 (fixed here). This used to fetch the v3 engine's registered
-// lookup service via engine.Engine.GetLookupService and type-assert it
-// to *lookups.MessageBoxLookupService. That assertion always failed:
+// This used to fetch the v3 engine's registered lookup service via
+// engine.Engine.GetLookupService and type-assert it to
+// *lookups.MessageBoxLookupService. That assertion always failed:
 // v3engine.New wraps every registered lookup service in an internal
 // detachedLookup/countingLookup pair (internal/overlay/v3engine/engine.go)
 // for health-registry notification bookkeeping, so GetLookupService
@@ -94,7 +94,7 @@ func wireGossipMessagingPolicy(gossipMgr *anvilgossip.Manager, cfg *config.Confi
 // no mutable state beyond the db handle itself and CurrentHosts only
 // reads, and it is the smaller change: the alternative (adding an
 // Unwrap() escape hatch to the v3engine wrapper types) would touch
-// v3engine itself, outside this brick's file list.
+// v3engine itself, which this change otherwise leaves alone.
 //
 // Still confirms v3Eng has the topic registered before building the
 // reader, preserving the documented "nil when overlay is disabled or

@@ -23,7 +23,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/wallet"
 )
 
-// TestReviewR1ProductionEngineHomeRule (below) exercises
+// TestHomeRuleRealProductionEngine (below) exercises
 // messageBoxAdvertSource's real production path (messaging_privacy.go)
 // against a real v3engine.New + Submit pipeline, so
 // MessageBoxTopicManager.Admit's signature verification is actually
@@ -33,8 +33,8 @@ import (
 // MessageBoxLookupService directly rather than paying for a full engine
 // round trip every time.
 
-// TestReviewR1ProductionEngineHomeRule is the review's R1 reproduction
-// (blocker B1), turned into a permanent regression test. Unlike
+// TestHomeRuleRealProductionEngine is a permanent regression test for a bug
+// a review once found here. Unlike
 // wiringTestAdvert's lighter tests (which register a
 // MessageBoxLookupService directly via engine.NewEngine and poke
 // OutputAdmittedByTopic, with no signature check), this test goes
@@ -47,7 +47,7 @@ import (
 // public_url), Elsewhere (after revoking the Home advert, a second
 // advert for the same identity naming a different host remains live),
 // and Unadvertised (after revoking that one too).
-func TestReviewR1ProductionEngineHomeRule(t *testing.T) {
+func TestHomeRuleRealProductionEngine(t *testing.T) {
 	root := t.TempDir()
 	dir, err := anviloverlay.NewDirectory(filepath.Join(root, "overlay"))
 	if err != nil {
@@ -144,7 +144,7 @@ func TestReviewR1ProductionEngineHomeRule(t *testing.T) {
 
 	// Elsewhere: a second live advert for the same identity naming a
 	// different host. Revoke the Home advert first so the answer isn't
-	// still Home (decision 2 counts ANY current qualifying advert).
+	// still Home (the Home rule counts ANY current qualifying advert).
 	elsewhereScript := lockAdvert("https://some-other-node.example.org")
 	elsewhereTx := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: elsewhereScript, Satoshis: 999})
 	submit(elsewhereTx)

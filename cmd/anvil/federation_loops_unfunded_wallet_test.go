@@ -21,13 +21,13 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
-// TestRunSyncAdvertisements_UnfundedWalletLogsClearlyAndKeepsRunning is
-// item 9 (K3/F5): what happens when the node wallet cannot afford the
+// TestRunSyncAdvertisements_UnfundedWalletLogsClearlyAndKeepsRunning
+// covers what happens when the node wallet cannot afford the
 // SHIP/SLAP adverts for tm_messagebox/ls_messagebox (or any other
 // topic). A real, freshly-created NodeWallet (a fresh WIF, never funded
 // by any deposit or internalized transaction -- zero balance by
-// construction, exactly the "a few sats" live-node case item 9 asks
-// about) is wired as a real federation.Advertiser against a real
+// construction, exactly the "a few sats" live-node case this test
+// covers) is wired as a real federation.Advertiser against a real
 // v3engine.New instance, then SyncAdvertisements is called directly,
 // with slog's process-wide default temporarily redirected to a buffer:
 // go-overlay-services' own SyncAdvertisements logs a failure via the

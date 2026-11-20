@@ -54,7 +54,7 @@ type StoredMessage struct {
 	AttestedBy string `json:"senderAttestedBy"`
 	ReceivedAt int64  `json:"-"`
 	// ExpiryBase is the "ex:" index timestamp (see copy_ttl.go): zero
-	// means "use ReceivedAt", which is both every pre-brick record's
+	// means "use ReceivedAt", which is both every older record's
 	// real value and the default for a record stored at ttl_seconds.
 	ExpiryBase int64 `json:"-"`
 }
@@ -63,8 +63,8 @@ type diskRecord struct {
 	Message
 	AttestedBy string `json:"senderAttestedBy"`
 	ReceivedAt int64  `json:"receivedAt"`
-	// ExpiryBase is additive: absent on any record written before this
-	// brick, which decodes it to the Go zero value — quota.go's
+	// ExpiryBase is additive: absent on any record written before
+	// per-copy expiry existed, which decodes it to the Go zero value — quota.go's
 	// read/write sites treat that as "equals ReceivedAt" uniformly, so
 	// old records keep their original expiry with no migration.
 	ExpiryBase int64 `json:"expiryBase,omitempty"`
@@ -134,7 +134,7 @@ func (s *Store) Send(msg *Message, originNode string) (string, error) {
 // the same checks regardless of which TTL or store decision the Home
 // Rule picks for its recipient. The returned record's ExpiryBase is left
 // zero (equals ReceivedAt, i.e. ttl_seconds); SendElsewhere overrides it
-// for the Elsewhere row of decision 3's table.
+// for the Elsewhere row of the "API send" table.
 func (s *Store) prepareSend(msg *Message, originNode string) (string, *StoredMessage, error) {
 	if err := validateMessage(msg, false); err != nil {
 		return "", nil, err

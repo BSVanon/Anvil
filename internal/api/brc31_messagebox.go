@@ -247,7 +247,7 @@ func (s *Server) resolveMessageCaller(w http.ResponseWriter, r *http.Request) (m
 
 // scopedRecipient resolves the inbox an authenticated caller may
 // read/ack. BRC-31 callers are strictly scoped to their own identity,
-// unconditionally — unaffected by decision 5. The operator token may
+// unconditionally — regardless of the operator-box switch below. The operator token may
 // target a body-supplied recipient (defaulting to the node identity)
 // when [messaging] operator_reads_all_boxes allows it (operatorBoxAllowed,
 // below); otherwise this writes a 403 and returns ok=false.
@@ -265,13 +265,13 @@ func (s *Server) scopedRecipient(w http.ResponseWriter, caller messageCaller, bo
 	return s.identityPub, true
 }
 
-// operatorBoxRestrictedMsg is the 403 body for every path decision 5
-// gates (scopedRecipient, above, and handleMessageSubscribe's operator
-// fallback, sse_messages.go).
+// operatorBoxRestrictedMsg is the 403 body for every path the operator-box
+// switch gates (scopedRecipient, above, and handleMessageSubscribe's
+// operator fallback, sse_messages.go).
 const operatorBoxRestrictedMsg = "the operator token may only access this node's own identity box; naming another recipient is disabled ([messaging] operator_reads_all_boxes = false)"
 
 // operatorBoxAllowed reports whether an operator-token caller may target
-// bodyRecipient (decision 5, B6 messaging-privacy spec): naming nothing,
+// bodyRecipient: naming nothing,
 // or this node's own identity box, is always allowed — that is today's
 // default behaviour regardless of the switch. Naming any OTHER recipient
 // requires operatorReadsAll() (default true, today's behaviour).

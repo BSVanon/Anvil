@@ -1,14 +1,14 @@
 package messaging
 
-// Decision 2 (B6 messaging-privacy spec): the Home Rule. For a recipient
+// The Home Rule. For a recipient
 // identity, HomeResolver answers whether THIS node is one of the hosts
 // the recipient has currently advertised via a canonical tm_messagebox
 // record, by querying ls_messagebox (internal/overlay/lookups/messagebox.go).
 //
-// B10 will extend adverts with certificates (bu_b6_spec.md "Neighbour
-// bricks"); HomeResolver's job is limited to reading adverts, so its one
-// dependency — AdvertSource — is the seam B10 extends, exactly as
-// decision 4's ForwardPeerFilter is the seam for certified peers.
+// A future extension may add certificates to adverts; HomeResolver's job
+// is limited to reading adverts, so its one dependency — AdvertSource —
+// is the seam such an extension would use, exactly as ForwardPeerFilter
+// is the seam for certified peers.
 
 import (
 	"net/url"
@@ -19,7 +19,7 @@ import (
 	"golang.org/x/net/idna"
 )
 
-// HomeState is the three-way answer decision 2 defines.
+// HomeState is the three-way answer the Home Rule defines.
 type HomeState int
 
 const (
@@ -48,8 +48,8 @@ func (s HomeState) String() string {
 }
 
 // Resolution is what HomeResolver answers for one recipient. State is
-// the three-way decision-2 answer; HasOtherHost is extra information
-// decision 3's "Forward received, Home" row needs (relay only when the
+// the three-way Home Rule answer; HasOtherHost is extra information
+// the "Forward received, Home" row needs (relay only when the
 // recipient ALSO advertises a host that isn't this node) — meaningful
 // only when State == Home, so callers must not read it otherwise.
 type Resolution struct {
@@ -74,8 +74,8 @@ type Advert struct {
 // kept as a plain function type so this package has no dependency on
 // the overlay/lookups package. A nil AdvertSource (or one that always
 // returns no hosts) makes every Resolve answer Unadvertised — "when this
-// node doesn't host the topic" (decision 2's last bullet), e.g. overlay
-// disabled or the engine not yet constructed.
+// node doesn't host the topic", e.g. overlay disabled or the engine not
+// yet constructed.
 type AdvertSource func(recipientIdentityHex string) ([]Advert, error)
 
 // AlwaysUnadvertised is a HomeResolver that answers Unadvertised for
@@ -100,7 +100,7 @@ type lookupHomeResolver struct {
 }
 
 // NewHomeResolver builds a HomeResolver over ownHosts (this node's
-// `[node] public_url` plus `[messaging] home_hosts`, per decision 2) and
+// `[node] public_url` plus `[messaging] home_hosts`) and
 // source. ownHosts entries that don't pass the qualifying-host rules
 // (https only, no loopback/.local/.example.com/.test/.invalid/.localhost)
 // are dropped at construction — an operator's own non-qualifying
@@ -131,16 +131,16 @@ func (r *lookupHomeResolver) Resolve(recipientIdentityHex string) (Resolution, e
 	hasAny := false
 	isHome := false
 	hasOther := false
-	seen := make(map[string]bool, len(adverts)) // K6: dedupe hosts after normalisation
+	seen := make(map[string]bool, len(adverts)) // dedupe hosts after normalisation
 	for _, a := range adverts {
 		nh, ok := qualifyAndNormalise(a.Host)
 		if !ok {
 			// Only adverts that pass the canonical client's host filter
-			// count (decision 2, "Which adverts count").
+			// count.
 			continue
 		}
 		if seen[nh] {
-			// K6: two raw advert forms (differing only by case, a
+			// Two raw advert forms (differing only by case, a
 			// trailing slash, or textual IPv4/IDN encoding — see
 			// qualifyAndNormalise) can normalise to the same qualifying
 			// host; count each distinct host once.
@@ -181,20 +181,20 @@ func (r *lookupHomeResolver) ownsHost(normalisedHost string) bool {
 // *.test, or *.invalid, or *.localhost) and, if it passes, returns the
 // normalised form: lowercase scheme and host, default port dropped,
 // trailing slash dropped, path kept. Returns ("", false) for a host that
-// fails the filter, isn't valid UTF-8 (N4 — see below), or doesn't parse
+// fails the filter, isn't valid UTF-8 (see below), or doesn't parse
 // as a URL.
 //
-// N4: a host whose bytes aren't valid UTF-8 is never counted, full stop
+// A host whose bytes aren't valid UTF-8 is never counted, full stop
 // — this is now the ONLY place that checks it. Admission used to refuse
 // such a host outright (topics/messagebox.go); it no longer does,
 // matching canon's own non-fatal decode, so an adversarial advert with a
 // garbled host is admitted and findable via Lookup like any other, but
 // can never qualify as a Home or Elsewhere advert here.
 //
-// K8 (review's host-filter table, proved against Node 22's WHATWG `URL`)
-// closes three divergences from the canonical client, which normalises
-// every host through a real WHATWG `URL` before this package's exclusion
-// checks ever run:
+// This closes three divergences from the canonical client (found via a
+// host-filter table proved against Node 22's WHATWG `URL`), which
+// normalises every host through a real WHATWG `URL` before this
+// package's exclusion checks ever run:
 //
 //   - IPv4 numeric forms ("127.1", "0x7f000001", "2130706433", octal
 //     parts): WHATWG's host parser recognises a hostname that "ends in a
@@ -260,15 +260,14 @@ func qualifyAndNormalise(raw string) (string, bool) {
 	// lowercases the whole string before this check — MessageBoxClient.ts
 	// :511 — but since the exclusion list only ever tests scheme/
 	// hostname, lowercasing just those two is behaviourally identical and
-	// lets the comparison below keep the path's original case, per
-	// decision 2: "Lowercase the scheme and the host ... and keep the
-	// path").
+	// lets the comparison below keep the path's original case
+	// ("Lowercase the scheme and the host ... and keep the path").
 	if strings.ToLower(u.Scheme) != "https" {
 		return "", false
 	}
 	rawHostname := u.Hostname()
 	if !utf8.ValidString(rawHostname) {
-		// N4: admission no longer refuses an invalid-UTF8 host (matching
+		// Admission no longer refuses an invalid-UTF8 host (matching
 		// canon's own non-fatal decode — see topics/messagebox.go's
 		// header comment) — so this is the layer that keeps such a host
 		// from being usable: it's stored and findable via Lookup, same
@@ -278,7 +277,7 @@ func qualifyAndNormalise(raw string) (string, bool) {
 	hostname := strings.ToLower(rawHostname)
 	isIPv6 := strings.Contains(hostname, ":") // bracket-stripped by Hostname(), so ':' only ever appears in an IPv6 literal
 	if !isIPv6 {
-		// K8: IDNA first, matching the real host parser's step order —
+		// IDNA first, matching the real host parser's step order —
 		// then attempt the numeric-IPv4 re-parse on its (possibly
 		// unchanged) ASCII result.
 		if ascii, err := idna.Lookup.ToASCII(hostname); err == nil {
@@ -300,7 +299,7 @@ func qualifyAndNormalise(raw string) (string, bool) {
 
 	// Drop the default port (443 for https) and a trailing slash; keep
 	// the path exactly as given (case preserved — URL paths are
-	// conventionally case-sensitive, unlike scheme/host). K8: re-bracket
+	// conventionally case-sensitive, unlike scheme/host). Re-bracket
 	// an IPv6 host, so "[a::1]:8443" and "[a::1:8443]" stay distinct
 	// instead of colliding once the brackets are gone.
 	host := hostname
@@ -315,7 +314,7 @@ func qualifyAndNormalise(raw string) (string, bool) {
 }
 
 // normalisedPort returns u's port, or "" when it's absent or equal to
-// the default https port (443) once parsed AS A NUMBER (K8: ":0443" is
+// the default https port (443) once parsed AS A NUMBER (":0443" is
 // the default port written with a leading zero, and must drop exactly
 // like ":443" — a string compare against the literal "443" misses it).
 // A port that fails to parse as a number at all (shouldn't happen —

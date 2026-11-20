@@ -608,7 +608,7 @@ func main() {
 		}
 	}
 
-	messagingPolicy := wireGossipMessagingPolicy(gossipMgr, cfg, v3Eng, overlayDir, msgStore) // decisions 2/3/5 (B6 spec), unconditional: see its doc comment
+	messagingPolicy := wireGossipMessagingPolicy(gossipMgr, cfg, v3Eng, overlayDir, msgStore) // unconditional: see its doc comment
 	// SHIP re-announce at half the TTL so entries survive on remote directories
 	if gossipMgr != nil {
 		go func() {
@@ -840,7 +840,7 @@ func main() {
 		P2PTxSource:     p2pTxFetcher,
 		P2PBlockSource:  p2pBlockFetcher,
 		MsgStore:        msgStore,
-		MessagingPolicy: messagingPolicy, // decisions 2/3/5 (B6 messaging-privacy spec); see its doc comment
+		MessagingPolicy: messagingPolicy, // see its doc comment
 		SigningKey:      identityPrivKey,
 		Wallet: func() sdkwallet.Interface {
 			if nodeWallet != nil {

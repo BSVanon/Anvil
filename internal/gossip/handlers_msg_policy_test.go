@@ -37,10 +37,10 @@ func (s stubHomeResolver) Resolve(string) (messaging.Resolution, error) {
 
 func ttlPtr(v int64) *int64 { return &v }
 
-// TestDeliverForwardHomeRelaysOnlyWhenHasOtherHost is the spec's
-// decision-3 table test: "a home node relays only when the recipient
+// TestDeliverForwardHomeRelaysOnlyWhenHasOtherHost is the "Forward
+// received" table test: "a home node relays only when the recipient
 // also advertises elsewhere." Both cases store at ttl_seconds either
-// way (decision 3: Home always stores) — only the relay outcome
+// way (Home always stores) — only the relay outcome
 // differs.
 func TestDeliverForwardHomeRelaysOnlyWhenHasOtherHost(t *testing.T) {
 	cases := []struct {
@@ -83,8 +83,8 @@ func TestDeliverForwardHomeRelaysOnlyWhenHasOtherHost(t *testing.T) {
 	}
 }
 
-// TestDeliverForwardDuplicateAlreadyStoredNotRelayedAgain is blocker
-// B2's regression test (cold review R2): a forward for a message this
+// TestDeliverForwardDuplicateAlreadyStoredNotRelayedAgain is a
+// regression test for a bug a review found: a forward for a message this
 // node already stores — the origin's own forward echoing back in a
 // cyclic mesh, a post-restart resend, or a msgSeen dedup eviction retry
 // — must not be relayed again. Before the fix, deliverHomeForward
@@ -124,7 +124,7 @@ func TestDeliverForwardDuplicateAlreadyStoredNotRelayedAgain(t *testing.T) {
 }
 
 // TestDeliverForwardHomeDuplicateAlreadyStoredNotRelayedAgain is the
-// Home-row half of blocker B2's fix (handlers_msg_policy.go's deliverHomeForward,
+// Home-row half of the fix above (handlers_msg_policy.go's deliverHomeForward,
 // ":169"): a duplicate forward for a message already stored at a Home
 // recipient that ALSO advertises another host must still not be relayed
 // again — ok must gate the relay, not hasOtherHost alone. The sibling
@@ -158,10 +158,10 @@ func TestDeliverForwardHomeDuplicateAlreadyStoredNotRelayedAgain(t *testing.T) {
 	}
 }
 
-// TestDeliverForwardHomeQuotaRelaysOnlyWhenHasOtherHost is blocker B3's
-// regression test (cold review R3): a Home recipient with NO other
+// TestDeliverForwardHomeQuotaRelaysOnlyWhenHasOtherHost is another
+// regression test for a bug a review found: a Home recipient with NO other
 // advertised host, whose store is quota-full, must not be relayed —
-// decision 3's row says "relay only if the recipient also advertises a
+// the "Forward received, Home" row says "relay only if the recipient also advertises a
 // host that isn't this node", and there is no delivery reason to spread
 // a Home-only message past this node. Before the fix, the quota branch
 // relayed through allowUnstoredRelay without checking hasOtherHost at
@@ -254,8 +254,8 @@ func TestDeliverForwardNonHomeForwardCopyTTLPositiveStoredAndRelayed(t *testing.
 	}
 }
 
-// TestDeliverForwardNonHomeForwardCopyTTLUsedNotStoreTTLSeconds is F3:
-// the cold review's mutation M5b (swap forward_copy_ttl for the store's
+// TestDeliverForwardNonHomeForwardCopyTTLUsedNotStoreTTLSeconds covers a
+// bug a review found: swapping forward_copy_ttl for the store's
 // ttl_seconds at this call site, handlers_msg_policy.go's
 // deliverNonHomeForward ":197") survived because no test inspected the
 // stored copy's actual expiry basis, only that a copy existed (the

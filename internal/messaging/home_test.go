@@ -55,8 +55,8 @@ func TestHomeResolver_Unadvertised(t *testing.T) {
 
 // TestHomeResolver_HomeAndElsewhere: a recipient advertising BOTH this
 // node and another host is Home (ordering/co-occurrence doesn't change
-// the state — decision 2's "ordering doesn't matter" rule), with
-// HasOtherHost=true for decision 3's relay row.
+// the state), with HasOtherHost=true for the "Forward received, Home"
+// relay row.
 func TestHomeResolver_HomeAndElsewhere(t *testing.T) {
 	r := NewHomeResolver([]string{"https://anvil.example"},
 		sourceFor("https://other.example", "https://anvil.example"))
@@ -85,8 +85,8 @@ func TestHomeResolver_HTTPOnlyAdvertIgnored(t *testing.T) {
 	}
 }
 
-// TestHomeResolver_ExcludedHostnamesIgnored covers every exclusion in
-// decision 2: localhost, 127.0.0.1, 0.0.0.0, ::1, *.local, *.example.com,
+// TestHomeResolver_ExcludedHostnamesIgnored covers every exclusion the
+// Home Rule applies: localhost, 127.0.0.1, 0.0.0.0, ::1, *.local, *.example.com,
 // *.test, *.invalid, *.localhost never qualify.
 func TestHomeResolver_ExcludedHostnamesIgnored(t *testing.T) {
 	excluded := []string{
@@ -160,11 +160,11 @@ func TestHomeResolver_SeveralAdvertsAtOnce(t *testing.T) {
 	}
 }
 
-// TestQualifyAndNormalise_K8HostFilterTable is the reviewer's R5 probe
+// TestQualifyAndNormalise_HostFilterTable is the reviewer's probe
 // (scratchpad/repro/messaging_zz_review_test.go.txt) made permanent as a
-// real assertion test: every row of the review's K8 host-filter table,
+// real assertion test: every row of the host-filter table below,
 // proved against Node 22's WHATWG `URL`.
-// TestQualifyAndNormalise_InvalidUTF8HostNotCounted (N4): a host string
+// TestQualifyAndNormalise_InvalidUTF8HostNotCounted: a host string
 // containing a byte sequence that cannot be valid UTF-8 never qualifies.
 // Admission admits such an advert now (matching canon's non-fatal
 // decode, topics/messagebox_test.go's
@@ -177,10 +177,10 @@ func TestQualifyAndNormalise_InvalidUTF8HostNotCounted(t *testing.T) {
 	}
 }
 
-func TestQualifyAndNormalise_K8HostFilterTable(t *testing.T) {
+func TestQualifyAndNormalise_HostFilterTable(t *testing.T) {
 	// IPv4 numeric forms: three different spellings of the loopback
 	// address must all be excluded, matching canon ("excluded, hostname
-	// becomes 127.0.0.1" — K8 table row 1). 127.0.0.1 itself is the
+	// becomes 127.0.0.1" — table row 1). 127.0.0.1 itself is the
 	// pre-existing baseline, unaffected by this fix, included so the
 	// alternate spellings are seen converging on the same answer.
 	for _, h := range []string{"https://127.1", "https://0x7f000001", "https://2130706433", "https://127.0.0.1"} {
@@ -193,12 +193,12 @@ func TestQualifyAndNormalise_K8HostFilterTable(t *testing.T) {
 	// own IPv6 check never strips the brackets from the string it's
 	// actually given (host.ts:28-29), so the literal "::1" comparison
 	// never fires. The overseer decision is to keep excluding it here
-	// anyway, a deliberate, documented divergence (K8 table row 2).
+	// anyway, a deliberate, documented divergence (table row 2).
 	if _, ok := qualifyAndNormalise("https://[::1]"); ok {
 		t.Error("https://[::1]: expected excluded (Anvil's deliberate divergence from the canon bug), got qualified")
 	}
 
-	// Ports: ":0443" must drop exactly like ":443" (K8 table row 3 —
+	// Ports: ":0443" must drop exactly like ":443" (table row 3 —
 	// parsed as a number, not string-compared against the literal
 	// "443").
 	withLeadingZero, ok := qualifyAndNormalise("https://node-a.example.org:0443")
@@ -214,8 +214,8 @@ func TestQualifyAndNormalise_K8HostFilterTable(t *testing.T) {
 	}
 
 	// IDN hosts: converted to ASCII/punycode, matching canon, so both
-	// spellings of the same hostname normalise to the same string (K8
-	// table row 4).
+	// spellings of the same hostname normalise to the same string
+	// (table row 4).
 	idn, ok := qualifyAndNormalise("https://bücher.example")
 	if !ok {
 		t.Fatal("https://bücher.example: expected to qualify")
@@ -248,7 +248,7 @@ func TestQualifyAndNormalise_K8HostFilterTable(t *testing.T) {
 	}
 }
 
-// TestHomeResolver_HostsDedupedAfterNormalise (K6): two raw advert host
+// TestHomeResolver_HostsDedupedAfterNormalise: two raw advert host
 // strings that normalise to the SAME qualifying host count as one host,
 // not two — the recipient must still answer Home (not just "some other
 // host"), and HasOtherHost must not be set from a duplicate of this
@@ -269,8 +269,8 @@ func TestHomeResolver_HostsDedupedAfterNormalise(t *testing.T) {
 }
 
 // TestHomeResolver_NoTopicHosted: a resolver with no AdvertSource at all
-// (the node doesn't host the topic) always answers Unadvertised —
-// decision 2's last bullet, and today's behaviour.
+// (the node doesn't host the topic) always answers Unadvertised,
+// today's behaviour.
 func TestHomeResolver_NoTopicHosted(t *testing.T) {
 	r := NewHomeResolver([]string{"https://anvil.example"}, nil)
 	res, err := r.Resolve("deadbeef")

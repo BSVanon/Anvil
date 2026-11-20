@@ -1,6 +1,6 @@
 package topics_test
 
-// Engine-level K1 coverage (cold review R4b): drives a real MessageBox
+// Engine-level coverage for a bug a cold review found: drives a real MessageBox
 // advert through the actual go-overlay-services engine (v3engine.New,
 // Anvil's production wiring) rather than just Admit in isolation, and
 // confirms a pure revocation deletes the engine's OWN storage row —
@@ -25,13 +25,14 @@ import (
 	"github.com/bsv-blockchain/go-sdk/wallet"
 )
 
-// TestMessageBoxEngine_PureRevocationDeletesStorageRow is R4b: after K1's
-// fix (CoinsToRetain nil, CoinsRemoved built from previousUTXOs), a pure
+// TestMessageBoxEngine_PureRevocationDeletesStorageRow covers a bug a
+// review found: after the coin-retention fix (CoinsToRetain nil,
+// CoinsRemoved built from previousUTXOs), a pure
 // revocation — spending the advert's output with no new MessageBox
 // output anywhere in the same transaction — must delete the engine's
 // own storage row, not just the lookup index (the lookup index already
 // dropped the advert pre-fix, since OutputSpent fires unconditionally;
-// this test is specifically about the engine's bookkeeping, the bug K1
+// this test is specifically about the engine's bookkeeping, that bug
 // found).
 func TestMessageBoxEngine_PureRevocationDeletesStorageRow(t *testing.T) {
 	ctx := context.Background()
@@ -106,10 +107,10 @@ func TestMessageBoxEngine_PureRevocationDeletesStorageRow(t *testing.T) {
 	}
 
 	// The lookup index dropping the advert was already true pre-fix
-	// (engine OutputSpent fires unconditionally). K1 changes the
-	// ENGINE'S OWN storage row: confirm it's gone, not "spent=true but
-	// still stored" (the pre-fix symptom, and the foothold K2's replay
-	// finding depends on). FindOutput reports a missing row as an error
+	// (engine OutputSpent fires unconditionally). The coin-retention fix
+	// changes the ENGINE'S OWN storage row: confirm it's gone, not
+	// "spent=true but still stored" (the pre-fix symptom, and the
+	// foothold a replay finding depends on). FindOutput reports a missing row as an error
 	// here, not nil — either shape means "deleted."
 	mbTopic := topics.MessageBoxTopicName
 	stored, ferr := eng.Storage.FindOutput(ctx, &transaction.Outpoint{Txid: *advertTx.TxID(), Index: 0}, &mbTopic, nil, false)

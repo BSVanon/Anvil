@@ -1,12 +1,11 @@
 package config
 
-// Decisions 2-5 (B6 messaging-privacy spec): defaults and validation for
-// [messaging] forward_copy_ttl, forward_peers, operator_reads_all_boxes
-// and home_hosts.
+// Defaults and validation for [messaging] forward_copy_ttl,
+// forward_peers, operator_reads_all_boxes and home_hosts.
 //
 // ForwardCopyTTLSeconds and OperatorReadsAllBoxes are pointers for the
 // same reason internal/gossip's MessagingPolicy and internal/api's
-// Server fields are (decisions 3 and 5): a bare zero value can't tell
+// Server fields are: a bare zero value can't tell
 // "the operator explicitly chose this" apart from "the key is absent
 // from the TOML file" — forward_copy_ttl=0 and operator_reads_all_boxes
 // =false are both real, meaningful, different-from-default choices.
@@ -24,27 +23,28 @@ import (
 	"log"
 )
 
-// defaultForwardCopyTTLSeconds is decision 3's "the default is 24 hours."
+// defaultForwardCopyTTLSeconds is the forward_copy_ttl default: 24 hours.
 const defaultForwardCopyTTLSeconds = int64(24 * 60 * 60)
 
-// normalizeMessagingPrivacy applies decisions 2-5's defaults and
-// validation to cfg in place. Called once from Load, after cfg's other
-// Messaging fields (TTLSeconds etc.) have already been defaulted, since
-// forward_copy_ttl's validation depends on the final TTLSeconds value.
+// normalizeMessagingPrivacy applies the [messaging] section's defaults
+// and validation to cfg in place. Called once from Load, after cfg's
+// other Messaging fields (TTLSeconds etc.) have already been defaulted,
+// since forward_copy_ttl's validation depends on the final TTLSeconds
+// value.
 //
-// N5/K5: returns an error for a value Load should refuse to start on,
+// Returns an error for a value Load should refuse to start on,
 // rather than silently reinterpreting the operator's intent the way
 // this file's other clamps do:
 //   - a negative forward_copy_ttl used to be accepted and then behave
 //     like 0 downstream (the store-gate everywhere else is `ttl > 0`)
 //     with no indication why;
 //   - a forward_peers entry that isn't a valid compressed public key in
-//     hex (K5) would otherwise silently never match any real peer,
+//     hex would otherwise silently never match any real peer,
 //     making the allow-list quietly useless instead of visibly wrong.
 //
 // The ttl_seconds clamp below stays a clamp, not an error (matching
 // every other [messaging] key's style), but now logs when it actually
-// fires (N5) — previously a small ttl_seconds override could turn a
+// fires — previously a small ttl_seconds override could turn a
 // node relay-only with no line in the log saying so.
 func normalizeMessagingPrivacy(cfg *MessagingConfig) error {
 	if cfg.ForwardCopyTTLSeconds == nil {
@@ -53,7 +53,7 @@ func normalizeMessagingPrivacy(cfg *MessagingConfig) error {
 	} else if *cfg.ForwardCopyTTLSeconds < 0 {
 		return fmt.Errorf("messaging.forward_copy_ttl must not be negative, got %d", *cfg.ForwardCopyTTLSeconds)
 	}
-	// "It must be below ttl_seconds" (decision 3).
+	// forward_copy_ttl must be below ttl_seconds.
 	if *cfg.ForwardCopyTTLSeconds >= cfg.TTLSeconds {
 		clamped := cfg.TTLSeconds - 1
 		if clamped < 0 {

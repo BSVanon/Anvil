@@ -20,7 +20,7 @@ import (
 )
 
 // errMBScanLimitReached is returned by currentRecords' scanPrefix
-// callback to stop the scan once limit hits are collected (K6). It is
+// callback to stop the scan once limit hits are collected. It is
 // not a real error — scanPrefix propagates whatever the callback
 // returns, and currentRecords recognises this sentinel and swallows it.
 var errMBScanLimitReached = errors.New("messagebox lookup: scan limit reached")
@@ -45,7 +45,7 @@ type mbHit struct {
 // byte order, which is descending AdmittedAt order by construction, and
 // ties resolve by txid then vout ascending — the index key's own
 // trailing bytes — "for free", with nothing left to sort afterwards
-// (N6: there is no comparator computing Txid.String() repeatedly,
+// (there is no comparator computing Txid.String() repeatedly,
 // because there is no comparator).
 func (s *MessageBoxLookupService) currentRecords(identityKeyLower string, limit int) ([]mbHit, error) {
 	fullPrefix := []byte(mbIDPrefix + identityKeyLower + ":")
@@ -76,7 +76,7 @@ func (s *MessageBoxLookupService) currentRecords(identityKeyLower string, limit 
 }
 
 // CurrentHosts returns the raw (un-normalised) host string of the
-// newest maxCurrentHostsScan live adverts for identityKeyHex (K6),
+// newest maxCurrentHostsScan live adverts for identityKeyHex,
 // deduplicated after normalisation is NOT done here — qualifyAndNormalise
 // (internal/messaging/home.go) normalises and HomeResolver.Resolve
 // dedupes by comparing normalised forms, since two raw hosts can
@@ -128,7 +128,7 @@ func (s *MessageBoxLookupService) removeOutpoint(txid *chainhash.Hash, vout uint
 }
 
 // mbIndexKey produces
-// <mbIDPrefix><identityKeyLower>:<invertedTime>:<txid>:<vout> (K6). The
+// <mbIDPrefix><identityKeyLower>:<invertedTime>:<txid>:<vout>. The
 // identity key is already hex (fixed alphabet, no ':'), so unlike
 // kvstore's free-text keys it needs no extra hex-escaping layer, and the
 // inverted-time segment is fixed-width so decodeMBIndexOutpoint can skip

@@ -116,8 +116,8 @@ but the recipient's actual home node:
 With `forward_copy_ttl = 0`, a recipient needs a `tm_messagebox` advert naming one of the
 closed network's nodes as their home, or nothing in the mesh ever stores their mail for
 them. An Unadvertised recipient's message is still stored in full, at `ttl_seconds`, on
-whichever node the `/sendMessage` call originated from (decision 3's Unadvertised row
-always stores, independent of `forward_copy_ttl`) — but it goes no further than that one
+whichever node the `/sendMessage` call originated from (an Unadvertised recipient is
+always stored there, independent of `forward_copy_ttl`) — but it goes no further than that one
 node; it is never relayed-and-stored anywhere else. Advertise a home node for every
 recipient who needs their mail to land somewhere they can reliably poll.
 
