@@ -27,6 +27,7 @@ type Config struct {
 	Mempool      MempoolConfig      `toml:"mempool"`
 	API          APIConfig          `toml:"api"`
 	Capabilities CapabilitiesConfig `toml:"capabilities"`
+	Gateway      GatewayConfig      `toml:"gateway"`
 }
 
 // CapabilitiesConfig lets operators declare capabilities beyond the built-in
@@ -72,6 +73,10 @@ type NodeConfig struct {
 	Listen    string `toml:"listen"`
 	APIListen string `toml:"api_listen"`
 	PublicURL string `toml:"public_url"` // public-facing API URL for overlay registration (e.g. "https://anvil.sendbsv.com")
+
+	// Mode is "standard" (default) or "gateway" — only changes installer
+	// defaults (internal/gateway); nothing here branches on it at runtime.
+	Mode string `toml:"mode"`
 }
 
 type IdentityConfig struct {
@@ -519,6 +524,10 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Messaging.MaxInboxBytes < 0 {
 		cfg.Messaging.MaxInboxBytes = 0
+	}
+
+	if err := finalizeGateway(cfg, path); err != nil {
+		return nil, err
 	}
 
 	// Merge deprecated [foundry] into [mesh] for backward compatibility
