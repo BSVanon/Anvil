@@ -78,8 +78,12 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check auth status for private omission + paid redaction (same as GET /data)
-	isAuthed := s.isAuthed(r)
+	// authed gates private-envelope omission; authedOrPaid additionally
+	// accepts a verified payment and gates paid/monetized redaction — same
+	// authenticated/paid split as GET /data (handlers.go), so paying never
+	// unlocks a private envelope over SSE either.
+	authed := s.isAuthed(r)
+	authedOrPaid := s.isAuthedOrPaid(r)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -114,14 +118,15 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case env := <-ch:
-			// Private envelopes are never streamed to unauthenticated
-			// subscribers (read-gated, matching GET /data omission).
-			if env.Private && !isAuthed {
+			// Private envelopes are never streamed to callers who are not
+			// authenticated (read-gated, matching GET /data omission). A
+			// verified payment alone is never sufficient.
+			if env.Private && !authed {
 				continue
 			}
-			// Redact paid payloads for unauthenticated subscribers
+			// Redact paid payloads unless authenticated or paid.
 			outEnv := env
-			if !isAuthed && env.Monetization != nil && env.Monetization.PriceSats > 0 {
+			if !authedOrPaid && env.Monetization != nil && env.Monetization.PriceSats > 0 {
 				redacted := *env
 				redacted.Payload = "[paid content — access via HTTP 402]"
 				outEnv = &redacted

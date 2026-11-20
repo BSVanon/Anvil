@@ -120,14 +120,26 @@ func (s *Server) handleNodePublish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isAuthed reports whether the request carries a valid authorization signal for
-// read-gated content (private envelopes, paid payloads): the internal
-// X-Anvil-Authed marker that ONLY the token/payment middleware sets (client
-// copies are stripped at the trust boundary — see Handler), or the operator
-// bearer token.
+// isAuthed reports whether the request is authenticated: the internal
+// X-Anvil-Authed marker that ONLY the operator-token/app-token middleware
+// sets (client copies are stripped at the trust boundary — see Handler), or
+// the operator bearer token directly. isAuthed is the ONLY signal that gates
+// `private` envelope data and metadata — a verified x402 payment is never
+// sufficient on its own; see isAuthedOrPaid for the payment-inclusive check
+// used by paid/monetized payload redaction. See
+// docs/ANVIL_PRIVATE_FLAG_CONTRACT.md for the full contract.
 func (s *Server) isAuthed(r *http.Request) bool {
 	return r.Header.Get("X-Anvil-Authed") == "true" ||
 		(s.authToken != "" && r.Header.Get("Authorization") == "Bearer "+s.authToken)
+}
+
+// isAuthedOrPaid reports whether the request is authenticated (isAuthed) or
+// carries a verified x402 payment for this request (isPaid, paid_context.go).
+// Use this to gate paid/monetized payloads, which a payment alone may
+// unlock — unchanged from before the authenticated/paid split. Never use it
+// to gate a `private` envelope or its metadata; use isAuthed for that.
+func (s *Server) isAuthedOrPaid(r *http.Request) bool {
+	return s.isAuthed(r) || isPaid(r)
 }
 
 // latestVisibleEnvelope returns the newest envelope on a topic that the caller
@@ -196,21 +208,25 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		envs = filtered
 	}
 
-	// Authenticated = bearer token, successful x402 payment, or valid app token.
-	// Gates paid-payload redaction + private-envelope omission below.
-	isAuthed := s.isAuthed(r)
+	// authed gates `private` envelope omission below: operator bearer token
+	// or a valid app token ONLY — a verified x402 payment is never
+	// sufficient (docs/ANVIL_PRIVATE_FLAG_CONTRACT.md). authedOrPaid
+	// additionally accepts a verified payment and gates paid/monetized
+	// payload redaction, unchanged from before the split.
+	authed := s.isAuthed(r)
+	authedOrPaid := s.isAuthedOrPaid(r)
 
 	// Clone envelopes for response — never mutate the in-memory store.
-	// Private envelopes are OMITTED entirely for unauthenticated callers (not
-	// just payload-redacted) so neither the sealed blob nor its metadata
-	// (topic/pubkey/timestamp/size) leaks; authenticated callers (operator
-	// bearer / x402 / app token) see them in full.
+	// Private envelopes are OMITTED entirely for callers who are not
+	// authenticated (not just payload-redacted) so neither the sealed blob
+	// nor its metadata (topic/pubkey/timestamp/size) leaks; operator bearer
+	// / app token callers see them in full. Paying never unlocks one.
 	responseEnvs := make([]*envelope.Envelope, 0, len(envs))
 	for _, env := range envs {
-		if env.Private && !isAuthed {
+		if env.Private && !authed {
 			continue
 		}
-		if !isAuthed && env.Monetization != nil && env.Monetization.PriceSats > 0 {
+		if !authedOrPaid && env.Monetization != nil && env.Monetization.PriceSats > 0 {
 			// Shallow copy + redact payload
 			redacted := *env
 			redacted.Payload = "[paid content — access via HTTP 402]"

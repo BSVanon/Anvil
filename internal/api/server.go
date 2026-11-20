@@ -894,10 +894,13 @@ func (s *Server) authOrPayBinary(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Trust boundary: strip any client-supplied X-Anvil-Authed. This header
-		// is an INTERNAL authorization signal that only the token/payment
-		// middleware may set (on a validated app-token or x402 payment);
-		// handlers read it to authorize read-gated content (private envelopes,
-		// paid payloads). Without this strip a client could send
+		// is an INTERNAL authentication signal that only the operator-token/
+		// app-token middleware may set (on a validated bearer or app token);
+		// handlers read it (isAuthed) to authorize `private` envelope data and
+		// metadata. A verified x402 payment is marked separately, by a
+		// request-context value a client cannot set at all (paid_context.go):
+		// paid unlocks paid/monetized payloads (isAuthedOrPaid) but never a
+		// private envelope. Without this strip a client could send
 		// `X-Anvil-Authed: true` and — on a node with no gate configured — read
 		// content it never authenticated for. Server middleware re-sets it
 		// downstream on genuine success, so legitimate auth is unaffected.
