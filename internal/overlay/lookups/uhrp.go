@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -204,19 +205,42 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 // lookupByOutpoint answers the Outpoint query key: a direct single-record
 // lookup, independent of (and ignoring) every other field on the query —
 // matching canonical UHRPLookupService.ts's short-circuit (fix pass, spec
-// item 5). An expired BRC-26 record is treated as absent, the same as
-// every other query path (uhrpExpired, uhrp_filter.go) — legacy records
-// (BRC26 false) are never expired and are returned normally.
+// item 5).
+//
+// Unlike every other query path, this one does NOT filter an expired
+// BRC-26 record: canonical UHRPLookupService.ts:62-67's outpoint branch
+// is a bare findOne with no expiry check at all, so Anvil matches that
+// exactly here (fix pass, re-review RISKS item 2). The other paths'
+// server-side expiry filtering (uhrpExpired, filterUHRPRecords rule 1,
+// uhrp_filter.go) is a separate, pre-existing, deliberate Anvil-only
+// hardening choice that canonical doesn't apply on ITS non-outpoint path
+// either (UHRPLookupService.ts:68-72's records.find(query) has no expiry
+// check) — this change only removes Anvil's own expiry check from the
+// one path (outpoint) where canonical's behavior is unambiguous and
+// directly comparable; it leaves the other, already-divergent paths
+// exactly as they were.
 func (s *UHRPLookupService) lookupByOutpoint(raw string) (*lookup.LookupAnswer, error) {
 	op, err := parseUHRPOutpointQuery(raw)
 	if err != nil {
 		return nil, fmt.Errorf("uhrp lookup: invalid outpoint %q: %w", raw, err)
 	}
-	item, ok, err := s.loadItem(op)
+	_, ok, err := s.loadItem(op)
 	if err != nil {
+		if errors.Is(err, errUHRPCorruptRecord) {
+			// Fix pass, re-review BLOCKER: a corrupt record must be
+			// skipped here exactly as itemsByHash and allItemRecords skip
+			// one during a scan (uhrp_filter.go) — propagating it as a
+			// hard error would turn a single bit-rotted record into a
+			// failure for the one query shape that names it directly,
+			// while the same corruption is already silently skipped by a
+			// content_hash, uhrpUrl, or list=all query over the same data.
+			slog.Warn("uhrp lookup: skipping corrupt record in outpoint lookup",
+				"txid", op.Txid.String(), "vout", op.Index, "error", err)
+			return &lookup.LookupAnswer{Type: lookup.AnswerTypeFormula, Formulas: []lookup.LookupFormula{}}, nil
+		}
 		return nil, err
 	}
-	if !ok || uhrpExpired(item, nowUnix()) {
+	if !ok {
 		return &lookup.LookupAnswer{Type: lookup.AnswerTypeFormula, Formulas: []lookup.LookupFormula{}}, nil
 	}
 	return &lookup.LookupAnswer{
