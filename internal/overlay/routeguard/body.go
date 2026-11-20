@@ -112,7 +112,14 @@ func (t *Ticket) read(w http.ResponseWriter, r *http.Request, route Route) ([]by
 	if declared {
 		n = r.ContentLength
 	}
-	p := newPacer(t.g, w, http.MaxBytesReader(w, r.Body, route.MaxBody), n, route.ReadTimeout)
+	// The pacer takes r.ContentLength directly, not n: a declared length
+	// paces the body against its own total, but an undeclared one (-1) has
+	// none to pace against, so the pacer paces it against the bytes read so
+	// far instead, on the same schedule (cold review round 4 RISK 2). n
+	// itself still reserves as if the body were MaxBody, below: an undeclared
+	// body's heap cost is capped before its length is known, whatever its
+	// pace.
+	p := newPacer(t.g, w, http.MaxBytesReader(w, r.Body, route.MaxBody), r.ContentLength, route.ReadTimeout)
 	fail := func(err error) ([]byte, error) {
 		abandon(w, p)
 		return nil, err

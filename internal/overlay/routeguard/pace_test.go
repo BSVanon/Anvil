@@ -2,7 +2,9 @@ package routeguard
 
 import (
 	"errors"
+	"fmt"
 	"net"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -45,7 +47,7 @@ func TestPacer_Schedule(t *testing.T) {
 	start := time.Unix(1_000_000, 0)
 	for _, n := range []int64{1, 50_000, 1_000_000, BigBody + 1, BigBodyRate * 118, 16 << 20} {
 		rate := paceRate(n, BEEFReadTimeout, bodyread.ReadGrace, MinBodyRate)
-		p := &pacer{start: start, end: start.Add(BEEFReadTimeout), grace: bodyread.ReadGrace, minRate: rate}
+		p := &pacer{start: start, end: start.Add(BEEFReadTimeout), grace: bodyread.ReadGrace, timeout: BEEFReadTimeout, floor: MinBodyRate, n: n}
 		for _, have := range []int64{0, n / 4, n / 2, n - 1, n} {
 			p.have = have
 			want := start.Add(bodyread.ReadGrace + time.Duration(have)*time.Second/time.Duration(rate))
@@ -171,5 +173,142 @@ func TestPacing_RealTime(t *testing.T) {
 		if c.wantTooSlow != errors.Is(res.err, ErrBodyTooSlow) || (!c.wantTooSlow && res.err != nil) {
 			t.Errorf("%s: %v, want too slow %v", c.name, res.err, c.wantTooSlow)
 		}
+	}
+}
+
+// TestPacerRate_UndeclaredFollowsBytesReadSoFar (cold review round 4 RISK 2):
+// an undeclared body (n negative) is paced like a declared one of have
+// bytes, recomputed as have grows, rather than like one of a fixed total —
+// MinBodyRate while have is at most BigBody, then BigBodyRate, never the
+// rate a body of MaxBody would need from its first byte.
+func TestPacerRate_UndeclaredFollowsBytesReadSoFar(t *testing.T) {
+	p := &pacer{timeout: BEEFReadTimeout, grace: bodyread.ReadGrace, floor: MinBodyRate, n: -1}
+	for _, have := range []int64{0, 1000, BigBody, BigBody + 1, 16 << 20} {
+		p.have = have
+		want := paceRate(have, BEEFReadTimeout, bodyread.ReadGrace, MinBodyRate)
+		if got := p.rate(); got != want {
+			t.Errorf("undeclared, %d bytes read so far: rate %d, want %d (the schedule a declared body of %d bytes would keep)", have, got, want, have)
+		}
+	}
+	// Early in the body, have is nowhere near MaxBEEFBody: pacing by have
+	// must not demand the much faster rate a declared MaxBEEFBody submit
+	// would (the regression this fixes).
+	p.have = 150_000
+	maxBodyRate := paceRate(MaxBEEFBody, BEEFReadTimeout, bodyread.ReadGrace, MinBodyRate)
+	if got := p.rate(); got == maxBodyRate {
+		t.Fatalf("an undeclared body that has read only %d of up to %d bytes was paced at MaxBody's rate %d", p.have, MaxBEEFBody, got)
+	} else if got != MinBodyRate {
+		t.Fatalf("an undeclared body that has read only %d bytes: rate %d, want the floor %d", p.have, got, MinBodyRate)
+	}
+}
+
+// rawChunkedPost opens a connection to srv and sends the headers of a POST to
+// /read with a chunked, undeclared body, leaving the connection open for the
+// caller to write chunks on.
+func rawChunkedPost(t *testing.T, srv *httptest.Server) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	fmt.Fprint(conn, "POST /read HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+	return conn
+}
+
+// sendChunkedAt writes n bytes to conn as chunks of at most 4 KiB, at rate
+// bytes a second, then the terminating zero-length chunk, as a link of that
+// speed sending a chunked body would.
+func sendChunkedAt(conn net.Conn, n, rate int64, stop chan struct{}) {
+	const chunkSize = 4 << 10
+	start := time.Now()
+	for sent := int64(0); sent < n; {
+		select {
+		case <-stop:
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+		due := min(n, int64(time.Since(start).Seconds()*float64(rate)))
+		for sent < due {
+			k := min(chunkSize, due-sent)
+			if _, err := fmt.Fprintf(conn, "%x\r\n", k); err != nil {
+				return
+			}
+			if _, err := conn.Write(make([]byte, k)); err != nil {
+				return
+			}
+			if _, err := fmt.Fprint(conn, "\r\n"); err != nil {
+				return
+			}
+			sent += k
+		}
+	}
+	fmt.Fprint(conn, "0\r\n\r\n")
+}
+
+// trickleChunkedTo writes a chunk-encoded chunk of chunk bytes to conn every
+// interval until stop closes or a write fails.
+func trickleChunkedTo(conn net.Conn, chunk int, interval time.Duration, stop chan struct{}) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+			if _, err := fmt.Fprintf(conn, "%x\r\n", chunk); err != nil {
+				return
+			}
+			if _, err := conn.Write(make([]byte, chunk)); err != nil {
+				return
+			}
+			if _, err := fmt.Fprint(conn, "\r\n"); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// TestReadBody_UndeclaredHonestBodyPaces (cold review round 4 RISK 2): a 150
+// KB chunked BEEF sent at 200 kbit/s passes, as it did before this guard
+// existed (base e63349f); paced at the rate a declared MaxBody submit would
+// need (142,180 B/s), it was cut at 2.43 s instead.
+func TestReadBody_UndeclaredHonestBodyPaces(t *testing.T) {
+	const n, link = 150_000, 25_000                      // 200 kbit/s
+	g := New(MemoryBudget-ExecAllowance, 1, 1, testWait) // room for an undeclared body's MaxBody-sized reservation
+	srv, results := bodyServer(t, g, BEEFRoute, 0, 0)
+	conn := rawChunkedPost(t, srv)
+	stop := make(chan struct{})
+	defer close(stop)
+	go sendChunkedAt(conn, n, link, stop)
+	res := nextResult(t, results, 15*time.Second)
+	if res.err != nil || len(res.body) != n {
+		t.Fatalf("a 150 KB chunked BEEF at 200 kbit/s: %d bytes, %v after %v, want it to pass", len(res.body), res.err, res.elapsed)
+	}
+	if want := time.Duration(n) * time.Second / time.Duration(link); res.elapsed < want {
+		t.Fatalf("read in %v, faster than the 200 kbit/s link allows (%v): the test proves nothing", res.elapsed, want)
+	}
+	t.Logf("150 KB chunked BEEF at 200 kbit/s: read in %v", res.elapsed)
+}
+
+// TestReadBody_UndeclaredTrickleIsStillCut (cold review round 4 RISK 2): an
+// undeclared body is still paced, not exempted: one trickling at an eighth
+// of MinBodyRate is cut with ErrBodyTooSlow soon after the grace, as a
+// declared one is (TestReadBody_TrickleBelowTheRateIsCut).
+func TestReadBody_UndeclaredTrickleIsStillCut(t *testing.T) {
+	g := New(1<<20, 1, 1, testWait)
+	route := Route{MaxBody: 1 << 20, Expansion: 1, ReadTimeout: 10 * time.Second}
+	srv, results := bodyServer(t, g, route, 0, 0)
+	conn := rawChunkedPost(t, srv)
+	stop := make(chan struct{})
+	defer close(stop)
+	go trickleChunkedTo(conn, int(MinBodyRate/80), 100*time.Millisecond, stop) // 1/8 of the floor
+	res := nextResult(t, results, route.ReadTimeout)
+	want := bodyread.ReadGrace * 8 / 7
+	if !errors.Is(res.err, ErrBodyTooSlow) {
+		t.Fatalf("an undeclared trickle at an eighth of the floor: %v after %v, want ErrBodyTooSlow", res.err, res.elapsed)
+	}
+	if res.elapsed < bodyread.ReadGrace || res.elapsed > want+time.Second {
+		t.Fatalf("the undeclared trickle was cut after %v, want about %v", res.elapsed, want)
 	}
 }
