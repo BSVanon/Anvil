@@ -266,8 +266,9 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			}
 			receiptJSON, _ := json.Marshal(receipt)
 			w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
-			r.Header.Set("X-Anvil-Authed", "true")
-			next(w, r)
+			// Marks *paid*, not *authenticated* — a payment never unlocks a
+			// private envelope (see paid_context.go, isAuthedOrPaid).
+			next(w, r.WithContext(withPaid(r.Context())))
 			return
 		}
 
@@ -279,8 +280,9 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 
 		receiptJSON, _ := json.Marshal(receipt)
 		w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
-		r.Header.Set("X-Anvil-Authed", "true")
-		next(w, r)
+		// Marks *paid*, not *authenticated* — a payment never unlocks a
+		// private envelope (see paid_context.go, isAuthedOrPaid).
+		next(w, r.WithContext(withPaid(r.Context())))
 	}
 }
 
