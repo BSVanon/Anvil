@@ -13,36 +13,47 @@ import (
 )
 
 // MinBodyRate is the least average rate, in bytes a second, at which a
-// request body must arrive once bodyread.ReadGrace has passed. It is half
-// bodyread.MinReadRate, the rate this node asks of the replies it reads, so
-// that a body of 1 MB sent at 200 kbit/s (25,000 bytes a second), which that
-// rate cut off after 8.4 s (cold review round 4 RISK 6), is read in 40 s,
-// within the 63 s its length allows (TestPacing_RealTime).
+// request body of up to BigBody bytes must arrive once bodyread.ReadGrace has
+// passed. It is half bodyread.MinReadRate, the rate this node asks of the
+// replies it reads, so that a body of 1 MB sent at 200 kbit/s (25,000 bytes a
+// second), which that rate cut off after 8.4 s (cold review round 4 RISK 6),
+// is read in 40 s, within the 63 s its length allows (TestPacing_RealTime).
 const MinBodyRate int64 = 16 << 10
+
+// BigBodyRate is the least average rate for a body over BigBody:
+// bodyread.MinReadRate, the floor every body had before MinBodyRate. Such a
+// body holds the one big-body slot, which every other body over BigBody
+// waits for, so the lower floor must not make that slot cheaper to hold.
+// Holds of smaller bodies are many at once and capped per client.
+const BigBodyRate int64 = bodyread.MinReadRate
 
 // ErrBodyTooSlow means the body did not start within bodyread.ReadGrace, or
 // fell below its pace after it (Route.MinRate). It wraps ErrReadTimeout, so
 // the route answers 408.
-var ErrBodyTooSlow = fmt.Errorf("%w: a body must start within %v and then arrive at %d bytes a second or more, "+
+var ErrBodyTooSlow = fmt.Errorf("%w: a body must start within %v and then arrive at %d bytes a second or more (%d over %d bytes), "+
 	"or faster when it is too long to arrive within the route's read timeout at that rate",
-	ErrReadTimeout, bodyread.ReadGrace, MinBodyRate)
+	ErrReadTimeout, bodyread.ReadGrace, MinBodyRate, BigBodyRate, BigBody)
 
 // MinRate is the average rate, in bytes a second, at which a body of n bytes
 // must arrive on route r once bodyread.ReadGrace has passed: MinBodyRate, or
-// the rate that brings all n bytes in by the route's ReadTimeout when that is
-// faster. A body that declares no length is paced as one of MaxBody bytes, as
-// it is reserved.
+// BigBodyRate when n is over BigBody, or the rate that brings all n bytes in
+// by the route's ReadTimeout when that is faster. A body that declares no
+// length is paced as one of MaxBody bytes, as it is reserved.
 func (r Route) MinRate(n int64) int64 {
 	return paceRate(n, r.ReadTimeout, bodyread.ReadGrace, MinBodyRate)
 }
 
 // paceRate is the average rate, in bytes a second, at which a body of n bytes
 // must arrive once grace has passed on a route whose bodies must arrive
-// within timeout: floor, or n over the time from grace to timeout when that
-// is faster. Without that second term a body could be sent at floor for as
-// long as timeout allows, and hold the reservation of all n bytes while it
-// sent a fraction of them.
+// within timeout: floor, raised as BigBodyRate is over MinBodyRate when n is
+// over BigBody, or n over the time from grace to timeout when that is faster.
+// Without that last term a body could be sent at the floor for as long as
+// timeout allows, and hold the reservation of all n bytes while it sent a
+// fraction of them.
 func paceRate(n int64, timeout, grace time.Duration, floor int64) int64 {
+	if n > BigBody {
+		floor = floor * BigBodyRate / MinBodyRate
+	}
 	span := timeout - grace
 	if span <= 0 || n <= 0 {
 		return floor

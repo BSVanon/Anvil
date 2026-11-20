@@ -10,9 +10,10 @@ import (
 	"github.com/BSVanon/Anvil/internal/netguard/bodyread"
 )
 
-// TestPaceRate_TheRoutesRates: a body is paced at MinBodyRate unless it is
-// too long to arrive within its route's read timeout at that rate, and then
-// at the rate that brings it in just by the timeout.
+// TestPaceRate_TheRoutesRates: a body is paced at MinBodyRate, or at
+// BigBodyRate when it is over BigBody, unless it is too long to arrive within
+// its route's read timeout at that rate, and then at the rate that brings it
+// in just by the timeout.
 func TestPaceRate_TheRoutesRates(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -21,7 +22,9 @@ func TestPaceRate_TheRoutesRates(t *testing.T) {
 		want  int64
 	}{
 		{"a 1 MB submit", BEEFRoute, 1_000_000, MinBodyRate},
-		{"the longest submit the floor covers", BEEFRoute, MinBodyRate * 118, MinBodyRate},
+		{"a submit of BigBody bytes", BEEFRoute, BigBody, MinBodyRate},
+		{"a submit over BigBody", BEEFRoute, BigBody + 1, BigBodyRate},
+		{"the longest submit BigBodyRate covers", BEEFRoute, BigBodyRate * 118, BigBodyRate},
 		{"a 16 MiB submit", BEEFRoute, 16 << 20, 142_180}, // 16 MiB / 118 s, rounded up
 		{"a lookup question", LookupRoute, 1_000, MinBodyRate},
 		{"a 1 MiB lookup", LookupRoute, 1 << 20, 80_660}, // 1 MiB / 13 s, rounded up
@@ -40,7 +43,7 @@ func TestPaceRate_TheRoutesRates(t *testing.T) {
 // body whatever its length.
 func TestPacer_Schedule(t *testing.T) {
 	start := time.Unix(1_000_000, 0)
-	for _, n := range []int64{1, 50_000, 1_000_000, MinBodyRate * 118, 16 << 20} {
+	for _, n := range []int64{1, 50_000, 1_000_000, BigBody + 1, BigBodyRate * 118, 16 << 20} {
 		rate := paceRate(n, BEEFReadTimeout, bodyread.ReadGrace, MinBodyRate)
 		p := &pacer{start: start, end: start.Add(BEEFReadTimeout), grace: bodyread.ReadGrace, minRate: rate}
 		for _, have := range []int64{0, n / 4, n / 2, n - 1, n} {
@@ -112,6 +115,21 @@ func TestReadBody_HonestSlowUplinkPasses(t *testing.T) {
 	t.Logf("at bodyread.MinReadRate it was cut after %v (%v at full scale)", old.elapsed, old.elapsed*scale)
 }
 
+// TestReadBody_BigBodyKeepsBigBodyRate: a body over BigBody, which holds the
+// one big-body slot, must keep BigBodyRate, so the slow uplink a 1 MB body
+// passes on cuts it off, as bodyread.MinReadRate did. The test runs ten times
+// faster, as TestReadBody_HonestSlowUplinkPasses does.
+func TestReadBody_BigBodyKeepsBigBodyRate(t *testing.T) {
+	const scale, n, link = 10, BigBody + 1, 25_000
+	grace, timeout := bodyread.ReadGrace/scale, BEEFReadTimeout/scale
+	res := slowUplink(t, grace, MinBodyRate*scale, n, link*scale, timeout)
+	want := time.Duration(float64(grace) / (1 - float64(link)/float64(BigBodyRate)))
+	if !errors.Is(res.err, ErrBodyTooSlow) || res.elapsed < grace || res.elapsed > 2*want {
+		t.Fatalf("a body over BigBody at 200 kbit/s (scaled): %v after %v, want ErrBodyTooSlow at about %v", res.err, res.elapsed, want)
+	}
+	t.Logf("a body over BigBody at 200 kbit/s, ten times faster: cut after %v (expected about %v; %v at full scale)", res.elapsed, want, res.elapsed*scale)
+}
+
 // TestReadBody_LongBodyMustKeepItsTimeoutsPace: a body too long to arrive
 // within its route's timeout at MinBodyRate must keep the pace that brings it
 // in by the timeout. A trickle at four times the floor, which the floor alone
@@ -129,9 +147,9 @@ func TestReadBody_LongBodyMustKeepItsTimeoutsPace(t *testing.T) {
 }
 
 // TestPacing_RealTime measures, at full scale and in real time, an honest
-// 1 MB body at 200 kbit/s, the same at bodyread.MinReadRate, and two
-// trickles. It takes about a minute, so it runs only with
-// ANVIL_MEASURE_PACING=1.
+// 1 MB body at 200 kbit/s, the same at bodyread.MinReadRate, a body over
+// BigBody at that link's rate, and two trickles. It takes about a minute, so
+// it runs only with ANVIL_MEASURE_PACING=1.
 func TestPacing_RealTime(t *testing.T) {
 	if os.Getenv("ANVIL_MEASURE_PACING") != "1" {
 		t.Skip("set ANVIL_MEASURE_PACING=1 to measure pacing in real time")
@@ -144,6 +162,7 @@ func TestPacing_RealTime(t *testing.T) {
 	}{
 		{"1 MB at 200 kbit/s", MinBodyRate, 1_000_000, 25_000, false},
 		{"1 MB at 200 kbit/s, bodyread.MinReadRate", bodyread.MinReadRate, 1_000_000, 25_000, true},
+		{"1 MiB + 1 byte at 200 kbit/s, over BigBody", MinBodyRate, BigBody + 1, 25_000, true},
 		{"1 MB declared, trickled at 8 KiB/s", MinBodyRate, 1_000_000, 8 << 10, true},
 		{"16 MiB declared, trickled at 64 KiB/s", MinBodyRate, 16 << 20, 64 << 10, true},
 	} {

@@ -11,13 +11,13 @@
 //     returned once the body is in.
 //   - Connection time. The body must start within bodyread.ReadGrace, the
 //     grace bodyread gives the replies this node reads, then arrive at
-//     MinBodyRate on average, or at the rate that brings it all in within its
-//     route's ReadTimeout when that is faster (Route.MinRate), and all of it
-//     within that timeout. The connection's read deadline, set through
-//     http.ResponseController and moved forward as bytes arrive, enforces
-//     them, and is cleared once the body is in, so the node's other routes,
-//     the SSE streams among them, keep the server's own timeouts. A body cut
-//     short is answered 408.
+//     MinBodyRate on average (BigBodyRate over BigBody), or at the rate that
+//     brings it all in within its route's ReadTimeout when that is faster
+//     (Route.MinRate), and all of it within that timeout. The connection's
+//     read deadline, set through http.ResponseController and moved forward
+//     as bytes arrive, enforces them, and is cleared once the body is in, so
+//     the node's other routes, the SSE streams among them, keep the server's
+//     own timeouts. A body cut short is answered 408.
 //   - Bodies over BigBody. Once the first byte is in, a body that may pass
 //     BigBody takes the one big-body slot, so senders of large bodies, slow
 //     ones included, cannot take the heap the routes' small requests need.
@@ -152,7 +152,8 @@ type Guard struct {
 	clients *clientSet
 
 	// The pace a body must keep: bodyread.ReadGrace and MinBodyRate (bytes a
-	// second), which the package's tests change.
+	// second, raised for a body over BigBody), which the package's tests
+	// change.
 	grace   time.Duration
 	minRate int64
 }
