@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -15,8 +14,10 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 )
 
 // paddedPayment pays 200 sats to payeeScriptHex and carries pad bytes in an
@@ -44,6 +45,65 @@ func paddedPayment(t *testing.T, nonce *NonceUTXO, payeeScriptHex string, pad in
 	return tx
 }
 
+// paddedSignedDirectPayment is paddedPayment's X-Bsv-Payment counterpart: a
+// genuinely signed P2PKH spend (embedded source output + real signature,
+// same shape as buildSignedDirectPaymentTx, payment_direct_verify_test.go)
+// paying 200 sats to payeeScriptHex, padded with pad bytes in an OP_FALSE
+// OP_RETURN output for header-size-cap testing. verifyDirectPaymentInputs
+// verifies every input's signature unconditionally, so a direct-payment
+// test fixture — unlike paddedPayment's nonce-bound fixture, which the
+// proof flow's dev-mode nonce sentinel exempts from that check — needs one.
+// Returned pre-serialized as extended-format hex (EFHex requires the
+// embedded source output tx.Bytes() alone would drop).
+func paddedSignedDirectPayment(t *testing.T, payeeScriptHex string, pad int) string {
+	t.Helper()
+	key, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	addr, err := bsvscript.NewAddressFromPublicKey(key.PubKey(), true)
+	if err != nil {
+		t.Fatalf("derive address: %v", err)
+	}
+	lockScript, err := p2pkh.Lock(addr)
+	if err != nil {
+		t.Fatalf("build lock script: %v", err)
+	}
+	sourceTx := transaction.NewTransaction()
+	sourceTx.AddOutput(&transaction.TransactionOutput{Satoshis: 1000, LockingScript: lockScript})
+	sourceTxID := sourceTx.TxID()
+
+	tx := transaction.NewTransaction()
+	tx.AddInput(&transaction.TransactionInput{
+		SourceTXID:        sourceTxID,
+		SourceTxOutIndex:  0,
+		SequenceNumber:    0xffffffff,
+		SourceTransaction: sourceTx,
+	})
+	payee, err := bsvscript.NewFromHex(payeeScriptHex)
+	if err != nil {
+		t.Fatalf("payee script: %v", err)
+	}
+	tx.AddOutput(&transaction.TransactionOutput{Satoshis: 200, LockingScript: payee})
+	data := &bsvscript.Script{bsvscript.OpFALSE, bsvscript.OpRETURN}
+	_ = data.AppendPushData(make([]byte, pad))
+	tx.AddOutput(&transaction.TransactionOutput{LockingScript: data})
+
+	unlock, err := p2pkh.Unlock(key, nil)
+	if err != nil {
+		t.Fatalf("create unlock template: %v", err)
+	}
+	tx.Inputs[0].UnlockingScriptTemplate = unlock
+	if err := tx.Sign(); err != nil {
+		t.Fatalf("sign tx: %v", err)
+	}
+	efHex, err := tx.EFHex()
+	if err != nil {
+		t.Fatalf("serialize extended format: %v", err)
+	}
+	return efHex
+}
+
 // serveGateMeasured is serveGate that also reports the bytes allocated while
 // the request was served.
 func serveGateMeasured(pg *PaymentGate, header, value string) (*httptest.ResponseRecorder, uint64) {
@@ -63,7 +123,7 @@ func TestPaymentHeaderSizeCap(t *testing.T) {
 		ch := gateChallenge(t, pg, "/status")
 		return proofForTx(t, ch, paddedPayment(t, ch.NonceUTXO, payee, pad))
 	}
-	direct := func(pad int) string { return hex.EncodeToString(paddedPayment(t, nil, payee, pad).Bytes()) }
+	direct := func(pad int) string { return paddedSignedDirectPayment(t, payee, pad) }
 	atCap := strings.Repeat("ab", maxPaymentHeaderBytes/2)
 	cases := []struct {
 		name, header, value string

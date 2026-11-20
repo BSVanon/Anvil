@@ -289,6 +289,16 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 		}
 	}
 
+	// Verify every input's script and signature (payment_direct_verify.go) —
+	// the same go-sdk interpreter path the challenge-proof nonce spend uses,
+	// run unconditionally here whether or not ARC is configured below. Without
+	// this, a direct payment with correct outputs but no valid input
+	// signatures (or none at all) was served like a real payment whenever no
+	// ARC client was configured to implicitly reject it at broadcast time.
+	if err := verifyDirectPaymentInputs(tx); err != nil {
+		return nil, fmt.Errorf("direct payment input verification failed: %w", err)
+	}
+
 	txid := tx.TxID().String()
 
 	// Broadcast to ARC if available (direct payments aren't challenge-bound,

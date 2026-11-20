@@ -660,6 +660,14 @@ func buildRawTx(lockingScript []byte, satoshis uint64) []byte {
 	return tx.Bytes()
 }
 
+// TestDirectPaymentAcceptsValidTx: a genuinely signed direct payment (real
+// P2PKH input, embedded source output, valid signature — see
+// buildSignedDirectPaymentTx, payment_direct_verify_test.go) is accepted.
+// Before verifyDirectPaymentInputs existed, this test built its "valid" tx
+// via buildRawTx, which has no unlocking script and no embedded source
+// output at all — i.e. it asserted an UNSIGNED transaction should be
+// accepted. See TestDirectPaymentRejectsUnsignedTxNoARC
+// (payment_direct_verify_test.go) for that exact case, now rejected.
 func TestDirectPaymentAcceptsValidTx(t *testing.T) {
 	payeeScript := testPayeeScript(t)
 	pg := NewPaymentGate(PaymentGateConfig{
@@ -669,9 +677,12 @@ func TestDirectPaymentAcceptsValidTx(t *testing.T) {
 		// No ARC client — skip broadcast
 	})
 
-	payeeBytes, _ := hex.DecodeString(payeeScript)
-	txHex := hex.EncodeToString(buildRawTx(payeeBytes, 100))
-	receipt, err := pg.verifyDirectPayment(txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	tx := buildSignedDirectPaymentTx(t, payeeScript, 100)
+	efHex, err := tx.EFHex()
+	if err != nil {
+		t.Fatalf("serialize extended format: %v", err)
+	}
+	receipt, err := pg.verifyDirectPayment(efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err != nil {
 		t.Fatalf("should accept valid direct payment: %v", err)
 	}
