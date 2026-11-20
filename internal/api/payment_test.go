@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -662,34 +661,6 @@ func buildRawTx(lockingScript []byte, satoshis uint64) []byte {
 		LockingScript: &ls,
 	})
 	return tx.Bytes()
-}
-
-// TestDirectPaymentRefusedWithoutARC: with no ARC client, a validly signed
-// direct payment is refused with ERR_DIRECT_PAYMENT_UNAVAILABLE. Its signature
-// checks out against the source output it carries, but that output is the
-// client's own claim (buildSignedDirectPaymentTx spends a parent that was
-// never broadcast), and without ARC nothing shows that it exists.
-func TestDirectPaymentRefusedWithoutARC(t *testing.T) {
-	payeeScript := testPayeeScript(t)
-	pg := NewPaymentGate(PaymentGateConfig{
-		PriceSats:      100,
-		PayeeScriptHex: payeeScript,
-		NonceProvider:  &DevNonceProvider{},
-		// No ARC client.
-	})
-
-	tx := buildSignedDirectPaymentTx(t, payeeScript, 100)
-	efHex, err := tx.EFHex()
-	if err != nil {
-		t.Fatalf("serialize extended format: %v", err)
-	}
-	receipt, err := pg.verifyDirectPayment(efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
-	if err == nil {
-		t.Fatalf("a direct payment must be refused when the node has no ARC client, got receipt %+v", receipt)
-	}
-	if !errors.Is(err, errDirectPaymentUnavailable) {
-		t.Fatalf("want errDirectPaymentUnavailable, got %v", err)
-	}
 }
 
 // helper to suppress unused import

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -124,5 +125,33 @@ func TestDirectPaymentAtomicBEEFIsNotParsed(t *testing.T) {
 	w := serveDirectPayment(srv, "/stats", hex.EncodeToString(beef))
 	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "invalid transaction in payment header") {
 		t.Fatalf("an Atomic BEEF X-Bsv-Payment: got %d %s, want 402 from the transaction parse", w.Code, w.Body.String())
+	}
+}
+
+// TestDirectPaymentRefusedWithoutARC: with no ARC client, a validly signed
+// direct payment is refused with ERR_DIRECT_PAYMENT_UNAVAILABLE. Its signature
+// checks out against the source output it carries, but that output is the
+// client's own claim (buildSignedDirectPaymentTx spends a parent that was
+// never broadcast), and without ARC nothing shows that it exists.
+func TestDirectPaymentRefusedWithoutARC(t *testing.T) {
+	payeeScript := testPayeeScript(t)
+	pg := NewPaymentGate(PaymentGateConfig{
+		PriceSats:      100,
+		PayeeScriptHex: payeeScript,
+		NonceProvider:  &DevNonceProvider{},
+		// No ARC client.
+	})
+
+	tx := buildSignedDirectPaymentTx(t, payeeScript, 100)
+	efHex, err := tx.EFHex()
+	if err != nil {
+		t.Fatalf("serialize extended format: %v", err)
+	}
+	receipt, err := pg.verifyDirectPayment(efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	if err == nil {
+		t.Fatalf("a direct payment must be refused when the node has no ARC client, got receipt %+v", receipt)
+	}
+	if !errors.Is(err, errDirectPaymentUnavailable) {
+		t.Fatalf("want errDirectPaymentUnavailable, got %v", err)
 	}
 }
