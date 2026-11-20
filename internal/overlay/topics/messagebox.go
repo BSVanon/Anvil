@@ -16,11 +16,12 @@ package topics
 // (MessageBoxTopicManager.ts:37-106) 1:1 modulo language idioms:
 // PushDrop-decode (:48) -> pop the trailing field as the signature, the
 // rest destructured as [identityKeyBuf, hostBuf] (:51-52) -> both fields
-// required non-empty (:54-60) -> host must additionally be valid UTF-8
-// (Utils.toUTF8, :62-67) -> verify the signature with the canonical
-// "anyone" ProtoWallet over the flattened remaining fields (:69-70, :73),
-// counterparty = hex(field[0]) (:69, :75), protocolID = [1, "messagebox
-// advertisement"] (:76), keyID = "1" (:77).
+// required non-empty (:54-60) -> host decoded permissively, matching
+// canon's own non-fatal Utils.toUTF8 (:62-67, N4) -> verify the
+// signature with the canonical "anyone" ProtoWallet over the flattened
+// remaining fields (:69-70, :73), counterparty = hex(field[0]) (:69,
+// :75), protocolID = [1, "messagebox advertisement"] (:76), keyID = "1"
+// (:77).
 //
 // Coin retention (K1, corrected from a stale pin). The overlay-express-examples
 // @481c42e pin this port originally followed retained every previous coin
@@ -40,17 +41,21 @@ package topics
 // Divergences (interop-priority rule: executable interop with the
 // canonical MessageBoxClient.ts wins):
 //
-//   - UTF-8 strictness. Canon's host decode (Utils.toUTF8,
-//     MessageBoxTopicManager.ts:62-67) wraps a non-fatal TextDecoder
-//     (ts-sdk `toUTF8`, primitives/utils.ts — non-fatal confirmed, N4):
-//     canon therefore never refuses invalid UTF-8 for this. This port
-//     uses Go's utf8.Valid and refuses a host field containing invalid
-//     UTF-8 outright, per the explicit admission rule the spec states —
-//     a deliberate, documented divergence, strictly more conservative
-//     than canon, never less. Only adversarial/malformed byte sequences
-//     diverge: a canonical client-built advert (anointHost,
-//     MessageBoxClient.ts:1551, `Utils.toArray(host, 'utf8')` on a JS
-//     string that is always well-formed) never produces one.
+//   - UTF-8 strictness (N4, corrected from a stricter prior pass). Canon's
+//     host decode (Utils.toUTF8, MessageBoxTopicManager.ts:62-67) wraps a
+//     non-fatal TextDecoder (ts-sdk `toUTF8`, primitives/utils.ts —
+//     confirmed non-fatal): canon never refuses invalid UTF-8 for this.
+//     This port used to refuse a host field containing invalid UTF-8
+//     outright at admission; it now matches canon exactly and admits it.
+//     A canonical client-built advert (anointHost, MessageBoxClient.ts
+//     :1551, `Utils.toArray(host, 'utf8')` on a JS string that is always
+//     well-formed) never produces one anyway, so this only ever affects
+//     an adversarial/malformed submission — which still can't resolve to
+//     anything: internal/messaging/home.go's qualifyAndNormalise refuses
+//     a host that isn't valid UTF-8 before it's ever compared against
+//     anything, so an invalid-UTF8 host advert is admitted and findable
+//     via Lookup, exactly like canon, but is never counted by the Home
+//     Rule.
 //   - Decode-failure narration. Canon's per-output try/catch logs every
 //     skip reason, including a caught decode exception for a non-PushDrop
 //     output (MessageBoxTopicManager.ts:85-87 console.warn). This port
@@ -76,7 +81,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"unicode/utf8"
 
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
@@ -340,12 +344,11 @@ func decodeMessageBoxAdvert(scriptBytes []byte) (*mbDecoded, error) {
 		// "[ADMISSIBILITY] Output skipped due to empty field(s)" skip.
 		return nil, nil
 	}
-	if !utf8.Valid(hostBuf) {
-		// Invalid UTF-8 host — matches the canonical
-		// "[ADMISSIBILITY] Output skipped due to UTF-8 decoding
-		// failure" skip. See the UTF-8-strictness divergence above.
-		return nil, nil
-	}
+	// N4: admission does NOT refuse invalid UTF-8 in the host field —
+	// matching canon's own non-fatal decode (see the header comment).
+	// hostBuf is kept and stored as-is, valid or not; a host that
+	// doesn't survive re-parsing as a URL simply isn't counted later
+	// (internal/messaging/home.go's qualifyAndNormalise).
 
 	entry := &MessageBoxAdvertEntry{
 		IdentityKey: hex.EncodeToString(identityKeyBuf),

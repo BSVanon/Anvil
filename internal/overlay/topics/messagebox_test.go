@@ -152,15 +152,22 @@ func TestMessageBoxAdmit_EmptyIdentityKeyRejected(t *testing.T) {
 	assertNotAdmitted(t, admitOne(t, scriptBytes, nil))
 }
 
-// TestMessageBoxAdmit_InvalidUTF8HostRejected: a host field containing a
-// byte sequence that cannot be valid UTF-8 ({0xff, 0xfe, 0xfd}) is
-// refused — the UTF-8-strictness divergence cited in messagebox.go
-// (stricter than canon's non-fatal TextDecoder, never looser).
-func TestMessageBoxAdmit_InvalidUTF8HostRejected(t *testing.T) {
+// TestMessageBoxAdmit_InvalidUTF8HostAdmitted (N4, corrected from a
+// stricter prior pass): a host field containing a byte sequence that
+// cannot be valid UTF-8 ({0xff, 0xfe, 0xfd}) is still admitted — canon's
+// own host decode (Utils.toUTF8) is a non-fatal TextDecoder that never
+// refuses this, so admission doesn't either. The host simply never
+// resolves to anything useful: it isn't counted by the Home Rule (see
+// TestQualifyAndNormalise_InvalidUTF8HostNotCounted,
+// internal/messaging/home_test.go).
+func TestMessageBoxAdmit_InvalidUTF8HostAdmitted(t *testing.T) {
 	w, identityPub := mbIdentityWallet(t)
 	scriptBytes := lockMessageBoxFields(t, w, [][]byte{identityPub, {0xff, 0xfe, 0xfd}})
 
-	assertNotAdmitted(t, admitOne(t, scriptBytes, nil))
+	inst := admitOne(t, scriptBytes, nil)
+	if inst == nil || len(inst.OutputsToAdmit) != 1 || inst.OutputsToAdmit[0] != 0 {
+		t.Fatalf("expected output 0 admitted (invalid UTF-8 host is non-fatal, matching canon), got %+v", inst)
+	}
 }
 
 // TestMessageBoxAdmit_RemovesPreviousCoins confirms the K1-corrected

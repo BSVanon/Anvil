@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 )
@@ -181,7 +182,15 @@ func (r *lookupHomeResolver) ownsHost(normalisedHost string) bool {
 // *.test, or *.invalid, or *.localhost) and, if it passes, returns the
 // normalised form: lowercase scheme and host, default port dropped,
 // trailing slash dropped, path kept. Returns ("", false) for a host that
-// fails the filter or doesn't parse as a URL.
+// fails the filter, isn't valid UTF-8 (N4 — see below), or doesn't parse
+// as a URL.
+//
+// N4: a host whose bytes aren't valid UTF-8 is never counted, full stop
+// — this is now the ONLY place that checks it. Admission used to refuse
+// such a host outright (topics/messagebox.go); it no longer does,
+// matching canon's own non-fatal decode, so an adversarial advert with a
+// garbled host is admitted and findable via Lookup like any other, but
+// can never qualify as a Home or Elsewhere advert here.
 //
 // K8 (review's host-filter table, proved against Node 22's WHATWG `URL`)
 // closes three divergences from the canonical client, which normalises
@@ -258,7 +267,16 @@ func qualifyAndNormalise(raw string) (string, bool) {
 	if strings.ToLower(u.Scheme) != "https" {
 		return "", false
 	}
-	hostname := strings.ToLower(u.Hostname())
+	rawHostname := u.Hostname()
+	if !utf8.ValidString(rawHostname) {
+		// N4: admission no longer refuses an invalid-UTF8 host (matching
+		// canon's own non-fatal decode — see topics/messagebox.go's
+		// header comment) — so this is the layer that keeps such a host
+		// from being usable: it's stored and findable via Lookup, same
+		// as canon, but never counted as a qualifying advert here.
+		return "", false
+	}
+	hostname := strings.ToLower(rawHostname)
 	isIPv6 := strings.Contains(hostname, ":") // bracket-stripped by Hostname(), so ':' only ever appears in an IPv6 literal
 	if !isIPv6 {
 		// K8: IDNA first, matching the real host parser's step order —

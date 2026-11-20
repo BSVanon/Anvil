@@ -164,6 +164,19 @@ func TestHomeResolver_SeveralAdvertsAtOnce(t *testing.T) {
 // (scratchpad/repro/messaging_zz_review_test.go.txt) made permanent as a
 // real assertion test: every row of the review's K8 host-filter table,
 // proved against Node 22's WHATWG `URL`.
+// TestQualifyAndNormalise_InvalidUTF8HostNotCounted (N4): a host string
+// containing a byte sequence that cannot be valid UTF-8 never qualifies.
+// Admission admits such an advert now (matching canon's non-fatal
+// decode, topics/messagebox_test.go's
+// TestMessageBoxAdmit_InvalidUTF8HostAdmitted); this is the layer that
+// keeps it from being usable.
+func TestQualifyAndNormalise_InvalidUTF8HostNotCounted(t *testing.T) {
+	raw := "https://" + string([]byte{0xff, 0xfe, 0xfd})
+	if _, ok := qualifyAndNormalise(raw); ok {
+		t.Fatalf("expected a host with invalid UTF-8 bytes to never qualify, raw=%q", raw)
+	}
+}
+
 func TestQualifyAndNormalise_K8HostFilterTable(t *testing.T) {
 	// IPv4 numeric forms: three different spellings of the loopback
 	// address must all be excluded, matching canon ("excluded, hostname
