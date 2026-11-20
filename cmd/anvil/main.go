@@ -117,7 +117,7 @@ func main() {
 	if cfg.API.AuthToken != "" {
 		log.Printf("  auth:       configured (run 'anvil token' to display)")
 	}
-
+	configureAdmission(cfg) // logs the memory limit with the lines above
 	go checkForUpdate(logger)
 
 	headerDir := filepath.Join(cfg.Node.DataDir, "headers")
