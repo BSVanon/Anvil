@@ -468,6 +468,11 @@ proves authorship, but it does not replace bearer auth or x402 payment for
 data write endpoints. Messagebox authentication is described above and does
 not use x402.
 
+Get your auth token:
+```bash
+sudo anvil token
+```
+
 ### Paying a request
 
 A priced request without payment answers 402 with an `X402-Challenge`
@@ -533,11 +538,6 @@ this needs topic ownership.
 `/app/{name}` and `/explorer` (topic `anvil:catalog`) and `/mesh/nodes`
 (topic `mesh:heartbeat`). The SSE subscription was always exact. Mesh peers
 still subscribe to each other by topic prefix.
-
-Get your auth token:
-```bash
-sudo anvil token
-```
 
 ## Real-time Subscription (SSE)
 
