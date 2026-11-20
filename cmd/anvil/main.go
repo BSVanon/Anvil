@@ -734,15 +734,13 @@ func main() {
 			}
 
 			go pub.RunHeartbeat(feedCtx, 60*time.Second, feeds.HeartbeatSources{
-				HeightFn:   headerStore.Tip,
-				PeersFn:    gossipMgr.PeerCount,
-				TopicsFn:   envStore.Topics,
-				DemandFn:   gossipMgr.DemandMap,
-				UpstreamFn: upstreamFn,
+				HeightFn:            headerStore.Tip,
+				PeersFn:             gossipMgr.PeerCount,
+				TopicsFn:            heartbeatTopicsFn(envStore),
+				DemandFn:            gossipMgr.DemandMap,
+				PrivateOnlyTopicsFn: heartbeatPrivateOnlyTopicsFn(envStore),
+				UpstreamFn:          upstreamFn,
 			})
-
-			// Block tip feed removed — experimental, no consumers.
-			// Header sync continues internally for x402 payment verification.
 
 			log.Printf("feeds: heartbeat (60s) publisher started")
 		}
