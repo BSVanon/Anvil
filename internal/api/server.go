@@ -37,6 +37,10 @@ type headerStore interface {
 	HeaderAtHeight(uint32) ([]byte, error)
 	HeightForHash(*chainhash.Hash) (uint32, error)
 	RangeHeaders(uint32, uint32) ([][]byte, uint32, error)
+	// RangeHeadersTruncated backs the chaintracks v2 /headers and
+	// /headers.bin routes only — see its doc comment in
+	// internal/headers/store.go for why it never errors past tip.
+	RangeHeadersTruncated(uint32, uint32) ([][]byte, uint32, error)
 	Tip() uint32
 	Work() *big.Int
 	// SubscribeTip/SubscribeReorg feed the chaintracks v2 SSE routes
@@ -278,9 +282,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /chaintracks/v2/tip.bin", s.openPublic(s.handleChaintracksV2TipBinary))
 	s.mux.HandleFunc("GET /chaintracks/v2/tip/stream", s.openPublic(s.handleChaintracksV2TipStream))
 	s.mux.HandleFunc("GET /chaintracks/v2/reorg/stream", s.openPublic(s.handleChaintracksV2ReorgStream))
-	// Not a canonical route (the canonical route table has no /height at
-	// all) — added because bcommon's Arcade kind calls it; see
-	// handleChaintracksV2Height's doc comment.
+	// /height IS a canonical route (routes/fiber/routes.go:109 Register,
+	// handleGetHeight impl at :306-316) — it's simply absent from the
+	// *standalone* go-chaintracks server's route table (cmd/server/api.go),
+	// which is not what Anvil mirrors here; see handleChaintracksV2Height's
+	// doc comment.
 	s.mux.HandleFunc("GET /chaintracks/v2/height", s.openPublic(s.handleChaintracksV2Height))
 	// header/height/{height} and header/hash/{hash} also serve their own
 	// ".bin" shape — see handlers_chaintracks_v2.go's doc comments on why

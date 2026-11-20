@@ -426,23 +426,59 @@ func (s *Store) RangeHeaders(from, count uint32) ([][]byte, uint32, error) {
 	if last > uint64(tip) {
 		return nil, tip, ErrRangeExceedsTip
 	}
+	out, err := s.readHeadersLocked(from, count)
+	if err != nil {
+		return nil, tip, err
+	}
+	return out, tip, nil
+}
 
+// RangeHeadersTruncated is RangeHeaders without the hard tip-exceeded
+// error: count is clamped to what exists from `from` up to tip (zero past
+// tip), matching go-chaintracks' collectHeaders (routes/fiber/routes.go
+// :458-469), which stops at the first missing height and still answers
+// 200. Chaintracks v2 /headers(.bin) only (handlers_chaintracks_v2.go) —
+// native /headers/range keeps RangeHeaders' hard-error contract as-is.
+func (s *Store) RangeHeadersTruncated(from, count uint32) ([][]byte, uint32, error) {
+	if count == 0 {
+		return nil, 0, fmt.Errorf("count must be >= 1")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tip := s.tip
+	if from > tip {
+		return nil, tip, nil
+	}
+	available := uint64(tip) - uint64(from) + 1
+	if uint64(count) > available {
+		count = uint32(available) //nolint:gosec // available < count (a uint32) in this branch
+	}
+	out, err := s.readHeadersLocked(from, count)
+	if err != nil {
+		return nil, tip, err
+	}
+	return out, tip, nil
+}
+
+// readHeadersLocked reads count consecutive headers from `from`; the caller
+// must hold s.mu and have already bounds-checked count.
+func (s *Store) readHeadersLocked(from, count uint32) ([][]byte, error) {
 	out := make([][]byte, 0, count)
 	// Iterate by offset so the loop counter cannot overflow uint32 even when
-	// from+count would wrap. The uint64 bound check above already guarantees
-	// from+i fits in uint32 for every i in [0, count).
+	// from+count would wrap.
 	for i := uint32(0); i < count; i++ {
 		h := from + i
 		raw, err := s.db.Get(heightToKey(prefixHeader, h), nil)
 		if err != nil {
-			return nil, tip, fmt.Errorf("header at %d: %w", h, err)
+			return nil, fmt.Errorf("header at %d: %w", h, err)
 		}
 		if len(raw) != 80 {
-			return nil, tip, fmt.Errorf("header at %d: expected 80 bytes, got %d", h, len(raw))
+			return nil, fmt.Errorf("header at %d: expected 80 bytes, got %d", h, len(raw))
 		}
 		out = append(out, raw)
 	}
-	return out, tip, nil
+	return out, nil
 }
 
 // HashAtHeight returns the block hash at the given height.

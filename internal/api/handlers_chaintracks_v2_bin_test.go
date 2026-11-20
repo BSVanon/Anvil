@@ -179,17 +179,43 @@ func TestChaintracksV2HeadersBinary(t *testing.T) {
 	}
 }
 
-func TestChaintracksV2HeadersBinaryRangeErrors(t *testing.T) {
+// TestChaintracksV2HeadersBinaryTruncatesAndClamps proves headers.bin shares
+// chaintracksV2RawHeaders' truncate/clamp-not-reject behavior with plain
+// /headers (same underlying helper, see handlers_chaintracks_v2_headers_test.go
+// for the dedicated coverage of that helper), and that its extra
+// X-Header-Count header reports the actual (possibly truncated/clamped)
+// count, not the originally requested one.
+func TestChaintracksV2HeadersBinaryTruncatesAndClamps(t *testing.T) {
 	srv := testServer(t)
-	addServerTestChain(t, srv, 5)
+	addServerTestChain(t, srv, 5) // chain is heights 0..5, tip=5
 
-	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/headers.bin?height=3&count=10")
-	if code != http.StatusBadRequest {
-		t.Fatalf("range exceeding tip: expected 400, got %d %#v", code, body)
+	// height=3,count=10 would run past tip — truncated to heights 3,4,5 (3
+	// headers), not rejected.
+	code, hdr, data := fetchBareBytes(t, srv, "/chaintracks/v2/headers.bin?height=3&count=10")
+	if code != http.StatusOK {
+		t.Fatalf("range exceeding tip: expected 200, got %d", code)
 	}
-	code, _, body = fetchBareJSON(t, srv, "/chaintracks/v2/headers.bin?height=0&count="+strconv.Itoa(MaxHeadersRange+1))
-	if code != http.StatusBadRequest {
-		t.Fatalf("range above cap: expected 400, got %d %#v", code, body)
+	const wantNearTip = 3
+	if len(data) != wantNearTip*80 {
+		t.Fatalf("range exceeding tip: expected %d headers (%d bytes), got %d bytes", wantNearTip, wantNearTip*80, len(data))
+	}
+	if got := hdr.Get("X-Header-Count"); got != strconv.Itoa(wantNearTip) {
+		t.Fatalf("X-Header-Count = %q, want %q (the truncated count, not the requested 10)", got, strconv.Itoa(wantNearTip))
+	}
+
+	// count above this route's own cap is clamped, not rejected; on this
+	// 6-header chain the tip truncation also applies, confirming the two
+	// bounds compose (neither one masks the other).
+	code, hdr, data = fetchBareBytes(t, srv, "/chaintracks/v2/headers.bin?height=0&count="+strconv.Itoa(chaintracksV2MaxHeadersRange+1))
+	if code != http.StatusOK {
+		t.Fatalf("range above cap: expected 200, got %d", code)
+	}
+	const wantWholeChain = 6
+	if len(data) != wantWholeChain*80 {
+		t.Fatalf("range above cap: expected %d headers (%d bytes), got %d bytes", wantWholeChain, wantWholeChain*80, len(data))
+	}
+	if got := hdr.Get("X-Header-Count"); got != strconv.Itoa(wantWholeChain) {
+		t.Fatalf("X-Header-Count = %q, want %q", got, strconv.Itoa(wantWholeChain))
 	}
 }
 

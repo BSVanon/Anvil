@@ -3,12 +3,10 @@ package api
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/BSVanon/Anvil/internal/headers"
 	"github.com/libsv/go-p2p/chaincfg/chainhash"
 	"github.com/libsv/go-p2p/wire"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -40,13 +38,18 @@ import (
 // enveloped build of this file: previousHash/merkleRoot/hash are display
 // (big-endian) hex via chainhash.Hash.String()'s wire->display reversal.
 //
-// One deliberate, cited deviation from canonical: /headers is bounded by
-// Anvil's existing MaxHeadersRange (50) and hard-errors past the local tip,
-// instead of canonical's unbounded ParseHeightAndCount (chaintracks/parse.go
-// :9-22, no upper bound) + collectHeaders' silent stop-at-tip truncation
-// (routes.go:458-469). This matches the existing native /headers/range route
-// and is a stricter, not looser, contract — kept per the spec's allowance to
-// keep Anvil's stricter caps.
+// /headers and /headers.bin now match canonical's truncation semantics:
+// count is clamped to min(count, chaintracksV2MaxHeadersRange, what exists
+// up to the local tip) and the route still answers 200 with whatever that
+// yields — including zero headers when height is already past tip — rather
+// than 400ing a request a canonical-style sync client would consider
+// ordinary. Canonical: ParseHeightAndCount (chaintracks/parse.go:9-22, no
+// upper bound at all) + collectHeaders' silent stop-at-tip truncation
+// (routes.go:458-469), via internal/headers.Store's RangeHeadersTruncated.
+// chaintracksV2MaxHeadersRange (2000) is this route's own bound, distinct
+// from the native /headers/range route's MaxHeadersRange (50,
+// handlers_status.go) — that route's hard-error-past-tip contract is
+// unchanged.
 //
 // network is hardcoded to "main": Anvil has no testnet config today
 // (cmd/anvil/main.go, "the BRC-100 ecosystem is mainnet-only") and its header
@@ -262,14 +265,30 @@ func (s *Server) handleChaintracksV2HeaderByHash(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, chaintracksV2HeaderFor(hdr, height))
 }
 
-// chaintracksV2RawHeaders parses height/count, bounds them, and returns the
-// concatenated raw 80-byte headers plus the start height for a Cache-Control
-// decision — the shared body for /headers and /headers.bin (handlers_
+// chaintracksV2MaxHeadersRange bounds how many headers a single /headers or
+// /headers.bin request can ask for, before any further clamping to what the
+// local tip actually has. This is this route's OWN bound — distinct from
+// (and does not change) the native /headers/range route's MaxHeadersRange
+// (= 50, handlers_status.go), which that route still hard-errors past. 2000
+// headers is 160KB raw, a modest response-size ceiling for a binary-safe
+// route; reaching it still only clamps (200 with fewer headers), never
+// errors — see chaintracksV2RawHeaders.
+const chaintracksV2MaxHeadersRange = 2000
+
+// chaintracksV2RawHeaders parses height/count and returns the concatenated
+// raw 80-byte headers plus the start height for a Cache-Control decision —
+// the shared body for /headers and /headers.bin (handlers_
 // chaintracks_v2_bin.go), which differ only in the extra X-Start-Height /
-// X-Header-Count headers .bin sets. Canonical: routes/fiber/routes.go's
-// ParseHeightAndCount (chaintracks/parse.go:9-22) + collectHeaders
-// (routes.go:458-469), reusing Anvil's existing bounded RangeHeaders instead
-// — see the file-level deviation note above.
+// X-Header-Count headers .bin sets.
+//
+// count is clamped to min(count, chaintracksV2MaxHeadersRange, headers
+// remaining up to the local tip) via Store.RangeHeadersTruncated, and the
+// route always answers 200 with whatever that yields — including zero
+// headers when height is already past tip — matching canonical's
+// ParseHeightAndCount (chaintracks/parse.go:9-22, no upper bound at all) +
+// collectHeaders' silent stop-at-tip truncation (routes.go:458-469). A 400
+// is returned only for the same cases canonical's ParseHeightAndCount
+// itself rejects: a missing or unparseable height/count.
 func (s *Server) chaintracksV2RawHeaders(w http.ResponseWriter, r *http.Request) (data []byte, height uint32, ok bool) {
 	q := r.URL.Query()
 	heightStr, countStr := q.Get("height"), q.Get("count")
@@ -292,16 +311,11 @@ func (s *Server) chaintracksV2RawHeaders(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "count must be >= 1")
 		return nil, 0, false
 	}
-	if count > MaxHeadersRange {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("count must be <= %d", MaxHeadersRange))
-		return nil, 0, false
+	if count > chaintracksV2MaxHeadersRange {
+		count = chaintracksV2MaxHeadersRange
 	}
 
-	raws, tip, err := s.headerStore.RangeHeaders(height, count)
-	if errors.Is(err, headers.ErrRangeExceedsTip) {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("range exceeds local tip %d", tip))
-		return nil, 0, false
-	}
+	raws, _, err := s.headerStore.RangeHeadersTruncated(height, count)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "header read failed")
 		return nil, 0, false

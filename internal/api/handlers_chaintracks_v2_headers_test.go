@@ -45,23 +45,92 @@ func TestChaintracksV2HeadersRangeBytes(t *testing.T) {
 	}
 }
 
-func TestChaintracksV2HeadersRangeExceedsTip(t *testing.T) {
+// TestChaintracksV2HeadersTruncatesNearTip proves a range reaching past the
+// tip is truncated to what exists, not rejected — canonical's collectHeaders
+// (routes/fiber/routes.go:458-469) simply stops at the first missing height
+// and still answers 200 with whatever it collected. Replaces the pre-fix
+// behavior (a hard 400 once the request ran past tip, inherited from the
+// native /headers/range route's stricter contract).
+func TestChaintracksV2HeadersTruncatesNearTip(t *testing.T) {
 	srv := testServer(t)
-	addServerTestChain(t, srv, 5)
+	tip := addServerTestChain(t, srv, 10)
 
-	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/headers?height=3&count=10")
-	if code != http.StatusBadRequest {
-		t.Fatalf("expected 400 when range exceeds tip, got %d %#v", code, body)
+	// height=5, count=20 would run to height 24, but the chain only goes to
+	// 10 — expect exactly heights 5..10 (6 headers), not an error.
+	code, _, data := fetchBareBytes(t, srv, "/chaintracks/v2/headers?height=5&count=20")
+	if code != http.StatusOK {
+		t.Fatalf("truncation near tip: expected 200, got %d", code)
+	}
+	wantCount := int(tip) - 5 + 1
+	if len(data) != wantCount*80 {
+		t.Fatalf("expected %d truncated headers (%d bytes), got %d bytes", wantCount, wantCount*80, len(data))
+	}
+	lastHdr, err := decodeWireHeaderV2(data[len(data)-80:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHash, err := srv.headerStore.HashAtHeight(tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lastHdr.BlockHash(); got != *wantHash {
+		t.Fatalf("last truncated header hash = %s, want tip hash %s", got, wantHash)
 	}
 }
 
-func TestChaintracksV2HeadersRangeExceedsCap(t *testing.T) {
+// TestChaintracksV2HeadersPastTipIsEmptyOK proves a height already past the
+// local tip answers 200 with zero headers, matching canonical exactly:
+// collectHeaders' very first GetHeaderByHeight call fails immediately, the
+// loop breaks before collecting anything, and handleGetHeaders still
+// answers c.Send(data) on that empty data — 200, never 400 or 404.
+func TestChaintracksV2HeadersPastTipIsEmptyOK(t *testing.T) {
 	srv := testServer(t)
-	addServerTestChain(t, srv, 5)
+	addServerTestChain(t, srv, 5) // tip = 5
 
-	code, _, body := fetchBareJSON(t, srv, "/chaintracks/v2/headers?height=0&count="+strconv.Itoa(MaxHeadersRange+1))
-	if code != http.StatusBadRequest {
-		t.Fatalf("expected 400 above MaxHeadersRange, got %d %#v", code, body)
+	code, hdr, data := fetchBareBytes(t, srv, "/chaintracks/v2/headers?height=10&count=5")
+	if code != http.StatusOK {
+		t.Fatalf("height past tip: expected 200, got %d", code)
+	}
+	if len(data) != 0 {
+		t.Fatalf("height past tip: expected 0 bytes, got %d", len(data))
+	}
+	if got := hdr.Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("Content-Type = %q, want application/octet-stream even for an empty body", got)
+	}
+}
+
+// TestChaintracksV2HeadersCountClampedNotRejected covers the task's three
+// named count values: 51 (above the native /headers/range route's
+// MaxHeadersRange=50, but this route has its own, higher bound and must not
+// reuse that one), 2000 (exactly at chaintracksV2MaxHeadersRange), and 5000
+// (above it, clamped down to chaintracksV2MaxHeadersRange, never rejected).
+// Canonical's own ParseHeightAndCount has no upper bound at all
+// (chaintracks/parse.go:9-22); this route keeps a bound for memory safety,
+// but enforces it by clamping, not erroring.
+func TestChaintracksV2HeadersCountClampedNotRejected(t *testing.T) {
+	srv := testServer(t)
+	addServerTestChain(t, srv, chaintracksV2MaxHeadersRange+500)
+
+	tests := []struct {
+		name      string
+		count     int
+		wantCount int
+	}{
+		{name: "count=51 above the native route's 50-cap", count: 51, wantCount: 51},
+		{name: "count=2000 exactly at this route's cap", count: 2000, wantCount: chaintracksV2MaxHeadersRange},
+		{name: "count=5000 clamped to this route's cap", count: 5000, wantCount: chaintracksV2MaxHeadersRange},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := "/chaintracks/v2/headers?height=0&count=" + strconv.Itoa(tc.count)
+			code, _, data := fetchBareBytes(t, srv, path)
+			if code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", code)
+			}
+			if len(data) != tc.wantCount*80 {
+				t.Fatalf("expected %d headers (%d bytes), got %d bytes", tc.wantCount, tc.wantCount*80, len(data))
+			}
+		})
 	}
 }
 
