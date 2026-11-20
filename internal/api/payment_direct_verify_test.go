@@ -224,3 +224,39 @@ func TestDirectPaymentRejectsNoEmbeddedSourceOutput(t *testing.T) {
 	}
 	t.Logf("correctly refused missing source output: %v", err)
 }
+
+// TestDirectPaymentRejectsTxAlteredAfterSigning: a payment changed after it
+// was signed still carries a well-formed P2PKH unlocking script, but its
+// signature covers a different transaction, so the interpreter's signature
+// check refuses it, even on a node whose ARC would accept it. Each change is
+// made to a transaction that passes the input check as signed.
+func TestDirectPaymentRejectsTxAlteredAfterSigning(t *testing.T) {
+	payeeScript := testPayeeScript(t)
+	pg := NewPaymentGate(PaymentGateConfig{
+		PriceSats:      100,
+		PayeeScriptHex: payeeScript,
+		NonceProvider:  &DevNonceProvider{},
+		ARCClient:      mockARCServer(t),
+	})
+	payees := []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}}
+	alterations := map[string]func(tx *transaction.Transaction){
+		"payee output raised from 1 to 100 sats": func(tx *transaction.Transaction) { tx.Outputs[0].Satoshis = 100 },
+		"output added after signing": func(tx *transaction.Transaction) {
+			tx.AddOutput(scriptOutput(t, payeeScript, 100))
+		},
+	}
+	for name, alter := range alterations {
+		tx := buildSignedDirectPaymentTx(t, payeeScript, 1)
+		if err := verifyDirectPaymentInputs(tx); err != nil {
+			t.Fatalf("%s: the transaction as signed should pass the input check: %v", name, err)
+		}
+		alter(tx)
+		efHex, err := tx.EFHex()
+		if err != nil {
+			t.Fatalf("%s: serialize extended format: %v", name, err)
+		}
+		if _, err := pg.verifyDirectPayment(efHex, payees); err == nil {
+			t.Fatalf("%s: a payment altered after signing must be refused", name)
+		}
+	}
+}
