@@ -156,14 +156,36 @@ func TestInstall_RejectsDeclaredOversizeBody(t *testing.T) {
 }
 
 // TestGuard_PassesSwitchingProtocolsUntouched: a 101 response's body is the
-// upgraded connection, so the guard must hand it on as it came.
+// upgraded connection, so the guard must hand it on as it came, when the
+// request itself asked for the upgrade.
 func TestGuard_PassesSwitchingProtocolsUntouched(t *testing.T) {
 	body := &trackedBody{Reader: strings.NewReader("")}
 	resp := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: body, ContentLength: -1, Header: http.Header{}}
 	g := &guard{base: fakeTransport{resp: resp}, maxBytes: 1, maxLookupBytes: 1}
-	got, err := g.RoundTrip(newRequest(t, http.MethodGet, "http://h/ws"))
+	req := newRequest(t, http.MethodGet, "http://h/ws")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "keep-alive, Upgrade")
+	got, err := g.RoundTrip(req)
 	if err != nil || got != resp || got.Body != body {
-		t.Fatalf("a 101 response must pass through untouched, got %+v, err %v", got, err)
+		t.Fatalf("a 101 response to a request that asked for the upgrade must pass through untouched, got %+v, err %v", got, err)
+	}
+}
+
+// TestGuard_RefusesUnrequestedSwitchingProtocols: cold review round 4 cycle
+// 6b's B2 -- a 101 reply to a request that never asked for an upgrade hands
+// the caller the raw connection as its body, which go-overlay-services'
+// GASP client then reads in full with no cap on a non-200 status. Refused
+// here instead, with the body closed so the connection is released.
+func TestGuard_RefusesUnrequestedSwitchingProtocols(t *testing.T) {
+	body := &trackedBody{Reader: strings.NewReader("")}
+	resp := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: body, ContentLength: -1, Header: http.Header{}}
+	g := &guard{base: fakeTransport{resp: resp}, maxBytes: 1, maxLookupBytes: 1}
+	got, err := g.RoundTrip(newRequest(t, http.MethodGet, "http://h/ws"))
+	if got != nil || err == nil {
+		t.Fatalf("an unrequested 101 must be refused, got %+v, err %v", got, err)
+	}
+	if !body.closed {
+		t.Fatal("the refused 101's body must be closed")
 	}
 }
 

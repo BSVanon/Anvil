@@ -24,7 +24,12 @@
 // The GASP remote decodes a JSON stream that need never end.
 //
 // Install wraps DefaultClient's transport. Every response body is then capped
-// at MaxResponseBytes. Every reply to an overlay lookup is read in full, up to
+// at MaxResponseBytes. A lookup or GASP exchange's response headers must
+// arrive within HeaderTimeout of the request, or it is cancelled; a 101
+// Switching Protocols reply is refused outright unless the request itself
+// asked for the upgrade, since net/http hands an upgraded reply's body on as
+// the raw, unbounded connection (cold review round 4 cycle 6b, RISK 1, B2).
+// Every reply to an overlay lookup is read in full, up to
 // peerhygiene.MaxLookupResponseBytes, under one of bodyread.LookupPermits read
 // permits, and only then validated and decoded under one of
 // peerhygiene.LookupSlots decoding slots, shared with
@@ -34,16 +39,21 @@
 // exchange of at most SubmitTimeout, and its STEAK reply is read up to
 // MaxSteakBytes, validated, and handed on re-encoded, so go-sdk decodes
 // exactly what was checked. Every reply to a GASP node fetch
-// (/requestForeignGASPNode) is read in full, up to MaxResponseBytes -- the
-// cap this traffic already had -- under a read deadline and minimum rate,
-// decoded exactly as go-overlay-services' own doNodeRequest decodes it, and
-// refused if it does not decode that way or if its transaction has an
-// unlocking script the B1 reparse bug (cold review round 4) could reach; a
-// clear reply is handed on re-encoded from the node checked (see
-// checkGASPNode).
+// (/requestForeignGASPNode) or initial sync request (/requestSyncResponse) is
+// read in full, up to MaxResponseBytes -- the cap this traffic already had --
+// under gaspReadTimeout's size-scaled deadline and the same minimum rate a
+// lookup reply reads under. A GASP node reply is then decoded exactly as
+// go-overlay-services' own doNodeRequest decodes it, refused if it does not
+// decode that way or if its transaction has an unlocking script the B1
+// reparse bug (cold review round 4) could reach, and otherwise handed on as
+// exactly the bytes decoded, never re-encoded (cold review round 4 cycle 6b's
+// own B1: re-encoding a string field padded with '<', '>' or '&' can grow it
+// 6x under json.Marshal's HTML-escaping); see checkGASPNode. A sync reply has
+// no transaction to check and is handed on as read; see checkGASPSync.
 package netguard
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -99,38 +109,120 @@ func Install() {
 	})
 }
 
+// HeaderTimeout bounds how long a lookup or GASP exchange may wait for
+// response headers, from sending the request (cold review round 4 cycle 6b,
+// RISK 1): before this, only the body read had a deadline, so a peer that
+// never sent headers at all, or a redirect hop that never answered, blocked
+// that exchange forever -- and GASP sync runs one peer and topic at a time
+// on the root context, so one such peer froze every later one too.
+const HeaderTimeout = 30 * time.Second
+
 // guard is the http.RoundTripper Install puts on http.DefaultClient.
 type guard struct {
 	base           http.RoundTripper
 	maxBytes       int64
 	maxLookupBytes int64
-	readTimeout    time.Duration // how long reading one lookup reply may take
-	minRate        int64         // bytes/s a lookup or STEAK reply must keep up after grace; zero for no floor
+	readTimeout    time.Duration // how long reading one lookup reply's body may take; GASP's own deadline is gaspReadTimeout, not this field
+	minRate        int64         // bytes/s a lookup, GASP or STEAK reply must keep up after grace; zero for no floor
 	grace          time.Duration
 	maxSteakBytes  int64         // zero or less uses MaxSteakBytes
 	submitTimeout  time.Duration // one /submit exchange; zero or less uses SubmitTimeout
+	headerTimeout  time.Duration // zero or less uses HeaderTimeout
 }
 
-// RoundTrip sends req through the base transport and bounds the response. A
-// 101 Switching Protocols response and the reply to a HEAD request have no
-// body to bound and pass through untouched; a /submit exchange is bounded as
-// a whole by roundTripSubmit.
+func (g *guard) headerDeadline() time.Duration {
+	if g.headerTimeout <= 0 {
+		return HeaderTimeout
+	}
+	return g.headerTimeout
+}
+
+// withinHeaderDeadline sends req through g.base, cancelling the wait if
+// response headers do not arrive within g.headerDeadline(). Once headers
+// arrive the timer is disarmed and its cancel is instead released when the
+// response body is closed (the same shape roundTripSubmit's cancelOnClose
+// gives a /submit exchange's deadline), so a body that keeps arriving, just
+// slowly, is never cut short by this timer -- that is bodyread's job, under
+// its own, separate and longer deadline. Leaks no goroutine: the context's
+// own cancel is always eventually called, whether by the timer, by this
+// function on an error, or by the wrapped body's Close.
+func (g *guard) withinHeaderDeadline(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(req.Context())
+	timer := time.AfterFunc(g.headerDeadline(), cancel)
+	resp, err := g.base.RoundTrip(req.WithContext(ctx))
+	timer.Stop()
+	if err != nil || resp == nil {
+		cancel()
+		return resp, err
+	}
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// requestedUpgrade reports whether req itself asked for a protocol upgrade:
+// a non-empty Upgrade header and an "upgrade" token in Connection, the pair
+// every real upgrade request sets and no request any guarded call site here
+// sends (lookup, GASP and /submit are all plain POSTs). See RoundTrip's 101
+// handling.
+func requestedUpgrade(req *http.Request) bool {
+	if req.Header.Get("Upgrade") == "" {
+		return false
+	}
+	for _, tok := range strings.Split(req.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(tok), "upgrade") {
+			return true
+		}
+	}
+	return false
+}
+
+// RoundTrip sends req through the base transport and bounds the response.
+// The reply to a HEAD request has no body to bound and passes through
+// untouched. A 101 Switching Protocols response hands the caller the raw,
+// unbounded connection as its body (net/http's own transport special-cases
+// it); that is only safe when req itself asked for the upgrade, so an
+// unrequested one is refused outright instead (cold review round 4 cycle 6b,
+// B2: go-overlay-services' GASP client reads any non-200 reply's body in
+// full with no cap, so an unrequested 101 from a SHIP-advertised peer, with
+// Connection: Upgrade set on the reply alone, let that peer stream without
+// limit). A /submit exchange is bounded as a whole by roundTripSubmit. A
+// lookup or GASP exchange's response headers are bounded by
+// withinHeaderDeadline before the base transport is even asked (RISK 1);
+// their 200 replies are read, decoded (GASP nodes only) and re-bounded by
+// checkLookup, checkGASPNode or checkGASPSync.
 func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {
 	if isSubmit(req) {
 		return g.roundTripSubmit(req)
 	}
-	resp, err := g.base.RoundTrip(req)
+	headerBound := isLookup(req) || isGASPNode(req) || isGASPSync(req)
+	var resp *http.Response
+	var err error
+	if headerBound {
+		resp, err = g.withinHeaderDeadline(req)
+	} else {
+		resp, err = g.base.RoundTrip(req)
+	}
 	if err != nil || resp == nil {
 		return resp, err
 	}
-	if resp.StatusCode == http.StatusSwitchingProtocols || req.Method == http.MethodHead {
+	if req.Method == http.MethodHead {
 		return resp, nil
+	}
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		if requestedUpgrade(req) {
+			return resp, nil
+		}
+		_ = resp.Body.Close()
+		return nil, errors.New("netguard: refused a 101 Switching Protocols reply to a request that did not ask for one")
 	}
 	if resp.StatusCode == http.StatusOK && isLookup(req) {
 		return g.checkLookup(req, resp)
 	}
 	if resp.StatusCode == http.StatusOK && isGASPNode(req) {
 		return g.checkGASPNode(resp)
+	}
+	if resp.StatusCode == http.StatusOK && isGASPSync(req) {
+		return g.checkGASPSync(resp)
 	}
 	if resp.ContentLength > g.maxBytes {
 		_ = resp.Body.Close()

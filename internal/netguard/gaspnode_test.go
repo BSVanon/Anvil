@@ -114,22 +114,62 @@ func TestGuard_RefusesMalformedGASPNodeReply(t *testing.T) {
 }
 
 // TestGuard_PassesHonestGASPNodeReply: an honest reply reaches
-// OverlayGASPRemote.RequestNode decoded exactly as it would through an
-// unguarded client, byte for byte.
+// OverlayGASPRemote.RequestNode decoded to the same gasp.Node a direct,
+// unguarded client would get -- not byte for byte (the guard hands on
+// decodeGASPNode's own consumed slice, never the reply's original bytes
+// unchanged; see checkGASPNode's doc comment), but field for field, by
+// reflect.DeepEqual on what each client actually decodes. Each case
+// populates every field doNodeRequest's own gasp.Node can carry -- Proof,
+// TxMetadata, OutputMetadata and Inputs, not just RawTx, GraphID and
+// OutputIndex -- so a guard change that dropped or altered one of them in
+// the slice it hands on would show up here (cold review round 4 cycle 6b
+// nit; folds in zz_rev2_roundtrip_test.go's TestRev2_HonestFullNodeThroughGuard,
+// which checked the same guarded-vs-unguarded property through the same
+// code path).
 func TestGuard_PassesHonestGASPNodeReply(t *testing.T) {
-	url, _ := serveAnswer(t, "application/json", gaspNodeReply(t, honestTx(t)), false)
-
-	want, err := engine.NewOverlayGASPRemote(url, "tm_test", &http.Client{}, 8).
-		RequestNode(context.Background(), nil, gaspOutpoint, false)
-	if err != nil {
-		t.Fatalf("unguarded RequestNode: %v", err)
+	txHex := hex.EncodeToString(honestTx(t))
+	cases := map[string]*gasp.Node{
+		"unproven, metadata and inputs": {
+			GraphID:        gaspOutpoint,
+			RawTx:          txHex,
+			OutputIndex:    2,
+			TxMetadata:     "tm <&>",
+			OutputMetadata: "om",
+			Inputs:         map[string]*gasp.Input{"aa": {Hash: "bb"}},
+		},
+		"proven, metadata": {
+			GraphID:        gaspOutpoint,
+			RawTx:          txHex,
+			OutputIndex:    0,
+			Proof:          stringPtr("fe0100000001"),
+			TxMetadata:     "tm",
+			OutputMetadata: "om",
+		},
 	}
-	got, err := engine.NewOverlayGASPRemote(url, "tm_test", http.DefaultClient, 8).
-		RequestNode(context.Background(), nil, gaspOutpoint, false)
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("guarded RequestNode differs: err %v\n got  %+v\n want %+v", err, got, want)
+	for name, node := range cases {
+		t.Run(name, func(t *testing.T) {
+			body, err := json.Marshal(node)
+			if err != nil {
+				t.Fatalf("marshal gasp.Node: %v", err)
+			}
+			url, _ := serveAnswer(t, "application/json", body, false)
+
+			want, err := engine.NewOverlayGASPRemote(url, "tm_test", &http.Client{}, 8).
+				RequestNode(context.Background(), nil, gaspOutpoint, true)
+			if err != nil {
+				t.Fatalf("unguarded RequestNode: %v", err)
+			}
+			got, err := engine.NewOverlayGASPRemote(url, "tm_test", http.DefaultClient, 8).
+				RequestNode(context.Background(), nil, gaspOutpoint, true)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("guarded RequestNode differs: err %v\n got  %+v\n want %+v", err, got, want)
+			}
+		})
 	}
 }
+
+// stringPtr returns a pointer to s, for a gasp.Node literal's Proof field.
+func stringPtr(s string) *string { return &s }
 
 // TestGuard_RefusesEveryTrailingByteVariant is cold review round 4 cycle 6's
 // B1 reproduction, adapted into a permanent regression: checkGASPNode used to

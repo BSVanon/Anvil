@@ -26,7 +26,7 @@ func TestGaspNodeMalformed_RecoversAPanic(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 
-	node, err := decodeGASPNode(gaspNodeReply(t, honestTx(t)))
+	node, _, err := decodeGASPNode(gaspNodeReply(t, honestTx(t)))
 	if err != nil {
 		t.Fatalf("decodeGASPNode: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestGaspNodeMalformed_MutatedTransactionsNeverPanic(t *testing.T) {
 			_, _ = r.Read(s)
 		}
 		n++
-		node, err := decodeGASPNode(gaspNodeReply(t, s))
+		node, _, err := decodeGASPNode(gaspNodeReply(t, s))
 		if err != nil {
 			continue // gaspNodeReply's JSON/hex framing is always well-formed; not this probe's concern
 		}

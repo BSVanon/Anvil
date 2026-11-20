@@ -1,19 +1,24 @@
 package netguard
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/headers"
+	"github.com/BSVanon/Anvil/internal/overlay/hostiletest"
 	"github.com/BSVanon/Anvil/internal/overlay/overlaytest"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/gasp"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
@@ -113,5 +118,175 @@ func TestGuard_GASPSyncNeverAppendsAMalformedChildToTheRealStorage(t *testing.T)
 	storage := engine.NewOverlayGASPStorage("tm_dex_swap", &engine.Engine{ChainTracker: store}, nil)
 	if err := storage.AppendToGraph(ctx, honestNode, nil); err != nil {
 		t.Fatalf("appending the honest node to the real storage: %v", err)
+	}
+}
+
+// gaspE2ELargeParentPush and the bounds below belong to
+// TestGuard_GASPBypassNeverReachesVerify: a parent locking script this big,
+// and a heap/time cost far under what parsing or running it would take, so
+// either bound tripping is unmistakable evidence something walked into it.
+const gaspE2ELargeParentPush = 2_000_000
+
+const (
+	gaspE2EHeapBound = 64 << 20
+	gaspE2ETimeBound = 2 * time.Second
+)
+
+// TestGuard_GASPBypassNeverReachesVerify is the original cold review round 4
+// cycle 6 reviewer's reproduction (zz_rev_gasp_e2e_test.go,
+// TestRev_GASPBypassReachesVerify), ported as a permanent regression and
+// closing the two gaps cold review round 4 cycle 6b's re-review found in it:
+// its malformed child had no large parent, so it could not show a heap
+// regression, and -- like TestGuard_GASPSyncNeverAppendsAMalformedChildToTheRealStorage,
+// which this test complements rather than repeats -- a passing run never
+// actually reaches AppendToGraph or ValidateGraphAnchor for a refused node,
+// so neither probe's source having that call present was, on its own,
+// evidence that a reopened bypass would be caught there too.
+//
+// This keeps the original's own shape instead: if the malformed child --
+// spending a parent whose own locking script is one huge push
+// (gaspE2ELargeParentPush bytes), with or without a trailing byte after the
+// JSON object -- is refused by RequestNode alone, as it must be, the real
+// OverlayGASPStorage is never reached at all, asserted cheaply (heap and
+// time bounds, with the large parent behind it to make that bound mean
+// something). Only if RequestNode ever failed to refuse it -- the B1
+// bypass this whole cold review round 4 cycle reopened -- does the test go
+// on to run the real AppendToGraph and ValidateGraphAnchor the original
+// probe named, and fail loudly for reaching them at all, rather than on
+// whatever they happen to decide.
+func TestGuard_GASPBypassNeverReachesVerify(t *testing.T) {
+	store, err := headers.NewTestStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	overlaytest.SeedFundingBlock(t, store)
+	fund := overlaytest.FundingTx()
+
+	lock := []byte{script.OpPUSHDATA4, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint32(lock[1:], uint32(gaspE2ELargeParentPush))
+	lock = append(lock, bytes.Repeat([]byte{script.OpNOP}, gaspE2ELargeParentPush)...)
+	ls := script.Script(lock)
+	parent := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: &ls, Satoshis: 50_000})
+	parentOP := &transaction.Outpoint{Txid: *parent.TxID(), Index: 0}
+
+	// The B1 child: spends parent:0, ends in an undecodable instruction.
+	malformedChild := transaction.NewTransaction()
+	malformedChild.Version = 2
+	malformedChild.AddInputFromTx(parent, 0, nil)
+	priv, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatalf("new private key: %v", err)
+	}
+	sig, err := priv.Sign(bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	der := append(sig.Serialize(), 0x41)
+	pk := priv.PubKey().Compressed()
+	var badUnlock []byte
+	badUnlock = append(append(badUnlock, byte(len(der))), der...)
+	badUnlock = append(append(badUnlock, byte(len(pk))), pk...)
+	badUnlock = append(badUnlock, script.OpCHECKSIG, script.OpDROP, script.OpPUSHDATA1, 0x05) // claims 5 bytes, none follow
+	badUS := script.Script(badUnlock)
+	malformedChild.Inputs[0].UnlockingScript = &badUS
+	out := script.Script{script.OpTRUE}
+	malformedChild.AddOutput(&transaction.TransactionOutput{LockingScript: &out, Satoshis: 1000})
+
+	rootOP := &transaction.Outpoint{Txid: *malformedChild.TxID(), Index: 0}
+	fundProof := fund.MerklePath.Hex()
+	mk := func(tx *transaction.Transaction, proof *string) []byte {
+		body, err := json.Marshal(&gasp.Node{GraphID: rootOP, RawTx: tx.Hex(), OutputIndex: 0, Proof: proof})
+		if err != nil {
+			t.Fatalf("marshal gasp.Node: %v", err)
+		}
+		return body
+	}
+	parentReply := mk(parent, nil)
+	fundReply := mk(fund, &fundProof)
+	malformedReply := mk(malformedChild, nil)
+	fundOP := &transaction.Outpoint{Txid: *fund.TxID(), Index: 0}
+
+	for _, variant := range []struct {
+		name  string
+		reply []byte
+	}{
+		{"plain", malformedReply},
+		{"trailing byte", append(append([]byte{}, malformedReply...), 'x')},
+	} {
+		t.Run(variant.name, func(t *testing.T) {
+			replies := map[chainhash.Hash][]byte{
+				*parent.TxID():         parentReply,
+				*fund.TxID():           fundReply,
+				*malformedChild.TxID(): variant.reply,
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				var req gasp.NodeRequest
+				_ = json.Unmarshal(body, &req)
+				reply, ok := replies[*req.Txid]
+				if !ok {
+					http.Error(w, "unknown", http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Length", strconv.Itoa(len(reply)))
+				_, _ = w.Write(reply)
+			}))
+			defer srv.Close()
+			remote := engine.NewOverlayGASPRemote(srv.URL, "tm_dex_swap", http.DefaultClient, 8)
+			ctx := context.Background()
+
+			var nodeChild *gasp.Node
+			var rerr error
+			start := time.Now()
+			peak, heapBase := hostiletest.HeapPeak(func() {
+				nodeChild, rerr = remote.RequestNode(ctx, nil, rootOP, true)
+			})
+			took := time.Since(start)
+			t.Logf("%s: RequestNode took %v, heap peak %.1f MiB over %.1f MiB base, err=%v",
+				variant.name, took, mib(peak), mib(heapBase), rerr)
+
+			if rerr != nil {
+				// The expected, fixed outcome: refused before the real
+				// storage is ever reached, cheaply even with the large
+				// parent behind it.
+				if took > gaspE2ETimeBound {
+					t.Errorf("refused after %v, want well under %v", took, gaspE2ETimeBound)
+				}
+				if peak > gaspE2EHeapBound {
+					t.Errorf("heap peak %d bytes over base, want under %d (the large parent's push must never be read for a refused child)", peak, gaspE2EHeapBound)
+				}
+				return
+			}
+
+			// Not refused: the B1 bypass this test guards against has
+			// reopened. Follow it all the way through the real storage,
+			// the same as the original probe did, and fail on reaching
+			// ValidateGraphAnchor at all -- not on whatever it returns.
+			t.Logf("WARNING: %s was not refused -- following it into the real storage", variant.name)
+			nodeParent, err := remote.RequestNode(ctx, rootOP, parentOP, true)
+			if err != nil {
+				t.Fatalf("the parent's RequestNode: %v", err)
+			}
+			nodeFund, err := remote.RequestNode(ctx, rootOP, fundOP, true)
+			if err != nil {
+				t.Fatalf("the funding tx's RequestNode: %v", err)
+			}
+			storage := engine.NewOverlayGASPStorage("tm_dex_swap", &engine.Engine{ChainTracker: store}, nil)
+			for _, step := range []struct {
+				node *gasp.Node
+				by   *transaction.Outpoint
+			}{
+				{nodeChild, nil},
+				{nodeParent, rootOP},
+				{nodeFund, parentOP},
+			} {
+				if err := storage.AppendToGraph(ctx, step.node, step.by); err != nil {
+					t.Fatalf("append: %v", err)
+				}
+			}
+			verr := storage.ValidateGraphAnchor(ctx, rootOP)
+			t.Fatalf("the B1 bypass reopened: a malformed %s child reached the real ValidateGraphAnchor (err=%v) instead of being refused", variant.name, verr)
+		})
 	}
 }
