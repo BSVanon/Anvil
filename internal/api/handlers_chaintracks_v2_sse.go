@@ -42,6 +42,24 @@ import (
 // chaintracksSSEMaxPerClient / chaintracksSSEMaxGlobal bound concurrent
 // tip/stream + reorg/stream connections. Vars, not consts, so tests can
 // shrink them (mirrors sse_caps_test.go's own pattern for messagebox SSE).
+//
+// Rationale for the numbers: each live stream pins one handler goroutine
+// (minimum ~2-8KB stack) plus one small fixed-capacity buffered channel —
+// tip/stream's is a chan uint32 (cap 1); reorg/stream's is a chan
+// headers.ReorgNotice (cap 1), whose one in-flight value carries at most
+// maxReorgDepth=144 orphaned hashes (~4.6KB, internal/headers/store.go).
+// Call it on the order of 10KB of Go-side memory per connection, excluding
+// kernel socket buffers — at the global cap of 2000 that is tens of MB,
+// a deliberately modest ceiling for a BSV node.
+//
+// Lower than the messagebox SSE caps (sse_messages.go:
+// sseMaxStreamsPerClientKey=64, sseMaxStreamsNodeWide=10000): these are
+// no-login public infrastructure routes expected to serve a modest number
+// of long-lived header-sync clients per node, not messagebox's
+// per-identity authenticated inboxes serving a potentially large end-user
+// base. Both pairs of caps bound the same hazard — unbounded goroutine/
+// memory growth from concurrent streams — just calibrated to a different
+// expected client population.
 var (
 	chaintracksSSEMaxPerClient = 16
 	chaintracksSSEMaxGlobal    = 2000
@@ -98,8 +116,7 @@ func writeChaintracksStreamLimit(w http.ResponseWriter) {
 // handleChaintracksV2TipStream serves GET /chaintracks/v2/tip/stream.
 // Canonical: routes/fiber/routes.go:343-396 handleTipStream.
 func (s *Server) handleChaintracksV2TipStream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
@@ -117,8 +134,9 @@ func (s *Server) handleChaintracksV2TipStream(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusOK)
 
 	// Canonical sends the current tip immediately on connect.
-	s.writeChaintracksV2TipEvent(w, s.headerStore.Tip())
-	flusher.Flush()
+	if err := s.writeChaintracksV2TipEvent(w, s.headerStore.Tip()); err != nil {
+		return
+	}
 
 	ch := make(chan uint32, 1)
 	unsub := s.headerStore.SubscribeTip(ch)
@@ -133,40 +151,45 @@ func (s *Server) handleChaintracksV2TipStream(w http.ResponseWriter, r *http.Req
 		case <-ctx.Done():
 			return
 		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
-			flusher.Flush()
+			if err := writeSSE(w, ": ping\n\n"); err != nil {
+				return
+			}
 		case height := <-ch:
-			s.writeChaintracksV2TipEvent(w, height)
-			flusher.Flush()
+			if err := s.writeChaintracksV2TipEvent(w, height); err != nil {
+				return
+			}
 		}
 	}
 }
 
 // writeChaintracksV2TipEvent writes one SSE data frame carrying the bare
-// header JSON for height. A transient read/decode failure is skipped rather
-// than sent malformed — the stream just waits for the next tip.
-func (s *Server) writeChaintracksV2TipEvent(w http.ResponseWriter, height uint32) {
+// header JSON for height, under sse_deadline.go's per-write deadline. A
+// transient read/decode failure is skipped rather than sent malformed — the
+// stream just waits for the next tip; that is not a write error and never
+// aborts the connection. A genuine write/flush error (including a stalled
+// client exceeding the deadline) IS returned, so the caller's loop returns
+// and its deferred release() frees the stream slot.
+func (s *Server) writeChaintracksV2TipEvent(w http.ResponseWriter, height uint32) error {
 	raw, err := s.headerStore.HeaderAtHeight(height)
 	if err != nil {
-		return
+		return nil
 	}
 	hdr, err := decodeWireHeaderV2(raw)
 	if err != nil {
-		return
+		return nil
 	}
 	data, err := json.Marshal(chaintracksV2HeaderFor(hdr, height))
 	if err != nil {
-		return
+		return nil
 	}
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	return writeSSE(w, fmt.Sprintf("data: %s\n\n", data))
 }
 
 // handleChaintracksV2ReorgStream serves GET /chaintracks/v2/reorg/stream.
 // Canonical: routes/fiber/routes.go:398-445 handleReorgStream — no initial
 // event (only tip/stream sends one on connect).
 func (s *Server) handleChaintracksV2ReorgStream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
@@ -182,7 +205,9 @@ func (s *Server) handleChaintracksV2ReorgStream(w http.ResponseWriter, r *http.R
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	if err := writeSSE(w, ""); err != nil {
+		return
+	}
 
 	ch := make(chan headers.ReorgNotice, 1)
 	unsub := s.headerStore.SubscribeReorg(ch)
@@ -197,11 +222,13 @@ func (s *Server) handleChaintracksV2ReorgStream(w http.ResponseWriter, r *http.R
 		case <-ctx.Done():
 			return
 		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
-			flusher.Flush()
+			if err := writeSSE(w, ": ping\n\n"); err != nil {
+				return
+			}
 		case notice := <-ch:
-			s.writeChaintracksV2ReorgEvent(w, notice)
-			flusher.Flush()
+			if err := s.writeChaintracksV2ReorgEvent(w, notice); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -211,8 +238,12 @@ func (s *Server) handleChaintracksV2ReorgStream(w http.ResponseWriter, r *http.R
 // commonAncestor, newTip, depth. commonAncestor and newTip are looked up
 // fresh from the store — both heights are still present after a reorg (only
 // the orphaned range was deleted), which is why ReorgNotice carries the
-// orphaned hashes directly instead of heights to look up.
-func (s *Server) writeChaintracksV2ReorgEvent(w http.ResponseWriter, notice headers.ReorgNotice) {
+// orphaned hashes directly instead of heights to look up. Sits under
+// sse_deadline.go's per-write deadline, with the same skip-vs-error split as
+// writeChaintracksV2TipEvent: a JSON marshal failure is skipped (never
+// happens for this map in practice), while a genuine write/flush error is
+// returned so the caller's loop can return and release its stream slot.
+func (s *Server) writeChaintracksV2ReorgEvent(w http.ResponseWriter, notice headers.ReorgNotice) error {
 	event := map[string]any{
 		"orphanedHashes": chaintracksV2HashStrings(notice.OrphanedHashes),
 		"depth":          uint32(len(notice.OrphanedHashes)), //nolint:gosec // bounded by maxReorgDepth
@@ -229,9 +260,9 @@ func (s *Server) writeChaintracksV2ReorgEvent(w http.ResponseWriter, notice head
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
-		return
+		return nil
 	}
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	return writeSSE(w, fmt.Sprintf("data: %s\n\n", data))
 }
 
 func chaintracksV2HashStrings(hashes []chainhash.Hash) []string {

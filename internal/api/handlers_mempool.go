@@ -136,8 +136,7 @@ func (s *Server) handleWatchSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
@@ -149,7 +148,12 @@ func (s *Server) handleWatchSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	// Flush under a fresh write deadline (sse_deadline.go) — a stalled
+	// client that never reads must not block here forever, holding this
+	// goroutine and its watch subscription open indefinitely.
+	if err := writeSSE(w, ""); err != nil {
+		return
+	}
 
 	ch := make(chan mempool.WatchHit, 16)
 	unsub := s.watcher.Subscribe(address, ch)
@@ -167,8 +171,9 @@ func (s *Server) handleWatchSubscribe(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			seq++
-			fmt.Fprintf(w, "id: %d\ndata: %s\n\n", seq, data)
-			flusher.Flush()
+			if err := writeSSE(w, fmt.Sprintf("id: %d\ndata: %s\n\n", seq, data)); err != nil {
+				return
+			}
 		}
 	}
 }
