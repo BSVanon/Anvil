@@ -81,6 +81,26 @@ func TestSiteHandler_RootHonoursIfNoneMatch(t *testing.T) {
 	}
 }
 
+// TestSiteHandler_SeqQueryParamIs404 is R5, made permanent: bu_b7_spec.md:60
+// requires "/" with a ?seq= query parameter to 404 until B8 gives it a
+// meaning, not silently fall through to "/"'s plain latest-version
+// behaviour the way r.URL.Path == "/" alone (ignoring the query string)
+// used to.
+func TestSiteHandler_SeqQueryParamIs404(t *testing.T) {
+	origin := testOutpoint(703, 0)
+	content := &fakeContent{data: []byte("<html>hi</html>"), ct: "text/html"}
+	sh := buildTestSiteHandler(t, "site.example.org", origin, content, "any")
+
+	req := httptest.NewRequest("GET", "http://site.example.org/?seq=5", nil)
+	req.Host = "site.example.org"
+	w := httptest.NewRecorder()
+	sh.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for \"/\" with a ?seq= query parameter, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestSiteHandler_RootMismatchedIfNoneMatchServes200(t *testing.T) {
 	origin := testOutpoint(702, 0)
 	content := &fakeContent{data: []byte("<html>hi</html>"), ct: "text/html"}

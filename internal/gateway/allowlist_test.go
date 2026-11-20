@@ -25,6 +25,11 @@ func TestValidateDomain(t *testing.T) {
 		{"trailing hyphen label rejected", "bad-.example.org", "", false},
 		{"underscore rejected (not LDH)", "bad_domain.org", "", false},
 		{"multi-label subdomain", "sub.Example.ORG", "sub.example.org", true},
+		// N2: a bare IP literal is never a meaningful "domain" entry.
+		{"IPv4 literal rejected", "127.0.0.1", "", false},
+		{"IPv4 literal rejected (public-looking)", "203.0.113.42", "", false},
+		{"IPv6 literal rejected (loopback)", "::1", "", false},
+		{"IPv6 literal rejected (full form)", "2001:db8::1", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

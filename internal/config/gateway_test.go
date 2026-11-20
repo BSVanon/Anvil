@@ -192,3 +192,33 @@ api_host = "admin.example.org"
 		t.Fatal("expected an error when the sites file lists api_host as a domain entry")
 	}
 }
+
+// TestLoadRejectsInvalidContentScope is D3: only "", "site" or "any" are
+// accepted for [gateway] content_scope; anything else fails Load, rather
+// than silently falling back to "site" as it used to.
+func TestLoadRejectsInvalidContentScope(t *testing.T) {
+	dir := t.TempDir()
+	p := writeTestConfig(t, dir, "[node]\nname = \"test\"\n\n[gateway]\ncontent_scope = \"anyy\"\n")
+
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected an error for an invalid [gateway] content_scope")
+	}
+}
+
+// TestLoadAcceptsValidContentScopeValues is D3's positive case, for both
+// explicit values (empty/default is already covered by
+// TestLoadGatewayDefaults and TestLoadGatewayExplicitValues).
+func TestLoadAcceptsValidContentScopeValues(t *testing.T) {
+	for _, scope := range []string{"site", "any"} {
+		dir := t.TempDir()
+		p := writeTestConfig(t, dir, "[node]\nname = \"test\"\n\n[gateway]\ncontent_scope = \""+scope+"\"\n")
+
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("content_scope=%q: unexpected error: %v", scope, err)
+		}
+		if cfg.Gateway.ContentScope != scope {
+			t.Fatalf("content_scope=%q: got %q", scope, cfg.Gateway.ContentScope)
+		}
+	}
+}

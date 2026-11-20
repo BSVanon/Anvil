@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -212,12 +213,19 @@ func parseSitesFile(data []byte) (*Snapshot, error) {
 var ldhLabel = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
 // validateDomain lowercases raw, strips one trailing dot, and requires
-// every label to be ASCII LDH (decision 7). Punycode (xn--...) is already
-// plain ASCII LDH and passes; raw Unicode does not.
+// every label to be ASCII LDH (decision 7) and the whole string to not be
+// an IP literal (N2): a bare IPv4 or IPv6 address is never a meaningful
+// "domain" entry for the _ordfs TXT convention this package implements,
+// and refusing it outright is clearer than relying on IPv6's colons to
+// incidentally fail the LDH check. Punycode (xn--...) is already plain
+// ASCII LDH and passes; raw Unicode does not.
 func validateDomain(raw string) (string, bool) {
 	d := strings.ToLower(strings.TrimSpace(raw))
 	d = strings.TrimSuffix(d, ".")
 	if d == "" || len(d) > 253 {
+		return "", false
+	}
+	if net.ParseIP(d) != nil {
 		return "", false
 	}
 	for _, label := range strings.Split(d, ".") {

@@ -118,6 +118,13 @@ func (sh *SiteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case r.URL.Path == "/" && r.URL.Query().Has("seq"):
+		// R5 / bu_b7_spec.md:60: "Anything else, including ?seq= until
+		// B8: 404." B8 gives ?seq= its own meaning (requesting a specific
+		// tracked version); until then it must not silently fall through
+		// to "/"'s plain latest-version behaviour below.
+		sh.counters.NotFound.Add(1)
+		http.NotFound(w, r)
 	case r.URL.Path == "/":
 		sh.serveRoot(w, r, origin)
 	case strings.HasPrefix(r.URL.Path, "/content/"):

@@ -104,6 +104,8 @@ func finalizeGateway(cfg *Config, configPath string) error {
 		cfg.Gateway.ContentScope = defaultGatewayContentScope
 	case "site", "any":
 		// explicit and valid
+	default:
+		return fmt.Errorf(`invalid [gateway] content_scope %q: must be "" (defaults to "site"), "site" or "any"`, cfg.Gateway.ContentScope)
 	}
 	if cfg.Gateway.SitesFile == "" {
 		// "the config dir" (decision 7) is wherever this node's own config
