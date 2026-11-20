@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // graphContent is a controllable contentFetcher that serves a fixed graph
@@ -207,5 +208,154 @@ func TestScopeCache_SingleflightOneScanPerKey(t *testing.T) {
 	g.mu.Unlock()
 	if calls != 1 {
 		t.Fatalf("expected exactly 1 fetch of the root across %d concurrent InScope calls, got %d", n, calls)
+	}
+}
+
+// TestScanScope_CompleteWhenFinishedNaturally confirms scanScope's new
+// complete field: a scan that runs to its natural end (its queue empties
+// before any bound is even approached) is complete — the ordinary case
+// every other scope_test.go test already exercises, pinned explicitly here
+// now that caching depends on it (R4).
+func TestScanScope_CompleteWhenFinishedNaturally(t *testing.T) {
+	g := newGraphContent()
+	root := testOutpoint(700, 0)
+	g.set(root, "<html>leaf</html>")
+
+	result := scanScope(context.Background(), g, root, root)
+	if !result.complete {
+		t.Fatal("expected a scan that finishes within its bounds to be complete")
+	}
+}
+
+// TestScanScope_IncompleteWhenContextDone confirms the other half of R4's
+// caching gate: a scan whose context is already done before it can finish
+// is marked incomplete, even though the roots it never got to expand are
+// still (conservatively) in its returned set.
+func TestScanScope_IncompleteWhenContextDone(t *testing.T) {
+	g := newGraphContent()
+	root := testOutpoint(701, 0)
+	child := testOutpoint(702, 0)
+	g.set(root, "<html>"+ref(child)+"</html>")
+	g.set(child, "<html>leaf</html>")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done before the scan starts
+
+	result := scanScope(ctx, g, root, root)
+	if result.complete {
+		t.Fatal("expected a scan under an already-done context to be incomplete")
+	}
+	if !result.has(root) {
+		t.Fatal("expected the root to still be in the (incomplete) result unconditionally")
+	}
+}
+
+// blockingContent wraps a graphContent but blocks the fetch of one
+// specific outpoint until released, so a test can deterministically
+// cancel a caller's context WHILE the shared scan is in flight on a
+// different, later outpoint.
+type blockingContent struct {
+	inner   *graphContent
+	blockOn string
+	started chan struct{} // closed once the blocking fetch begins
+	release chan struct{} // closed to let the blocking fetch proceed
+}
+
+func (b *blockingContent) Inscription(ctx context.Context, txid string, vout int) ([]byte, string, error) {
+	op := txid + "_" + strconv.Itoa(vout)
+	if op == b.blockOn {
+		close(b.started)
+		<-b.release
+	}
+	return b.inner.Inscription(ctx, txid, vout)
+}
+
+// TestScopeCache_CallerCancellationDoesNotTruncateOrPoisonCache is R4's
+// required test: the first caller cancels mid-scan, a second caller still
+// gets the correct answer, and nothing truncated is cached.
+//
+// Chain: root -> slow -> tail -> deep. The shared scan blocks fetching
+// `slow`; while blocked, the first caller's OWN context is cancelled.
+// Before the fix, scanScope ran under that first caller's context, so the
+// cancellation would make the very next loop iteration (fetching `tail`)
+// see ctx.Err() != nil and stop there — `deep` (only discoverable by
+// fetching tail) would never be found, and that truncated result would
+// be cached forever. After the fix (R4's detached, independently-bounded
+// context), the first caller's cancellation has no effect at all on the
+// shared scan: it runs to completion, finds `deep`, and that complete
+// result is what gets cached for every caller, including the one that
+// cancelled.
+func TestScopeCache_CallerCancellationDoesNotTruncateOrPoisonCache(t *testing.T) {
+	g := newGraphContent()
+	root := testOutpoint(800, 0)
+	slow := testOutpoint(801, 0)
+	tail := testOutpoint(802, 0)
+	deep := testOutpoint(803, 0)
+	g.set(root, "<html>"+ref(slow)+"</html>")
+	g.set(slow, "<html>"+ref(tail)+"</html>")
+	g.set(tail, "<html>"+ref(deep)+"</html>")
+	g.set(deep, "<html>leaf</html>")
+
+	blocking := &blockingContent{
+		inner:   g,
+		blockOn: slow,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	sc := newScopeCache(blocking)
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	done1 := make(chan bool, 1)
+	go func() {
+		// `deep` is only reachable by scanning past `slow` and `tail`, so
+		// this forces the full chain to be walked — it is not one of the
+		// trivial root/latest matches InScope shortcuts.
+		done1 <- sc.InScope(ctx1, root, root, deep)
+	}()
+
+	<-blocking.started // the shared scan is now blocked fetching `slow`
+	cancel1()          // the FIRST caller cancels mid-scan
+	time.Sleep(50 * time.Millisecond)
+	close(blocking.release) // let the blocked fetch, and the scan, proceed
+
+	if ok := <-done1; !ok {
+		t.Fatal("expected the first (cancelling) caller to still get the correct, complete answer")
+	}
+
+	// A second caller must see the SAME correct, cached answer — not a
+	// truncated one poisoned by the first caller's cancellation.
+	if ok := sc.InScope(context.Background(), root, root, deep); !ok {
+		t.Fatal("expected the second caller to get the correct answer from cache")
+	}
+}
+
+// TestScopeCache_IncompleteResultIsNeverCached isolates R4's caching rule
+// from the context-detachment mechanism above: a fetch error alone (no
+// cancellation at all, plain context.Background() throughout) is enough
+// to mark a scan incomplete, and an incomplete result must never be
+// cached, regardless of why it was incomplete.
+func TestScopeCache_IncompleteResultIsNeverCached(t *testing.T) {
+	g := newGraphContent()
+	root := testOutpoint(810, 0)
+	missing := testOutpoint(811, 0) // referenced, but never g.set: its fetch errors
+	g.set(root, "<html>"+ref(missing)+"</html>")
+
+	sc := newScopeCache(g)
+
+	sc.InScope(context.Background(), root, root, missing)
+	g.mu.Lock()
+	callsAfterFirst := g.calls[root]
+	g.mu.Unlock()
+
+	// A second call for the same (origin, latestOutpoint) key must re-scan
+	// (re-fetching root) rather than reuse a cached-but-incomplete result.
+	sc.InScope(context.Background(), root, root, missing)
+	g.mu.Lock()
+	callsAfterSecond := g.calls[root]
+	g.mu.Unlock()
+
+	if callsAfterSecond <= callsAfterFirst {
+		t.Fatalf("expected the second call to re-scan rather than reuse a cached incomplete result: root fetches after first call=%d, after second=%d",
+			callsAfterFirst, callsAfterSecond)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 )
@@ -16,6 +17,37 @@ const (
 	scopeMaxOutpoints = 2000
 	scopeMaxBytes     = 32 << 20 // 32 MiB
 )
+
+// R3: scanScope's loop checks bytesFetched against scopeMaxBytes before
+// each fetch, not against the next fetch's size — content.Inscription has
+// no up-front, pre-fetch size signal to check against (its only per-fetch
+// bound is internal/content/woc_limit.go's maxWoCTxHexBytes, 32 MiB of hex
+// decoding to a 16 MiB transaction, applied inside the fetch itself, not
+// exposed to callers beforehand) — so the scan can run up to one more
+// fetch past scopeMaxBytes before the next loop check stops it: a 16 MiB
+// single fetch is this scan's worst-case overshoot, making ~48 MiB
+// (scopeMaxBytes plus one maximum fetch) the worst-case transient memory
+// one scan's fetches hold, on top of content.Server's own, separate
+// inscription cache.
+
+// scopeScanTimeout bounds the shared, singleflighted scan's own detached
+// context (R4). The scan runs independently of whichever caller happened
+// to trigger it (see InScope), so this is now the only deadline it has,
+// and it has to absorb a run of individually-slow-but-legitimate fetches
+// without tripping, or every such scan would go uncached and re-run on
+// every request. A single Inscription() fetch can itself legitimately
+// take up to ~30s in the worst case — WhatsOnChain's hex endpoint and its
+// JSON fallback can each take the content server's own 15s HTTP timeout
+// (internal/content/serve.go's client field) before falling through — so
+// 30s is this scan's per-fetch floor, not a sane scan-wide ceiling. Two
+// minutes gives room for several such slow-but-legitimate fetches in a
+// row while staying nowhere near the pathological worst case (up to
+// scopeMaxOutpoints sequential fetches against a consistently slow
+// source would take hours, far past any caller still waiting on it), so
+// a genuinely wedged or consistently slow source still can't hold the
+// scan — and the singleflight group every other caller for the same key
+// is waiting on — open indefinitely.
+const scopeScanTimeout = 2 * time.Minute
 
 // contentFetcher is the subset of *content.Server the scope scanner and
 // SiteHandler need — narrow so tests can fake content without a real
@@ -33,9 +65,19 @@ type contentFetcher interface {
 // literal text appears.
 var scopeRefRe = regexp.MustCompile(`/content/([0-9a-fA-F]{64})_([0-9]+)`)
 
-// scopeResult is one scan's reachable outpoint set.
+// scopeResult is one scan's reachable outpoint set. complete is R4's
+// caching gate: true for a scan that ran to its natural end — exhausting
+// its queue, or stopping at the deterministic scopeMaxOutpoints/
+// scopeMaxBytes/scopeMaxDepth bounds, all of which are complete, correct
+// answers by design — false for one cut short by its context (a timeout,
+// or a cancellation — though R4's detached context means no caller's own
+// cancellation can reach it any more) or by a fetch error. Only a complete
+// result may ever be cached (see InScope); an incomplete one is still
+// returned to its own caller (the best answer available right now), just
+// never memoized for anyone else.
 type scopeResult struct {
-	set map[string]struct{}
+	set      map[string]struct{}
+	complete bool
 }
 
 func (r *scopeResult) has(outpoint string) bool {
@@ -64,6 +106,16 @@ func newScopeCache(content contentFetcher) *scopeCache {
 // needed (decision 6). origin and latestOutpoint are always themselves in
 // scope: they are the scan's roots, not something reachability needs to
 // prove.
+//
+// R4: the shared, singleflighted scan runs under its own context, detached
+// from whichever caller happens to trigger it (context.WithoutCancel) and
+// bounded by its own timeout (scopeScanTimeout) rather than ctx's
+// cancellation — so a caller disconnecting mid-scan can neither truncate
+// the scan nor, by extension, ever poison the cache with a truncated
+// result for every other caller sharing the same (origin, latestOutpoint)
+// key. Only a complete scopeResult (scanScope's complete field) is ever
+// stored in byKey; an incomplete one is still the right answer for the
+// caller that's waiting on it right now, just never memoized.
 func (c *scopeCache) InScope(ctx context.Context, origin, latestOutpoint, target string) bool {
 	if target == origin || target == latestOutpoint {
 		return true
@@ -85,7 +137,12 @@ func (c *scopeCache) InScope(ctx context.Context, origin, latestOutpoint, target
 		}
 		c.mu.Unlock()
 
-		result := scanScope(ctx, c.content, origin, latestOutpoint)
+		scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scopeScanTimeout)
+		defer cancel()
+		result := scanScope(scanCtx, c.content, origin, latestOutpoint)
+		if !result.complete {
+			return result, nil
+		}
 
 		c.mu.Lock()
 		c.byKey[key] = result
@@ -106,11 +163,18 @@ type frontierNode struct {
 
 // scanScope performs decision 6's breadth-first reachability scan from
 // origin and latestOutpoint, bounded by depth, outpoint count and bytes
-// fetched. Hitting a bound simply stops expansion — everything found up
-// to that point is still a valid (if conservative) scope. A fetch failure
-// for a referenced outpoint also just stops expansion from that node: it
-// was still referenced (so it stays in scope), it just can't be scanned
-// further for its own references.
+// fetched. Hitting any of those deterministic bounds simply stops
+// expansion — everything found up to that point is a complete, correct
+// (if conservative) scope, fit to cache (R4). Stopping because ctx is
+// done (the scan's own bounded timeout — see InScope) is different:
+// expansion is abandoned early, so the queue may still have held
+// references this run never got to discover — the returned set is still
+// the best answer available for the caller waiting on it right now, but
+// it is marked incomplete, and InScope never caches an incomplete result.
+// A per-node fetch error also marks the result incomplete (for the same
+// caching reason) but does NOT stop the scan early: that node stays in
+// scope (it WAS referenced), it just can't be scanned further for its own
+// references, exactly as before — only the final caching decision changes.
 func scanScope(ctx context.Context, content contentFetcher, origin, latestOutpoint string) *scopeResult {
 	visited := map[string]struct{}{origin: {}, latestOutpoint: {}}
 	// Queue each root once: B7a's DefaultVersions always has
@@ -122,8 +186,13 @@ func scanScope(ctx context.Context, content contentFetcher, origin, latestOutpoi
 		queue = append(queue, frontierNode{latestOutpoint, 0})
 	}
 	bytesFetched := 0
+	complete := true
 
 	for len(queue) > 0 && len(visited) < scopeMaxOutpoints && bytesFetched < scopeMaxBytes {
+		if err := ctx.Err(); err != nil {
+			complete = false
+			break
+		}
 		node := queue[0]
 		queue = queue[1:]
 		if node.depth >= scopeMaxDepth {
@@ -135,6 +204,7 @@ func scanScope(ctx context.Context, content contentFetcher, origin, latestOutpoi
 		}
 		data, contentType, err := content.Inscription(ctx, txid, vout)
 		if err != nil {
+			complete = false
 			continue
 		}
 		bytesFetched += len(data)
@@ -156,7 +226,7 @@ func scanScope(ctx context.Context, content contentFetcher, origin, latestOutpoi
 			queue = append(queue, frontierNode{ref, node.depth + 1})
 		}
 	}
-	return &scopeResult{set: visited}
+	return &scopeResult{set: visited, complete: complete}
 }
 
 // splitOutpoint splits a normalised "txid_vout" string into its parts.
