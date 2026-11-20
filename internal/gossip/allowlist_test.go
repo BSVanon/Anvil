@@ -2,6 +2,7 @@ package gossip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -149,7 +150,11 @@ func TestMeshAllowlist_InboundNotListedIsRefused(t *testing.T) {
 // TestMeshAllowlist_OutboundNotListedIsRefused proves ConnectPeer's
 // allowed_peers enforcement: the DIALER's own allowed_peers decides whether
 // it keeps talking to a peer it just connected to, independent of whatever
-// the remote side configured.
+// the remote side configured. ConnectPeer completes the handshake and the
+// allowlist check synchronously, before ever announcing anything to the
+// remote (see establishAndAuthorizePeer) — so unlike the inbound case, a
+// refusal surfaces as an error from ConnectPeer itself, not only as
+// PeerCount() settling back to 0 sometime later.
 func TestMeshAllowlist_OutboundNotListedIsRefused(t *testing.T) {
 	walletA, _ := newIdentity(t)
 	walletB, _ := newIdentity(t)
@@ -161,11 +166,10 @@ func TestMeshAllowlist_OutboundNotListedIsRefused(t *testing.T) {
 
 	// A only allows "stranger" -- B is refused once A learns B's identity.
 	mgrA := newAllowlistTestManager(t, "outbound-a", walletA, []string{strangerHex})
-	if err := mgrA.ConnectPeer(t.Context(), wsURL); err != nil {
-		t.Fatalf("ConnectPeer: %v", err)
+	err := mgrA.ConnectPeer(t.Context(), wsURL)
+	if !errors.Is(err, errPeerRefused) {
+		t.Fatalf("ConnectPeer: got error %v, want errPeerRefused", err)
 	}
-
-	time.Sleep(1 * time.Second)
 
 	if got := mgrA.PeerCount(); got != 0 {
 		t.Fatalf("dialer PeerCount() = %d, want 0 (peer not in allowed_peers must be refused)", got)

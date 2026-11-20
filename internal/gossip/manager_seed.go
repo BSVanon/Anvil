@@ -2,6 +2,7 @@ package gossip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,11 +10,21 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
+// maxRefusalBackoff caps the reconnect delay for a seed whose authenticated
+// identity is connected but refused by [mesh] allowed_peers. Kept separate
+// from the plain connect-failure backoff below (capped at 5 minutes) — an
+// operator misconfiguration (wrong seed, DNS drift) that connects fine but
+// never passes the allowlist shouldn't retry at the same cadence as a
+// transient network failure, and 10 minutes is long enough that the repeated
+// refusal/disconnect doesn't stay visible as a reconnect-storm log line.
+const maxRefusalBackoff = 10 * time.Minute
+
 // ConnectSeedWithReconnect connects to a seed peer and automatically
 // reconnects if the connection drops. Blocks until ctx is cancelled.
 // Designed to run in a goroutine per seed peer.
 func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string, interval time.Duration) {
 	consecutiveFails := 0
+	consecutiveRefusals := 0
 	for {
 		// Anti-thrash: exponential backoff after consecutive failures,
 		// capped at 5 minutes. Resets on successful connection.
@@ -45,25 +56,20 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 			Transport: transport,
 		})
 
+		// By the time this fires, establishAndAuthorizePeer below has
+		// already re-keyed this peer's map entry to its identity hex and
+		// checked allowed_peers — this callback only still needs to run
+		// the one-time bond check.
 		peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
 			pkHex := fmt.Sprintf("%x", senderPK.Compressed())
 
 			m.mu.Lock()
 			needsBondCheck := false
-			if mp, ok := m.peers[endpoint]; ok && mp.IdentityPK == nil {
-				mp.IdentityPK = senderPK
-				m.peers[pkHex] = mp
-				delete(m.peers, endpoint)
+			if mp, ok := m.peers[pkHex]; ok && !mp.bondChecked {
+				mp.bondChecked = true
 				needsBondCheck = true
 			}
 			m.mu.Unlock()
-
-			// [mesh] allowed_peers: refuse an outbound seed whose identity
-			// isn't listed, right after the handshake and before any bond
-			// check or message processing.
-			if needsBondCheck && !m.checkAllowedPeer(pkHex, "outbound", endpoint) {
-				return fmt.Errorf("peer identity not in allowed_peers")
-			}
 
 			if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
 				balance, err := m.bondChecker.VerifyBond(senderPK)
@@ -132,6 +138,44 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 		m.logLiveDataReady(peerCount)
 
 		go transport.StartReceive()
+
+		// Complete the handshake and check [mesh] allowed_peers BEFORE
+		// sending anything derived from local state — see
+		// establishAndAuthorizePeer. A refused peer is already removed
+		// and its transport closed.
+		pkHex, authErr := m.establishAndAuthorizePeer(ctx, peer, endpoint, "outbound", endpoint, 5000)
+		if authErr != nil {
+			if errors.Is(authErr, errPeerRefused) {
+				// Refused, not merely unreachable: back off exponentially
+				// up to maxRefusalBackoff instead of the fixed interval,
+				// so a misconfigured seed doesn't reconnect-and-get-refused
+				// every interval forever.
+				consecutiveRefusals++
+				refusalDelay := interval * time.Duration(uint64(1)<<min(consecutiveRefusals, 5))
+				if refusalDelay > maxRefusalBackoff {
+					refusalDelay = maxRefusalBackoff
+				}
+				m.logger.Warn("seed peer refused by allowed_peers, backing off",
+					"endpoint", endpoint, "peer", truncate(pkHex), "retry_in", refusalDelay,
+					"consecutive_refusals", consecutiveRefusals)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(refusalDelay):
+					continue
+				}
+			}
+			m.logger.Warn("seed peer handshake failed, retrying",
+				"endpoint", endpoint, "error", authErr, "retry_in", interval)
+			m.removePeerWithReason(endpoint, "handshake_failed")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+				continue
+			}
+		}
+		consecutiveRefusals = 0
 
 		if err := m.announceInterests(peer); err != nil {
 			m.logger.Warn("seed peer interest announce failed", "endpoint", endpoint, "error", err)

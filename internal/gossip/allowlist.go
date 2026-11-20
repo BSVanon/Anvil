@@ -1,10 +1,21 @@
 package gossip
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bsv-blockchain/go-sdk/auth"
 )
+
+// errPeerRefused is returned by establishAndAuthorizePeer when the peer's
+// authenticated identity is not in [mesh] allowed_peers. Callers use
+// errors.Is to tell this apart from a handshake failure (timeout, transport
+// error), since the two call for different retry/backoff treatment.
+var errPeerRefused = errors.New("peer identity not in allowed_peers")
 
 // allowedPeerRefusalLogInterval rate-limits repeated refusal log lines for
 // the same identity, so a peer stuck in a reconnect loop cannot spam the
@@ -89,4 +100,53 @@ func (m *Manager) checkAllowedPeer(pkHex, direction, endpoint string) bool {
 	}
 	m.removePeerWithReason(pkHex, "not_allowed")
 	return false
+}
+
+// establishAndAuthorizePeer completes the BRC-31 handshake for an outbound
+// dial — ConnectPeer / ConnectSeedWithReconnect — and checks the resulting
+// identity against [mesh] allowed_peers before the caller sends anything
+// derived from local state (topic interests, the SHIP directory, catch-up
+// requests) to it.
+//
+// peer.GetAuthenticatedSession(ctx, nil, maxWaitMs) performs (or reuses) the
+// handshake only — unlike peer.ToPeer, which performs the same handshake
+// then immediately sends a payload on it with no way for the caller to
+// intervene in between. Once this returns, go-sdk's autoPersistLastSession
+// (on by default, see auth.PeerOptions) means a subsequent ToPeer(ctx, msg,
+// nil, ...) call from the same peer reuses this session instead of
+// re-handshaking, so callers can go straight to announcing once this
+// succeeds.
+//
+// mapKey is the key the caller registered this connection's MeshPeer under
+// before the identity was known (the dial endpoint). On success, the entry
+// is re-keyed to the identity hex, mirroring the re-key the reactive
+// ListenForGeneralMessages callback already does for the first message
+// received; direction/endpoint are passed through to checkAllowedPeer for
+// logging.
+//
+// Returns the peer's identity hex and a nil error when the caller may
+// proceed. A non-nil error is either errPeerRefused (checkAllowedPeer has
+// already removed the peer and closed its transport) or a wrapped handshake
+// error (the caller owns cleanup in that case, exactly as it did before this
+// helper existed).
+func (m *Manager) establishAndAuthorizePeer(ctx context.Context, peer *auth.Peer, mapKey, direction, endpoint string, maxWaitMs int) (pkHex string, err error) {
+	session, err := peer.GetAuthenticatedSession(ctx, nil, maxWaitMs)
+	if err != nil {
+		return "", fmt.Errorf("handshake: %w", err)
+	}
+	senderPK := session.PeerIdentityKey
+	pkHex = fmt.Sprintf("%x", senderPK.Compressed())
+
+	m.mu.Lock()
+	if mp, ok := m.peers[mapKey]; ok && mp.IdentityPK == nil {
+		mp.IdentityPK = senderPK
+		m.peers[pkHex] = mp
+		delete(m.peers, mapKey)
+	}
+	m.mu.Unlock()
+
+	if !m.checkAllowedPeer(pkHex, direction, endpoint) {
+		return pkHex, errPeerRefused
+	}
+	return pkHex, nil
 }
