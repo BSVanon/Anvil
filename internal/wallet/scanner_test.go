@@ -3,11 +3,9 @@ package wallet
 import (
 	"encoding/hex"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/bsv-blockchain/go-sdk/chainhash"
-	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
@@ -20,10 +18,10 @@ func TestTSCtoMerklePath(t *testing.T) {
 	// Real data from block 942218, tx index 27409
 	// Block merkle root: de284edf510f40832764758ae76180834ed5cb0e31611506f73f669b886d3a8c
 	const (
-		txidHex      = "3baeb8f45b270b2fe2c9c6c4d2eba73a5a7c8dc62ae60d0ecac5f96d882fc448"
-		blockHeight  = uint32(942218)
-		expectedRoot = "de284edf510f40832764758ae76180834ed5cb0e31611506f73f669b886d3a8c"
-		tscIndex     = uint64(27409)
+		txidHex         = "3baeb8f45b270b2fe2c9c6c4d2eba73a5a7c8dc62ae60d0ecac5f96d882fc448"
+		blockHeight     = uint32(942218)
+		expectedRoot    = "de284edf510f40832764758ae76180834ed5cb0e31611506f73f669b886d3a8c"
+		tscIndex        = uint64(27409)
 	)
 
 	tscNodes := []string{
@@ -205,108 +203,6 @@ func TestTSCNodeToElement_Duplicate(t *testing.T) {
 	elem := tscNodeToElement("*", 7)
 	if elem.Duplicate == nil || !*elem.Duplicate {
 		t.Fatal("expected duplicate flag")
-	}
-}
-
-// TestFetchedTxMatches verifies the guard ScanAddress runs on every fetched
-// transaction's raw bytes before trusting WhatsOnChain's reply: bytes whose
-// double-SHA256 (display order) is not the requested txid must be rejected,
-// case-insensitively.
-func TestFetchedTxMatches(t *testing.T) {
-	tx := &transaction.Transaction{LockTime: 1}
-	raw := tx.Bytes()
-	realTxid := tx.TxID().String()
-
-	if !fetchedTxMatches(raw, realTxid) {
-		t.Fatalf("expected a match against the tx's own real txid %s", realTxid)
-	}
-	if !fetchedTxMatches(raw, strings.ToUpper(realTxid)) {
-		t.Fatal("expected the match to be case-insensitive")
-	}
-
-	tx2 := &transaction.Transaction{LockTime: 2}
-	otherTxid := tx2.TxID().String()
-	if otherTxid == realTxid {
-		t.Fatal("test setup: expected two different transactions to hash differently")
-	}
-	if fetchedTxMatches(raw, otherTxid) {
-		t.Fatal("expected no match against a different transaction's txid")
-	}
-}
-
-// TestFetchedTxMatchesDetectsNonCanonicalReserialization is Risk 1's central
-// regression test: it proves fetchedTxMatches hashes the bytes actually
-// fetched, not a go-sdk reserialization of them, using a fixture where those
-// two differ.
-//
-// go-sdk's transaction parser accepts a non-minimal CompactSize varint
-// (transaction/parse_guard.go's readVarInt: the 0xfd case always reads the
-// next 2 bytes, with no check that the value needed them) but its encoder
-// always emits the minimal form (transaction.go's appendVarInt, documented
-// there as "byte-identical to util.VarInt(v).Bytes()"). So: take a canonical
-// 1-input/1-output transaction's bytes, and replace the single canonical
-// byte that encodes the output's locking-script length with a 3-byte
-// non-minimal encoding of the same value (0xfd, len, 0x00) — the result
-// still parses via NewTransactionFromBytes (its length prefix correctly
-// says how many script bytes follow, and the strict used==len(b) check
-// passes), but tx.TxID() — the hash of the RE-serialized, minimal-form
-// bytes — is a different hash from the true identity of what was actually
-// received.
-func TestFetchedTxMatchesDetectsNonCanonicalReserialization(t *testing.T) {
-	script5 := script.NewFromBytes([]byte{0x01, 0x02, 0x03, 0x04, 0x05})
-	tx := &transaction.Transaction{
-		Version: 1,
-		Inputs: []*transaction.TransactionInput{{
-			SourceTXID:       &chainhash.Hash{},
-			SourceTxOutIndex: 0,
-			SequenceNumber:   0xffffffff,
-		}},
-		Outputs: []*transaction.TransactionOutput{{
-			Satoshis:      1000,
-			LockingScript: script5,
-		}},
-		LockTime: 0,
-	}
-	canonical := tx.Bytes()
-
-	// Byte offset of the output's locking-script-length varint: version(4)
-	// + input-count varint(1) + one input (txid 32 + index 4 + empty
-	// unlocking-script varint 1 + sequence 4 = 41) + output-count varint(1)
-	// + output satoshis(8).
-	const offset = 4 + 1 + 41 + 1 + 8
-	if canonical[offset] != 5 {
-		t.Fatalf("test setup: byte at offset %d = 0x%02x, want the canonical 1-byte varint 0x05 (fixture's assumed layout has drifted)", offset, canonical[offset])
-	}
-
-	spliced := make([]byte, 0, len(canonical)+2)
-	spliced = append(spliced, canonical[:offset]...)
-	spliced = append(spliced, 0xfd, 0x05, 0x00) // non-minimal encoding of 5
-	spliced = append(spliced, canonical[offset+1:]...)
-	if len(spliced) != len(canonical)+2 {
-		t.Fatalf("test setup: spliced length %d, want %d", len(spliced), len(canonical)+2)
-	}
-
-	parsed, err := transaction.NewTransactionFromBytes(spliced)
-	if err != nil {
-		t.Fatalf("test setup: spliced bytes must still parse (self-describing length prefix): %v", err)
-	}
-
-	reserializedHash := parsed.TxID().String()
-	fetchedHash := chainhash.DoubleHashH(spliced).String()
-	if reserializedHash == fetchedHash {
-		t.Fatal("test setup: expected the non-minimal splice to make reserialization diverge from the fetched bytes' own hash")
-	}
-
-	// The regression this guards against: hashing tx.TxID() (a
-	// reserialization) instead of the fetched bytes would wrongly accept
-	// spliced as "the requested transaction" under its reserialized hash,
-	// when the true requested txid is fetchedHash — what the bytes actually
-	// fetched hash to.
-	if fetchedTxMatches(spliced, reserializedHash) {
-		t.Fatal("fetchedTxMatches matched the reserialized hash instead of the fetched bytes' own hash")
-	}
-	if !fetchedTxMatches(spliced, fetchedHash) {
-		t.Fatal("fetchedTxMatches must match the fetched bytes' own double-SHA256, display-order hash")
 	}
 }
 

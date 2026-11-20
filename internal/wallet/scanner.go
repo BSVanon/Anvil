@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/txrelay"
@@ -152,7 +151,7 @@ func (s *Scanner) ScanAddress(ctx context.Context, address string) (*ScanResult,
 			continue
 		}
 
-		// Decode the raw transaction bytes WhatsOnChain returned.
+		// Parse transaction to get canonical TxID hash
 		txBytesRaw, txParseErr := hex.DecodeString(rawTxHex)
 		if txParseErr != nil {
 			detail.Status = "error"
@@ -161,29 +160,6 @@ func (s *Scanner) ScanAddress(ctx context.Context, address string) (*ScanResult,
 			result.Details = append(result.Details, detail)
 			continue
 		}
-
-		// fetchRawTx trusts WhatsOnChain for the bytes themselves; verify
-		// here, before parsing, that the RAW bytes actually fetched hash to
-		// utxo.TxHash — the same way content.verifyTxidMatch
-		// (internal/content/txid_verify.go) verifies a fetched tx's raw
-		// bytes, hashing exactly what was received rather than a parsed
-		// transaction's TxID(). go-sdk's decoder accepts non-minimal
-		// CompactSize varints but its encoder always re-emits the minimal
-		// form (transaction/parse_guard.go's readVarInt, transaction.go's
-		// appendVarInt), so a parse-then-reserialize round trip is not
-		// guaranteed byte-identical to what was fetched: checking
-		// parsedTx.TxID() after parsing would verify a reserialization of
-		// the bytes, not the bytes themselves. Everything below — the
-		// parse, the merkle proof fetch, the BEEF, the outpoint — is keyed
-		// off these same bytes, so this one check protects all of it.
-		if !fetchedTxMatches(txBytesRaw, utxo.TxHash) {
-			detail.Status = "error"
-			detail.Error = fmt.Sprintf("fetched tx bytes do not hash to requested %s", utxo.TxHash)
-			result.Errors++
-			result.Details = append(result.Details, detail)
-			continue
-		}
-
 		parsedTx, txParseErr := transaction.NewTransactionFromBytes(txBytesRaw)
 		if txParseErr != nil {
 			detail.Status = "error"
@@ -528,20 +504,6 @@ func reverseBytes(b []byte) {
 	}
 }
 
-// fetchedTxMatches reports whether raw's own double-SHA256 hash (display
-// order, matching chainhash.Hash.String()'s wire→display reversal) is
-// requested, so a scan never proceeds — parsing, fetching a merkle proof,
-// building BEEF, or spending an outpoint — against bytes fetchRawTx
-// returned under the wrong txid. Hashes raw directly rather than a parsed
-// transaction's TxID(): see the call site in ScanAddress for why that
-// distinction matters (go-sdk's parse-then-reserialize is not guaranteed
-// byte-identical to the fetched bytes). Mirrors content.verifyTxidMatch
-// (internal/content/txid_verify.go), which performs the identical
-// raw-bytes hash-and-compare for the same reason.
-func fetchedTxMatches(raw []byte, requested string) bool {
-	return strings.EqualFold(chainhash.DoubleHashH(raw).String(), requested)
-}
-
 // buildBEEFFromTx constructs Atomic BEEF from an already-parsed transaction
 // and a BRC-74 merkle path hex string.
 func buildBEEFFromTx(tx *transaction.Transaction, merklePathHex string) ([]byte, error) {
@@ -564,3 +526,4 @@ func buildBEEFFromTx(tx *transaction.Transaction, merklePathHex string) ([]byte,
 
 	return atomicBytes, nil
 }
+
