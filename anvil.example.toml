@@ -115,6 +115,11 @@ tls_cert = ""                     # path to TLS cert (or use reverse proxy)
 tls_key = ""                      # path to TLS key
 rate_limit = 100                  # requests/second per IP for open reads
 trust_proxy = false               # set true behind nginx/caddy
+# trust_proxy reads only X-Forwarded-For (not X-Real-IP or Forwarded); the
+# proxy must send that header. trust_proxy_hops counts entries from the
+# right: 1 for one proxy (the default). Behind a CDN plus a local proxy, set
+# trust_proxy = true and trust_proxy_hops = 2.
+# trust_proxy_hops = 1
 payment_satoshis = 0              # x402 price per request (0 = free, experimental)
 
 # Non-custodial app payment models.

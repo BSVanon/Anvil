@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"net/http"
+	"net/http/httptest"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -121,7 +122,9 @@ func heapPeak(t *testing.T, gcPercent int, send func(url string) int) (code int,
 	defer debug.SetGCPercent(debug.SetGCPercent(gcPercent))
 	peak, _ = hostiletest.HeapPeak(func() {
 		code = send(url)
-		idle, err := g.Begin(false)
+		r := httptest.NewRequest(http.MethodPost, "/submit", nil)
+		r.RemoteAddr = "127.0.0.1:1234"
+		idle, err := g.Begin(httptest.NewRecorder(), r, false)
 		if err == nil {
 			err = idle.Reserve(context.Background(), routeguard.MemoryBudget-routeguard.ExecAllowance)
 			idle.Close()

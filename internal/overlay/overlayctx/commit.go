@@ -2,7 +2,7 @@
 // overlay engine, which passes the submit context opaquely from the HTTP
 // handler down to the storage layer.
 //
-// Its one job today: let the legacy /overlay/submit handler learn the exact
+// Its first job: let the legacy /overlay/submit handler learn the exact
 // moment EACH submitted topic's transaction becomes *durably committed* (and
 // therefore discoverable on this node). The engine commits topics one at a time
 // (commitAdmittedOutputs loops Topics), so a single submit produces one signal
@@ -21,6 +21,10 @@
 // the background. The engine in between is a
 // transparent pass-through; non-submit callers (GASP sync, internalize) register
 // no notifier and the signals are no-ops.
+//
+// Its second, ReadOnly (readonly.go): let a lookup or a GASP reply, which
+// write nothing, have the engine's storage reads for them stop when their
+// client goes away.
 package overlayctx
 
 import "context"

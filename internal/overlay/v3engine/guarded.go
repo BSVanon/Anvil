@@ -21,7 +21,7 @@ func (h *Handlers) guard() *routeguard.Guard { return routeguard.Or(h.Guard) }
 // answered the request and returns false; on success the caller closes the
 // ticket once it has answered.
 func (h *Handlers) readJSON(w http.ResponseWriter, r *http.Request, route routeguard.Route) (*routeguard.Ticket, []byte, bool) {
-	t, err := h.guard().Begin(true)
+	t, err := h.guard().Begin(w, r, true)
 	if err != nil {
 		writeGuardError(w, r, err, "")
 		return nil, nil, false
@@ -43,7 +43,7 @@ func (h *Handlers) readJSON(w http.ResponseWriter, r *http.Request, route routeg
 // not the bytes received. SubmitTimeout, counted from the end of the body,
 // covers the guard's verification and the engine's work alike.
 func (h *Handlers) submitBEEF(w http.ResponseWriter, r *http.Request, topics []string) {
-	t, err := h.guard().Begin(false)
+	t, err := h.guard().Begin(w, r, false)
 	if err != nil {
 		writeGuardError(w, r, err, "")
 		return

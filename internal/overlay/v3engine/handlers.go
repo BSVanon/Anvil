@@ -212,7 +212,7 @@ func (h *Handlers) Lookup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "query required")
 		return
 	}
-	answer, err := h.Engine.Lookup(r.Context(), &lookup.LookupQuestion{
+	answer, err := lookupFor(r, h.Engine, &lookup.LookupQuestion{
 		Service: raw.Service,
 		Query:   raw.Query,
 	})

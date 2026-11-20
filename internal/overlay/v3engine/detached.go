@@ -3,6 +3,7 @@ package v3engine
 import (
 	"context"
 
+	"github.com/BSVanon/Anvil/internal/overlay/overlayctx"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/overlay"
@@ -28,11 +29,20 @@ import (
 // context's values, so the legacy shim's per-topic commit notifier
 // (internal/overlay/overlayctx) still reaches the store.
 //
+// The one exception is a read for a request that only reads: a lookup or a
+// GASP reply, whose handler marks its context overlayctx.ReadOnly. Such a
+// read keeps the caller's context, so a lookup whose client has gone away
+// stops hydrating at its next read rather than reading on for nobody (cold
+// review round 3 S4). Reads stay detached otherwise, as the engine reads
+// between the writes of a commit too (deleteUTXODeep's FindOutput, the merkle
+// updates, GASP sync), and writes stay detached whatever the mark.
+//
 // Neither type embeds the interface it implements. A method added upstream
 // fails to compile here instead of silently keeping the cancellable context.
 
 // detachedStorage passes every call to inner with the context's cancellation
-// and deadline removed. Anvil code that holds the store itself, outside the
+// and deadline removed, but for the reads of a request marked
+// overlayctx.ReadOnly. Anvil code that holds the store itself, outside the
 // engine, still has its context honored.
 type detachedStorage struct {
 	inner engine.Storage
@@ -40,30 +50,41 @@ type detachedStorage struct {
 
 var _ engine.Storage = detachedStorage{}
 
+// reading is the context a storage read runs under: ctx itself when it is a
+// read-only request's (overlayctx.ReadOnly), ctx without its cancellation
+// otherwise.
+func reading(ctx context.Context) context.Context {
+	if overlayctx.IsReadOnly(ctx) {
+		return ctx
+	}
+	return context.WithoutCancel(ctx)
+}
+
 // InsertOutputs implements engine.Storage without cancellation.
 func (s detachedStorage) InsertOutputs(ctx context.Context, topic string, txid *chainhash.Hash, outputs []uint32, outpointsConsumed []*transaction.Outpoint, beef *transaction.Beef, ancillaryTxids []*chainhash.Hash) error {
 	return s.inner.InsertOutputs(context.WithoutCancel(ctx), topic, txid, outputs, outpointsConsumed, beef, ancillaryTxids)
 }
 
-// FindOutput implements engine.Storage without cancellation. The commit calls
-// it from deleteUTXODeep.
+// FindOutput implements engine.Storage as a read (see reading). The commit
+// calls it from deleteUTXODeep.
 func (s detachedStorage) FindOutput(ctx context.Context, outpoint *transaction.Outpoint, topic *string, spent *bool, includeBEEF bool) (*engine.Output, error) {
-	return s.inner.FindOutput(context.WithoutCancel(ctx), outpoint, topic, spent, includeBEEF)
+	return s.inner.FindOutput(reading(ctx), outpoint, topic, spent, includeBEEF)
 }
 
-// FindOutputs implements engine.Storage without cancellation.
+// FindOutputs implements engine.Storage as a read (see reading).
 func (s detachedStorage) FindOutputs(ctx context.Context, outpoints []*transaction.Outpoint, topic string, spent *bool, includeBEEF bool) ([]*engine.Output, error) {
-	return s.inner.FindOutputs(context.WithoutCancel(ctx), outpoints, topic, spent, includeBEEF)
+	return s.inner.FindOutputs(reading(ctx), outpoints, topic, spent, includeBEEF)
 }
 
-// FindOutputsForTransaction implements engine.Storage without cancellation.
+// FindOutputsForTransaction implements engine.Storage as a read (see
+// reading).
 func (s detachedStorage) FindOutputsForTransaction(ctx context.Context, txid *chainhash.Hash, includeBEEF bool) ([]*engine.Output, error) {
-	return s.inner.FindOutputsForTransaction(context.WithoutCancel(ctx), txid, includeBEEF)
+	return s.inner.FindOutputsForTransaction(reading(ctx), txid, includeBEEF)
 }
 
-// FindUTXOsForTopic implements engine.Storage without cancellation.
+// FindUTXOsForTopic implements engine.Storage as a read (see reading).
 func (s detachedStorage) FindUTXOsForTopic(ctx context.Context, topic string, since float64, limit uint32, includeBEEF bool) ([]*engine.Output, error) {
-	return s.inner.FindUTXOsForTopic(context.WithoutCancel(ctx), topic, since, limit, includeBEEF)
+	return s.inner.FindUTXOsForTopic(reading(ctx), topic, since, limit, includeBEEF)
 }
 
 // DeleteOutput implements engine.Storage without cancellation.
@@ -96,9 +117,10 @@ func (s detachedStorage) InsertAppliedTransaction(ctx context.Context, tx *overl
 	return s.inner.InsertAppliedTransaction(context.WithoutCancel(ctx), tx)
 }
 
-// DoesAppliedTransactionExist implements engine.Storage without cancellation.
+// DoesAppliedTransactionExist implements engine.Storage as a read (see
+// reading).
 func (s detachedStorage) DoesAppliedTransactionExist(ctx context.Context, tx *overlay.AppliedTransaction) (bool, error) {
-	return s.inner.DoesAppliedTransactionExist(context.WithoutCancel(ctx), tx)
+	return s.inner.DoesAppliedTransactionExist(reading(ctx), tx)
 }
 
 // UpdateLastInteraction implements engine.Storage without cancellation.
@@ -106,14 +128,15 @@ func (s detachedStorage) UpdateLastInteraction(ctx context.Context, host, topic 
 	return s.inner.UpdateLastInteraction(context.WithoutCancel(ctx), host, topic, since)
 }
 
-// GetLastInteraction implements engine.Storage without cancellation.
+// GetLastInteraction implements engine.Storage as a read (see reading).
 func (s detachedStorage) GetLastInteraction(ctx context.Context, host, topic string) (float64, error) {
-	return s.inner.GetLastInteraction(context.WithoutCancel(ctx), host, topic)
+	return s.inner.GetLastInteraction(reading(ctx), host, topic)
 }
 
-// FindOutpointsByMerkleState implements engine.Storage without cancellation.
+// FindOutpointsByMerkleState implements engine.Storage as a read (see
+// reading).
 func (s detachedStorage) FindOutpointsByMerkleState(ctx context.Context, topic string, state engine.MerkleState, limit uint32) ([]*transaction.Outpoint, error) {
-	return s.inner.FindOutpointsByMerkleState(context.WithoutCancel(ctx), topic, state, limit)
+	return s.inner.FindOutpointsByMerkleState(reading(ctx), topic, state, limit)
 }
 
 // ReconcileMerkleRoot implements engine.Storage without cancellation.
@@ -121,9 +144,9 @@ func (s detachedStorage) ReconcileMerkleRoot(ctx context.Context, topic string, 
 	return s.inner.ReconcileMerkleRoot(context.WithoutCancel(ctx), topic, blockHeight, merkleRoot)
 }
 
-// LoadAncillaryBeef implements engine.Storage without cancellation.
+// LoadAncillaryBeef implements engine.Storage as a read (see reading).
 func (s detachedStorage) LoadAncillaryBeef(ctx context.Context, output *engine.Output) error {
-	return s.inner.LoadAncillaryBeef(context.WithoutCancel(ctx), output)
+	return s.inner.LoadAncillaryBeef(reading(ctx), output)
 }
 
 // detachedLookup passes the five notification callbacks to inner with the

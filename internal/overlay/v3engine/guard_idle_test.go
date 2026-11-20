@@ -81,12 +81,12 @@ func cutAnswer(t *testing.T, conn net.Conn, limit time.Duration) (int, bool) {
 // budget nor the JSON slots while they wait, so honest lookups sent one at a
 // time while they are open are answered 200 within honestBound. Each idle
 // connection is answered 408 and closed once bodyread.ReadGrace has passed
-// with no byte, or the stalled one once its first KiB no longer covers
-// bodyread.MinReadRate. With the guard of cfa383a the first two cases
-// answered every honest lookup 503, at 2.0 s and at once.
+// with no byte, or the stalled one once its first KiB no longer covers the
+// pace of a 16 MiB body (routeguard.Route.MinRate). With the guard of cfa383a
+// the first two cases answered every honest lookup 503, at 2.0 s and at once.
 func TestGuard_IdleConnectionsDoNotRefuseHonestLookups(t *testing.T) {
 	submit := "x-topics: [\"" + topics.UHRPTopicName + "\"]\r\n"
-	stalled := bodyread.ReadGrace + (1<<10)*time.Second/bodyread.MinReadRate
+	stalled := bodyread.ReadGrace + (1<<10)*time.Second/time.Duration(routeguard.BEEFRoute.MinRate(16<<20))
 	for _, c := range []struct {
 		name string
 		open func(t *testing.T, url string) []net.Conn

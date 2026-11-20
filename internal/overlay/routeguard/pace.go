@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"time"
@@ -11,31 +12,90 @@ import (
 	"github.com/BSVanon/Anvil/internal/netguard/bodyread"
 )
 
+// MinBodyRate is the least average rate, in bytes a second, at which a
+// request body of up to BigBody bytes must arrive once bodyread.ReadGrace has
+// passed. It is half bodyread.MinReadRate, the rate this node asks of the
+// replies it reads, so that a body of 1 MB sent at 200 kbit/s (25,000 bytes a
+// second), which that rate cut off after 8.4 s (cold review round 4 RISK 6),
+// is read in 40 s, within the 63 s its length allows (TestPacing_RealTime).
+const MinBodyRate int64 = 16 << 10
+
+// BigBodyRate is the least average rate for a body over BigBody:
+// bodyread.MinReadRate, the floor every body had before MinBodyRate. Such a
+// body holds the one big-body slot, which every other body over BigBody
+// waits for, so the lower floor must not make that slot cheaper to hold.
+// Holds of smaller bodies are many at once and capped per client.
+const BigBodyRate int64 = bodyread.MinReadRate
+
 // ErrBodyTooSlow means the body did not start within bodyread.ReadGrace, or
-// fell below bodyread.MinReadRate on average after it. It wraps
-// ErrReadTimeout, so the route answers 408.
-var ErrBodyTooSlow = fmt.Errorf("%w: a body must start within %v and then arrive at %d bytes a second or more",
-	ErrReadTimeout, bodyread.ReadGrace, bodyread.MinReadRate)
+// fell below its pace after it (Route.MinRate). It wraps ErrReadTimeout, so
+// the route answers 408. tooSlow names the rate, in bytes a second, that
+// actually applied to the body cut off: MinBodyRate, BigBodyRate, or the
+// faster rate a long body's length (declared, or read so far when it was
+// not) demanded (cold review round 4 nit, "quote the rate that applied").
+var ErrBodyTooSlow = fmt.Errorf("%w: a body must start within %v and then keep its pace, or faster when it is too long to arrive within the route's read timeout at that rate", ErrReadTimeout, bodyread.ReadGrace)
+
+func tooSlow(rate int64) error { return fmt.Errorf("%w (%d bytes a second)", ErrBodyTooSlow, rate) }
+
+// MinRate is the average rate, in bytes a second, at which a body of n bytes
+// must arrive on route r once bodyread.ReadGrace has passed: MinBodyRate, or
+// BigBodyRate when n is over BigBody, or the rate that brings all n bytes in
+// by the route's ReadTimeout when that is faster. A body that declares no
+// length is paced the same way, but on the bytes read so far rather than a
+// fixed n (pacer.rate), so it is not held to MaxBody's rate from its first
+// byte.
+func (r Route) MinRate(n int64) int64 {
+	return paceRate(n, r.ReadTimeout, bodyread.ReadGrace, MinBodyRate)
+}
+
+// paceRate is the average rate, in bytes a second, at which a body of n bytes
+// must arrive once grace has passed on a route whose bodies must arrive
+// within timeout: floor, raised as BigBodyRate is over MinBodyRate when n is
+// over BigBody, or n over the time from grace to timeout when that is faster.
+// Without that last term a body could be sent at the floor for as long as
+// timeout allows, and hold the reservation of all n bytes while it sent a
+// fraction of them.
+func paceRate(n int64, timeout, grace time.Duration, floor int64) int64 {
+	if n > BigBody {
+		floor = floor * BigBodyRate / MinBodyRate
+	}
+	span := timeout - grace
+	if span <= 0 || n <= 0 {
+		return floor
+	}
+	return max(floor, int64(math.Ceil(float64(n)/span.Seconds())))
+}
 
 // pacer reads a request body under the connection's read deadline, which it
-// sets before each read: by grace + n/minRate after start, more than n bytes
-// must have arrived, and all of the body by end. These are bodyread's limits
-// for the replies this node reads, applied to the requests it serves.
+// sets before each read: by grace + k/rate after start, more than k bytes
+// must have arrived, and all of the body by end. For a declared length, rate
+// is paceRate(n, ...), fixed for the body's life. For an undeclared one (n
+// negative), there is no total to pace it against, so rate is recomputed on
+// the same schedule from have, the bytes read so far, each time due is
+// asked: the floor until have passes BigBody, then BigBodyRate, exactly as a
+// declared body of have bytes would be paced at this point. An honest
+// chunked body is then held to the same pace a declared one of its eventual
+// length would be, rather than to the rate a body of up to MaxBody would
+// need from its first byte (cold review round 4 RISK 2).
 type pacer struct {
 	r       io.Reader
 	rc      *http.ResponseController // nil once the writer has refused a deadline
 	start   time.Time                // when the read began, moved on by the guard's own waits
 	end     time.Time                // when the route's ReadTimeout passes, never moved
 	grace   time.Duration
-	minRate int64
-	have    int64     // bytes read so far
-	set     time.Time // the deadline the last read ran under, zero when none was set
-	eof     bool      // the body has ended
+	timeout time.Duration // the route's ReadTimeout, fixed: unlike end - start, pause does not shrink it
+	floor   int64         // the guard's rate floor (g.minRate), raised in paceRate for a long body
+	n       int64         // the declared length, or negative when none
+	have    int64         // bytes read so far
+	set     time.Time     // the deadline the last read ran under, zero when none was set
+	eof     bool          // the body has ended
 }
 
-// newPacer starts pacing body, which the guard g reads for w's request, now,
-// with timeout for all of it.
-func newPacer(g *Guard, w http.ResponseWriter, body io.Reader, timeout time.Duration) *pacer {
+// newPacer starts pacing body for w's request, now, with timeout for all of
+// it: after g's grace it must arrive at g's rate for n bytes (Route.MinRate),
+// or, when n is negative (the request declared no length), at the rate for
+// have bytes, recomputed as have grows (see pacer).
+func newPacer(g *Guard, w http.ResponseWriter, body io.Reader, n int64, timeout time.Duration) *pacer {
 	start := time.Now()
 	return &pacer{
 		r:       body,
@@ -43,13 +103,25 @@ func newPacer(g *Guard, w http.ResponseWriter, body io.Reader, timeout time.Dura
 		start:   start,
 		end:     start.Add(timeout),
 		grace:   g.grace,
-		minRate: g.minRate,
+		timeout: timeout,
+		floor:   g.minRate,
+		n:       n,
 	}
+}
+
+// rate is the least bytes a second p's body must keep up now: paceRate of
+// the declared length, or, when there is none, of the bytes read so far.
+func (p *pacer) rate() int64 {
+	n := p.n
+	if n < 0 {
+		n = p.have
+	}
+	return paceRate(n, p.timeout, p.grace, p.floor)
 }
 
 // due is when more than p.have bytes must have arrived.
 func (p *pacer) due() time.Time {
-	due := p.start.Add(p.grace + time.Duration(p.have)*time.Second/time.Duration(p.minRate))
+	due := p.start.Add(p.grace + time.Duration(p.have)*time.Second/time.Duration(p.rate()))
 	if due.After(p.end) {
 		return p.end
 	}
@@ -82,7 +154,7 @@ func (p *pacer) Read(b []byte) (int, error) {
 		p.eof = true
 	case err != nil && errors.Is(err, os.ErrDeadlineExceeded):
 		if !p.set.IsZero() && p.set.Before(p.end) {
-			return n, ErrBodyTooSlow
+			return n, tooSlow(p.rate())
 		}
 		return n, ErrReadTimeout
 	}
