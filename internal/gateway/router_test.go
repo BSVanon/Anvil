@@ -203,6 +203,45 @@ func TestRouter_LoopbackNamesReachAPI(t *testing.T) {
 	}
 }
 
+// TestRouter_LoopbackAntiSpoof is fix cycle 2 item 3: a Host that merely
+// looks like, contains, or sounds like a loopback name must not take
+// isLoopbackHost's exact-match/IP-literal rule — only "localhost" itself
+// or an actual loopback IP literal (optionally with a port, stripped by
+// normalizeHost first) does. A Sites allowlist that only knows
+// "site.example.org" means any of these reaching the API instead of a
+// 404 proves the spoof attempt actually took the loopback rule.
+func TestRouter_LoopbackAntiSpoof(t *testing.T) {
+	sites := newTestSiteHandler(t, "site.example.org", testOutpoint(36, 0))
+	rt := &Router{API: stubAPIHandler(), Sites: sites, APIHost: "admin.example.org"}
+
+	spoofed := []string{
+		"localhost.evil.com", // suffix match, not exact
+		"127.0.0.1.evil.com", // looks IP-prefixed, not a valid IP literal
+		"evil-localhost",     // contains "localhost", isn't it
+		"xn--localhost",      // punycode-shaped, isn't "localhost" either
+	}
+	for _, host := range spoofed {
+		req := httptest.NewRequest("GET", "http://placeholder.invalid/status", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+		rt.ServeHTTP(w, req)
+		if w.Code == http.StatusOK && w.Body.String() == "API" {
+			t.Fatalf("Host %q: must NOT take the loopback rule and reach the API, got %d %q", host, w.Code, w.Body.String())
+		}
+	}
+
+	genuine := []string{"localhost", "127.0.0.2:9333", "[::1]:9333"}
+	for _, host := range genuine {
+		req := httptest.NewRequest("GET", "http://placeholder.invalid/status", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+		rt.ServeHTTP(w, req)
+		if w.Code != http.StatusOK || w.Body.String() != "API" {
+			t.Fatalf("Host %q: expected a genuine loopback Host to still reach the API, got %d %q", host, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestRouter_NilSitesIs404ForAnythingNotAPIHost(t *testing.T) {
 	rt := &Router{API: stubAPIHandler(), Sites: nil, APIHost: "admin.example.org"}
 
