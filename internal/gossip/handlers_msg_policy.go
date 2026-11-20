@@ -153,12 +153,27 @@ func (m *Manager) deliverLegacyForward(msg *messaging.Message, attestedBy string
 // deliverHomeForward is decision 3's "Forward received, Home" row: store
 // at ttl_seconds via the unchanged Deliver, relay only when the recipient
 // also advertises a host that isn't this node.
+//
+// Blockers B2 and B3 (fixed here). Both outcomes below used to relay
+// without checking ok (whether the store call actually inserted a new
+// record) first:
+//   - B3: the quota-rejection branch relayed through allowUnstoredRelay
+//     whenever the store was full, even when hasOtherHost was false —
+//     spreading a Home-only message to non-home nodes with no delivery
+//     reason, every time this node's inbox/pair/store quota was hit.
+//   - B2: the success branch relayed on hasOtherHost alone, regardless
+//     of ok. Deliver returns (false, nil) for a message already stored
+//     (e.g. this node's own forward echoing back in a cyclic mesh, or a
+//     msgSeen dedup eviction), so a duplicate forward was relayed again
+//     on every such retry — unbounded, and bypassing allowUnstoredRelay
+//     entirely, contradicting this file's own header and the spec's
+//     relay bound.
 func (m *Manager) deliverHomeForward(msg *messaging.Message, attestedBy string, hasOtherHost bool) forwardDeliveryOutcome {
 	ok, err := m.msgStore.Deliver(msg, attestedBy)
 	if err != nil {
 		if isQuotaErr(err) {
 			m.logMessageQuotaDrop(err)
-			return forwardDeliveryOutcome{relay: m.allowUnstoredRelay()}
+			return forwardDeliveryOutcome{relay: hasOtherHost && m.allowUnstoredRelay()}
 		}
 		m.logger.Debug("forwarded message store failed", "error", err)
 		return forwardDeliveryOutcome{clearSeen: true}
@@ -166,7 +181,7 @@ func (m *Manager) deliverHomeForward(msg *messaging.Message, attestedBy string, 
 	if ok {
 		m.logger.Debug("forwarded message delivered (home)", "id", msg.MessageID, "recipient", msg.Recipient)
 	}
-	return forwardDeliveryOutcome{relay: hasOtherHost}
+	return forwardDeliveryOutcome{relay: ok && hasOtherHost}
 }
 
 // deliverNonHomeForward is decision 3's "Forward received, Unadvertised
@@ -191,7 +206,7 @@ func (m *Manager) deliverNonHomeForward(msg *messaging.Message, attestedBy strin
 	if ok {
 		m.logger.Debug("forwarded message delivered (copy)", "id", msg.MessageID, "recipient", msg.Recipient)
 	}
-	return forwardDeliveryOutcome{relay: true}
+	return forwardDeliveryOutcome{relay: ok}
 }
 
 func isQuotaErr(err error) bool {
