@@ -21,6 +21,42 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
+// acmeChallengeMaxPayloadBytes bounds the wire-encoded MsgACMEChallenge
+// payload (the Message.Data bytes handed to onACMEChallenge, below —
+// ACMEChallengePayload's own JSON: key, base64 value, expires) this
+// node will even attempt to json.Unmarshal. Sized from the largest
+// entry this message type ever legitimately carries: a tls-alpn-01
+// token certificate with its private key — autocert's own cache value
+// for a "+token" key (golang.org/x/crypto/acme/autocert@v0.59.0's
+// cachePut, autocert.go:517-549): PEM(private key) + PEM(one
+// self-signed certificate, never a chain).
+//
+// TLSALPN01ChallengeCert (acme/acme.go:611) always generates a fresh
+// ECDSA P-256 key unless a WithKey option is passed — which nothing in
+// this codebase's ACME client call does — so every entry this node
+// actually produces measures (measured directly, a self-signed cert
+// built the same way): ~797 raw PEM bytes, ~1131 bytes once wrapped in
+// this message's own JSON. An RSA-2048 key — not produced by this exact
+// code path today, measured anyway as a margin against a future
+// change — comes to ~2782 raw / ~3779 wire bytes. 16 KiB is a little
+// over 4x that RSA figure: comfortably clear of any entry this protocol
+// can legitimately produce, while still refusing — for the cost of a
+// length check, before spending anything on parsing it — a payload
+// many times too large to be one.
+const acmeChallengeMaxPayloadBytes = 16 * 1024
+
+// acmeOversizeDropped counts how many MsgACMEChallenge payloads
+// onACMEChallenge has refused for being over
+// acmeChallengeMaxPayloadBytes, before json.Unmarshal ever runs on
+// them. A package-level counter rather than a new Manager field —
+// manager.go is at its line budget, and this file's existing practice
+// (see BroadcastACMEChallenge's own doc comment) is to keep this one
+// message type's state local to itself. Tests read the delta this
+// causes across a single call, the same way any counter is read from
+// outside across one unit of work, so sharing it across every *Manager
+// in a test binary carries no cross-test pollution risk.
+var acmeOversizeDropped atomic.Int64
+
 // SetACMEChallengeHook registers the callback invoked for each decoded
 // MsgACMEChallenge received from a peer. Unlike SetOnEnvelopeHook, this
 // is a plain setter rather than an accumulating wrapper: nothing else in
@@ -37,8 +73,24 @@ func (m *Manager) SetACMEChallengeHook(fn func(senderPKHex, key string, value []
 // panic) and then silently discarded, the same "ignore what nothing is
 // listening for" outcome an older peer gets from handlers.go's dispatch
 // default case for a message type it doesn't know at all.
+//
+// Two guards run before any of that decoding: a size check against
+// acmeChallengeMaxPayloadBytes, refusing anything over it for the cost
+// of a length comparison rather than a json.Unmarshal; and the same
+// per-peer rate limit onData already applies to incoming gossip
+// envelopes (allowPeerMessage, manager_seed.go) — a shared bucket
+// rather than a second one just for this message type, so a peer can't
+// get a free extra allowance by sending challenge entries instead of
+// envelopes.
 func (m *Manager) onACMEChallenge(senderPKHex string, raw json.RawMessage) error {
 	if m.onACMEChallengeHook == nil {
+		return nil
+	}
+	if len(raw) > acmeChallengeMaxPayloadBytes {
+		acmeOversizeDropped.Add(1)
+		return nil
+	}
+	if !m.allowPeerMessage(senderPKHex) {
 		return nil
 	}
 	var payload ACMEChallengePayload
