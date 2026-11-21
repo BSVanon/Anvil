@@ -42,6 +42,7 @@ type Broadcaster struct {
 	arc          *ARCClient    // nil if ARC is disabled
 	meshAnnounce MeshAnnouncer // nil if mesh relay is disabled
 	logger       *slog.Logger
+	observer     atomic.Pointer[Observer] // see SetObserver
 
 	arcLastSuccess atomic.Int64 // unix seconds; 0 = never
 	arcLastFailure atomic.Int64 // unix seconds; 0 = never
@@ -81,6 +82,7 @@ func (b *Broadcaster) BroadcastBEEF(beef []byte) (*BroadcastResult, error) {
 
 	// Add to mempool (idempotent — ignore if already present)
 	_ = b.mempool.Add(txid, rawBytes)
+	b.observe(tx, beef)
 
 	result := &BroadcastResult{
 		TxID:     txid,
@@ -110,6 +112,7 @@ func (b *Broadcaster) BroadcastRaw(raw []byte) (*BroadcastResult, error) {
 
 	txid := tx.TxID().String()
 	_ = b.mempool.Add(txid, raw) // idempotent — duplicate is not an error
+	b.observe(tx, nil)
 
 	result := &BroadcastResult{
 		TxID:     txid,
