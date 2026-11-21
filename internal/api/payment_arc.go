@@ -60,12 +60,22 @@ func checkARCAcceptance(resp *txrelay.ARCResponse) error {
 // (payment_replay.go).
 const maxDirectPaymentDepth = 144
 
+// maxPaymentHeightAboveTip is how far above this node's header tip ARC may
+// report a MINED direct payment: 2 blocks, the lag ordinary block
+// propagation leaves between ARC and this node. A height further above the
+// tip means this node's headers are behind, so it cannot tell how deep the
+// payment is.
+const maxPaymentHeightAboveTip = 2
+
 // checkPaymentDepth refuses a direct payment that ARC reports as MINED more
 // than maxDirectPaymentDepth blocks below the node's header tip, so a payment
 // the replay set no longer remembers, after eviction or a restart, cannot pay
 // again once it is buried. A MINED report whose depth the node cannot work
-// out, because it carries no block height or the node has no header tip, is
-// refused as well. Other accepted statuses are unmined and pass.
+// out is refused as well: one with no block height, one when the node has no
+// header tip, and one more than maxPaymentHeightAboveTip blocks above the
+// tip, which a node whose headers have stopped syncing would otherwise accept
+// whatever the payment's real depth. Other accepted statuses are unmined and
+// pass.
 func (pg *PaymentGate) checkPaymentDepth(resp *txrelay.ARCResponse) error {
 	if resp.Status != "MINED" {
 		return nil
@@ -79,6 +89,13 @@ func (pg *PaymentGate) checkPaymentDepth(resp *txrelay.ARCResponse) error {
 			code: codePaymentTooOld,
 			msg: fmt.Sprintf("ARC reports the payment mined at height %d and this node's header tip is %d, so the node cannot confirm it is recent; pay with a new transaction",
 				resp.BlockHeight, tip),
+		}
+	}
+	if resp.BlockHeight > tip && resp.BlockHeight-tip > maxPaymentHeightAboveTip {
+		return &paymentRefusal{
+			code: codePaymentHeadersBehind,
+			msg: fmt.Sprintf("ARC reports the payment mined at height %d, %d blocks above this node's header tip %d: this node's headers are behind, so it cannot confirm how deep the payment is; retry the same transaction once they have caught up",
+				resp.BlockHeight, resp.BlockHeight-tip, tip),
 		}
 	}
 	if tip > resp.BlockHeight && tip-resp.BlockHeight > maxDirectPaymentDepth {

@@ -145,7 +145,9 @@ func TestDirectPaymentRetryAfterRefusedStatus(t *testing.T) {
 
 // TestDirectPaymentMinedDepth: a payment ARC reports as MINED is accepted
 // only when the node can see it is at most maxDirectPaymentDepth blocks below
-// its header tip.
+// its header tip. A height more than maxPaymentHeightAboveTip blocks above the
+// tip means the node's headers are behind, and is refused as such, not as too
+// old: a stale tip must not let any height above it through.
 func TestDirectPaymentMinedDepth(t *testing.T) {
 	payee := testPayeeScript(t)
 	payees := []Payee{{Role: "infrastructure", LockingScriptHex: payee, AmountSats: 100}}
@@ -172,7 +174,8 @@ func TestDirectPaymentMinedDepth(t *testing.T) {
 	}{
 		{"mined at the tip", tip, tip, true},
 		{"mined maxDirectPaymentDepth blocks deep", tip - maxDirectPaymentDepth, tip, true},
-		{"mined above this node's tip", tip + 3, tip, true},
+		{"mined one block above this node's tip", tip + 1, tip, true},
+		{"mined maxPaymentHeightAboveTip blocks above this node's tip", tip + maxPaymentHeightAboveTip, tip, true},
 	}
 	for _, tc := range accepted {
 		if err := pay(tc.minedAt, tc.tip, tc.haveTip); err != nil {
@@ -183,18 +186,21 @@ func TestDirectPaymentMinedDepth(t *testing.T) {
 		name         string
 		minedAt, tip uint32
 		haveTip      bool
+		code         string
 	}{
-		{"mined one block deeper than maxDirectPaymentDepth", tip - maxDirectPaymentDepth - 1, tip, true},
-		{"mined a year ago", tip - 52_560, tip, true},
-		{"mined with no block height", 0, tip, true},
-		{"mined, and the node's tip is 0", tip, 0, true},
-		{"mined, and the node has no header tip", tip, 0, false},
+		{"mined one block deeper than maxDirectPaymentDepth", tip - maxDirectPaymentDepth - 1, tip, true, codePaymentTooOld},
+		{"mined a year ago", tip - 52_560, tip, true, codePaymentTooOld},
+		{"mined with no block height", 0, tip, true, codePaymentTooOld},
+		{"mined, and the node's tip is 0", tip, 0, true, codePaymentTooOld},
+		{"mined, and the node has no header tip", tip, 0, false, codePaymentTooOld},
+		{"mined three blocks above this node's tip", tip + 3, tip, true, codePaymentHeadersBehind},
+		{"mined far above a header tip that stopped 20,000 blocks back", tip, tip - 20_000, true, codePaymentHeadersBehind},
 	}
 	for _, tc := range refused {
 		err := pay(tc.minedAt, tc.tip, tc.haveTip)
 		var refusal *paymentRefusal
-		if !errors.As(err, &refusal) || refusal.code != codePaymentTooOld {
-			t.Fatalf("%s: want a %s refusal, got %v", tc.name, codePaymentTooOld, err)
+		if !errors.As(err, &refusal) || refusal.code != tc.code {
+			t.Fatalf("%s: want a %s refusal, got %v", tc.name, tc.code, err)
 		}
 	}
 }

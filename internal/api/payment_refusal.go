@@ -23,6 +23,12 @@ const (
 	// node accepts, or at a depth it cannot work out (checkPaymentDepth,
 	// payment_arc.go).
 	codePaymentTooOld = "ERR_PAYMENT_TOO_OLD"
+	// codePaymentHeadersBehind: ARC reports the direct payment mined more
+	// than maxPaymentHeightAboveTip blocks above this node's header tip, so
+	// the node's headers are behind and it cannot confirm the payment's depth
+	// (checkPaymentDepth, payment_arc.go). The same transaction can be
+	// retried once they catch up.
+	codePaymentHeadersBehind = "ERR_PAYMENT_HEADERS_BEHIND"
 )
 
 // paymentRefusal is a payment refused with one of the codes above.

@@ -501,7 +501,12 @@ of every direct payment it accepts, for 24 hours and up to 100,000 txids,
 and refuses a reused transaction with 402 and code `ERR_PAYMENT_REPLAYED`.
 It also refuses, with code `ERR_PAYMENT_TOO_OLD`, a direct payment that ARC
 reports as mined more than 144 blocks below the node's header tip, or mined
-at a depth the node cannot work out. Known limit: the txid memory is not
+with no block height, or when the node has no header tip. A direct payment
+ARC reports as mined more than 2 blocks above the node's header tip is
+refused with code `ERR_PAYMENT_HEADERS_BEHIND`: the node's headers are
+behind, so it cannot confirm how deep the payment is. A lag of 1 or 2 blocks
+passes, and the same transaction can be retried once the headers catch up.
+Known limit: the txid memory is not
 kept across a restart, so after a restart a direct payment accepted in the
 last 24 hours that is still unmined, or mined at most 144 blocks deep, can
 pay once more.
