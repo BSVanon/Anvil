@@ -1,7 +1,7 @@
 // Package overlay holds the shared types and interfaces that Anvil's
 // topic managers + legacy compatibility shim depend on. The legacy
-// in-process Engine + Submit/Lookup/HTTP handlers were removed in W-7
-// (2026-05-16); production now uses the canonical v3 engine wired via
+// in-process Engine + Submit/Lookup/HTTP handlers were removed; production now
+// uses the canonical v3 engine wired via
 // internal/overlay/v3engine + internal/overlay/legacyshim with storage
 // in internal/overlay/storage and lookup services in
 // internal/overlay/lookups.
@@ -20,7 +20,7 @@
 //   - The legacy shim re-uses the JSON wire shapes (STEAK,
 //     TaggedBEEF, LookupQuestion, LookupAnswer) to preserve byte-for-
 //     byte compatibility with apps that haven't migrated to canonical
-//     /submit + /lookup yet (Lens 2 = 2c indefinite).
+//     /submit + /lookup yet.
 //
 // If a future workstream rewrites the topic implementations to depend
 // on the canonical engine.TopicManager directly (no adapter), this

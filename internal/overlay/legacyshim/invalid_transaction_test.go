@@ -18,7 +18,7 @@ import (
 // serialized on its own and never wrapped in any BEEF envelope -- the shape
 // a client sends when it mistakes a raw transaction for a BEEF -- posted to
 // /overlay/submit answers 400 with the clear refusal message, not the 500
-// it used to answer (bu_b4_specs.md item 4). beefnorm.Parse's call to
+// it used to answer. beefnorm.Parse's call to
 // go-sdk's NewBeefFromBytes used to return that error unwrapped, which fell
 // through legacyshim's own classification to statusForSubmitError's generic
 // 500.
@@ -41,8 +41,7 @@ func TestLegacySubmit_RawTransactionIsRefused400NotCrashed(t *testing.T) {
 // ErrMalformed case TestLegacySubmit_RefusesSpendsOnlyTheExtendedFormatBacks
 // exercises): its parent is included with a real BUMP, so PreVerify reaches
 // spv.Verify instead of being refused earlier, and spv.Verify returns
-// go-sdk's own script failure as a plain error (bu_b4_specs.md item 4b;
-// cycle-6b re-review, NIT 1).
+// go-sdk's own script failure as a plain error.
 func failingScriptBEEF(t *testing.T) []byte {
 	t.Helper()
 	subject := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: beefnormtest.Lock(), Satoshis: 1000})
@@ -56,7 +55,7 @@ func failingScriptBEEF(t *testing.T) []byte {
 // PreVerify returns that is not a guard refusal, budget or size error --
 // answers 400 with invalidTransactionCode and logs ReasonInvalidTransaction,
 // instead of the 500 under ReasonOtherGuardError it used to answer and log
-// (bu_b4_specs.md item 4b).
+// before the error classification was corrected.
 func TestLegacySubmit_FailingScriptIsClassifiedInvalidTransaction(t *testing.T) {
 	logs := watchRefusals(t)
 	url := guardedShimServer(t, newWiredShim(t), routeguard.New(testPool, routeguard.CPUSlots, routeguard.JSONSlots, routeguard.Wait))

@@ -1,11 +1,11 @@
 package topics_test
 
-// Engine-level coverage for a bug a cold review found: drives a real MessageBox
+// Engine-level coverage drives a real MessageBox
 // advert through the actual go-overlay-services engine (v3engine.New,
 // Anvil's production wiring) rather than just Admit in isolation, and
 // confirms a pure revocation deletes the engine's OWN storage row —
 // mirroring uhrp_engine_test.go's TestUHRPEngine_PureRevocationDeletesStorageRow
-// exactly, reusing its newFixPassTestEngine helper (same package).
+// exactly, reusing its test-engine helper (same package).
 
 import (
 	"context"
@@ -25,8 +25,8 @@ import (
 	"github.com/bsv-blockchain/go-sdk/wallet"
 )
 
-// TestMessageBoxEngine_PureRevocationDeletesStorageRow covers a bug a
-// review found: after the coin-retention fix (CoinsToRetain nil,
+// TestMessageBoxEngine_PureRevocationDeletesStorageRow verifies that after the
+// coin-retention correction (CoinsToRetain nil,
 // CoinsRemoved built from previousUTXOs), a pure
 // revocation — spending the advert's output with no new MessageBox
 // output anywhere in the same transaction — must delete the engine's

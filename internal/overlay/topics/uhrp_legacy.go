@@ -8,7 +8,7 @@ package topics
 // uhrp.go's package doc comment).
 //
 // Split out of uhrp.go, which was growing past this package's established
-// per-file size once the BRC-26 and fix-pass additions landed there; this
+// per-file size after the BRC-26 implementation was added; this
 // file and uhrp.go together replace what was one file, with no behaviour
 // change (mirrors the equivalent split already done on the lookups side,
 // uhrp.go / uhrp_filter.go).

@@ -123,8 +123,8 @@ const invalidTransactionCode = "ERR_INVALID_TRANSACTION"
 // 503 with Retry-After when the node is busy, 408 when the body was too slow,
 // 400 with beefscan.Code for a BEEF over a cap, 400 with
 // routeguard.MalformedScriptCode for an unlocking script ending in an
-// undecodable instruction (routeguard.ErrMalformedScript, cold review round 4
-// B1), 400 for a BEEF the guard does not accept (routeguard.ErrMalformed),
+// undecodable instruction (routeguard.ErrMalformedScript), 400 for a BEEF
+// the guard does not accept (routeguard.ErrMalformed),
 // 422 with routeguard.ValidationBudgetCode for scripts over the verification
 // budget, and otherwise the status the engine's own error got before the
 // guard (statusForSubmitError). The six named guard-imposed cases are
@@ -146,8 +146,8 @@ const invalidTransactionCode = "ERR_INVALID_TRANSACTION"
 // Submit error in routes.go) never sees anything but a Begin, ReadBody or
 // PreVerify-stage error -- that 500 is overridden to 400 with
 // invalidTransactionCode and ReasonInvalidTransaction instead: go-sdk's
-// spv.Verify returns script, fee and merkle failures as plain errors
-// (cycle-6b re-review, NIT 1), which routeguard/verify.go's final switch
+// spv.Verify returns script, fee and merkle failures as plain errors, which
+// routeguard/verify.go's final switch
 // passes straight through, and the client's BEEF failing to verify is not a
 // node fault.
 func writeLegacyGuardError(w http.ResponseWriter, r *http.Request, err error) {
@@ -189,7 +189,7 @@ func writeLegacyGuardError(w http.ResponseWriter, r *http.Request, err error) {
 // engine.ErrInvalidTransaction or engine.ErrInvalidBeef, and
 // ReasonOtherGuardError for every other error writeLegacyGuardError's
 // default branch logs when statusForSubmitError already named it (unknown
-// topic, or a deadline) -- cold review round 4 cycle 6 NIT. It changes no
+// topic, or a deadline). It changes no
 // status code there: statusForSubmitError still decides that, unchanged. The
 // branch where statusForSubmitError does not name the error (its generic
 // 500) does not call this: see writeLegacyGuardError's default case.

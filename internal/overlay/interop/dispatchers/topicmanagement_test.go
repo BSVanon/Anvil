@@ -138,8 +138,8 @@ func TestTopicManagement_Vector2_NotReadyHealth(t *testing.T) {
 func TestTopicManagement_Vector2_FallsBackToMainHandler(t *testing.T) {
 	// Without a notReady handler attached, vector .2 routes through the
 	// main handler. If that handler is ready (returns 200), the vector
-	// FAILs (vector expects 503). This is the behavior Codex called out:
-	// the dispatcher should produce a real result, not a silent SKIP.
+	// FAILs (vector expects 503). The dispatcher must produce a real result,
+	// not a silent SKIP.
 	file := loadTopicManagementFile(t)
 	v := vectorByID(t, file, "overlay.topicmanagement.2")
 
@@ -177,7 +177,7 @@ func TestTopicManagement_RemainingVectorsPending(t *testing.T) {
 			pendingCount++
 		}
 	}
-	// 18 total - 10 (handled) = 8 expected PENDING (Workstream D vectors).
+	// 18 total - 10 handled = 8 expected PENDING vectors.
 	if pendingCount != 8 {
 		t.Errorf("PENDING count = %d, want 8", pendingCount)
 	}
@@ -223,7 +223,7 @@ func TestTopicManagement_Vector8_MissingAdminStatsScenario_FALL_THROUGH(t *testi
 	// Without the admin-stats scenario attached, vector .8 falls back to
 	// default (which doesn't have a Bearer token configured), so the request
 	// gets 401 instead of 200. Vector expects 200, dispatcher should FAIL.
-	// This is the safety net Codex b126d8fc asked us to preserve.
+	// A missing scenario must fail instead of silently skipping the vector.
 	file := loadTopicManagementFile(t)
 	v := vectorByID(t, file, "overlay.topicmanagement.8")
 	d := freshDispatcher(true) // no admin-stats scenario attached
@@ -274,13 +274,12 @@ func TestTopicManagement_Vector5_MissingScenarioFallsBackAndFails(t *testing.T) 
 }
 
 func TestTopicManagement_PerVectorWorkstream(t *testing.T) {
-	// Codex review b126d8fc: Result.Workstream must reflect the vector's
-	// owning workstream, not the file's umbrella label. The runner's
-	// PendingByWorkstream relies on this field for honest backlog counts.
+	// Result.Workstream must retain the vector's ownership label rather than
+	// the file's umbrella label. PendingByWorkstream uses it for backlog counts.
 	file := loadTopicManagementFile(t)
 	d := productionDispatcher()
 
-	// .5-.8, .17, .18 are Workstream A; .9-.16 are Workstream D.
+	// .5-.8, .17, and .18 are configured; .9-.16 remain pending.
 	cases := map[string]string{
 		"overlay.topicmanagement.5":  "A",
 		"overlay.topicmanagement.9":  "D",

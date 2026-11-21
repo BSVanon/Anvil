@@ -128,7 +128,7 @@ func transactionsHugeTxCount() []byte {
 	return hugeCountVarint()
 }
 
-// TestParseGuard_RejectsOversizedWireCounts is the v3.4.1 security
+// TestParseGuard_RejectsOversizedWireCounts is the v3.5.0 security
 // regression for wire-sized allocations. go-sdk v1.2.23 sized slices directly
 // from varints read off the wire, so a crafted BEEF or transaction whose
 // declared element count or byte length exceeds the bytes actually present

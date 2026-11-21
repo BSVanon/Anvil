@@ -53,7 +53,7 @@ var _ engine.LookupService = (*OrdLockBuyLookupService)(nil)
 // --- event handlers --------------------------------------------------------
 
 // BackfillFromLegacyMetadata populates this service's lk_ordlockbuy
-// index for a single legacy AdmittedOutput. Used by W-4 phase B
+// index for a single legacy AdmittedOutput. Used by migration
 // migration. metadata is a JSON-encoded topics.OrdLockBuyEntry. See
 // the UHRP backfill doc-comment for the canonical /lookup BEEF-empty
 // limitation that applies equally here.

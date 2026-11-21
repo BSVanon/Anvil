@@ -10,11 +10,11 @@ package topics
 //
 // Port source: `bsv-blockchain/overlay-express-examples` →
 // `ts-stack/packages/overlays/topics/src/ump/UMPTopicManager.ts` (commit
-// pinned via the MCP go-stack source). Behavior preserved 1:1 modulo
+// pinned from the Go implementation source). Behavior preserved 1:1 modulo
 // language idioms; admission rules + v3 detection + kdfAlgorithm
 // validation mirror the canonical TypeScript implementation.
 //
-// SendBSV-Wallet consumes this topic to publish cross-device-recovery
+// Wallets consume this topic to publish cross-device-recovery
 // UMP tokens (12-field PushDrop carrying encrypted recovery primaries +
 // password salts). Anvil's job is admission-only: PushDrop-decode the
 // output, verify field count + v3-version invariants, and admit. The
@@ -161,8 +161,8 @@ func (m *UMPTopicManager) Admit(txData []byte, previousUTXOs []anviloverlay.Admi
 // GetDocumentation returns the human-readable purpose of the topic.
 func (m *UMPTopicManager) GetDocumentation() string {
 	return "UMP (User Management Protocol) Topic Manager: admits 12-field PushDrop tokens that publish " +
-		"encrypted CWI-style wallet account descriptors. Used by BRC-100 wallets (SendBSV-Wallet, " +
-		"Babbage MetaNet) for cross-device passkey recovery. Anvil indexes the lookup keys " +
+		"encrypted CWI-style wallet account descriptors. Used by BRC-100 wallets for cross-device " +
+		"passkey recovery. Anvil indexes the lookup keys " +
 		"(presentationHash, recoveryHash) but never decrypts the encrypted recovery primaries — " +
 		"that is strictly a client-side wallet responsibility."
 }

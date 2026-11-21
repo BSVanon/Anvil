@@ -17,7 +17,7 @@ package topics
 // publicly-revealed-attributes check (decryptFields must yield at
 // least one non-empty entry) is preserved.
 //
-// SendBSV-Wallet consumes this topic for paymail handle resolution
+// Wallets consume this topic for paymail handle resolution
 // (BRC-52 identity certs published under the user's paymail). Anvil's
 // job is admission-only: PushDrop-decode → JSON-parse → verify
 // signature chain → admit. The wallet does client-side query +

@@ -112,7 +112,7 @@ func buildUHRPBRC26Script(t *testing.T, w wallet.Interface, identityPub, hash []
 		uhrpBRC26Protocol,
 		uhrpBRC26KeyID,
 		wallet.Counterparty{Type: wallet.CounterpartyTypeAnyone},
-		true, // forSelf — see the fix-pass comment above
+		true, // forSelf — required for the derived locking key to match
 		true, // includeSignature: a BRC-26 advert carries an appended signature
 		pushdrop.LockBefore,
 	)

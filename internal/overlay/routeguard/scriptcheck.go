@@ -31,8 +31,8 @@ const MalformedScriptCode = "ERR_MALFORMED_SCRIPT"
 // inside such an unlocking script re-decode it joined with the spent locking
 // script (reparseJoined, script/interpreter/thread.go:1123-1162), so a
 // locking script that is one large push becomes one ParsedOpcode per byte --
-// a heap bomb with no login and no cost to the sender (cold review round 4,
-// B1). The go-sdk comment at thread.go:1129-1134 notes bitcoin-sv decodes the
+// a heap bomb with no login and no cost to the sender. The go-sdk comment at
+// thread.go:1129-1134 notes bitcoin-sv decodes the
 // same joined bytes, so such a script can be valid under Chronicle when the
 // malformed tail follows a top-level OP_RETURN; no honest wallet emits one,
 // and before Chronicle the push-only rule already refused it (it sits beside
@@ -52,9 +52,8 @@ var ErrMalformedScript = errors.New("unlocking script ends in an undecodable ins
 // allocates nothing, so PreVerify calls it before taking the execution or
 // CPU slot: a flood of this one shape then costs the guard nothing beyond
 // parsing the BEEF, instead of queuing behind, or taking, the slots
-// legitimate verification work needs (cold review round 4 cycle 6 NIT,
-// "slot order" -- this check used to run inside checkScripts, after both
-// slots were already taken).
+// legitimate verification work needs. This check runs before both slots are
+// taken.
 func scanMalformedScripts(g beefnorm.Graph) error {
 	for _, tx := range g.Unmined {
 		for vin, in := range tx.Inputs {

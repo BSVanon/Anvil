@@ -180,8 +180,7 @@ func TestSLAPStorage_StoreFindDelete(t *testing.T) {
 // TestSHIPStorage_DefaultSortIsDescCreatedAt verifies the canonical
 // sort contract from go-overlay-discovery-services/pkg/shared/storage.go:24-31:
 // findOpts default to descending createdAt (newest first) when no
-// sortOrder is supplied. Codex review 6daa58cb1a6f43e4 caught the
-// original adapter just reversing LevelDB key order — bypass of the
+// sortOrder is supplied. Reversing LevelDB key order would bypass the
 // canonical contract that would have produced wrong ordering once
 // CreatedAt-aware peers queried us.
 func TestSHIPStorage_DefaultSortIsDescCreatedAt(t *testing.T) {

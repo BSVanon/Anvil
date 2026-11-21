@@ -26,7 +26,7 @@ import (
 //     canonical.New per vector whose Submit callback returns the
 //     SubmitResponse parsed from expected.body. The dispatcher exercises
 //     that registered handler end-to-end and LITERAL-matches the response
-//     body against expected.body (Codex review a8dc1754).
+//     body against expected.body.
 //
 //   - Error vectors (.4, .5, .6, .9, .11, .12): use the default scenario
 //     handler. Status + body.status="error" assertions (.12 also requires
@@ -35,8 +35,8 @@ import (
 //   - Vector .7 (unknown topic → 400): uses the "known-topics" scenario so
 //     the canonical handler's KnownTopics filter rejects the request.
 //
-// Codex review ba3e80 enforced this CLI-owned registration so a miswired
-// CLI is observable: if the CLI forgets to register happy-path scenarios,
+// CLI-owned registration makes a miswired CLI observable: if it forgets to
+// register happy-path scenarios,
 // those vectors fall back to default (which produces empty admissions for
 // any topic) and FAIL the literal-match assertion.
 //
@@ -177,7 +177,7 @@ func (d *OverlaySubmit) Run(_ context.Context, _ *interop.VectorFile, v interop.
 	// Look up the registered scenario handler. The CLI owns scenario
 	// registration; missing scenarios for happy-path vectors fall back to
 	// default and (almost always) FAIL — that's the safety net for
-	// observable miswiring (Codex review ba3e80).
+	// observable miswiring.
 	scenario := scenarioForSubmitVector(v.ID)
 	handler, ok := d.handlers[scenario]
 	if !ok {
@@ -205,7 +205,7 @@ func (d *OverlaySubmit) Run(_ context.Context, _ *interop.VectorFile, v interop.
 
 	if rec.Code >= 200 && rec.Code < 300 {
 		// Primary check: response body literally matches expected.body
-		// (Codex a8dc1754 — shape-only would silently PASS empty admissions).
+		// Shape-only matching would silently pass empty admissions.
 		if msg := assertSubmitLiteralMatch(rec.Body.Bytes(), expected.Body); msg != "" {
 			result.Status = interop.StatusFail
 			result.Message = msg

@@ -154,9 +154,8 @@ func (h *Handlers) RequestForeignGASPNode(w http.ResponseWriter, r *http.Request
 		//   - engine.ErrNotFound ("not-found") returned by the storage
 		//     layer (Anvil's anvilstorage.FindOutput, upstream
 		//     engine.go:1259) when the outpoint isn't present at all.
-		// Both mean "this node doesn't have it" → 404.
-		// Codex review 24358e121cfe3e64 caught the original
-		// implementation reporting missing nodes as 500.
+		// Both mean "this node doesn't have it" → 404. Returning 500 would classify
+		// absent state as a server failure.
 		if errors.Is(err, engine.ErrMissingOutput) || errors.Is(err, engine.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
 			return

@@ -201,8 +201,8 @@ func TestTracker_BackoffEscalatesPerWindowAndCaps(t *testing.T) {
 	}
 }
 
-// TestFacilitator_BurstFailuresDoNotOverEscalate is the regression for Codex's
-// residual: many CONCURRENT per-topic failures to one dead host in a single sync
+// TestFacilitator_BurstFailuresDoNotOverEscalate verifies that many concurrent
+// per-topic failures to one dead host in a single sync
 // must not rocket it to the 1h cap. The burst collapses to the base window, so a
 // host that recovers next round isn't stuck for hours.
 func TestFacilitator_BurstFailuresDoNotOverEscalate(t *testing.T) {

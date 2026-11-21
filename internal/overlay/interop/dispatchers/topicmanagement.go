@@ -10,8 +10,8 @@
 //
 // Conventions:
 //   - Use in-process execution (httptest.NewRecorder) for HTTP vectors. Live
-//     network execution is reserved for Workstream F Phase 7 against
-//     overlay-express.
+//     network execution is reserved for integration testing against the
+//     external overlay service.
 //   - SKIP vectors that require infrastructure we don't have yet (fault
 //     injection, BRC-31 keys, etc.) with an informative SkipReason.
 package dispatchers
@@ -50,7 +50,7 @@ const (
 // Production wires every scenario it has a handler for; if a vector requests
 // a scenario the dispatcher doesn't have, the dispatcher falls back to default
 // and (often) FAILs honestly rather than silently SKIPping. That fall-back
-// failure is the safety net Codex review b126d8fc asked for.
+// failure makes a missing scenario visible instead of silently skipping it.
 type TopicManagement struct {
 	handlers map[string]http.Handler
 }
@@ -93,25 +93,24 @@ type vectorInput struct {
 // vectorExpected is the canonical response shape for the health-class vectors.
 // Body is JSON; status_oneof captures multi-status vectors.
 type vectorExpected struct {
-	Status       int             `json:"status"`
-	StatusOneOf  []int           `json:"status_oneof"`
-	Body         json.RawMessage `json:"body"`
-	SchemaNote   string          `json:"schema_note"`
+	Status      int             `json:"status"`
+	StatusOneOf []int           `json:"status_oneof"`
+	Body        json.RawMessage `json:"body"`
+	SchemaNote  string          `json:"schema_note"`
 }
 
 // Run implements interop.Dispatcher.
 func (d *TopicManagement) Run(_ context.Context, _ *interop.VectorFile, v interop.Vector) interop.Result {
-	// Workstream is always per-vector (not per-file) so the runner's
-	// PendingByWorkstream aggregation distinguishes A from D honestly.
+	// Workstream is per-vector, so PendingByWorkstream preserves each vector's
+	// report label.
 	result := interop.Result{
 		FileID:     d.FileID(),
 		VectorID:   v.ID,
 		Workstream: workstreamForVector(v.ID),
 	}
 
-	// Vectors covered by the current slice (Workstream A). Anything else
-	// lands as PENDING with its owning workstream so the report is honest
-	// about what's not implemented yet.
+	// Only configured vectors execute here. Others remain PENDING with their
+	// ownership label so the report shows what is not implemented.
 	switch v.ID {
 	case "overlay.topicmanagement.1",
 		"overlay.topicmanagement.2",
@@ -145,8 +144,7 @@ func (d *TopicManagement) Run(_ context.Context, _ *interop.VectorFile, v intero
 
 	// Pick the handler fixture this vector requires. If the dispatcher
 	// doesn't have the named scenario wired, we fall back to default — that
-	// usually FAILs the vector honestly (matching Codex b126d8fc's "no
-	// silent SKIPs" rule).
+	// usually FAILs the vector honestly rather than silently skipping it.
 	scenario := scenarioForVector(v.ID)
 	handler, ok := d.handlers[scenario]
 	if !ok {

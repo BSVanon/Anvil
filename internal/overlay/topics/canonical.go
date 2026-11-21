@@ -7,7 +7,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/overlay"
 )
 
-// canonicalVersion is the W-2 adapter version stamp. Bumped if the adapter
+// canonicalVersion is the adapter version stamp. Bumped if the adapter
 // translation changes shape in a way consumers might care about. Distinct
 // from Anvil's release version because it tracks adapter behaviour, not
 // node behaviour.

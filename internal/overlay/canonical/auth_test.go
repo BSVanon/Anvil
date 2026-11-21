@@ -210,11 +210,11 @@ func TestPubKeyHexPattern(t *testing.T) {
 	}
 	invalid := []string{
 		"",
-		"04abc",                              // wrong prefix
-		"02abc",                              // too short
-		"04" + "0000000000000000000000000000000000000000000000000000000000000000",   // wrong prefix, right length
-		"02" + "z000000000000000000000000000000000000000000000000000000000000000",   // non-hex char
-		"01" + "0000000000000000000000000000000000000000000000000000000000000000",   // invalid prefix
+		"04abc", // wrong prefix
+		"02abc", // too short
+		"04" + "0000000000000000000000000000000000000000000000000000000000000000", // wrong prefix, right length
+		"02" + "z000000000000000000000000000000000000000000000000000000000000000", // non-hex char
+		"01" + "0000000000000000000000000000000000000000000000000000000000000000", // invalid prefix
 	}
 	for _, v := range invalid {
 		if PubKeyHexPattern.MatchString(v) {

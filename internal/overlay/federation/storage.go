@@ -23,7 +23,8 @@
 //     v3engine.Config (Advertiser, SyncConfiguration, SHIPTrackers,
 //     SLAPTrackers, LookupResolver, Broadcaster).
 //
-// See docs/internal/W10_FEDERATION_PLAN.md for the workstream context.
+// The configured federation components provide advertising, peer discovery,
+// transaction propagation, and SHIP/SLAP lookup over this storage.
 package federation
 
 import (
@@ -145,7 +146,7 @@ func (s *SHIPStorage) EnsureIndexes(_ context.Context) error { return nil }
 // lookupRecord fetches a single SHIPRecord by outpoint. Returns
 // (nil, nil) for not-found. Used by the federation advertiser's
 // BEEF-empty fallback path: when an output's BEEF isn't in anvilstorage
-// (typical post-W-4-B migration state), we still need TopicOrService +
+// (a typical migrated state), we still need TopicOrService +
 // IdentityKey + Domain to satisfy engine.SyncAdvertisements'
 // "already advertised" filter — those fields live in our local SHIP
 // record even when on-chain BEEF is absent.
@@ -396,8 +397,7 @@ func contains(haystack []string, needle string) bool {
 // ascending. Keeps results deterministic when multiple records land in
 // the same timestamp bucket (common in tests + fast-admit bursts).
 //
-// Codex review 6daa58cb1a6f43e4 caught the original implementation
-// just reversing LevelDB key order without ever sorting by CreatedAt,
+// Sorting only by reversed LevelDB key order without CreatedAt
 // which diverged silently from the canonical contract.
 func paginate(records []*types.SHIPRecord, limit, skip *int, sortOrder *types.SortOrder) []types.UTXOReference {
 	asc := sortOrder != nil && *sortOrder == types.SortOrderAsc

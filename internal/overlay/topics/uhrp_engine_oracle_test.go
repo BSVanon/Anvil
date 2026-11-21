@@ -5,8 +5,8 @@ package topics_test
 // StorageDownloader.ts's resolve()) both a canonical BRC-26 answer (must
 // decode cleanly) and a LEGACY-format advert (must throw). Split out of
 // uhrp_engine_test.go, which was growing past this package's established
-// per-file size norm after a negative-case addition
-// (re-review RISKS item 4) landed here; this file and uhrp_engine_test.go
+// per-file size norm after a negative-case addition landed here; this file
+// and uhrp_engine_test.go
 // together replace what was one file, with no behaviour change to the
 // moved code (only the extracted exec.Command/CombinedOutput plumbing was
 // factored into runUHRPOracle so the new negative case doesn't duplicate
@@ -30,8 +30,7 @@ import (
 )
 
 // uhrpStorageDownloaderOracleJS mirrors ts-sdk's StorageDownloader.ts
-// resolve() decode loop exactly (reviewer scratch ts/sd.mjs, reused not
-// re-derived): PushDrop-decode, then read the expiry varint and URL
+// resolve() decode loop exactly: PushDrop-decode, then read the expiry varint and URL
 // field the same way resolve() does. A throw means a real client would
 // drop the output — must never happen for a {uhrpUrl} answer, since
 // those are BRC-26-only.
@@ -52,13 +51,13 @@ for (const hex of items) {
 `
 
 // findLocalBSVSDK locates a local @bsv/sdk ESM build to run the oracle
-// against, preferring the same SDK version/path set the cold review's
-// own TS vectors were generated from. Returns "" if none is found.
+// against. ANVIL_TEST_BSV_SDK_ESM overrides the default path. Returns "" if
+// neither path exists.
 func findLocalBSVSDK() string {
-	for _, p := range []string{
-		"/tmp/sdk/dist/esm/mod.js",
-		"/home/robert/Documents/Anvil-Swap/node_modules/@bsv/sdk/dist/esm/mod.js",
-	} {
+	for _, p := range []string{os.Getenv("ANVIL_TEST_BSV_SDK_ESM"), "/tmp/sdk/dist/esm/mod.js"} {
+		if p == "" {
+			continue
+		}
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
@@ -82,14 +81,14 @@ func runUHRPOracle(t *testing.T, oraclePath, nodePath, sdkPath string, scriptHex
 }
 
 // TestUHRPEngine_UhrpUrlAnswersDecodeInCanonicalStorageDownloader is the
-// spec item 6 oracle requirement: admit two fresh BRC-26 adverts through
+// Oracle requirement: admit two fresh BRC-26 adverts through
 // the real engine, resolve each by its canonical uhrp:// URL (hydrating
 // genuine BEEF via Storage, not test-built bytes), and feed every
 // resulting locking script to a Node process running the real @bsv/sdk.
 // Skips, never fails, when node or a local @bsv/sdk build isn't available.
 //
-// Re-review RISKS item 4 extends this with the negative case: a
-// LEGACY-format advert script (topics.BuildUHRPScript — OP_RETURN-shaped,
+// The negative case uses a LEGACY-format advert script
+// (topics.BuildUHRPScript — OP_RETURN-shaped,
 // never PushDrop-shaped) fed to the identical oracle must THROW, proving
 // the oracle would actually catch it if canonicalOnly ever let one leak
 // into a {uhrpUrl} answer — not just that the oracle accepts what it's
@@ -170,7 +169,7 @@ func TestUHRPEngine_UhrpUrlAnswersDecodeInCanonicalStorageDownloader(t *testing.
 		t.Fatalf("expected %d canonical-decodes, got %d:\n%s", len(scriptHexes), got, out)
 	}
 
-	// Negative case (re-review RISKS item 4): a LEGACY-format advert is
+	// Negative case: a LEGACY-format advert is
 	// never PushDrop-shaped (uhrp_legacy.go: OP_FALSE OP_RETURN "UHRP"
 	// <hash>...), so the identical oracle must THROW on it — proof that
 	// canonicalOnly's uhrpUrl-is-BRC26-only rule (filterUHRPRecords rule 3,

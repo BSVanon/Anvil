@@ -22,7 +22,7 @@ import (
 // POST /lookup, GET /listTopicManagers, GET /listLookupServiceProviders)
 // as net/http handlers backed by a single engine.Engine. Anvil's
 // existing api.Server mounts these under the canonical route group in
-// W-5 phase B.
+// canonical route group.
 //
 // MaxBodyBytes, when positive, lowers every route's body cap to it. Zero
 // keeps routeguard's caps: routeguard.MaxBEEFBody for /submit and
@@ -288,11 +288,8 @@ type Middleware func(http.HandlerFunc) http.HandlerFunc
 // Register mounts every canonical route on the given mux, wrapping each
 // handler with the supplied middleware. Pass nil for no wrapping (tests
 // use that path). Production boot MUST pass api.Server.CorsWrap so
-// browser callers (Anvil-Swap UI, SendBSV-Foundry) get the required
-// Access-Control-* headers when they migrate to canonical routes —
-// Codex review fe9707876f5618ca caught the original implementation
-// mounting handlers raw and noted browser callers would fail
-// cross-origin as soon as app migrations begin.
+// browser callers get the required Access-Control-* headers when they migrate
+// to canonical routes. Mounting handlers raw would fail cross-origin requests.
 //
 // Routes are registered with bare patterns so the handler bodies keep
 // emitting the canonical {status,message} error envelope on
@@ -308,7 +305,7 @@ func (h *Handlers) Register(mux *http.ServeMux, wrap Middleware) {
 	mux.HandleFunc("/listTopicManagers", wrap(h.ListTopicManagers))
 	mux.HandleFunc("/listLookupServiceProviders", wrap(h.ListLookupServiceProviders))
 	mux.HandleFunc("/arc-ingest", wrap(h.ArcIngest))
-	// W-10.3: canonical GASP federation routes. Always registered — the
+	// Canonical GASP federation routes are always registered — the
 	// engine guards on missing federation state internally (returns
 	// empty/zero responses if no peers, no SyncConfiguration). Operators
 	// who want single-node mode set cfg.Overlay.EnableGASPSync=false
@@ -363,7 +360,7 @@ type errorEnvelope struct {
 
 // writeError writes the canonical error envelope at the given status.
 // Replaces the earlier `{"error": msg}` shape which diverged from the
-// pinned vectors (caught by Codex review 93c0fe5a44610be1).
+// pinned vectors.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, errorEnvelope{Status: "error", Message: msg})
 }

@@ -11,8 +11,8 @@ import (
 	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 )
 
-// B1 (cold review round 4): see v3engine/malformed_script_test.go for the
-// shape and the mechanism. PreVerify is shared code
+// PreVerify is shared code; see v3engine/malformed_script_test.go for the
+// input shape and mechanism.
 // (internal/overlay/routeguard/verify.go's Ticket.PreVerify, called from both
 // /submit and /overlay/submit), so this pins the same refusal for the legacy
 // route: refused promptly, with the coded 400, in the legacy {"error",

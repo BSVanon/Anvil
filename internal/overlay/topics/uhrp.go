@@ -256,7 +256,7 @@ func ParseUHRPOutput(script []byte) *UHRPEntry {
 // classifyUHRPOutput, parsePushDataFields, HashContent, BuildUHRPScript and
 // appendPushData (the legacy OP_RETURN format's decode/encode helpers) live
 // in uhrp_legacy.go — split out to hold this file under the package's
-// per-file size norm once the BRC-26 and fix-pass additions landed here
+// per-file size norm after the BRC-26 implementation was added here
 // (mirrors the lookups package's uhrp.go / uhrp_filter.go split), no
 // behaviour change.
 

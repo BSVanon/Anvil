@@ -176,7 +176,7 @@ func TestUHRP_LookupByUhrpUrl(t *testing.T) {
 
 	// The same hash via content_hash still surfaces both records — a
 	// uhrpUrl query is the one query shape canonicalOnly restricts; by-hash
-	// and list queries keep both formats per spec item 1.
+	// and list queries keep both formats.
 	qHash, _ := json.Marshal(topics.UHRPLookupQuery{ContentHash: hashHex})
 	hashAnswer, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{Service: topics.UHRPLookupServiceName, Query: qHash})
 	if err != nil {

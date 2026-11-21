@@ -3,7 +3,7 @@
 // sub-prefix index keyed by the metadata it cares about, hydrated by the
 // engine's OutputAdmittedByTopic / OutputSpent / OutputEvicted callbacks.
 //
-// W-3 phase A (2026-05-13): UHRP shipped as the first end-to-end example.
+// UHRP is the first end-to-end lookup example.
 // Phases B+ port DEX-swap, OrdLock listings, and OrdLock buy following
 // the same pattern.
 //
@@ -11,7 +11,7 @@
 // pkg/core/engine/engine.go:723-744), lookups return LookupAnswer with
 // Type=AnswerTypeFormula and a Formulas slice of outpoint references; the
 // engine hydrates BEEF from its registered Storage layer (Anvil's
-// internal/overlay/storage in W-5). Lookups never store BEEF locally —
+// internal/overlay/storage). Lookups never store BEEF locally —
 // only the metadata indexes their queries need.
 package lookups
 
@@ -272,7 +272,7 @@ func uhrpHashKey(contentHash string, txid *chainhash.Hash, vout uint32) []byte {
 
 // parseUHRPOutpointQuery decodes canonical UHRPLookupService.ts's
 // Outpoint query key: "<txid-hex>.<output-index>", dot-separated (fix
-// pass, spec item 5). This is the wire format an external canonical
+// pass. This is the wire format an external canonical
 // client sends inside its query object — distinct from uhrpItemKey /
 // uhrpHashKey above, which encode Anvil's own internal LevelDB keys
 // using ':' and never appear on the wire.

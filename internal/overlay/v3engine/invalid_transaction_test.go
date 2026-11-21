@@ -16,8 +16,8 @@ import (
 // TestSubmit_RawTransactionIsRefused400NotCrashed: a raw transaction,
 // serialized on its own and never wrapped in any BEEF envelope -- the shape
 // a client sends when it mistakes a raw transaction for a BEEF -- posted to
-// /submit answers 400 with the clear refusal message, not a 500
-// (bu_b4_specs.md item 4). beefnorm.Parse's call to go-sdk's
+// /submit answers 400 with the clear refusal message, not a 500.
+// beefnorm.Parse's call to go-sdk's
 // NewBeefFromBytes used to return that error unwrapped, which fell through
 // both routeguard and the route's own classification to a generic failure.
 func TestSubmit_RawTransactionIsRefused400NotCrashed(t *testing.T) {
@@ -39,7 +39,7 @@ func TestSubmit_RawTransactionIsRefused400NotCrashed(t *testing.T) {
 // ErrMalformed case, exercised elsewhere): its parent is included with a
 // real BUMP, so PreVerify reaches spv.Verify instead of being refused
 // earlier, and spv.Verify returns go-sdk's own script failure as a plain
-// error (bu_b4_specs.md item 4b; cycle-6b re-review, NIT 1).
+// error.
 func failingScriptBEEF(t *testing.T) []byte {
 	t.Helper()
 	subject := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: beefnormtest.Lock(), Satoshis: 1000})
@@ -52,8 +52,7 @@ func failingScriptBEEF(t *testing.T) []byte {
 // subject's script genuinely fails verification -- a verification verdict
 // PreVerify returns that is not a guard refusal, budget or size error --
 // answers 400 with invalidTransactionCode and logs ReasonInvalidTransaction,
-// instead of the unclassified ReasonOtherGuardError it used to log
-// (bu_b4_specs.md item 4b).
+// instead of the unclassified ReasonOtherGuardError it used to log.
 func TestSubmit_FailingScriptIsClassifiedInvalidTransaction(t *testing.T) {
 	logs := watchRefusals(t)
 	_, _, url := normEngine(t)

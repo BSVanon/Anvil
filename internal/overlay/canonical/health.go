@@ -8,7 +8,7 @@ import (
 // HealthReport is the JSON body of GET /health. The shape is fixed by
 // conformance vector overlay.topicmanagement.1.
 type HealthReport struct {
-	Status  string         `json:"status"`            // "ok" | "degraded" | "error"
+	Status  string         `json:"status"` // "ok" | "degraded" | "error"
 	Live    bool           `json:"live"`
 	Ready   bool           `json:"ready"`
 	Service ServiceSummary `json:"service"`

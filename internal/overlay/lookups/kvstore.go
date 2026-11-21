@@ -7,7 +7,7 @@ package lookups
 // that repo gains a topic-impl partition for non-SHIP/SLAP canonical
 // primitives. Port source: `ts-stack`
 // `packages/overlays/topics/src/kvstore/KVStoreLookupService.ts` +
-// `KVStoreStorageManager.ts` (MCP-verified, head `29aff6e`).
+// `KVStoreStorageManager.ts` (head `29aff6e`).
 //
 // The canonical service indexes admitted KVStore tokens into MongoDB and
 // answers the BRC-35 §3.5 query schema. Anvil's port keeps the identical

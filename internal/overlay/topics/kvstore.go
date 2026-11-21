@@ -11,7 +11,7 @@ package topics
 //
 // Port source: `ts-stack`
 // `packages/overlays/topics/src/kvstore/KVStoreTopicManager.ts` +
-// `types.ts` (MCP-verified, head `29aff6e`, last commit 2026-05-11).
+// `types.ts` (head `29aff6e`, last commit 2026-05-11).
 // Admission rules mirror the canonical TypeScript 1:1 modulo language
 // idioms: PushDrop-decode → field-shape validation (legacy 5-field OR
 // tagged 6-field, signature included in the count) → non-empty
@@ -20,11 +20,11 @@ package topics
 // performs canonical signature verification at admission (UMP checks
 // field shape only; Identity uses Certificate.Verify).
 //
-// SendBSV-Wallet consumes this topic to publish canonical BRC-35
+// Wallet clients use this topic to publish canonical BRC-35
 // key-value records for cross-device wallet-settings sync (cold-storage
 // address, fiat-currency preference, display toggles, tip-jar config,
 // payment templates). Private values are BRC-2 self-encrypted client
-// side (`sendbsv-enc:v1:<base64>`); Anvil sees only opaque value bytes
+// side (`app-enc:v1:<base64>`); Anvil sees only opaque value bytes
 // plus the lookup keys (key, protocolID, controller, tags) it indexes.
 
 import (
@@ -211,7 +211,7 @@ func (m *KVStoreTopicManager) Admit(txData []byte, previousUTXOs []anviloverlay.
 // GetDocumentation returns the human-readable purpose of the topic.
 func (m *KVStoreTopicManager) GetDocumentation() string {
 	return "KVStore (BRC-35) Topic Manager: admits PushDrop tokens representing canonical key-value " +
-		"records into an overlay. Wallets (SendBSV-Wallet) publish encrypted settings (cold-storage " +
+		"records into an overlay. Wallets publish encrypted settings (cold-storage " +
 		"address, fiat-currency preference, display toggles, tip-jar config, payment templates) as " +
 		"BRC-35 KVStore tokens for cross-device sync. Anvil verifies each token's appended signature " +
 		"against the controller's identity key using the canonical anyone-wallet scheme and admits if " +

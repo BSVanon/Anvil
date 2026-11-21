@@ -2,7 +2,7 @@
 // pinned ts-stack conformance corpus (docs/internal/conformance-vectors/) and
 // reports per-vector pass/fail status.
 //
-// See docs/internal/OVERLAY_PROTOCOL_ALIGNMENT_PLAN.md §Workstream F.
+// The corpus is pinned with the source revision in its metadata.
 package interop
 
 import (
@@ -17,9 +17,9 @@ import (
 type ParityClass string
 
 const (
-	ParityRequired   ParityClass = "required"
-	ParityIntended   ParityClass = "intended"
-	ParityBestEffort ParityClass = "best-effort"
+	ParityRequired    ParityClass = "required"
+	ParityIntended    ParityClass = "intended"
+	ParityBestEffort  ParityClass = "best-effort"
 	ParityUnsupported ParityClass = "unsupported"
 )
 

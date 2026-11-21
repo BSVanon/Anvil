@@ -79,7 +79,7 @@ func TestSubmit_LogsARefusedBEEF(t *testing.T) {
 // branch used to log every otherwise-unnamed error, including a genuinely
 // invalid transaction (engine.ErrInvalidTransaction or engine.ErrInvalidBeef)
 // under the same ReasonOtherGuardError as any other unclassified guard
-// failure (cold review round 4 cycle 6 NIT). It now logs those two, and any
+// failure. It now logs those two, and any
 // other verification verdict PreVerify returns -- a bare error such as a
 // plain spv.Verify script, fee or merkle failure (cycle-6b re-review, NIT 1)
 // -- under their own ReasonInvalidTransaction, while engine.ErrUnknownTopic

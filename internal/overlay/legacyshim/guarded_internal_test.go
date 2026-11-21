@@ -62,14 +62,14 @@ func (b *internalLogs) assertLogged(t *testing.T, status int, reason refusallog.
 // default branch used to log every otherwise-unnamed error, including a
 // genuinely invalid transaction (engine.ErrInvalidTransaction or
 // engine.ErrInvalidBeef) under the same ReasonOtherGuardError as any other
-// unclassified guard failure (cold review round 4 cycle 6 NIT), and answered
+// unclassified guard failure, and answered
 // a bare verification-stage error (statusForSubmitError's generic case) with
 // a 500. It now logs the two named engine sentinels under their own
 // ReasonInvalidTransaction with their status unchanged (422, from
 // statusForSubmitError), and reclassifies any other error that would have
 // fallen to statusForSubmitError's generic 500 -- a plain spv.Verify script,
 // fee or merkle failure, unwrapped by routeguard/verify.go's final switch
-// (cycle-6b re-review, NIT 1) -- as an invalid transaction too, answered 400
+// -- as an invalid transaction too, answered 400
 // with invalidTransactionCode instead of 500.
 func TestWriteLegacyGuardError_ClassifiesInvalidTransaction(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/overlay/submit", nil)

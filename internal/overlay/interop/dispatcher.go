@@ -38,16 +38,10 @@ type Result struct {
 }
 
 // Dispatcher runs the vectors for one VectorFile.id (e.g. "overlay.submit").
-// Implementations live next to the subsystem under test:
-//   - Workstream A adds dispatchers for auth.brc31-handshake, overlay.topicmanagement (health/admin)
-//   - Workstream B adds the overlay.submit dispatcher
-//   - Workstream C adds the overlay.lookup dispatcher
-//   - Workstream D adds remaining topicmanagement (SHIP/SLAP) vectors
-//   - Workstream E adds the sync.gasprotocol dispatcher
-//
-// During Phase 0a, no dispatchers are registered. All vectors land as
-// StatusPending so the runner shape can be validated and dispatcher gaps
-// quantified.
+// Implementations live next to the subsystem under test. The registry maps
+// auth, submission, lookup, topic-management, and federation vector files to
+// their dispatchers. Unregistered vectors return StatusPending so gaps remain
+// visible in the report.
 type Dispatcher interface {
 	// FileID is the VectorFile.ID this dispatcher claims (e.g. "overlay.submit").
 	FileID() string
@@ -104,11 +98,8 @@ func (r *Registry) RegisteredIDs() []string {
 	return ids
 }
 
-// workstreamForFile maps a VectorFile.ID to the alignment-plan workstream
-// that owns it. Used by the runner to label Pending results so the report
-// shows which workstream needs to land next.
-//
-// Source: docs/internal/FAILURE_INVENTORY.md §Summary by Workstream.
+// workstreamForFile maps a VectorFile.ID to its report ownership label.
+// Pending results retain that label so the report groups missing dispatchers.
 func workstreamForFile(fileID string) string {
 	switch fileID {
 	case "auth.brc31-handshake":
@@ -127,7 +118,7 @@ func workstreamForFile(fileID string) string {
 }
 
 // pendingResult builds a StatusPending result for a vector, labeling which
-// workstream owns the dispatcher gap.
+// report group owns the dispatcher gap.
 func pendingResult(file *VectorFile, v Vector) Result {
 	ws := workstreamForFile(file.ID)
 	msg := fmt.Sprintf("no dispatcher for file id %q (workstream %s)", file.ID, ws)

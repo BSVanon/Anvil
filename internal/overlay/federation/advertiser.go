@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	oa "github.com/bsv-blockchain/go-overlay-services/pkg/core/advertiser"
 	"github.com/bsv-blockchain/go-overlay-discovery-services/pkg/types"
+	oa "github.com/bsv-blockchain/go-overlay-services/pkg/core/advertiser"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	admintoken "github.com/bsv-blockchain/go-sdk/overlay/admin-token"
@@ -37,9 +37,9 @@ import (
 //   - Advertisement storage: our own canonical-shaped SHIPStorage/SLAPStorage
 //   - BEEF retrieval for revocation: Anvil's anvilstorage.Storage
 //
-// Robert chose this approach (option 1 in the 2026-05-24 architectural
-// fork) after WalletAdvertiser's runtime requirements proved
-// incompatible with Anvil's single-binary LevelDB topology.
+// This uses the canonical interface with local primitives because
+// WalletAdvertiser's runtime requirements do not fit Anvil's single-binary
+// LevelDB topology.
 type Advertiser struct {
 	Wallet       wallet.Interface
 	HostingURL   string
@@ -227,8 +227,8 @@ func (a *Advertiser) FindAllAdvertisements(protocol overlay.Protocol) ([]*oa.Adv
 // as if they were independent admissions (which they semantically are —
 // each spend invalidates one and only one SHIP/SLAP record).
 //
-// Codex review 18af38d602483289 caught the original concat-BEEF
-// implementation. Per-tx is the canonical-safe alternative; trading a
+// Concatenating BEEF buffers is invalid. Per-tx is the canonical-safe
+// alternative; trading a
 // few extra wallet round-trips for correctness is the right call here,
 // since revoke flows are infrequent (operator topic configuration
 // changes, not steady-state traffic).
@@ -403,8 +403,8 @@ func (a *Advertiser) ParseAdvertisement(outputScript *script.Script) (*oa.Advert
 // never drops it, because engine.SyncAdvertisements (engine.go:914-918)
 // matches "already advertised" on Domain && TopicOrService alone — and
 // dropping an already-advertised ad makes the sync pass re-mint it every
-// cycle. Codex reviews 18af38d602483289 (TopicOrService must be populated)
-// and the v3.1.3 flood fix (hydration must not drop indexed ads).
+// cycle. TopicOrService must be populated and hydration must not drop indexed
+// advertisements.
 func (a *Advertiser) hydrateAdvertisements(ctx context.Context, refs []types.UTXOReference, protocol overlay.Protocol, topic string) []*oa.Advertisement {
 	out := make([]*oa.Advertisement, 0, len(refs))
 	for _, ref := range refs {

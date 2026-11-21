@@ -267,9 +267,9 @@ func (s *Storage) FindOutpointsByMerkleState(
 // `merkleRoot` argument. Matching → Validated, mismatching → Invalidated,
 // nil-root → left as Unmined.
 //
-// W-4 phase A keeps this conservative: it does NOT auto-promote to
+// This keeps the operation conservative: it does NOT auto-promote to
 // Immutable (that requires header-chain depth info the storage layer
-// shouldn't own). Callers may invoke a separate promotion path in W-5 when
+// shouldn't own). Callers may invoke a separate promotion path when
 // chain depth is known.
 func (s *Storage) ReconcileMerkleRoot(
 	ctx context.Context,

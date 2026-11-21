@@ -144,12 +144,12 @@ func TestUHRP_HostIdentityKeyAndExpiryTimeANDCombine(t *testing.T) {
 	}
 }
 
-// --- re-review fix-pass coverage: BLOCKER (corrupt records) + RISKS items 2/3 ---
+// --- Corrupt-record coverage ---
 
 // corruptUHRPRecord admits one normal BRC-26 record via s, then overwrites
 // its stored item body in place with bytes that fail json.Unmarshal —
 // reproducing "a stored record under a directly-queried outpoint that
-// fails to JSON-decode" (re-review BLOCKER) without needing a real
+// fails to JSON-decode without needing a real
 // bit-rot event. The hash index entry is left untouched, so the record
 // stays reachable by every query shape exactly as a real corruption would
 // leave it.
@@ -205,7 +205,7 @@ func TestUHRP_CorruptRecordSkippedOnEveryQueryShape(t *testing.T) {
 	}
 }
 
-// TestUHRP_LookupByOutpointIgnoresExpiry is the re-review RISKS item 2
+// TestUHRP_LookupByOutpointIgnoresExpiry verifies that
 // fix: canonical UHRPLookupService.ts:62-67's outpoint branch is a bare
 // findOne with no expiry check at all, so lookupByOutpoint must return an
 // expired BRC-26 record too, exactly as canonical would — while every
@@ -244,7 +244,7 @@ func TestUHRP_LookupByOutpointIgnoresExpiry(t *testing.T) {
 
 // TestUHRP_HostIdentityKeyMatchIsCaseInsensitive pins the deliberate
 // divergence documented on uhrpQueryFilter.matches (uhrp_filter.go,
-// re-review RISKS item 3): canonical UHRPLookupService.ts matches
+// canonical UHRPLookupService.ts matches
 // hostIdentityKey case-sensitively against lowercase hex, Anvil matches
 // with strings.EqualFold. A query in a case that differs from the stored
 // (always-lowercase, hex.EncodeToString-produced) identity key must still

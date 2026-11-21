@@ -102,7 +102,7 @@ func TestBRC31_Vector15_PubKeyHexPattern(t *testing.T) {
 	}
 }
 
-// BRC-31 Pass 2: structural assertions for vectors .5-.8, .10, .11, .14, .16
+// Structural assertions for BRC-31 vectors .5-.8, .10, .11, .14, and .16
 // matching the upstream auth.ts dispatcher convention. Each vector now PASSes
 // via structural-only checks on its `expected` field. Real middleware behavior
 // is hardened separately in canonical/auth.go unit tests.
@@ -210,7 +210,7 @@ func TestRunStructural_GeneralRequestHeaders_MissingSignatureHeader_Fails(t *tes
 	}
 }
 
-// Codex ec2db518 regression tests: prove the tightened assertions catch
+// These regression tests prove the exact assertions catch
 // regressed vector contracts.
 
 func TestRunStructural_Vector5_MissingVersionHeader_Fails(t *testing.T) {
@@ -292,7 +292,7 @@ func TestBRC31_AllVectorsCovered(t *testing.T) {
 	}
 }
 
-// --- Codex review 0ad931ee regression tests ---
+// --- Literal response-value regression tests ---
 //
 // These tests inject deliberately-wrong handlers and verify the dispatcher
 // reports FAIL instead of silently PASSing. If the dispatcher regresses to
@@ -341,7 +341,7 @@ func (h *wrongPhase1Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestBRC31_Vector1_WrongMessageType_Fails(t *testing.T) {
-	// Codex 0ad931ee MEDIUM: vector .1's body_shape has literal
+	// Vector .1's body_shape has literal
 	// messageType="initialResponse". A handler that returns the wrong
 	// messageType (but right shape) must FAIL, not PASS.
 	file := loadBRC31File(t)
@@ -375,7 +375,7 @@ func TestBRC31_Vector1_WrongVersion_Fails(t *testing.T) {
 }
 
 func TestBRC31_Vector13_WrongNonceLength_Fails(t *testing.T) {
-	// Codex 0ad931ee LOW: vector .13's contract is "32 bytes base64-encoded
+	// Vector .13's contract is "32 bytes base64-encoded
 	// = 44 chars". If the implementation emits a shorter nonce, the
 	// dispatcher must FAIL (the previous version probed only a hardcoded
 	// literal and would have silently PASSed).

@@ -74,7 +74,7 @@ const (
 	// See the package divergence note above.
 	uhrpBRC26MinFields = 6
 	// uhrpBRC26IdentityKeyLen and uhrpBRC26HashLen are the field lengths
-	// spec item 1 names (33-byte compressed pubkey, 32-byte SHA-256).
+	// require a 33-byte compressed public key and a 32-byte SHA-256 hash.
 	// Canonical TS 4.1.1 rejects a 65-byte uncompressed
 	// identityKey ("Signature is not properly linked" — @bsv/sdk's
 	// ProtoWallet.getPublicKey only ever returns a compressed point, so an

@@ -1,15 +1,13 @@
 package topics_test
 
-// Engine-level fix-pass coverage (spec item 6): these tests drive real
+// Engine-level coverage: these tests drive real
 // BRC-26 UHRP transactions through the actual go-overlay-services engine
 // (v3engine.New, Anvil's production wiring), not just Admit in isolation —
-// closing the review's CLAIM CHECK note that a lookup-service-only test
-// overstates "end-to-end." package topics_test lets this file import
+// confirming the full engine path rather than lookup-only behavior. Package
+// topics_test lets this file import
 // v3engine (which itself imports topics) with no cycle. The two-tx
-// construction (funded advert; real signed spend of it) mirrors the cold
-// review's own reproduction (reviewer scratch v3engine/zz_revoke_test.go,
-// rerun against this code to confirm before writing this
-// permanent test) — reused, not re-derived. overlaytest.SpendingTx exists
+// construction (funded advert; real signed spend of it) uses the same
+// production transaction flow. overlaytest.SpendingTx exists
 // because go-sdk v1.7's spv.Verify now requires every unmined tx to have a
 // real, spendable input (see that package's doc).
 
@@ -37,7 +35,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb"
 )
 
-// newFixPassTestEngine wires a real engine.Engine the same way
+// The test-engine helper wires a real engine.Engine the same way
 // v3engine's own engine_test.go does (newTestEngine there, unexported —
 // this package can't reach it, so it's a faithful duplicate): tmp-dir
 // LevelDB instances plus a headers test store with PoW validation off.
@@ -152,9 +150,8 @@ func freshHash32(seed byte) []byte {
 	return h
 }
 
-// TestUHRPEngine_FreshlyBuiltAdvertAdmittedAndResolvable is the spec
-// item 6 "positive Go-built advert admitted through the engine's
-// Submit" requirement: a fresh, non-golden-vector BRC-26 advertisement
+// TestUHRPEngine_FreshlyBuiltAdvertAdmittedAndResolvable verifies that a
+// fresh, non-golden-vector BRC-26 advertisement
 // goes through the real engine (admission wiring, storage, and the
 // lookup-notify path together), not just UHRPTopicManager.Admit called
 // directly.
@@ -221,7 +218,7 @@ func TestUHRPEngine_PureRevocationDeletesStorageRow(t *testing.T) {
 
 	// A pure revocation: spend the advert's output with no new
 	// UHRP-shaped output anywhere among this tx's outputs — an ordinary
-	// OP_TRUE payment, exactly like the review's own reproduction.
+	// OP_TRUE payment.
 	rev := transaction.NewTransaction()
 	if err := rev.AddInputFrom(advertTx.TxID().String(), 0, advert.script.String(), 1000, nil); err != nil {
 		t.Fatalf("AddInputFrom: %v", err)
@@ -266,7 +263,5 @@ func TestUHRPEngine_PureRevocationDeletesStorageRow(t *testing.T) {
 
 // The TS-oracle cross-check for {uhrpUrl} answers (the positive BRC-26
 // case plus the LEGACY-format negative case) lives in
-// uhrp_engine_oracle_test.go — split out after the negative-case
-// addition (re-review RISKS item 4) would have pushed this file past the
-// package's established per-file size norm; no behaviour change to
-// either half.
+// uhrp_engine_oracle_test.go, keeping this file within the package's
+// established per-file size norm; no behavior changes between the two files.

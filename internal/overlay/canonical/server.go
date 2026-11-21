@@ -4,14 +4,8 @@
 // `GET /health`, etc. — and lives alongside (not instead of) Anvil's legacy
 // `/overlay/*` handlers in internal/overlay/handlers.go.
 //
-// Each workstream of the alignment plan fills in another slice of this package:
-//   - Workstream A: health + auth (BRC-31)
-//   - Workstream B: /submit pipeline
-//   - Workstream C: /lookup + provider hydration
-//   - Workstream D: SHIP/SLAP admin routes
-//   - Workstream E: GASP sync endpoints
-//
-// See docs/internal/OVERLAY_PROTOCOL_ALIGNMENT_PLAN.md.
+// This package serves health, authentication, submit, lookup, administration,
+// and federation routes.
 package canonical
 
 import "net/http"
@@ -67,8 +61,7 @@ type Config struct {
 	// If nil, the handler acknowledges (200) without forwarding — this is
 	// suitable for the conformance runner and for read-only deployments,
 	// but production Anvil MUST wire this to engine.OnArcIngest or
-	// equivalent. Codex review 9fe46aca flagged that a nil hook in
-	// production would silently drop ARC callbacks.
+	// equivalent. A nil hook in production would silently drop ARC callbacks.
 	ArcIngest func(req ArcIngestRequest) error
 
 	// Submit is invoked by POST /submit after header + body validation.
@@ -111,7 +104,7 @@ func (c Config) resolveLookupNames() []string {
 // returned handler can be mounted on its own (e.g. by the conformance runner)
 // or composed into a larger Anvil mux.
 //
-// Routes registered today (Workstreams A + B):
+// Routes registered by this server:
 //   - GET /health
 //   - GET /health/live
 //   - GET /health/ready

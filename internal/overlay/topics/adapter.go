@@ -13,7 +13,7 @@ import (
 )
 
 // Adapter wraps an Anvil topic manager (overlay.TopicManager) and exposes it
-// as a canonical engine.TopicManager. This is the W-2 bridge — Anvil's
+// as a canonical engine.TopicManager. This bridge is Anvil's
 // existing per-topic logic stays unchanged while the new engine consumes
 // topics via the canonical interface.
 //
@@ -47,7 +47,7 @@ import (
 // OutputMetadata is intentionally dropped at the adapter boundary. Anvil's
 // existing engine fed that metadata into the storage layer for lookup
 // services to read back; the canonical model moves per-output metadata into
-// each LookupService's own event-driven local state (handled in W-3).
+// each LookupService's own event-driven local state.
 type Adapter struct {
 	name  string
 	inner anvilov.TopicManager

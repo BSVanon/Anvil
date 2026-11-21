@@ -21,8 +21,8 @@ import (
 // onSteakReady (pre-commit) → a per-topic durable-commit signal for each topic
 // in commitTopics (overlayctx, as the real Storage fires per topic) → optional
 // error / hung propagation. Lets the submit handler be tested for the contracts
-// Codex flagged across iterations: never ack before EVERY submitted topic is
-// durably committed, and don't hang on dead-peer propagation.
+// enforced here: never acknowledge before every submitted topic is durably
+// committed, and do not hang on dead-peer propagation.
 type scriptedEngine struct {
 	steak        overlay.Steak
 	commitTopics []string      // topics that durably commit (fire the notifier), in order
@@ -74,8 +74,8 @@ func admit(vout uint32) *overlay.AdmittanceInstructions {
 	return &overlay.AdmittanceInstructions{OutputsToAdmit: []uint32{vout}}
 }
 
-// TestSubmit_HangingPeer_RespondsAfterCommit is the regression for Codex's first
-// High: /overlay/submit must return promptly even when cross-node propagation
+// TestSubmit_HangingPeer_RespondsAfterCommit verifies that /overlay/submit
+// returns promptly even when cross-node propagation
 // hangs (it can't be bounded by our context). The single topic commits, then
 // propagation blocks — the handler must return 200 with the admittance steak
 // without waiting for propagation.
@@ -114,8 +114,8 @@ func TestSubmit_HangingPeer_RespondsAfterCommit(t *testing.T) {
 	}
 }
 
-// TestSubmit_CommitFailure_DoesNotAckSuccess is the regression for Codex's
-// second High: if commit fails (the notifier never fires and the engine returns
+// TestSubmit_CommitFailure_DoesNotAckSuccess verifies that if commit fails
+// (the notifier never fires and the engine returns
 // an error), /overlay/submit must surface the error — NOT a premature 200.
 func TestSubmit_CommitFailure_DoesNotAckSuccess(t *testing.T) {
 	eng := &scriptedEngine{
@@ -136,8 +136,8 @@ func TestSubmit_CommitFailure_DoesNotAckSuccess(t *testing.T) {
 	}
 }
 
-// TestSubmit_MultiTopic_PartialCommit_DoesNotAck is the regression for Codex's
-// THIRD High: a multi-topic submit where topic A commits and topic B fails
+// TestSubmit_MultiTopic_PartialCommit_DoesNotAck verifies that a multi-topic
+// submit where topic A commits and topic B fails
 // afterward must NOT return 200 + a full steak. Only tm_a signals; the engine
 // then errors (tm_b failed). The handler must wait for ALL submitted topics and
 // surface the error instead of acking on the first commit.

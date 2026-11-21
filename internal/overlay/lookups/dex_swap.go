@@ -59,7 +59,7 @@ var _ engine.LookupService = (*DEXSwapLookupService)(nil)
 // --- event handlers --------------------------------------------------------
 
 // BackfillFromLegacyMetadata populates this service's lk_dexswap
-// index for a single legacy AdmittedOutput. Used by W-4 phase B
+// index for a single legacy AdmittedOutput. Used by migration
 // migration. metadata is a JSON-encoded topics.DEXSwapEntry. See the
 // UHRP backfill doc-comment for the canonical /lookup BEEF-empty
 // limitation that applies equally here.

@@ -20,7 +20,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/util"
 )
 
-// The v3.4.1 security regressions for POST /submit, which reaches go-sdk's
+// The v3.5.0 security regressions for POST /submit, which reaches go-sdk's
 // BEEF parser and spv.Verify with no login. go-sdk v1.2.23 could be crashed
 // there by a wire-sized allocation or by unbounded script stack memory, and
 // CPU-exhausted by diamond-shaped ancestry or a crafted BUMP. go-sdk v1.7.7

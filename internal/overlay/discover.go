@@ -14,7 +14,7 @@ import (
 // BRC-88 federation — canonical SHIP/SLAP discovery is handled
 // upstream by the v3 engine's LookupResolver via DEFAULT_SLAP_TRACKERS.
 //
-// As of v3.0.0 (W-10.5), the only caller of ProcessSHIPScript is
+// The only caller of ProcessSHIPScript is
 // internal/api/handlers.go's handleOverlayRegister, which forwards
 // SHIP scripts other anvil-mesh nodes submit to us via the bespoke
 // /overlay/register API. Pre-v3, this was also invoked by a JungleBus

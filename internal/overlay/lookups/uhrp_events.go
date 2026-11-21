@@ -29,7 +29,7 @@ import (
 // --- event handlers --------------------------------------------------------
 
 // BackfillFromLegacyMetadata populates this service's local lk_uhrp
-// indexes for a single legacy AdmittedOutput. Used by the W-4 phase B
+// indexes for a single legacy AdmittedOutput. Used by migration
 // migration to make migrated records visible through engine.Lookup
 // without going through the OutputAdmittedByTopic event (which
 // requires AtomicBEEF the migration doesn't have).

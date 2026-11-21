@@ -114,7 +114,7 @@ func (t *Ticket) read(w http.ResponseWriter, r *http.Request, route Route) ([]by
 	// The pacer takes r.ContentLength directly, not n: a declared length
 	// paces the body against its own total, but an undeclared one (-1) has
 	// none to pace against, so the pacer paces it against the bytes read so
-	// far instead, on the same schedule (cold review round 4 RISK 2). n
+	// far instead, on the same schedule. n
 	// itself still reserves as if the body were MaxBody, below: an undeclared
 	// body's heap cost is capped before its length is known, whatever its
 	// pace.

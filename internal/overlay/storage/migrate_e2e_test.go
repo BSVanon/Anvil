@@ -120,7 +120,7 @@ func newE2EEngine(t *testing.T, db *leveldb.DB) (*v3engine.Handlers, *legacyshim
 }
 
 // TestMigrate_EndToEnd_LookupBackfillLandsInIndexes is the end-to-end
-// test Codex review 09ddf00c90061eac asked for: seed legacy UHRP,
+// test seeds legacy UHRP,
 // migrate with the LookupBackfiller wired to a real canonical lookup
 // service, and assert the lk_uhrp:* indexes are populated (so the
 // lookup service answers with formulas — which it doesn't do without
@@ -173,8 +173,7 @@ func TestMigrate_EndToEnd_LookupBackfillLandsInIndexes(t *testing.T) {
 	}
 
 	// Assertion 2: canonical engine.Lookup drops the record at
-	// hydration (BEEF-empty limitation). Documented in operator docs
-	// + W-8 release notes.
+	// hydration because its migrated record has no BEEF.
 	_, shim := newE2EEngine(t, db)
 	// Use the shim's underlying engine via a parallel call to prove
 	// the path; legacyshim wraps the engine and behaves identically
@@ -195,7 +194,7 @@ func TestMigrate_EndToEnd_LookupBackfillLandsInIndexes(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 	var legacyResp struct {
-		Type    string          `json:"type"`
+		Type    string            `json:"type"`
 		Outputs []json.RawMessage `json:"outputs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&legacyResp); err != nil {

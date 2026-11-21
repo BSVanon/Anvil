@@ -84,8 +84,8 @@ func TestPreVerify_ScriptsThatWriteTakeTheOneExecutionSlot(t *testing.T) {
 	first.Done()
 }
 
-// TestPreVerify_RefusesAMalformedScriptBeforeAnySlot: cold review round 4
-// cycle 6's "slot order" NIT -- the malformed-script scan ran inside
+// TestPreVerify_RefusesAMalformedScriptBeforeAnySlot verifies slot ordering:
+// the malformed-script scan ran inside
 // checkScripts, after both the execution and CPU slots were taken -- fixed
 // by scanMalformedScripts, called before either is taken. With the guard's
 // one CPU slot held by another submit, a malformed submit is still refused

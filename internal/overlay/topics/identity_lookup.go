@@ -16,14 +16,11 @@ const IdentityLookupServiceName = "ls_identity"
 //   - IdentityKey:   fully supported (output-list / BEEF answer)
 //   - CertifierKey:  fully supported (output-list / BEEF answer)
 //   - Outpoint:      fully supported (output-list / BEEF answer)
-//   - Attributes:    deferred to W-11 — returns Freeform answer
-//                    `{deferred:true, use:"identityKey"}` so wallets
-//                    fall back to the two-step paymail protocol
-//                    (bsvalias HTTP gateway → identityKey → identityKey
-//                    lookup). See docs/internal/SENDBSV_USERS_TOPIC_REQUEST.md
-//                    § "Identity attributes deferral (W-11)" for the
-//                    resolution plan + the two options for getting
-//                    there in v3.1.0.
+//   - Attributes:    returns a deferred Freeform answer
+//     `{deferred:true, use:"identityKey", since:"v3.0.0"}` so wallets
+//     fall back to the two-step paymail protocol
+//     (bsvalias HTTP gateway → identityKey → identityKey
+//     lookup) until attribute decryption is available.
 type IdentityLookupQuery struct {
 	// IdentityKey resolves a cert by the subject's hex-encoded
 	// compressed pubkey. Primary lookup pattern.
@@ -37,6 +34,7 @@ type IdentityLookupQuery struct {
 	// Attributes is the wallet-facing "find me by handle" query. In
 	// v3.0.0 this returns the deferred-flag Freeform answer described
 	// above. Wallets are expected to use the two-step paymail protocol
-	// (bsvalias HTTP gateway + identityKey lookup) until W-11 lands.
+	// (bsvalias HTTP gateway + identityKey lookup) until attribute decryption
+	// is available.
 	Attributes map[string]string `json:"attributes,omitempty"`
 }

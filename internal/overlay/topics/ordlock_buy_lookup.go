@@ -18,10 +18,7 @@ type OrdLockBuyQuery struct {
 	Offset        int    `json:"offset,omitempty"`        // default 0
 }
 
-// W-7 (2026-05-16): the legacy in-process OrdLockBuyLookupService
-// struct + NewOrdLockBuyLookupService constructor + Lookup/
-// GetDocumentation/GetMetadata methods + matchesOrdLockBuyQuery +
-// normalizeOrdLockBuyLimitOffset internal helpers were removed here.
-// The replacement is lookups.NewOrdLockBuyLookupService at
+// The legacy in-process OrdLockBuy lookup implementation was removed. Its
+// replacement is lookups.NewOrdLockBuyLookupService at
 // internal/overlay/lookups/ordlock_buy.go, which uses
 // topics.NormalizeCancelFilter directly for the cancel-address check.

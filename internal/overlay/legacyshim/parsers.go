@@ -9,7 +9,7 @@ import (
 
 // DefaultParsers returns the canonical lookup-service → script-parser
 // mapping. Each parser is a thin wrapper around the topic package's
-// exported parser (renamed from private in W-3 phase B) that returns
+// exported parser that returns
 // the parsed entry marshalled as JSON, ready to drop into the legacy
 // AdmittedOutput.Metadata field.
 //

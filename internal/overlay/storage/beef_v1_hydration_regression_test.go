@@ -13,7 +13,8 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
-// TestBeefV1RoundtripHydration is the Satsu regression: a real 4-tx UMP submit
+// TestBeefV1RoundtripHydration uses a real 4-transaction UMP submit from a
+// wallet restore:
 // (AtomicBEEF wrapping a V1 BEEF, a 3-deep unconfirmed chain anchored to a
 // BUMP) admits fine, but go-sdk's V1 re-serialisation of the parsed BEEF could
 // not be re-parsed on hydration — it PANICKED ("index out of range … length 1")
@@ -78,7 +79,7 @@ func TestBeefV1RoundtripHydration(t *testing.T) {
 // that does not parse is skipped, never a crash and never a failed load:
 // go-overlay-services fails the whole lookup answer when LoadAncillaryBeef
 // returns an error. The blob is testdata/ump_v1_legacy_malformed.hex: what
-// go-sdk v1.2.x's beef.Bytes() wrote for the Satsu fixture, a V1 header
+// go-sdk v1.2.x's beef.Bytes() wrote for that fixture, a V1 header
 // (0100beef) followed by V2-layout transaction entries (format byte before
 // each raw tx). Pre-v3.2.14 nodes stored blobs in that shape. v1.2.x panicked
 // re-parsing it ("index out of range"); go-sdk v1.7 returns an ordinary error

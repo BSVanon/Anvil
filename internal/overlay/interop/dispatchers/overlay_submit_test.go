@@ -178,7 +178,7 @@ func TestAssertErrorBody_RequiresStatusError(t *testing.T) {
 	}
 }
 
-// Codex a8dc1754 regression tests — the dispatcher now LITERAL-matches the
+// Literal-match regression tests — the dispatcher now matches the
 // response body against the vector's expected.body. These tests prove the
 // matchSubset comparison catches wrong admissions / wrong topics, not just
 // shape regressions.
@@ -264,8 +264,8 @@ func TestMakeSubmitFixtureHandler_ReturnsExpectedSteak(t *testing.T) {
 	}
 }
 
-// TestOverlaySubmit_UnregisteredFixtures_HappyPathFails proves Codex
-// ba3e80's safety property: if the CLI forgets to call
+// TestOverlaySubmit_UnregisteredFixtures_HappyPathFails proves that if the CLI
+// forgets to call
 // RegisterHappyPathScenariosFromVectors, happy-path vectors with non-trivial
 // expected admissions fall back to the default handler (which returns
 // empty-admit STEAK for all requested topics) and FAIL the literal-match

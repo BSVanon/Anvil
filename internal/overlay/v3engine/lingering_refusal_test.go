@@ -81,8 +81,8 @@ func settledGoroutines() int {
 	return last
 }
 
-// TestGuard_BusyBeginRefusesAnUnsentBodyPromptly reproduces cold review round
-// 4's B4a RISK 1 exactly: routeguard.ReadPermits idle connections hold every
+// TestGuard_BusyBeginRefusesAnUnsentBodyPromptly verifies that routeguard.
+// ReadPermits idle connections hold every
 // read permit, so Begin fails with ErrBusy for the next arrival before
 // ReadBody ever runs — at that point nothing has read the connection past
 // its declared body, and nothing but this fix told the server to give it up.

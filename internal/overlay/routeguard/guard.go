@@ -230,8 +230,7 @@ func (g *Guard) slot(i int) *semaphore.Weighted {
 // when r declares a body and names one that is capped (clients.go), and then
 // one of the guard's ReadPermits: the same order every other slot is taken
 // in (slots.go), so a client already at its own cap never touches the
-// guard's shared pool even briefly (cold review round 4 nit, "the read
-// permit is taken from the guard first, then the client"). Neither waits:
+// guard's shared pool even briefly. Neither waits:
 // ErrBusy, with r's body refused unread, when the client is at its cap;
 // ErrBusy alone, r's body left for the caller, when all ReadPermits are
 // taken. jsonRoute marks a JSON route's ticket, whose ReadBody takes a JSON

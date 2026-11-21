@@ -147,8 +147,8 @@ func (f formulaLookup) Lookup(context.Context, *lookup.LookupQuestion) (*lookup.
 	return &lookup.LookupAnswer{Type: lookup.AnswerTypeFormula, Formulas: formulas}, nil
 }
 
-// TestLookup_DisconnectStopsTheReads (cold review round 3 S4): a lookup whose
-// answer names 2,000 outputs, each a 10 ms read, stops reading them once its
+// TestLookup_DisconnectStopsTheReads verifies that a lookup whose answer names
+// 2,000 outputs, each a 10 ms read, stops reading them once its
 // client goes away, within about one read, rather than reading on for 20 s
 // for nobody.
 func TestLookup_DisconnectStopsTheReads(t *testing.T) {

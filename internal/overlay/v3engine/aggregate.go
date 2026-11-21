@@ -44,7 +44,7 @@ import (
 // storage, and go-sdk v1.7.7's MergeBump combines two proofs of one block
 // (beef.go:828), which panics (merklepath.go:480) when the proof merged in
 // declares more levels than the one already held, as two separately admitted
-// BEEFs can (cold-review round 3, B3). So an output without a BEEF, or whose
+// BEEFs can. So an output without a BEEF, or whose
 // BEEF cannot be parsed, is skipped and logged, and when merging any output's
 // BEEF fails or panics, or the merged BEEF cannot be written, the answer is
 // written by writePerOutputAnswer instead, every output with its own BEEF,

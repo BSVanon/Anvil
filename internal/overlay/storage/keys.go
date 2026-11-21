@@ -1,8 +1,8 @@
 // Package storage is the LevelDB-backed implementation of the
 // go-overlay-services engine.Storage interface for Anvil v3.
 //
-// W-4 phase A (2026-05-13): schema + primitives only. The engine is not yet
-// wired to this package — that happens in W-5. Existing Anvil overlay storage
+// This package defines schema and primitives. The engine is not yet wired to
+// it. Existing Anvil overlay storage
 // (internal/overlay/engine.go's "ovl:" family) is left untouched; this package
 // uses its own non-overlapping key prefixes so both can coexist during the
 // transition.
@@ -35,8 +35,8 @@ import (
 //	peer3:<host>:<topic>                                        8-byte BE float64
 //
 // The "3" suffix distinguishes from the legacy v2 "ovl:" family used by
-// internal/overlay/engine.go so both can share a single LevelDB during W-5
-// dual-run. Phase B migration (later) will copy v2 → v3 then remove v2.
+// internal/overlay/engine.go so both can share a single LevelDB during
+// migration. Migration will copy v2 → v3 then remove v2.
 const (
 	prefixOutput      = "ovl3:"
 	prefixTxidIndex   = "txi3:"

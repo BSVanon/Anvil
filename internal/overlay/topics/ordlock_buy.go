@@ -1,15 +1,14 @@
 // OrdLockBuy topic manager — admits free-agent BSV-locked buy-side vaults
-// (the Rúnar-compiled OrdLockBuy covenant from Anvil-Swap Phase B-buy).
+// (the Rúnar-compiled OrdLockBuy covenant).
 //
 // Mirrors `ordlock.go` (sell-side listings) but for the buy-side covenant.
 // The two are intentionally separate topics so each can apply its own
 // structural filter without leaking matches into the other's lookup.
 //
 // Vendored constants (full artifact template + slot offsets) are
-// byte-identical to the canonical TypeScript reference at
-// `Anvil-Swap/src/ordlock/runar/buy-covenant.ts` + the artifact JSON at
-// `Anvil-Swap/artifacts/OrdLockBuy.runar.json`. Do not edit without
-// re-verifying parity against fresh Anvil-Swap-built fixtures.
+// byte-identical to the reference TypeScript builder for this covenant
+// (buy-covenant.ts) and its compiled artifact (OrdLockBuy.runar.json). Do not
+// edit without re-verifying parity against freshly built fixtures.
 package topics
 
 import (
@@ -75,9 +74,9 @@ var ordLockBuySlots = []ordLockBuySlot{
 
 // Derived at startup from the artifact template.
 var (
-	olockBuyArtifactBytes []byte // full template
-	olockBuyPrefixBytes   []byte // bytes before slot[0]
-	olockBuySuffixBytes   []byte // bytes after slot[last]
+	olockBuyArtifactBytes []byte   // full template
+	olockBuyPrefixBytes   []byte   // bytes before slot[0]
+	olockBuySuffixBytes   []byte   // bytes after slot[last]
 	olockBuyInterSlots    [][]byte // inter-slot fixed bytes; len == len(slots)
 )
 
@@ -123,7 +122,7 @@ func init() {
 }
 
 // OrdLockBuyEntry is the per-vault metadata stored on each admitted output.
-// The wire shape is consumed by Anvil-Swap's discovery library.
+// The wire shape is consumed by DEX clients' discovery libraries.
 type OrdLockBuyEntry struct {
 	Outpoint           string `json:"outpoint"`                  // "<txid>_<vout>"
 	VaultSats          int64  `json:"vaultSats"`                 // sats locked in the vault output
@@ -298,9 +297,8 @@ func ParseOrdLockBuyScript(script []byte) *OrdLockBuyEntry {
 	}
 
 	// Canonical-vault invariant: hash160(buyerPubKey) MUST equal cancelPkh.
-	// The TS builder (Anvil-Swap/src/ordlock/runar/buy-covenant.ts §228)
-	// rejects mismatches at vault-creation time per Codex review 5976f981
-	// (2026-04-26): the cancel branch validates a sig against buyerPubKey
+	// The reference TypeScript builder rejects mismatches at vault-creation
+	// time: the cancel branch validates a signature against buyerPubKey
 	// AND forces the refund output to P2PKH(cancelPkh), so divergence
 	// means a vault Bob can sign cancel for but whose refund lands at an
 	// address he doesn't control — funds permanently locked. Mirroring
@@ -368,10 +366,11 @@ func decodePriceSatsLE(hexStr string) (int64, error) {
 // parse failure.
 //
 // Wire shape (canonical 1Sat-style transfer output 0):
-//   8 bytes satoshis LE (0x0100000000000000)
-//   varint scriptLen
-//   scriptLen bytes script: OP_0 OP_IF "ord" OP_1 <mime> OP_0 <json> OP_ENDIF
-//                           + P2PKH transfer to buyerOrdAddress
+//
+//	8 bytes satoshis LE (0x0100000000000000)
+//	varint scriptLen
+//	scriptLen bytes script: OP_0 OP_IF "ord" OP_1 <mime> OP_0 <json> OP_ENDIF
+//	                        + P2PKH transfer to buyerOrdAddress
 func tryParseTransferFromOutput0Hex(out0Hex string) (proto, tokenId, tick, amount string) {
 	defer func() { _ = recover() }()
 

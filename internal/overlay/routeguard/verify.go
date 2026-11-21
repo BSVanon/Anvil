@@ -76,7 +76,7 @@ type Submit struct {
 //  4. scanMalformedScripts refuses an unlocking script whose node-exact parse
 //     ends in an undecodable instruction (ErrMalformedScript). It runs no
 //     script and needs no slot, so it runs before either of the next two
-//     steps takes one (cold review round 4 cycle 6 NIT, "slot order").
+//     steps takes one.
 //  5. scriptWeight prices the scripts (ErrTooComplex past MaxScriptOps), and
 //     the ticket returns what ReadBody reserved for them beyond that.
 //  6. A submit whose scripts may write new stack elements takes the

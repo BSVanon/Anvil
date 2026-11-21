@@ -18,7 +18,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 )
 
-// B1 (cold review round 4): an unlocking script that ends in an undecodable
+// An unlocking script that ends in an undecodable
 // instruction and spends a locking script that is one large push used to
 // make a signature opcode's reparse (go-sdk v1.7.7,
 // script/interpreter/thread.go:1110-1162) turn that push into millions of
@@ -31,7 +31,7 @@ import (
 
 // malformedScriptBodyBytes is the locking script's push size for these
 // tests: large enough that an unguarded reparse (one ~64-128 byte
-// ParsedOpcode per byte, per the B1 measurement) would add tens of MiB,
+// ParsedOpcode per byte would add tens of MiB,
 // clearly over malformedScriptHeapBound, while small enough that building it
 // (bytes.Repeat) and, if the guard ever regressed, even reparsing it, stays
 // fast enough for a suite run on every commit.
@@ -46,7 +46,7 @@ const malformedScriptBodyBytes = 300_000
 const malformedScriptHeapBound = 8 << 20
 
 // malformedScriptWallClockBound is how long a refused submit may take. The
-// original 15 MB, single-CHECKSIG case (cold review round 4) reparsed in
+// original 15 MB, single-CHECKSIG case reparsed in
 // about 1.03 s once already past the guard that did not yet exist; refused
 // before any of that work, this must return close to instantly.
 const malformedScriptWallClockBound = 2 * time.Second

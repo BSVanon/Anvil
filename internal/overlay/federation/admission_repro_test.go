@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	oa "github.com/bsv-blockchain/go-overlay-services/pkg/core/advertiser"
 	"github.com/bsv-blockchain/go-overlay-discovery-services/pkg/ship"
 	"github.com/bsv-blockchain/go-overlay-discovery-services/pkg/slap"
 	"github.com/bsv-blockchain/go-overlay-discovery-services/pkg/utils"
+	oa "github.com/bsv-blockchain/go-overlay-services/pkg/core/advertiser"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
@@ -242,7 +242,7 @@ func (w *e2eAdWallet) CreateAction(_ context.Context, args wallet.CreateActionAr
 }
 
 // TestAdvertiser_CreateAdvertisements_ProducesAdmittableTokens is the
-// end-to-end regression Codex required: it drives the REAL
+// end-to-end regression: it drives the real
 // Advertiser.CreateAdvertisements path and verifies every SHIP and SLAP output
 // it emits passes the canonical admission signature-linkage gate. This is the
 // guard against the duplicate-flood regression — before the fix these tokens

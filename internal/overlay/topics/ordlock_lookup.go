@@ -15,7 +15,8 @@ import (
 const OrdLockLookupServiceName = "ls_ordlock_listings"
 
 // OrdLockQuery is the wire query shape for ls_ordlock_listings.
-// Field naming follows N2/N3 in docs/internal/ORDLOCK_TOPIC_REQUEST.md.
+// Field names encode list selection, token/tick filters, seller cancel-key
+// filtering, and pagination.
 // Decoded by both lookups.OrdLockLookupService and the legacy shim's
 // /overlay/query handler.
 type OrdLockQuery struct {
@@ -27,10 +28,8 @@ type OrdLockQuery struct {
 	Offset        int    `json:"offset,omitempty"`        // default 0
 }
 
-// W-7 (2026-05-16): the legacy in-process OrdLockLookupService struct
-// + NewOrdLockLookupService constructor + Lookup/GetDocumentation/
-// GetMetadata methods + matchesOrdLockQuery + normalizeLimitOffset
-// internal helpers were removed here. The replacement is
+// The legacy in-process OrdLock lookup implementation was removed. The
+// replacement is
 // lookups.NewOrdLockLookupService at internal/overlay/lookups/ordlock.go,
 // which implements the canonical engine.LookupService with the same
 // filter semantics. NormalizeCancelFilter is KEPT (exported) because

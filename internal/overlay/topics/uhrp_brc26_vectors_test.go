@@ -1,11 +1,8 @@
 package topics
 
-// This file holds focused test coverage: one test
-// per BLOCKER/RISK the review raised that uhrp_brc26_test.go (the
-// original implementer's tests) didn't already cover with a dedicated,
-// mutation-killing test. Kept in its own file so each fix's proof is
-// easy to find next to the review finding it answers, and so
-// uhrp_brc26_test.go doesn't grow past this package's per-file norm.
+// This file holds focused BRC-26 boundary and mutation coverage not already
+// covered by uhrp_brc26_test.go. It stays separate to keep that file within
+// the package's per-file size norm.
 
 import (
 	"context"
@@ -21,8 +18,8 @@ import (
 // TestUHRPBRC26_FreshlyBuiltAdvertAdmitted proves the forSelf=true fix to
 // buildUHRPBRC26Script (see that function's comment, uhrp_brc26_test.go)
 // actually works: a fresh, non-golden-vector advertisement, built and
-// signed entirely in Go, is admitted end to end. No test before this fix
-// pass called buildUHRPBRC26Script and then asserted a successful
+// signed entirely in Go, is admitted end to end. Earlier tests did not call
+// buildUHRPBRC26Script and then assert a successful
 // admit — every existing caller asserted rejection for an unrelated
 // reason, so the old forSelf=false's broken key derivation (which made
 // the locking key never match what verifyBRC26Linkage independently
@@ -114,9 +111,8 @@ func TestUHRPBRC26_FiveTotalFieldsRejected(t *testing.T) {
 }
 
 // TestUHRPBRC26_URLHostAndPortChecks mutation-kills the two new URL
-// checks decodeUHRPBRC26 added (empty host, out-of-range port) against
-// the exact vector set the cold review's RISKS section and the reviewer
-// scratch oracle (ts/urls.mjs) classified: canonical's `new URL(...)`
+// checks decodeUHRPBRC26 added (empty host, out-of-range port) against URL
+// inputs classified by the canonical implementation: `new URL(...)`
 // rejects an empty authority outright but still admits the bare
 // scheme:opaque form, and rejects a port outside 0-65535.
 func TestUHRPBRC26_URLHostAndPortChecks(t *testing.T) {

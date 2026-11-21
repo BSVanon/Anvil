@@ -92,7 +92,7 @@ type legacyListEntry struct {
 // by Anvil's api.Server.CorsWrap and the inline cors() helper at
 // internal/api/server.go:270. Accepting an optional middleware on
 // Register lets the boot code pass api.Server.CorsWrap so browser
-// callers (Foundry, the DEX UI) get the same CORS behaviour they had
+// callers get the same CORS behaviour they had
 // against the pre-shim handlers (cmd/anvil/main.go:717).
 type Middleware func(http.HandlerFunc) http.HandlerFunc
 
@@ -148,8 +148,8 @@ func (s *Shim) optionsOK(w http.ResponseWriter, r *http.Request) {}
 //
 // Error envelope matches the existing legacy `{"error": msg}` shape —
 // NOT the canonical `{status, message}` envelope — because legacy
-// callers parse the error field directly. This is the cost of Lens 2 =
-// 2c indefinite compat.
+// callers parse the error field directly, so the compatibility route keeps
+// that envelope.
 func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 	t, body, ok := s.readGuarded(w, r, routeguard.BEEFRoute, false)
 	if !ok {
@@ -453,9 +453,7 @@ func (s *Shim) ListTopics(w http.ResponseWriter, r *http.Request) {
 
 // ListServices is the mirror endpoint for lookup services. Each entry
 // also carries a `topics` array of topic names the service indexes —
-// populated from Shim.ServiceTopics. Anvil-Swap's discovery code and
-// the TS SDK both treat that field as required (Codex review
-// d671fa17fe5cc746 caught it being dropped in the first draft).
+// populated from Shim.ServiceTopics. Legacy clients require that field.
 func (s *Shim) ListServices(w http.ResponseWriter, r *http.Request) {
 	services := s.Engine.ListLookupServiceProviders()
 	out := make(map[string]legacyListEntry, len(services))
@@ -510,8 +508,8 @@ func writeJSON(w http.ResponseWriter, status int, body interface{}) {
 
 // writeLegacyError writes the LEGACY error envelope `{"error": msg}` —
 // NOT the canonical `{status, message}` shape. Legacy callers parse
-// the `error` field directly; switching them to canonical would break
-// Anvil-Swap and SendBSV-Foundry. Lens 2 = 2c cost.
+// the `error` field directly; switching them to canonical would break legacy
+// clients.
 func writeLegacyError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }

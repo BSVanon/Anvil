@@ -91,8 +91,8 @@ func TestClient_KeyFollowsTheAPIsProxyTrust(t *testing.T) {
 	})
 }
 
-// TestClient_WarningsAreRateLimitedNotSilencedForever (cold review round 4
-// RISK 8): the guard's once-per-condition warnings are not a sync.Once that
+// TestClient_WarningsAreRateLimitedNotSilencedForever verifies that the
+// guard's once-per-condition warnings are not a sync.Once that
 // whoever meets the condition first uses up forever; each fires again once
 // an hour has passed, so a misconfiguration that persists, or recurs later,
 // is still logged.
@@ -132,8 +132,8 @@ func TestClient_WarningsAreRateLimitedNotSilencedForever(t *testing.T) {
 	}
 }
 
-// TestClient_IgnoredProxyHeaderNamesTheRightHeader (cold review round 4 RISK
-// 8): a public address whose X-Forwarded-For the node ignores (trust_proxy
+// TestClient_IgnoredProxyHeaderNamesTheRightHeader verifies that a public
+// address whose X-Forwarded-For the node ignores (trust_proxy
 // off) gets the ordinary advice to set trust_proxy; one that sent only
 // X-Real-IP or Forwarded, which trust_proxy cannot read, gets told plainly
 // that IP reads only X-Forwarded-For and that the proxy must send it,
@@ -167,7 +167,7 @@ func TestClient_IgnoredProxyHeaderNamesTheRightHeader(t *testing.T) {
 	})
 }
 
-// TestClient_ForgedPrivateHopStaysCapped (cold review round 4 RISK 9): with
+// TestClient_ForgedPrivateHopStaysCapped verifies that with
 // trust_proxy on and more hops configured than the client supplies,
 // clientkey.IP picks the leftmost entry, the client's own word, not the TCP
 // peer's. Forging that entry to look loopback, private or CGNAT must not let

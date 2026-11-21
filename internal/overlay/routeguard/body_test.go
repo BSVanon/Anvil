@@ -318,8 +318,8 @@ func TestReadBody_OverTheCapIsRefusedUnread(t *testing.T) {
 	}
 }
 
-// TestReadBody_OverTheCapClosesTheConnection (cold review round 4 nit, "the
-// over-cap 400 must go through refuse"): a declared length over MaxBody is
+// TestReadBody_OverTheCapClosesTheConnection verifies that a declared length
+// over MaxBody is
 // refused through refuse, not just with a 400 on an otherwise ordinary
 // response: the connection is told Connection: close and closed, as every
 // other refusal before a read is, rather than left open for the client's
@@ -340,8 +340,7 @@ func TestReadBody_OverTheCapClosesTheConnection(t *testing.T) {
 	}
 }
 
-// TestCloseAfter_ClosesTheConnection (cold review round 4 NIT, "refuse's
-// closeAfter is untested: removing it leaves the test passing"): closeAfter
+// TestCloseAfter_ClosesTheConnection verifies that closeAfter
 // alone, isolated from refuse's SetReadDeadline (whose own effect on an idle
 // connection could otherwise make a test pass without closeAfter doing
 // anything), tells the server to close the connection once its answer is

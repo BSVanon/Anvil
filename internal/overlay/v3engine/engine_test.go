@@ -125,8 +125,8 @@ func encodeFixtureBEEF(t *testing.T, tx *transaction.Transaction, atomic bool) [
 	return blob
 }
 
-// TestEngine_SubmitAndLookupUHRP is the W-5 phase A end-to-end proof
-// point: a real UHRP-bearing tx routed through engine.Submit reaches
+// TestEngine_SubmitAndLookupUHRP verifies that a real UHRP-bearing transaction
+// routed through engine.Submit reaches
 // both the topic adapter and the lookup service, and engine.Lookup then
 // resolves the lookup's formula via the storage adapter back to a fully
 // hydrated OutputListItem. This exercises the full storage + topic +

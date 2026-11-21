@@ -16,14 +16,14 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
-// legacyOutputPrefix is the v2 LevelDB key family the pre-W-7 Anvil
+// legacyOutputPrefix is the v2 LevelDB key family the earlier Anvil
 // engine used for admitted outputs. Format:
 // `ovl:<topic>:<txid-hex>:<vout-decimal>` mapping to a JSON-encoded
 // AdmittedOutput { txid, vout, topic, outputScript, satoshis,
 // metadata, spent }.
 //
 // The legacy Engine type and its outputKey() helper were stripped in
-// W-7 (2026-05-16); we hard-code the prefix + parser here because
+// We hard-code the prefix + parser here because
 // nothing else in the v3 codebase needs to know the legacy shape.
 const legacyOutputPrefix = "ovl:"
 
@@ -40,7 +40,7 @@ type legacyAdmittedOutput struct {
 	Spent        bool            `json:"spent,omitempty"`
 }
 
-// MigrateOptions controls the W-4 phase B backfill behaviour.
+// MigrateOptions controls backfill behaviour.
 //
 // DryRun walks the legacy entries and reports counts without writing
 // any v3 keys — useful for operators sanity-checking before committing.
@@ -65,9 +65,8 @@ type legacyAdmittedOutput struct {
 // wires this to dispatch per-topic to the four canonical lookup
 // services' BackfillFromLegacyMetadata methods.
 //
-// Codex review 09ddf00c90061eac caught the original implementation
-// leaving lk_* empty, which would have made upgraded VPS nodes report
-// zero results to apps for legitimately-admitted legacy UTXOs.
+// The backfill prevents upgraded nodes from reporting zero results for
+// legitimately admitted legacy UTXOs solely because lk_* was empty.
 type MigrateOptions struct {
 	DryRun           bool
 	Logger           func(format string, args ...any)
@@ -78,13 +77,13 @@ type MigrateOptions struct {
 // MigrateStats summarises what the migration did. Returned by
 // Migrate() so callers can surface a per-VPS report.
 type MigrateStats struct {
-	LegacyKeysSeen        int // every ovl: key visited
-	Migrated              int // wrote a new ovl3 record
-	AlreadyMigrated       int // ovl3 record already present (idempotent skip)
-	UnparseableLegacy     int // ovl: value didn't decode as legacyAdmittedOutput (corrupt or wrong shape)
-	UnparseableKey        int // ovl: key didn't split into <topic>:<txid>:<vout>
-	LookupBackfilled      int // canonical lk_* index entries written via LookupBackfiller
-	LookupBackfillErrors  int // LookupBackfiller invocations that returned an error (non-fatal; logged + counted)
+	LegacyKeysSeen       int // every ovl: key visited
+	Migrated             int // wrote a new ovl3 record
+	AlreadyMigrated      int // ovl3 record already present (idempotent skip)
+	UnparseableLegacy    int // ovl: value didn't decode as legacyAdmittedOutput (corrupt or wrong shape)
+	UnparseableKey       int // ovl: key didn't split into <topic>:<txid>:<vout>
+	LookupBackfilled     int // canonical lk_* index entries written via LookupBackfiller
+	LookupBackfillErrors int // LookupBackfiller invocations that returned an error (non-fatal; logged + counted)
 }
 
 // Migrate walks every legacy `ovl:<topic>:<txid>:<vout>` LevelDB key
@@ -168,8 +167,8 @@ func Migrate(ctx context.Context, db *leveldb.DB, opts MigrateOptions) (MigrateS
 		// still want to run LookupBackfiller below so reruns can
 		// REPAIR missing lk_* indexes (e.g. on a node that ran the
 		// pre-fix RC migrator, or on records where LookupBackfiller
-		// failed transiently). Codex review 9730ed97b8e75d6c caught
-		// the original short-circuit that made repair-reruns broken.
+		// failed transiently). This permits repair reruns to rebuild missing
+		// lookup indexes.
 		storageAlreadyMigrated, err := db.Has(outputKey(topic, op), nil)
 		if err != nil {
 			return stats, fmt.Errorf("storage: migrate: check existing for %s.%d: %w", txid.String(), vout, err)

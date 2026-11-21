@@ -8,10 +8,10 @@ package lookups
 // primitives. Port source:
 // `bsv-blockchain/overlay-express-examples/src/services/identity/IdentityLookupServiceFactory.ts`.
 //
-// Query support in W-10.1: identityKey, certifierKey, outpoint. The
+// Queries support identityKey, certifierKey, and outpoint. The
 // attributes-based query (paymail handle resolution) requires keyring
 // + public-attribute decryption which is deferred per the identity.go
-// admission-side note. SendBSV-Wallet's primary path (resolve by
+// admission-side note. The primary path (resolve by
 // identityKey) is fully supported.
 
 import (
@@ -212,21 +212,19 @@ func (s *IdentityLookupService) Lookup(ctx context.Context, question *lookup.Loo
 		return formulaList([]*transaction.Outpoint{op}), nil
 
 	case len(q.Attributes) > 0:
-		// Attribute-based resolution (paymail handle → identityKey) is
-		// DEFERRED to W-11. The canonical TS implementation decrypts
+		// Attribute-based resolution (paymail handle → identityKey) is not
+		// supported because the canonical TS implementation decrypts
 		// publicly-revealed attribute fields via
 		// VerifiableCertificate.decryptFields(anyoneWallet), but the
 		// on-chain PushDrop wire format publishes a plain Certificate
 		// without the verifier-specific keyring needed for that decode.
-		// See docs/internal/SENDBSV_USERS_TOPIC_REQUEST.md §
-		// "Identity attributes deferral (W-11)" for the resolution
-		// plan. Returning an explicit Freeform answer with a deferred
+		// Returning an explicit Freeform answer with a deferred
 		// flag (rather than silent-empty) so callers know to fall back
 		// to the supported identityKey path instead of guessing why
 		// the result list is empty.
 		return &lookup.LookupAnswer{
 			Type:   lookup.AnswerTypeFreeform,
-			Result: map[string]interface{}{"deferred": true, "since": "W-10.1", "use": "identityKey"},
+			Result: map[string]interface{}{"deferred": true, "use": "identityKey", "since": "v3.0.0"},
 		}, nil
 
 	default:

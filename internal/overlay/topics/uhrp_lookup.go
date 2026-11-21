@@ -46,8 +46,8 @@ type UHRPLookupQuery struct {
 	// (hex), matched case-insensitively. AND-combines with every other key
 	// supplied, per the struct doc comment above. Deliberate divergence
 	// from canonical, which matches case-sensitively against lowercase hex
-	// — see uhrpQueryFilter.matches's doc comment (uhrp_filter.go, fix
-	// pass, re-review RISKS item 3) for the exact canonical citation.
+	// — see uhrpQueryFilter.matches's doc comment for the exact canonical
+	// citation.
 	HostIdentityKey string `json:"hostIdentityKey,omitempty"`
 	// ExpiryTime is canonical's exact-match filter on an advertisement's
 	// absolute Unix-seconds expiry — a strict equality, never a range (see
@@ -60,9 +60,8 @@ type UHRPLookupQuery struct {
 	List string `json:"list,omitempty"`
 }
 
-// W-7 (2026-05-16): the legacy in-process UHRPLookupService struct +
-// NewUHRPLookupService constructor + Lookup/GetDocumentation/GetMetadata
-// methods were removed here. The replacement is
+// The legacy in-process UHRP lookup implementation was removed. The
+// replacement is
 // lookups.NewUHRPLookupService at internal/overlay/lookups/uhrp.go,
 // which implements the canonical engine.LookupService against an
 // event-driven local index. The constants + query types stay because

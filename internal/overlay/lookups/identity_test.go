@@ -116,10 +116,9 @@ func outpointFromIdentityPayload(t *testing.T, p *engine.OutputAdmittedByTopic) 
 	return &transaction.Outpoint{Txid: *txid, Index: p.OutputIndex}
 }
 
-// TestIdentity_AdmitAndLookupByIdentityKey pins the SendBSV-Wallet
-// happy path: a signed identity cert is admitted, then a lookup by
+// TestIdentity_AdmitAndLookupByIdentityKey verifies the primary path: a
+// signed identity cert is admitted, then a lookup by
 // identityKey (hex of subject compressed pubkey) returns the outpoint.
-// This is acceptance criterion #6 from SENDBSV_USERS_TOPIC_REQUEST.md.
 func TestIdentity_AdmitAndLookupByIdentityKey(t *testing.T) {
 	ctx := context.Background()
 	s := newIdentityLookup(t)
@@ -220,7 +219,7 @@ func TestIdentity_LookupByIdentityAndCertifierFilters(t *testing.T) {
 	}
 }
 
-// TestIdentity_AttributesQueryReturnsDeferred pins the W-11 deferral
+// TestIdentity_AttributesQueryReturnsDeferred pins the deferred
 // contract: an attributes-based query must NOT silently return empty
 // — it returns a Freeform answer with a deferred flag so callers know
 // to use the supported identityKey path instead.

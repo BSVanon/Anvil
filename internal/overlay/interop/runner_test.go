@@ -162,7 +162,7 @@ func TestRegistry_RejectsDoubleRegister(t *testing.T) {
 
 func TestRegistry_DispatcherInvoked(t *testing.T) {
 	// Proves that when a dispatcher IS registered, Run uses it. Validates the
-	// wiring before any real dispatcher lands in Workstream A.
+	// registry wiring before a production dispatcher is registered.
 	files, err := LoadAll(vectorRoot(t))
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)

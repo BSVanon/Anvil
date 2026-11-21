@@ -1,20 +1,19 @@
 // Package legacyshim translates Anvil's legacy /overlay/{submit,query,
 // topics,services} HTTP surface into calls against the canonical v3
-// engine (`go-overlay-services`). Implements Lens 2 = 2c (indefinite
-// app-layer adapter) from docs/internal/OVERLAY_PROTOCOL_ALIGNMENT_PLAN.md:
+// engine (`go-overlay-services`). It is an indefinite app-layer adapter:
 // apps that haven't migrated to canonical /submit + /lookup keep working
 // against /overlay/* while the canonical engine is the only data source
 // underneath.
 //
-// SCOPE CARVE-OUT (Codex review 14a2d703): this package handles only the
-// four legacy *overlay protocol* routes. The mesh-discovery routes that
+// This package handles only the four legacy *overlay protocol* routes. The
+// mesh-discovery routes that
 // share the /overlay/ URL prefix — /overlay/lookup, /overlay/register,
 // /overlay/deregister — are NOT in scope; they live in internal/api/
 // server.go and stay registered there indefinitely (they have no
 // canonical equivalent because they're Anvil-mesh-specific).
 //
-// Decommission: this package gets removed in W-9 when telemetry shows a
-// 30-day quiet period on /overlay/{submit,query}. Not before.
+// Retire this package only after telemetry shows no /overlay/{submit,query}
+// traffic for 30 days.
 package legacyshim
 
 import (
@@ -43,8 +42,7 @@ type overlayEngine interface {
 // and wraps the canonical engine + a per-lookup-service parser table
 // used to reconstruct the legacy AdmittedOutput.Metadata field from the
 // BEEF the canonical engine returns. Without that table the shim would
-// have to drop Metadata entirely, which would break Anvil-Swap's
-// discovery code (per docs/internal/APP_MIGRATION_TODO.md).
+// have to drop Metadata entirely, which would break legacy discovery clients.
 type Shim struct {
 	Engine overlayEngine
 

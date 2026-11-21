@@ -98,7 +98,7 @@ func slowUplink(t *testing.T, grace time.Duration, floor, n, rate int64, timeout
 	return nextResult(t, results, timeout+5*time.Second)
 }
 
-// TestReadBody_HonestSlowUplinkPasses (cold review round 4 RISK 6): a 1 MB
+// TestReadBody_HonestSlowUplinkPasses verifies that a 1 MB
 // body sent at 200 kbit/s, 25,000 bytes a second, is read in full in about
 // 40 s, where bodyread.MinReadRate cut it off. The test runs ten times
 // faster: grace, floor, timeout and link all scaled by ten.
@@ -176,8 +176,8 @@ func TestPacing_RealTime(t *testing.T) {
 	}
 }
 
-// TestPacerRate_UndeclaredFollowsBytesReadSoFar (cold review round 4 RISK 2):
-// an undeclared body (n negative) is paced like a declared one of have
+// TestPacerRate_UndeclaredFollowsBytesReadSoFar verifies that an undeclared
+// body (n negative) is paced like a declared one of have
 // bytes, recomputed as have grows, rather than like one of a fixed total —
 // MinBodyRate while have is at most BigBody, then BigBodyRate, never the
 // rate a body of MaxBody would need from its first byte.
@@ -269,7 +269,7 @@ func trickleChunkedTo(conn net.Conn, chunk int, interval time.Duration, stop cha
 	}
 }
 
-// TestReadBody_UndeclaredHonestBodyPaces (cold review round 4 RISK 2): a 150
+// TestReadBody_UndeclaredHonestBodyPaces verifies that a 150
 // KB chunked BEEF sent at 200 kbit/s passes, as it did before this guard
 // existed (base e63349f); paced at the rate a declared MaxBody submit would
 // need (142,180 B/s), it was cut at 2.43 s instead.
@@ -291,7 +291,7 @@ func TestReadBody_UndeclaredHonestBodyPaces(t *testing.T) {
 	t.Logf("150 KB chunked BEEF at 200 kbit/s: read in %v", res.elapsed)
 }
 
-// TestReadBody_UndeclaredTrickleIsStillCut (cold review round 4 RISK 2): an
+// TestReadBody_UndeclaredTrickleIsStillCut verifies that an
 // undeclared body is still paced, not exempted: one trickling at an eighth
 // of MinBodyRate is cut with ErrBodyTooSlow soon after the grace, as a
 // declared one is (TestReadBody_TrickleBelowTheRateIsCut).

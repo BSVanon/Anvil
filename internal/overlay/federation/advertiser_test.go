@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	oa "github.com/bsv-blockchain/go-overlay-services/pkg/core/advertiser"
 	"github.com/bsv-blockchain/go-overlay-discovery-services/pkg/types"
+	oa "github.com/bsv-blockchain/go-overlay-services/pkg/core/advertiser"
 	"github.com/bsv-blockchain/go-sdk/overlay"
 	admintoken "github.com/bsv-blockchain/go-sdk/overlay/admin-token"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
@@ -242,8 +242,7 @@ func TestAdvertiser_CreateAdvertisements_RejectsInvalidInputs(t *testing.T) {
 }
 
 // TestAdvertiser_BEEFEmptyFallback_PreservesTopicOrService pins
-// Codex review 18af38d602483289 finding #1: when an output is in
-// anvilstorage but its BEEF is nil (typical post-W-4-B migration
+// When an output is in anvilstorage but its BEEF is nil (a typical migrated
 // state), the hydration fallback must use the local SHIP record to
 // populate TopicOrService + IdentityKey. Without this, every
 // SyncAdvertisements cycle would treat the existing ad as "missing"
@@ -302,7 +301,7 @@ func TestAdvertiser_BEEFEmptyFallback_PreservesTopicOrService(t *testing.T) {
 // concat-BEEF approach. Uses a stubWallet that records every
 // CreateAction call so the test can assert one call per ad.
 //
-// Codex review 18af38d602483289 finding #2: go-sdk wallet decodes
+// The go-sdk wallet decodes
 // InputBEEF as one envelope, so concatenating multiple ad.Beef buffers
 // produces malformed input. Per-tx revoke is the canonical-safe
 // alternative.

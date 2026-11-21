@@ -134,8 +134,7 @@ func handleSubmit(w http.ResponseWriter, r *http.Request, cfg Config) {
 		// Conformance-runner / no-engine path: return a STEAK shape with
 		// empty admissions for each requested topic. This satisfies the
 		// vector shape contract without claiming to admit anything. Production
-		// MUST wire Config.Submit (mirrors the arc-ingest pattern from
-		// Codex review 9fe46aca).
+		// MUST wire Config.Submit, as with arc ingest.
 		steak = SubmitResponse{}
 		for _, t := range topics {
 			steak[t] = TopicAdmittance{OutputsToAdmit: []uint32{}}

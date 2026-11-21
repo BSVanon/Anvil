@@ -32,8 +32,8 @@ import (
 // The one exception is a read for a request that only reads: a lookup or a
 // GASP reply, whose handler marks its context overlayctx.ReadOnly. Such a
 // read keeps the caller's context, so a lookup whose client has gone away
-// stops hydrating at its next read rather than reading on for nobody (cold
-// review round 3 S4). Reads stay detached otherwise, as the engine reads
+// stops hydrating at its next read rather than reading on for nobody. Reads
+// stay detached otherwise, as the engine reads
 // between the writes of a commit too (deleteUTXODeep's FindOutput, the merkle
 // updates, GASP sync), and writes stay detached whatever the mark.
 //

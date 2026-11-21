@@ -212,8 +212,8 @@ func TestReadBody_TrickleBelowTheRateIsCut(t *testing.T) {
 	t.Logf("trickle at %d bytes a second cut after %v (expected about %v)", MinBodyRate/8, res.elapsed, want)
 }
 
-// TestReadBody_TooSlowNamesTheRateThatApplied (cold review round 4 nit,
-// "quote the rate that applied"): ErrBodyTooSlow's text names the exact rate
+// TestReadBody_TooSlowNamesTheRateThatApplied verifies that ErrBodyTooSlow's
+// text names the exact rate
 // the body was held to, not always MinBodyRate, so an operator reading the
 // refusal can tell what pace was actually required. A declared body long
 // enough that its length, not the floor, sets the rate (paceRate's length

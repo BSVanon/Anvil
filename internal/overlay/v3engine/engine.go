@@ -1,12 +1,11 @@
 // Package v3engine wires Anvil's canonical-engine pieces (storage adapter,
 // topic adapters, lookup services, chain tracker) into a single
-// engine.Engine instance ready for HTTP route handlers. This is the W-5
-// integration layer: it owns no business logic, only the construction
+// engine.Engine instance ready for HTTP route handlers. This integration layer
+// owns no business logic, only the construction
 // glue + the canonical-route HTTP handlers (handlers.go).
 //
-// The package name v3engine reflects Anvil's v3.0.0 target release (when
-// W-8 ships) and distinguishes from the legacy bridge code at
-// internal/overlay/canonical/ that gets decommissioned in W-7.
+// The package name distinguishes it from the legacy bridge code in
+// internal/overlay/canonical/.
 package v3engine
 
 import (
@@ -65,8 +64,8 @@ func (c countingLookup) OutputAdmittedByTopic(ctx context.Context, payload *engi
 // surfaces in the engine's SHIP/SLAP advertisement responses. Empty
 // string is allowed for offline/test setups.
 //
-// W-10.3 federation fields are all optional. Leaving them nil keeps the
-// pre-W-10 single-node behavior: no SHIP/SLAP advertising, no GASP sync,
+// Federation fields are optional. Leaving them nil keeps single-node behavior:
+// no SHIP/SLAP advertising, no GASP sync,
 // no peer discovery. Operators that want canonical BRC-88 federation
 // populate them; cmd/anvil/main.go wires them when
 // cfg.Overlay.EnableGASPSync is true.
@@ -77,8 +76,8 @@ func (c countingLookup) OutputAdmittedByTopic(ctx context.Context, payload *engi
 // tolerate a non-nil Advertiser whose FindAllAdvertisements returns an
 // error — SyncAdvertisements propagates that error and aborts.
 // Therefore the federation.Advertiser ErrUnimplemented stub MUST stay
-// unwired (Advertiser field nil) until W-10.2 fills in the four
-// methods; setting it before then would break advertisement sync.
+// unwired (Advertiser field nil) until it implements all four methods;
+// setting it before then would break advertisement sync.
 type Config struct {
 	Storage      *anvilstorage.Storage
 	HeadersStore *headers.Store
@@ -146,9 +145,8 @@ type Config struct {
 // transparently. Leaving them nil produces a single-node engine — no
 // SHIP/SLAP advertising, no GASP peer discovery, no transaction
 // propagation. The upstream Engine guards every federation pathway on
-// nil. Populating them enables canonical BRC-88 federation; see W-10
-// federation plan (docs/internal/W10_FEDERATION_PLAN.md) for the
-// full operator wiring.
+// nil. Populating them enables canonical BRC-88 federation, including
+// advertising, peer discovery, transaction propagation, and SHIP/SLAP lookup.
 //
 // BroadcastFacilitator remains unset; Anvil doesn't currently use the
 // canonical topic-broadcaster facilitator pattern.
@@ -181,8 +179,8 @@ func New(cfg *Config) (*engine.Engine, error) {
 		topics.DEXSwapTopicName:    topics.DEXSwapCanonical(),
 		topics.OrdLockTopicName:    topics.OrdLockCanonical(),
 		topics.OrdLockBuyTopicName: topics.OrdLockBuyCanonical(),
-		// W-10.1: canonical-upstream primitives (UMP, Identity). Hosted
-		// in Anvil today as a pragmatic transitional placement —
+		// Canonical-upstream primitives (UMP, Identity) are hosted in Anvil
+		// as a pragmatic transitional placement —
 		// destined for go-overlay-discovery-services once that repo
 		// gains a topic-impl partition. See topics/ump.go +
 		// topics/identity.go headers for port provenance.
@@ -190,8 +188,8 @@ func New(cfg *Config) (*engine.Engine, error) {
 		topics.IdentityTopicName: topics.IdentityCanonical(lg),
 		// v3.1.0: canonical BRC-35 KVStore — Go port of the canonical
 		// ts-stack KVStoreTopicManager. Hosted in Anvil as the same
-		// transitional placement as UMP/Identity. SendBSV-Wallet
-		// publishes encrypted cross-device settings under this topic.
+		// transitional placement as UMP/Identity. Wallets publish encrypted
+		// cross-device settings under this topic.
 		// See topics/kvstore.go header for port provenance.
 		topics.KVStoreTopicName: topics.KVStoreCanonical(lg),
 		// Canonical BRC-33 MessageBox host advertisement — Go port of

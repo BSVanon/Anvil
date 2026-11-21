@@ -13,9 +13,8 @@ import (
 
 // TestGASP_RoutesRegistered_BadRequestPaths exercises the canonical
 // /requestSyncResponse and /requestForeignGASPNode routes for their
-// bad-request paths. The federation surface is wired into v3engine.Register
-// in W-10.3 — these tests pin the route registration + error envelope,
-// even before the Advertiser implementation lands.
+// bad-request paths. These tests pin the federation route registration and
+// error envelope.
 func TestGASP_RoutesRegistered_BadRequestPaths(t *testing.T) {
 	url := newTestServer(t)
 
@@ -79,8 +78,7 @@ func TestGASP_RoutesRegistered_BadRequestPaths(t *testing.T) {
 // federation peers asking for a node we don't have would see a 500 —
 // indistinguishable from a real server error and likely to trigger
 // retries that compound load on a node that simply doesn't have the
-// requested state. Codex review 24358e121cfe3e64 caught the original
-// implementation mapping every error to 500.
+// requested state. Mapping every error to 500 would misclassify missing state.
 func TestGASP_RequestForeignGASPNode_MissingOutputReturns404(t *testing.T) {
 	url := newTestServer(t)
 	// 64-hex txid the fresh test engine has never admitted; the engine

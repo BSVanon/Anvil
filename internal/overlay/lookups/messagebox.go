@@ -2,10 +2,9 @@ package lookups
 
 // Canonical upstream primitive — MessageBox Lookup Service (ls_messagebox).
 //
-// Port source (re-pinned): ts-stack
-// `packages/overlays/topics/src/message-box/MessageBoxLookupService.ts` +
-// `MessageBoxStorage.ts` (MCP-verified via brc100-mcp read_file against
-// /home/robert/Documents/BRC100-MCP/lib/sources/ts-stack). The prior pin,
+// Port source: bsv-blockchain/ts-stack
+// packages/overlays/topics/src/message-box/MessageBoxLookupService.ts and
+// MessageBoxStorage.ts. The prior pin,
 // overlay-express-examples @481c42ed315279c17363e8b6d4c92401c8540fb7, is
 // a migrated-away repo; cited only as history. Both pins describe the
 // same MongoDB-backed design — ts-stack has not replaced this half with

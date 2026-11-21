@@ -15,7 +15,7 @@ import (
 // v1.2.23 matched proofs by pointer and never combined them, so the panic is
 // new with v1.7.7. Normalizing each stored ancillary with beefnorm's
 // canonical proofs before it is ever merged (normalizedBeefFromBytes) fixes
-// old (pre-v3.4.1) stored data at this boundary, so a merge over stored
+// data stored before v3.5.0 at this boundary, so a merge over stored
 // BEEFs is also still guarded per item: a BEEF that cannot be parsed,
 // normalized or merged is skipped, and the BEEF it was merged into is put
 // back as it was before that one merge, whatever order the items merge in.

@@ -3,10 +3,9 @@ package topics
 // Canonical upstream primitive — MessageBox host advertisement
 // (tm_messagebox).
 //
-// Port source (re-pinned): ts-stack
-// `packages/overlays/topics/src/message-box/MessageBoxTopicManager.ts`
-// (MCP-verified via brc100-mcp read_file against
-// /home/robert/Documents/BRC100-MCP/lib/sources/ts-stack). The prior pin,
+// Port source: bsv-blockchain/ts-stack
+// packages/overlays/topics/src/message-box/MessageBoxTopicManager.ts.
+// The prior pin,
 // overlay-express-examples @481c42ed315279c17363e8b6d4c92401c8540fb7, is a
 // migrated-away repo (its HEAD commit replaces the README with a redirect
 // notice) and is cited below only as history, where a divergence traces

@@ -149,7 +149,7 @@ func TestArcIngest_MalformedJSON_400(t *testing.T) {
 	}
 }
 
-// Codex 9fe46aca regression: arc-ingest must forward to the engine via
+// Arc ingest must forward to the engine via
 // Config.ArcIngest. These tests prove the callback receives the decoded
 // request, and that a failed callback surfaces as 500 (so production
 // operators see the failure instead of mined notifications dropping silently).
@@ -218,7 +218,7 @@ func TestArcIngest_NoCallback_StillAcknowledges(t *testing.T) {
 	// Conformance-runner case: no callback configured. Handler still returns
 	// 200 (vector .17 contract), but the lack of side-effect is the price
 	// of running without an engine wired up. Production wiring MUST set
-	// the callback per Codex 9fe46aca.
+	// the callback.
 	h := New(Config{})
 	body := []byte(`{"txid":"abcd","merklePath":"","blockHeight":0}`)
 	rec := httptest.NewRecorder()

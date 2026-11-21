@@ -10,10 +10,10 @@ import (
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/pushdrop"
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/wallet"
 	"github.com/syndtr/goleveldb/leveldb"
 )
@@ -109,11 +109,10 @@ func outpointFromUMPPayload(t *testing.T, p *engine.OutputAdmittedByTopic) *tran
 
 func umpHashHex(b []byte) string { return hex.EncodeToString(b) }
 
-// TestUMP_AdmitAndLookupByPresentationHash pins the SendBSV-Wallet
-// happy-path: a UMP token gets admitted via OutputAdmittedByTopic, then
+// TestUMP_AdmitAndLookupByPresentationHash pins the wallet happy path: a UMP
+// token gets admitted via OutputAdmittedByTopic, then
 // a lookup keyed by presentationHash returns the outpoint. This is the
-// load-bearing flow for returning-user same-passkey rehydrate from
-// SENDBSV_USERS_TOPIC_REQUEST.md acceptance criterion #5.
+// load-bearing flow for returning-user same-passkey rehydration.
 func TestUMP_AdmitAndLookupByPresentationHash(t *testing.T) {
 	ctx := context.Background()
 	s := newUMPLookup(t)
@@ -151,8 +150,7 @@ func TestUMP_AdmitAndLookupByPresentationHash(t *testing.T) {
 	}
 }
 
-// TestUMP_LookupByRecoveryHash pins the lost-passkey-recovery path —
-// SENDBSV_USERS_TOPIC_REQUEST.md's other primary UMP query shape.
+// TestUMP_LookupByRecoveryHash pins the lost-passkey recovery path.
 func TestUMP_LookupByRecoveryHash(t *testing.T) {
 	ctx := context.Background()
 	s := newUMPLookup(t)

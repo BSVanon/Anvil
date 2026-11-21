@@ -85,8 +85,8 @@ func neverReadingLookup(t *testing.T, url, hashHex string) net.Conn {
 	return conn
 }
 
-// TestGuard_SlowAnswerReadersDoNotStarveJSONSlots reproduces the B4a
-// review's scaled-pool probe: on a guard scaled down to 3 JSON slots, 3
+// TestGuard_SlowAnswerReadersDoNotStarveJSONSlots verifies that on a guard
+// scaled down to 3 JSON slots, 3
 // clients that send a complete lookup request and then never read their
 // (large) answer must not starve a 4th, honest client. Before the fix each
 // of the 3 held its JSON slot until its answer was fully written — which,

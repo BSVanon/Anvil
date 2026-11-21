@@ -36,8 +36,8 @@ func lookupAs(t *testing.T, url, client string) (int, time.Duration) {
 	return resp.StatusCode, time.Since(start)
 }
 
-// TestGuard_OneClientCannotHoldEveryReadPermit (cold review round 4 RISK 3,
-// single source): one client that opens routeguard.ReadPermits header-only
+// TestGuard_OneClientCannotHoldEveryReadPermit verifies that one client which
+// opens routeguard.ReadPermits header-only
 // connections, named in X-Forwarded-For by a loopback proxy, holds at most
 // routeguard.ClientReadPermits read permits: the rest are answered 503 and
 // closed at once, those it holds are cut 408 at the grace, and another

@@ -273,8 +273,7 @@ func TestLookupHandler_MissingQuery(t *testing.T) {
 
 // TestLookupHandler_NullQueryRejected: query: null is treated as absent
 // per vector overlay.lookup.5 + vector overlay.lookup.10's null-query
-// rejection precedent. Body must carry the canonical error envelope —
-// closing the verification gap Codex flagged in review 077b962a02931dce.
+// rejection precedent. Body must carry the canonical error envelope.
 func TestLookupHandler_NullQueryRejected(t *testing.T) {
 	url := newTestServer(t)
 	body := []byte(`{"service":"ls_uhrp","query":null}`)
@@ -489,12 +488,9 @@ func TestListLookupServiceProvidersHandler(t *testing.T) {
 // TestCanonicalRoutes_RegisterWithCORSMiddleware verifies the
 // production boot path: the Middleware wrap is applied to every
 // canonical route INCLUDING the OPTIONS preflights so cross-origin
-// browser callers (Anvil-Swap UI, SendBSV-Foundry, future TS SDK
-// consumers) get the required Access-Control-* headers when they
-// migrate to canonical /submit + /lookup. Codex review
-// fe9707876f5618ca caught the original implementation mounting
-// handlers raw — apps migrating per APP_MIGRATION_TODO.md would have
-// hit cross-origin failures.
+// browser callers get the required Access-Control-* headers when they use
+// canonical /submit + /lookup. Mounting handlers without this wrapper would
+// cause cross-origin failures.
 func TestCanonicalRoutes_RegisterWithCORSMiddleware(t *testing.T) {
 	eng, _ := newTestEngine(t)
 	mux := http.NewServeMux()
@@ -523,7 +519,7 @@ func TestCanonicalRoutes_RegisterWithCORSMiddleware(t *testing.T) {
 		{http.MethodPost, "/submit", []byte{0x01}, "application/octet-stream"},
 		{http.MethodPost, "/lookup", []byte(`{}`), "application/json"},
 		{http.MethodPost, "/arc-ingest", []byte(`{}`), "application/json"},
-		// OPTIONS preflights — the critical paths Codex flagged.
+		// OPTIONS preflights use the same middleware wrapper.
 		{http.MethodOptions, "/submit", nil, ""},
 		{http.MethodOptions, "/lookup", nil, ""},
 		{http.MethodOptions, "/arc-ingest", nil, ""},

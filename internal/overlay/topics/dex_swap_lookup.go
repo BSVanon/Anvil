@@ -19,10 +19,8 @@ type DEXSwapLookupQuery struct {
 	Maker string `json:"maker,omitempty"`
 }
 
-// W-7 (2026-05-16): the legacy in-process DEXSwapLookupService struct +
-// NewDEXSwapLookupService constructor + Lookup/GetDocumentation/
-// GetMetadata methods + the internal containsTokenTxid helper were
-// removed here. The replacement is lookups.NewDEXSwapLookupService at
+// The legacy in-process DEX swap lookup implementation was removed. Its
+// replacement is lookups.NewDEXSwapLookupService at
 // internal/overlay/lookups/dex_swap.go, which implements the canonical
 // engine.LookupService against an event-driven local index. The
 // canonical lookup re-implements containsTokenTxid locally rather

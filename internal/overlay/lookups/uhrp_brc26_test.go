@@ -211,7 +211,7 @@ func TestUHRPBRC26Lookup_ExpiredAdvertsSkipped(t *testing.T) {
 }
 
 // TestUHRPBRC26Lookup_OutputSpentRemovesEntry confirms the lifecycle event
-// spec item 2 requires: spending a canonical BRC-26 advertisement's UTXO
+// Spending a canonical BRC-26 advertisement's UTXO
 // removes it from the lookup index. Unlike the legacy OP_RETURN format
 // (unspendable), a real spend is an expected part of a BRC-26 advert's
 // life (revocation), so this is the more meaningful of the two formats to

@@ -327,9 +327,8 @@ func TestLegacyListTopicsAndServices(t *testing.T) {
 
 // TestLegacyListServices_TopicsFieldPresent asserts the per-service
 // `topics` array surfaces in GET /overlay/services exactly the way
-// internal/overlay/handlers.go:135-143 returned it pre-shim. Codex
-// review d671fa17fe5cc746 caught the first draft silently dropping
-// this field — Anvil-Swap and the TS SDK both treat it as required.
+// internal/overlay/handlers.go:135-143 returned it pre-shim. Legacy clients
+// treat this field as required.
 func TestLegacyListServices_TopicsFieldPresent(t *testing.T) {
 	url := newShimServer(t)
 	resp, err := http.Get(url + "/overlay/services")
@@ -368,8 +367,8 @@ func TestLegacyListServices_TopicsFieldPresent(t *testing.T) {
 // TestShim_RegisterWithCORSMiddleware verifies the boot path: the
 // Middleware wrap is applied to every legacy route so browser callers
 // see the same Access-Control-* headers they received before the shim.
-// Without this Foundry's cross-origin /overlay/submit + Anvil-Swap's
-// browser-side discovery POSTs would regress with CORS errors.
+// Without this, cross-origin submit and discovery requests would regress with
+// CORS errors.
 func TestShim_RegisterWithCORSMiddleware(t *testing.T) {
 	shim := newWiredShim(t)
 	mux := http.NewServeMux()

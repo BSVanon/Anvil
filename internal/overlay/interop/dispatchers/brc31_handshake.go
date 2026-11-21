@@ -26,10 +26,10 @@ import (
 //     against a separately-wired AuthMiddleware-wrapped echo handler.
 //
 // Vectors requiring real ECDSA signature verification (.5, .6, .7, .8, .14,
-// .16) are reported PENDING until BRC-31 Pass 2 lands the crypto. Cert
-// vectors (.10, .11) are deferred to Workstream G.
+// .16) are reported PENDING until signature verification is available. Cert
+// vectors (.10, .11) require certificate support.
 type BRC31Handshake struct {
-	phase1Handler           http.Handler // POST /.well-known/auth host
+	phase1Handler               http.Handler // POST /.well-known/auth host
 	allowUnauthenticatedHandler http.Handler // /api/* with allowUnauthenticated middleware
 }
 
@@ -71,11 +71,11 @@ type authVectorInput struct {
 	Scenario string `json:"_scenario"`
 
 	// Schema check carries the AuthMessage shape directly:
-	MessageType   string `json:"messageType"`
-	Version       string `json:"version"`
-	IdentityKey   string `json:"identityKey"`
-	Nonce         string `json:"nonce"`
-	InitialNonce  string `json:"initialNonce"`
+	MessageType  string `json:"messageType"`
+	Version      string `json:"version"`
+	IdentityKey  string `json:"identityKey"`
+	Nonce        string `json:"nonce"`
+	InitialNonce string `json:"initialNonce"`
 
 	// .15 carries valid + invalid examples:
 	ValidExamples   []string `json:"valid_examples"`
@@ -86,18 +86,18 @@ type authVectorInput struct {
 }
 
 type authVectorExpected struct {
-	Status                  int                    `json:"status"`
-	Body                    json.RawMessage        `json:"body"`
-	BodyShape               map[string]any         `json:"body_shape"`
-	ResponseHeadersRequired []string               `json:"response_headers_required"`
-	ResponseHeadersIncludes map[string]any         `json:"response_headers_includes"`
-	ReqAuthIdentityKey      string                 `json:"req_auth_identity_key"`
+	Status                  int             `json:"status"`
+	Body                    json.RawMessage `json:"body"`
+	BodyShape               map[string]any  `json:"body_shape"`
+	ResponseHeadersRequired []string        `json:"response_headers_required"`
+	ResponseHeadersIncludes map[string]any  `json:"response_headers_includes"`
+	ReqAuthIdentityKey      string          `json:"req_auth_identity_key"`
 
 	// Schema-only assertions:
-	ValidMessageTypes      []string `json:"valid_message_types"`
-	RequiredFields         []string `json:"required_fields"`
-	RequestIDBase64Length  int      `json:"requestId_base64_length"`
-	Pattern                string   `json:"pattern"`
+	ValidMessageTypes     []string `json:"valid_message_types"`
+	RequiredFields        []string `json:"required_fields"`
+	RequestIDBase64Length int      `json:"requestId_base64_length"`
+	Pattern               string   `json:"pattern"`
 }
 
 func (d *BRC31Handshake) Run(_ context.Context, _ *interop.VectorFile, v interop.Vector) interop.Result {
@@ -171,11 +171,11 @@ func (d *BRC31Handshake) Run(_ context.Context, _ *interop.VectorFile, v interop
 //
 // Each function asserts the vector's `expected` field documents the right
 // contract shape. Actual server behavior is tested separately in
-// canonical/auth.go unit tests so Pass 2 stays scoped to vector conformance.
+// canonical/auth.go unit tests so vector checks stay scoped to conformance.
 
 // requiredHeadersForVector5 — the full Phase 2 response header set documented
-// by vector .5. Codex review ec2db518 flagged that an under-assertion here
-// would let a regressed vector silently PASS.
+// by vector .5. Exact matching prevents a regressed vector from silently
+// passing with a missing or extra header.
 var requiredHeadersForVector5 = []string{
 	canonical.HeaderAuthVersion,
 	canonical.HeaderAuthIdentityKey,
@@ -395,9 +395,8 @@ func (d *BRC31Handshake) runSchema_RequestIDLength(r interop.Result, in authVect
 	}
 
 	// Probe the actual implementation: drive a Phase 1 request through the
-	// canonical handler and read the nonce header it emits. Codex review
-	// 0ad931ee flagged that an under-assertion here would silently PASS even
-	// if newNonce() regressed.
+	// canonical handler and read the nonce header it emits. Exact matching
+	// detects a regression in newNonce().
 	req := httptest.NewRequest("POST", "/.well-known/auth", bytes.NewReader([]byte(`{"messageType":"initialRequest","version":"0.1","identityKey":"028d37b941208cd6b8a4c28288eda5f2f16c2b3ab0fcb6d13c18b47fe37b971fc1","initialNonce":"dGVzdE5vbmNlMTIzNA=="}`)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(canonical.HeaderAuthIdentityKey, "028d37b941208cd6b8a4c28288eda5f2f16c2b3ab0fcb6d13c18b47fe37b971fc1")
@@ -586,8 +585,7 @@ func checkErrorBody(rawGot []byte, wantBody json.RawMessage) string {
 // This distinction matters because vectors mix type assertions and literal
 // assertions in the same body_shape map. For example vector .1 specifies
 // `messageType: "initialResponse"` (literal) alongside `identityKey: "string"`
-// (type). Codex review 0ad931ee flagged the prior under-assertion when this
-// dispatcher treated every string as a type sentinel.
+// (type). Literal strings must not be treated as type sentinels.
 var typeSentinels = map[string]bool{
 	"string":  true,
 	"array":   true,

@@ -54,7 +54,7 @@ var _ engine.LookupService = (*OrdLockLookupService)(nil)
 // --- event handlers --------------------------------------------------------
 
 // BackfillFromLegacyMetadata populates this service's lk_ordlock
-// index for a single legacy AdmittedOutput. Used by W-4 phase B
+// index for a single legacy AdmittedOutput. Used by migration
 // migration. metadata is a JSON-encoded topics.OrdLockEntry. See the
 // UHRP backfill doc-comment for the canonical /lookup BEEF-empty
 // limitation that applies equally here.
@@ -125,7 +125,7 @@ func (s *OrdLockLookupService) OutputAdmittedByTopic(ctx context.Context, payloa
 }
 
 // OutputSpent removes the listing from the local index when its UTXO is
-// spent. This is the path that finally resolves OrdLock N1 (stale-
+// spent. This removes stale
 // listing reconciliation) — once the engine wires up to GASP/BRC-64 the
 // callback fires regardless of how the spending tx arrived.
 func (s *OrdLockLookupService) OutputSpent(ctx context.Context, payload *engine.OutputSpent) error {

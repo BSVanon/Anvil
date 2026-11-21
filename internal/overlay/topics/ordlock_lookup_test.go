@@ -8,8 +8,8 @@ import (
 	"github.com/bsv-blockchain/go-sdk/script"
 )
 
-// W-7 (2026-05-16): every other test in this file targeted the
-// removed legacy OrdLockLookupService / matchesOrdLockQuery /
+// Every other test in this file targeted the removed legacy
+// OrdLockLookupService / matchesOrdLockQuery /
 // normalizeLimitOffset / lifecycle paths. Equivalent coverage lives
 // in internal/overlay/lookups/ordlock_test.go for the canonical
 // service. The TestNormalizeCancelFilter sub-tests are kept here

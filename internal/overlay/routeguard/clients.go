@@ -83,8 +83,8 @@ func newClientSet(pool, cpuSlots, jsonSlots int64) *clientSet {
 }
 
 // hourlyWarn tracks, per condition key, when it last let a warning through:
-// at most once an hour each, rather than a sync.Once's forever (cold review
-// round 4 RISK 8, "a later misconfiguration is never logged"). now is
+// at most once an hour each, rather than a sync.Once's forever, so later
+// configuration errors remain visible. now is
 // time.Now, overridden in tests.
 type hourlyWarn struct {
 	mu   sync.Mutex
@@ -124,7 +124,7 @@ func (g *Guard) TrustProxy(trust bool, hops int) {
 // requests only the node's own limits count. A key trust_proxy took from
 // X-Forwarded-For never falls back this way, forged private or loopback or
 // not: it is the client's own word, and lifting the cap on it would let any
-// direct client escape by claiming one (cold review round 4 RISK 9). Either
+// direct client escape by claiming one. Either
 // case it meets first for the guard's life is logged once.
 func (s *clientSet) keyOf(r *http.Request) (string, bool) {
 	trust, hops := false, 1

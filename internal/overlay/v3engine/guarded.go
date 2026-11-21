@@ -104,8 +104,8 @@ const invalidTransactionCode = "ERR_INVALID_TRANSACTION"
 // when the body was too slow, 400 with beefscan.Code for a BEEF over a cap,
 // 400 for a BEEF the guard does not accept (routeguard.ErrMalformed), 400 with
 // routeguard.MalformedScriptCode for an unlocking script ending in an
-// undecodable instruction (routeguard.ErrMalformedScript, cold review round 4
-// B1), 422 with routeguard.ValidationBudgetCode for scripts over the
+// undecodable instruction (routeguard.ErrMalformedScript), 422 with
+// routeguard.ValidationBudgetCode for scripts over the
 // verification budget, and otherwise the status the route answered before the
 // guard, with prefix before the message -- the default case's status is
 // unchanged by the classification below, always 400 here. The six
@@ -124,9 +124,7 @@ const invalidTransactionCode = "ERR_INVALID_TRANSACTION"
 // does not host, not a verdict on the transaction, and keeps
 // ReasonOtherGuardError uncoded as before. Both remaining buckets are still
 // the guard refusing a submit before the engine saw it, just for reasons the
-// other named Reasons do not cover (cold review round 4's NITs: this branch
-// was unlogged; cold review round 4 cycle 6's NITs: it was logged but not
-// split from a flood of genuinely invalid transactions). The deadline-exceeded
+// other named Reasons do not cover. The deadline-exceeded
 // case is an ordinary request outcome, not the guard protecting the node, so
 // it is not logged here.
 func writeGuardError(w http.ResponseWriter, r *http.Request, err error, prefix string) {

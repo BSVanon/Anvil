@@ -16,7 +16,7 @@ import (
 // request body of up to BigBody bytes must arrive once bodyread.ReadGrace has
 // passed. It is half bodyread.MinReadRate, the rate this node asks of the
 // replies it reads, so that a body of 1 MB sent at 200 kbit/s (25,000 bytes a
-// second), which that rate cut off after 8.4 s (cold review round 4 RISK 6),
+// second), which that rate cut off after 8.4 s,
 // is read in 40 s, within the 63 s its length allows (TestPacing_RealTime).
 const MinBodyRate int64 = 16 << 10
 
@@ -32,7 +32,7 @@ const BigBodyRate int64 = bodyread.MinReadRate
 // the route answers 408. tooSlow names the rate, in bytes a second, that
 // actually applied to the body cut off: MinBodyRate, BigBodyRate, or the
 // faster rate a long body's length (declared, or read so far when it was
-// not) demanded (cold review round 4 nit, "quote the rate that applied").
+// not) demanded.
 var ErrBodyTooSlow = fmt.Errorf("%w: a body must start within %v and then keep its pace, or faster when it is too long to arrive within the route's read timeout at that rate", ErrReadTimeout, bodyread.ReadGrace)
 
 func tooSlow(rate int64) error { return fmt.Errorf("%w (%d bytes a second)", ErrBodyTooSlow, rate) }
@@ -76,7 +76,7 @@ func paceRate(n int64, timeout, grace time.Duration, floor int64) int64 {
 // declared body of have bytes would be paced at this point. An honest
 // chunked body is then held to the same pace a declared one of its eventual
 // length would be, rather than to the rate a body of up to MaxBody would
-// need from its first byte (cold review round 4 RISK 2).
+// need from its first byte.
 type pacer struct {
 	r       io.Reader
 	rc      *http.ResponseController // nil once the writer has refused a deadline

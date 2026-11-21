@@ -285,7 +285,7 @@ func TestMigrate_ParseLegacyKey_Edge(t *testing.T) {
 }
 
 // TestMigrate_Repair_BackfillRunsOnAlreadyMigratedRecords pins the
-// behaviour Codex review 9730ed97b8e75d6c demanded: a rerun must
+// behaviour that a rerun must
 // repair lookup-side state for records whose storage primary already
 // exists. Without this, a node that ran the pre-fix RC migrator (no
 // LookupBackfiller) could never recover its lk_* indexes by rerunning

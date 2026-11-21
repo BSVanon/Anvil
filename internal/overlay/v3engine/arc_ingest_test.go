@@ -90,8 +90,8 @@ func TestArcIngestHandler_BadJSON(t *testing.T) {
 // (the store only has the genesis block), so this test instead
 // confirms that an INVALID-but-well-formed merkle path produces a
 // canonical 400, exercising the "engine returned error" branch. The
-// successful no-op branch is exercised implicitly by W-6 conformance
-// once real merkle proofs flow through.
+// successful no-op branch is exercised by conformance tests once real merkle
+// proofs flow through.
 func TestArcIngestHandler_InvalidMerklePathReturns400(t *testing.T) {
 	url := newTestServer(t)
 	// Real-looking merklePath hex that won't parse correctly.

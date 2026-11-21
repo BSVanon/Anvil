@@ -18,7 +18,7 @@ import (
 )
 
 // buildUMPTaggedBEEF makes an 11-field UMP PushDrop token (no signature —
-// matching Satsu's on-chain layout: presentationHash at field[6],
+// matching a real on-chain wallet layout: presentationHash at field[6],
 // recoveryHash at field[7]) and wraps it as a submittable TaggedBEEF.
 func buildUMPTaggedBEEF(t *testing.T, presH, recH []byte, atomic bool) overlay.TaggedBEEF {
 	t.Helper()
@@ -41,11 +41,11 @@ func buildUMPTaggedBEEF(t *testing.T, presH, recH []byte, atomic bool) overlay.T
 	return overlay.TaggedBEEF{Beef: encodeFixtureBEEF(t, tx, atomic), Topics: []string{topics.UMPTopicName}}
 }
 
-// TestEngine_SubmitAndLookupUMP is the decisive Satsu reproduction: drive a
+// TestEngine_SubmitAndLookupUMP drives a
 // UMP token all the way through eng.Submit -> admit -> lookup-notify -> index
 // -> eng.Lookup (which hydrates formulas from storage). The existing UMP unit
 // test only covers ls_users.Lookup's formula return, NOT the engine hydration
-// — exactly the gap where Satsu's "admits but lookup empty" could live.
+// — the gap where an admitted token could be absent from lookup results.
 func TestEngine_SubmitAndLookupUMP(t *testing.T) {
 	eng, _ := newTestEngine(t)
 	presH := make([]byte, 32)

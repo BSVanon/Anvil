@@ -51,10 +51,10 @@ func buildKVScript(t *testing.T, w wallet.Interface, controllerPub []byte, key, 
 		t.Fatalf("marshal protocol: %v", err)
 	}
 	fields := [][]byte{
-		protoJSON,        // 0: protocolID
-		[]byte(key),      // 1: key
-		[]byte(value),    // 2: value
-		controllerPub,    // 3: controller
+		protoJSON,     // 0: protocolID
+		[]byte(key),   // 1: key
+		[]byte(value), // 2: value
+		controllerPub, // 3: controller
 	}
 	if tagged {
 		tagsJSON, err := json.Marshal(tags)
@@ -112,7 +112,7 @@ func TestKVStoreAdmit_TaggedTokenAdmitted(t *testing.T) {
 // format (no tags) is also admitted.
 func TestKVStoreAdmit_LegacyTokenAdmitted(t *testing.T) {
 	w, ctrl := kvControllerWallet(t)
-	scriptBytes := buildKVScript(t, w, ctrl, "cold-address", "sendbsv-enc:v1:abc", nil, false)
+	scriptBytes := buildKVScript(t, w, ctrl, "cold-address", "app-enc:v1:abc", nil, false)
 
 	m := NewKVStoreTopicManager()
 	inst, err := m.Admit(txWith(t, scriptBytes), nil)

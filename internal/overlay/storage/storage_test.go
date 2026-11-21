@@ -110,7 +110,7 @@ func TestFindOutputsBatch_PositionalNilPadded(t *testing.T) {
 	// upstream engine.mergeExistingOutputs depends on — it iterates with
 	// `for vin, output := range outputs` and treats the slice index as the
 	// real input vin, skipping nil entries. Compacting misses out would
-	// silently renumber sparse spends. (Codex review 16624e3045f4f808.)
+	// silently renumber sparse spends.
 	s, _ := newStore(t)
 	txid := makeHash(0x44)
 	if err := s.InsertOutputs(ctxBg(), topicA, txid, []uint32{0, 1, 2}, nil, nil, nil); err != nil {
@@ -348,9 +348,8 @@ func TestReconcileMerkleRoot_StateTransitions(t *testing.T) {
 	if err := s.UpdateOutputBlockHeight(ctxBg(), op0, topicA, 100, 5); err != nil {
 		t.Fatalf("bh: %v", err)
 	}
-	// Manually stamp a merkle root so we can verify the match path. (In
-	// W-5 wiring this will come from BEEF extraction; phase A doesn't
-	// own that path.)
+	// Manually stamp a merkle root so we can verify the match path. Production
+	// wiring obtains it from BEEF extraction.
 	rec, _ := s.loadRecord(op0, &[]string{topicA}[0])
 	rec.MerkleRoot = makeHash(0xC0)
 	body, _ := encodeRecord(rec)

@@ -34,8 +34,7 @@ func (e *cancelingLookupEngine) Lookup(ctx context.Context, _ *lookup.LookupQues
 	return &lookup.LookupAnswer{}, nil
 }
 
-// TestQuery_ClientGoneBeforeTheAnswer (cold review round 4 nit, "no
-// client-gone check before canonicalToLegacyAnswer", legacyshim/routes.go):
+// TestQuery_ClientGoneBeforeTheAnswer verifies that, when
 // when the client left while the engine's lookup ran, /overlay/query must
 // not go on to hydrate a legacy answer, the Metadata field rebuilt from the
 // BEEF the canonical engine hydrated among it, for nobody.
@@ -51,7 +50,7 @@ func TestQuery_ClientGoneBeforeTheAnswer(t *testing.T) {
 	}
 }
 
-// TestQuery_LookupIsReadOnly (cold review round 3 S4): /overlay/query hands
+// TestQuery_LookupIsReadOnly verifies that /overlay/query hands
 // the engine its request's context marked overlayctx.ReadOnly, so the
 // engine's storage reads for the query stop when its client goes away, as
 // the canonical /lookup's do.

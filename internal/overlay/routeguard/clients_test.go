@@ -11,7 +11,7 @@ import (
 // TestClient_ReadPermitsArePerClient: one client holds at most
 // ClientReadPermits read permits, the next of its requests is refused at once,
 // another client still gets one, and a permit its client returns is free
-// again for that client (cold review round 4 RISK 3, single source).
+// again for that client.
 func TestClient_ReadPermitsArePerClient(t *testing.T) {
 	g, _ := quiet(New(1<<20, 4, 64, time.Minute))
 	var held []*Ticket
@@ -176,7 +176,7 @@ func TestClient_CPUAndJSONSlotsArePerClient(t *testing.T) {
 	}
 }
 
-// TestClient_OneSlotTakesTurnsAcrossClients (cold review round 3 S3): a
+// TestClient_OneSlotTakesTurnsAcrossClients verifies that a
 // client that keeps the execution slot busy with submit after submit, eight
 // at a time, cannot queue them ahead of another client's: each of the other
 // client's submits gets the slot at the next hand-off, within one hold, though
@@ -236,8 +236,8 @@ func TestClient_OneSlotTakesTurnsAcrossClients(t *testing.T) {
 	}
 }
 
-// TestClient_PartwayRefusalReleasesTheShare_TryTake (cold review round 4
-// CLAIM CHECK "Mutations"): tryTake takes a slot from the client first, then
+// TestClient_PartwayRefusalReleasesTheShare_TryTake verifies that tryTake
+// takes a slot from the client first, then
 // the guard (slots.go). When the client's own succeeds but the guard's is
 // not free, the client's share must be given back, not left held: fill the
 // guard's JSON slots from loopback, so client A's tryTake is refused partway
@@ -285,8 +285,8 @@ func TestClient_PartwayRefusalReleasesTheShare_TryTake(t *testing.T) {
 	}
 }
 
-// TestClient_PartwayRefusalReleasesTheShare_Wait (cold review round 4 CLAIM
-// CHECK "Mutations"): take (slots.go's acquireBoth) takes a slot from the
+// TestClient_PartwayRefusalReleasesTheShare_Wait verifies that take
+// (slots.go's acquireBoth) takes a slot from the
 // client first, then waits for the guard's. When the client's own succeeds
 // but the guard's wait runs out, the client's share must be given back: fill
 // the guard's CPU slots from loopback, so client A's EnterCPU is refused
