@@ -215,7 +215,7 @@ func TestScopeCache_SingleflightOneScanPerKey(t *testing.T) {
 // complete field: a scan that runs to its natural end (its queue empties
 // before any bound is even approached) is complete — the ordinary case
 // every other scope_test.go test already exercises, pinned explicitly here
-// now that caching depends on it (R4).
+// because caching depends on it.
 func TestScanScope_CompleteWhenFinishedNaturally(t *testing.T) {
 	g := newGraphContent()
 	root := testOutpoint(700, 0)
@@ -227,8 +227,8 @@ func TestScanScope_CompleteWhenFinishedNaturally(t *testing.T) {
 	}
 }
 
-// TestScanScope_IncompleteWhenContextDone confirms the other half of R4's
-// caching gate: a scan whose context is already done before it can finish
+// TestScanScope_IncompleteWhenContextDone confirms that a scan whose context
+// is already done before it can finish
 // is marked incomplete, even though the roots it never got to expand are
 // still (conservatively) in its returned set.
 func TestScanScope_IncompleteWhenContextDone(t *testing.T) {
@@ -270,8 +270,8 @@ func (b *blockingContent) Inscription(ctx context.Context, txid string, vout int
 	return b.inner.Inscription(ctx, txid, vout)
 }
 
-// TestScopeCache_CallerCancellationDoesNotTruncateOrPoisonCache is R4's
-// required test: the first caller cancels mid-scan, a second caller still
+// TestScopeCache_CallerCancellationDoesNotTruncateOrPoisonCache verifies that
+// the first caller can cancel mid-scan while a second caller still
 // gets the correct answer, and nothing truncated is cached.
 //
 // Chain: root -> slow -> tail -> deep. The shared scan blocks fetching
@@ -280,9 +280,9 @@ func (b *blockingContent) Inscription(ctx context.Context, txid string, vout int
 // cancellation would make the very next loop iteration (fetching `tail`)
 // see ctx.Err() != nil and stop there — `deep` (only discoverable by
 // fetching tail) would never be found, and that truncated result would
-// be cached forever. After the fix (R4's detached, independently-bounded
-// context), the first caller's cancellation has no effect at all on the
-// shared scan: it runs to completion, finds `deep`, and that complete
+// be cached forever. Its detached, independently-bounded context means the
+// first caller's cancellation does not affect the shared scan: it runs to
+// completion, finds `deep`, and that complete
 // result is what gets cached for every caller, including the one that
 // cancelled.
 func TestScopeCache_CallerCancellationDoesNotTruncateOrPoisonCache(t *testing.T) {

@@ -62,7 +62,7 @@ func manyLegacyTopicsJSON(n int) string {
 	return string(raw)
 }
 
-// TestLegacySubmit_DuplicateTopicsAdmittedOnce: S5. POST /overlay/submit
+// TestLegacySubmit_DuplicateTopicsAdmittedOnce: POST /overlay/submit
 // naming the same topic three times in X-Topics must run that topic's
 // admission once, not three times — the same guard, and the same reason
 // (routes.go's dedupTopics), as the canonical route's
@@ -114,7 +114,7 @@ func TestLegacySubmit_DuplicateTopicsAdmittedOnce(t *testing.T) {
 	}
 }
 
-// TestLegacySubmit_TooManyTopicsRejected: S5. More than
+// TestLegacySubmit_TooManyTopicsRejected: More than
 // probeMaxDistinctTopics distinct topics in X-Topics is refused with 400
 // before the engine ever sees the body's BEEF — dedupTopics runs ahead of
 // preVerify in Shim.Submit.

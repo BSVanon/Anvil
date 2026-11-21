@@ -221,7 +221,6 @@ func storeEnv(t *testing.T, srv *Server, topic, payload, pubkey string, ts int64
 // is public but which also has older PRIVATE envelopes must, for unauthenticated
 // callers, report only the public count/timestamp/publisher (private history
 // invisible); authenticated callers see the full aggregate.
-// round-2 HIGH — the mixed-topic discovery leak.)
 func TestMixedTopicHidesPrivateHistoryFromDiscovery(t *testing.T) {
 	srv := testServer(t)
 	const (
@@ -345,7 +344,6 @@ func TestPrivateIdentityNotLeakedViaGetIdentity(t *testing.T) {
 // TestPrivatePublisherIdentityOmittedFromTopicGet: GET /topics/{topic} must not
 // surface a publisher's PRIVATE identity envelope via the publisher_identity
 // field to unauthenticated callers, but must to authenticated ones.
-// cc800b5c round-4 belt-and-suspenders for the publisher_identity path.)
 func TestPrivatePublisherIdentityOmittedFromTopicGet(t *testing.T) {
 	srv := testServer(t)
 	const pub = "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"

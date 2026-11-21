@@ -148,8 +148,8 @@ func TestHostile_EmptyAPIHost_ConfiguredSiteStillHitsAPI(t *testing.T) {
 	}
 }
 
-// TestRouter_APIHostCaseInsensitive is review R1's case-sensitivity risk,
-// made permanent: a Host header differing only in case from the
+// TestRouter_APIHostCaseInsensitive confirms that a Host header differing
+// only in case from the
 // configured api_host must still match.
 func TestRouter_APIHostCaseInsensitive(t *testing.T) {
 	rt := &Router{API: stubAPIHandler(), Sites: nil, APIHost: "Admin.Example.ORG"}
@@ -164,8 +164,8 @@ func TestRouter_APIHostCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestRouter_APIHostTrailingDot is review R2's trailing-dot risk, made
-// permanent: a Host header with one trailing dot must still match an
+// TestRouter_APIHostTrailingDot confirms that a Host header with one trailing
+// dot matches an
 // api_host configured without one.
 func TestRouter_APIHostTrailingDot(t *testing.T) {
 	rt := &Router{API: stubAPIHandler(), Sites: nil, APIHost: "admin.example.org"}

@@ -154,7 +154,7 @@ func TestWireV3Federation_NamedPeersWithPublicURLStillNoAdvertiser(t *testing.T)
 }
 
 // TestWireV3Federation_NamedPeersSanitizesBlankEntries is the mutation check
-// for the named_peers nit: blank/whitespace-only entries must not count as
+// for named_peers: blank/whitespace-only entries must not count as
 // "named_peers is set", mirroring allowed_peers' own sanitization
 // (internal/gossip/allowlist.go's newPeerAllowlist).
 func TestWireV3Federation_NamedPeersSanitizesBlankEntries(t *testing.T) {

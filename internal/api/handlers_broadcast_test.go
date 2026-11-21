@@ -186,7 +186,7 @@ func TestBroadcastRejectsBypassWhenPaymentGateZeroPriced(t *testing.T) {
 	srv.Handler().ServeHTTP(w, req)
 
 	if w.Code == http.StatusOK {
-		t.Fatalf("HIGH SEVERITY: /broadcast accepted unauthenticated request on zero-priced gate — auth bypass")
+		t.Fatalf("/broadcast accepted unauthenticated request on zero-priced gate — auth bypass")
 	}
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for unauthenticated /broadcast on zero-priced gate, got %d: %s",

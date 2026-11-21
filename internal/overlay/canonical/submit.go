@@ -17,8 +17,8 @@ type SubmitRequest struct {
 
 	// IncludesOffChainValues mirrors the x-includes-off-chain-values header.
 	// When true, the body carries off-chain values varint-delimited before
-	// the BEEF bytes (vector overlay.submit.8). UPSTREAM_QUESTIONS Q2: the
-	// exact byte order is disputed between SDK and vector note — Anvil
+	// the BEEF bytes (vector overlay.submit.8). The exact byte order differs
+	// between the SDK and vector note — Anvil
 	// implementations should canonicalize when they ship real BEEF parsing.
 	IncludesOffChainValues bool
 }

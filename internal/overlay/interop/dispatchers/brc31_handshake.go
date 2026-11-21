@@ -385,7 +385,7 @@ func (d *BRC31Handshake) runSchema_AuthMessage(r interop.Result, in authVectorIn
 func (d *BRC31Handshake) runSchema_RequestIDLength(r interop.Result, in authVectorInput, exp authVectorExpected) interop.Result {
 	// Vector .13 expected: requestId_base64_length: 44 (32 bytes base64).
 	//
-	// Upstream caveat (UPSTREAM_QUESTIONS Q3): the requestId_example in the
+	// The requestId_example in the
 	// vector decodes to 28 bytes, not 32. The vector's expected length
 	// assertion is the contract; the example is illustrative.
 	if exp.RequestIDBase64Length != 44 {

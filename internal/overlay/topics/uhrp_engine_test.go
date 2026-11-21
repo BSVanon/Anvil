@@ -39,7 +39,7 @@ import (
 // v3engine's own engine_test.go does (newTestEngine there, unexported —
 // this package can't reach it, so it's a faithful duplicate): tmp-dir
 // LevelDB instances plus a headers test store with PoW validation off.
-func newFixPassTestEngine(t *testing.T) *engine.Engine {
+func newTestEngine(t *testing.T) *engine.Engine {
 	t.Helper()
 	root := t.TempDir()
 
@@ -69,7 +69,7 @@ func newFixPassTestEngine(t *testing.T) *engine.Engine {
 		Storage:      anvilstorage.New(storageDB),
 		HeadersStore: hdrStore,
 		LookupDB:     lookupDB,
-		HostingURL:   "https://anvil.fixpass.test",
+		HostingURL:   "https://anvil.example.test",
 	})
 	if err != nil {
 		t.Fatalf("v3engine.New: %v", err)
@@ -156,7 +156,7 @@ func freshHash32(seed byte) []byte {
 // lookup-notify path together), not just UHRPTopicManager.Admit called
 // directly.
 func TestUHRPEngine_FreshlyBuiltAdvertAdmittedAndResolvable(t *testing.T) {
-	eng := newFixPassTestEngine(t)
+	eng := newTestEngine(t)
 	hash := freshHash32(0x71)
 	hashHex := hex.EncodeToString(hash)
 
@@ -192,7 +192,7 @@ func TestUHRPEngine_FreshlyBuiltAdvertAdmittedAndResolvable(t *testing.T) {
 // row is gone.
 func TestUHRPEngine_PureRevocationDeletesStorageRow(t *testing.T) {
 	ctx := context.Background()
-	eng := newFixPassTestEngine(t)
+	eng := newTestEngine(t)
 	hash := freshHash32(0x5a)
 	hashHex := hex.EncodeToString(hash)
 

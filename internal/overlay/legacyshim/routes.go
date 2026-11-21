@@ -319,7 +319,7 @@ func (s *Shim) Submit(w http.ResponseWriter, r *http.Request) {
 // 45 s after the request at most (measured 44.5 s, TestSubmitChain_WorstCase
 // in this package), under nginx's default 60 s proxy_read_timeout
 // (deploy/nginx-anvil.conf) — the prior 45 + 15 = 60 s cap left no margin
-// below that default (review finding S8). Kept equal to
+// below that default. Kept equal to
 // v3engine.DefaultSubmitTimeout so both submit routes give up at the same
 // point.
 const submitBackgroundCap = 30 * time.Second

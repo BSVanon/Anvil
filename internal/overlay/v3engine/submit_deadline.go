@@ -17,8 +17,7 @@ import (
 // (measured 44.5 s, legacyshim's TestSubmitChain_WorstCase, which drives both
 // submit routes through the same worst case), under nginx's default 60 s
 // proxy_read_timeout (deploy/nginx-anvil.conf) — the prior 45 + 15 = 60 s cap
-// left no margin below that default and could be cut by it mid-commit
-// (review finding S8).
+// left no margin below that default, so nginx could cut it off mid-commit.
 //
 // 30 s equals, rather than exceeds, each go-sdk propagation lookup's own
 // allowance (lookup.MAX_TRACKER_WAIT_TIME, topic.MAX_SHIP_QUERY_TIMEOUT, both

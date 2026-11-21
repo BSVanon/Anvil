@@ -36,7 +36,7 @@ import (
 // found).
 func TestMessageBoxEngine_PureRevocationDeletesStorageRow(t *testing.T) {
 	ctx := context.Background()
-	eng := newFixPassTestEngine(t)
+	eng := newTestEngine(t)
 
 	priv, err := ec.NewPrivateKey()
 	if err != nil {

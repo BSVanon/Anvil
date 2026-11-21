@@ -104,7 +104,7 @@ func TestUHRPEngine_UhrpUrlAnswersDecodeInCanonicalStorageDownloader(t *testing.
 	}
 
 	ctx := context.Background()
-	eng := newFixPassTestEngine(t)
+	eng := newTestEngine(t)
 
 	fixtures := []struct {
 		hash []byte

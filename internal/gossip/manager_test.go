@@ -231,8 +231,8 @@ func TestDropPrivate(t *testing.T) {
 	}
 }
 
-// TestVisiblePageFiltersBeforePaginating is the mesh-pull regression:
-// 1b290a5d MEDIUM): with the newest window full of private envelopes, the page
+// TestVisiblePageFiltersBeforePaginating verifies that with the newest window
+// full of private envelopes, the page
 // must still return the older PUBLIC envelopes with a correct HasMore — the
 // pre-fix code paginated first (limit+1) then filtered, hiding public data
 // behind HasMore=false and permanently under-syncing mixed topics.

@@ -81,8 +81,8 @@ func TestSubmit_LogsARefusedBEEF(t *testing.T) {
 // under the same ReasonOtherGuardError as any other unclassified guard
 // failure. It now logs those two, and any
 // other verification verdict PreVerify returns -- a bare error such as a
-// plain spv.Verify script, fee or merkle failure (cycle-6b re-review, NIT 1)
-// -- under their own ReasonInvalidTransaction, while engine.ErrUnknownTopic
+// plain spv.Verify script, fee or merkle failure -- under their own
+// ReasonInvalidTransaction, while engine.ErrUnknownTopic
 // (a request for a topic this node does not host, not a verdict on the
 // transaction) still logs under ReasonOtherGuardError. The status code is
 // still the unchanged flat 400 throughout.

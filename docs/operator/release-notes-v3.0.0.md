@@ -142,7 +142,7 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -o dist/anvil-linux-arm64 ./cmd/a
 
 1. **BEEF-empty post-migration**: legacy admissions migrated by `anvil overlay-migrate` end up with empty BEEF in `beef3:`. `/lookup` drops these results at hydrate time. Either re-submit the affected txs or wait for the future BEEF-fetch workstream. See migration guide § "Known limitation".
 2. **Identity attributes query deferred**: `{attributes: {handle, domain}}` returns a deferred-flag Freeform answer. Wallets use the two-step paymail protocol instead.
-3. **Upstream go-sdk Q16 race**: `go-sdk@v1.2.23/auth/peer.go:976 handleGeneralMessage` has a known race vs `peer.go:285 ToPeer` that manifests under `go test -race` in `internal/gossip`. Pre-existing since v1.2.20, ACCEPTED in every audit, not a v3.0.0 blocker.
+3. **Upstream go-sdk race**: `go-sdk@v1.2.23/auth/peer.go:976 handleGeneralMessage` races with `peer.go:285 ToPeer` under `go test -race` in `internal/gossip`. It predates v1.2.20 and is not a v3.0.0 blocker.
 4. **Topic ports placement**: UMP + Identity Go implementations live in `internal/overlay/topics/` as transitional placement. Long-term home is upstream `bsv-blockchain/go-overlay-discovery-services` when that repo gains a topic-impl partition.
 
 ## Acknowledgements

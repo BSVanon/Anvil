@@ -116,8 +116,8 @@ const invalidTransactionCode = "ERR_INVALID_TRANSACTION"
 // default case, under ReasonInvalidTransaction and invalidTransactionCode for
 // engine.ErrInvalidTransaction or engine.ErrInvalidBeef (PreVerify's own
 // fallback for scripts that simply did not verify, or a BEEF with no subject)
-// and any other verification verdict PreVerify returns (cycle-6b re-review,
-// NIT 1: go-sdk's spv.Verify returns script, fee and merkle failures as plain
+// and any other verification verdict PreVerify returns. go-sdk's spv.Verify
+// returns script, fee and merkle failures as plain
 // errors, which PreVerify's final switch cannot wrap in a named sentinel
 // without routeguard losing the distinction go-sdk already drew) -- except
 // engine.ErrUnknownTopic, which is the guard refusing a topic name this node

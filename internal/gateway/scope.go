@@ -19,7 +19,7 @@ const (
 	scopeMaxBytes     = 32 << 20 // 32 MiB
 )
 
-// R3: scanScope's loop checks bytesFetched against scopeMaxBytes before
+// scanScope's loop checks bytesFetched against scopeMaxBytes before
 // each fetch, not against the next fetch's size — content.Inscription has
 // no up-front, pre-fetch size signal to check against (its only per-fetch
 // bound is internal/content/woc_limit.go's maxWoCTxHexBytes, 32 MiB of hex
@@ -32,7 +32,7 @@ const (
 // inscription cache.
 
 // scopeScanTimeout bounds the shared, singleflighted scan's own detached
-// context (R4). The scan runs independently of whichever caller happened
+// context. The scan runs independently of whichever caller happened
 // to trigger it (see InScope), so this is now the only deadline it has,
 // and it has to absorb a run of individually-slow-but-legitimate fetches
 // without tripping, or every such scan would go uncached and re-run on
@@ -134,12 +134,12 @@ func (f *negativeCachingFetcher) Inscription(ctx context.Context, txid string, v
 // literal text appears.
 var scopeRefRe = regexp.MustCompile(`/content/([0-9a-fA-F]{64})_([0-9]+)`)
 
-// scopeResult is one scan's reachable outpoint set. complete is R4's
-// caching gate: true for a scan that ran to its natural end — exhausting
+// scopeResult is one scan's reachable outpoint set. complete controls
+// caching: true for a scan that ran to its natural end — exhausting
 // its queue, or stopping at the deterministic scopeMaxOutpoints/
 // scopeMaxBytes/scopeMaxDepth bounds, all of which are complete, correct
 // answers by design — false for one cut short by its context (a timeout)
-// or by a fetch error (R4's detached context means no caller's own
+// or by a fetch error (the detached context means no caller's own
 // cancellation can reach it any more, so those are the only two ways left
 // to end up incomplete). expires is zero for a
 // complete result (cached with no TTL, exactly as before); set to
@@ -194,8 +194,8 @@ func newScopeCache(content contentFetcher) *scopeCache {
 // scope: they are the scan's roots, not something reachability needs to
 // prove.
 //
-// R4: the shared, singleflighted scan runs under its own context, detached
-// from whichever caller happens to trigger it (context.WithoutCancel) and
+// The shared, singleflighted scan runs under its own context, detached from
+// whichever caller happens to trigger it (context.WithoutCancel) and
 // bounded by its own timeout (scopeScanTimeout) rather than ctx's
 // cancellation — so a caller disconnecting mid-scan can neither truncate
 // the scan nor, by extension, ever poison the cache with a truncated
@@ -270,7 +270,7 @@ type frontierNode struct {
 // origin and latestOutpoint, bounded by depth, outpoint count and bytes
 // fetched. Hitting any of those deterministic bounds simply stops
 // expansion — everything found up to that point is a complete, correct
-// (if conservative) scope, fit to cache (R4). Stopping because ctx is
+// (if conservative) scope, fit to cache. Stopping because ctx is
 // done (the scan's own bounded timeout — see InScope) is different:
 // expansion is abandoned early, so the queue may still have held
 // references this run never got to discover — the returned set is still

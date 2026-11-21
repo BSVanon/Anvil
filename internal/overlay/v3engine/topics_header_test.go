@@ -19,7 +19,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
-// TestParseTopicsHeader_DedupesPreservingOrder: S5. The engine runs admission
+// TestParseTopicsHeader_DedupesPreservingOrder: The engine runs admission
 // once per entry in the topics list it is handed, with no deduplication of
 // its own (go-overlay-services' identifyAdmissibleOutputsPerTopic ranges
 // over the slice directly), so a repeated topic name must be collapsed
@@ -73,7 +73,7 @@ func manyTopicsJSON(n int) string {
 	return string(raw)
 }
 
-// TestParseTopicsHeader_CapAtMaxDistinctTopics: S5. Exactly maxDistinctTopics
+// TestParseTopicsHeader_CapAtMaxDistinctTopics: Exactly maxDistinctTopics
 // distinct names is admitted; one more is refused, naming the count.
 func TestParseTopicsHeader_CapAtMaxDistinctTopics(t *testing.T) {
 	if _, err := parseTopicsHeader(manyTopicsJSON(maxDistinctTopics)); err != nil {
@@ -111,7 +111,7 @@ func (m countingManager) GetMetaData() *overlay.MetaData {
 	return &overlay.MetaData{Name: m.name}
 }
 
-// TestSubmitHandler_DuplicateTopicsAdmittedOnce: S5. POST /submit naming the
+// TestSubmitHandler_DuplicateTopicsAdmittedOnce: POST /submit naming the
 // same topic three times in x-topics must run that topic's admission once,
 // not three times — the mutation this guards against is cheap to trigger
 // (repeat one topic name) and expensive to leave unguarded (repeat the
@@ -151,7 +151,7 @@ func TestSubmitHandler_DuplicateTopicsAdmittedOnce(t *testing.T) {
 	}
 }
 
-// TestSubmitHandler_TooManyTopicsRejected: S5. More than maxDistinctTopics
+// TestSubmitHandler_TooManyTopicsRejected: More than maxDistinctTopics
 // distinct topics in x-topics is refused with 400 before the body is even
 // read — the handler checks x-topics ahead of the body.
 func TestSubmitHandler_TooManyTopicsRejected(t *testing.T) {

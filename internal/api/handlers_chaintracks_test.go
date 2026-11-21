@@ -281,8 +281,8 @@ func TestChaintracksPublicAndCORS(t *testing.T) {
 	}
 }
 
-// TestChaintracksPublicUnderPaymentGate is the regression for the HIGH finding:
-// on a node that charges x402 (PriceSats>0), the chaintracks endpoints must
+// TestChaintracksPublicUnderPaymentGate verifies that on a node that charges
+// x402 (PriceSats>0), the chaintracks endpoints must
 // still serve unauthenticated (200), not answer a browser GET with a 402
 // challenge. openPublic must keep them off the payment/token gate that openRead
 // applies.

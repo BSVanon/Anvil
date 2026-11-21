@@ -12,7 +12,7 @@ import (
 // internal/overlay/routeguard/scriptcheck.go) never trips on real, honest
 // traffic. Every fixture here is a realistic unlocking script this
 // package's own TestCheckPassesHonestScripts already proves passes Check
-// and the real interpreter; this is the honest corpus C1.4 asks for the
+// and the real interpreter; this honest corpus covers the
 // OrdLock purchase and cancel, PushDrop, P2PKH, multisig and BSV-21/MNEE
 // shapes. A multisig spend is not in honestSpends (it is cost-guard test
 // machinery, not a wallet template), so it is added here with two realistic

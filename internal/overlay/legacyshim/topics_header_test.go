@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestDedupTopics_DedupesPreservingOrder: S5. The engine runs admission once
+// TestDedupTopics_DedupesPreservingOrder: The engine runs admission once
 // per entry in the topics list it is handed, with no deduplication of its
 // own, so /overlay/submit's X-Topics/JSON topic list must be collapsed
 // before it reaches the engine, the same as the canonical route.
@@ -50,7 +50,7 @@ func manyTopicNames(n int) []string {
 	return names
 }
 
-// TestDedupTopics_CapAtMaxDistinctTopics: S5. Exactly maxDistinctTopics
+// TestDedupTopics_CapAtMaxDistinctTopics: Exactly maxDistinctTopics
 // distinct names is admitted; one more is refused, naming the count — the
 // same bound as the canonical route's v3engine.maxDistinctTopics.
 func TestDedupTopics_CapAtMaxDistinctTopics(t *testing.T) {

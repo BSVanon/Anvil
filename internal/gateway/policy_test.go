@@ -41,8 +41,8 @@ func TestPolicy_DomainEntry(t *testing.T) {
 	}
 }
 
-// TestPolicy_DomainEntryCaseInsensitiveHost is review R1's case-sensitivity
-// risk, made permanent for a sites-file domain entry: a Host differing
+// TestPolicy_DomainEntryCaseInsensitiveHost confirms that a sites-file
+// domain entry matches a Host differing
 // only in case from the configured domain must still match.
 func TestPolicy_DomainEntryCaseInsensitiveHost(t *testing.T) {
 	origin := testOutpoint(27, 0)
@@ -55,8 +55,8 @@ func TestPolicy_DomainEntryCaseInsensitiveHost(t *testing.T) {
 	}
 }
 
-// TestPolicy_DomainEntryTrailingDotHost is review R2's trailing-dot risk,
-// made permanent for a sites-file domain entry: a Host with one trailing
+// TestPolicy_DomainEntryTrailingDotHost confirms that a sites-file domain
+// entry matches a Host with one trailing
 // dot must still match a domain entry configured without one.
 func TestPolicy_DomainEntryTrailingDotHost(t *testing.T) {
 	origin := testOutpoint(28, 0)

@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// TestLogTxidMismatchDistinguishesDecodeFailureFromHashMismatch is the nit
-// fix: the log line must say which of the two failure modes verifyTxidMatch
+// TestLogTxidMismatchDistinguishesDecodeFailureFromHashMismatch requires the
+// log line to say which of the two failure modes verifyTxidMatch
 // hit — a malformed (non-hex) body versus bytes that decode fine but hash to
 // the wrong txid — rather than one generic message for both.
 func TestLogTxidMismatchDistinguishesDecodeFailureFromHashMismatch(t *testing.T) {
