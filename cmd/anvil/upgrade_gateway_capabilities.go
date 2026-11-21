@@ -19,10 +19,10 @@ import (
 
 // ensureGatewayCapabilities inspects every anvil-*.service unit file in
 // the standard systemd location and, for each one whose referenced
-// config file declares [node] mode = "gateway", ensures both capability
-// directives are present — inserted immediately after
+// config file declares [gateway] enabled = true, ensures both
+// capability directives are present — inserted immediately after
 // gatewayCapabilityInsertAnchor, the same anchor renderGatewayUnit uses
-// for a fresh deploy. A standard-mode node's unit, or one whose config
+// for a fresh deploy. A node with the gateway off, or one whose config
 // can't be read, is left untouched. Returns the number of unit files
 // modified.
 func ensureGatewayCapabilities() int {
@@ -60,16 +60,13 @@ func ensureGatewayCapabilitiesIn(systemdDir string) int {
 			continue // already present
 		}
 		if !unitReferencesGatewayConfig(content) {
-			continue // a standard-mode node: nothing to add
+			continue // the gateway is off for this node: nothing to add
 		}
-		if !strings.Contains(content, gatewayCapabilityInsertAnchor) {
-			continue // unfamiliar shape: skip rather than guess where to insert
+		newContent, ok := insertAfterAnchorOnce(content, gatewayCapabilityInsertAnchor, gatewayCapabilityInsertBlock)
+		if !ok {
+			fmt.Printf("    WARNING: %s: %q anchor not found exactly once — leaving this unit untouched\n", unitPath, gatewayCapabilityInsertAnchor)
+			continue
 		}
-
-		block := gatewayCapabilityInsertAnchor +
-			"\n\n# Bind 80/443 without running as root.\n" +
-			gatewayCapabilityAmbient + "\n" + gatewayCapabilityBoundingSet
-		newContent := strings.Replace(content, gatewayCapabilityInsertAnchor, block, 1)
 
 		// Staging file + rename, the same atomic-write pattern
 		// ensureExecStartPreHookIn uses for the same reason: systemd
@@ -92,9 +89,12 @@ func ensureGatewayCapabilitiesIn(systemdDir string) int {
 
 // unitReferencesGatewayConfig reads a unit file's ExecStart= line for a
 // -config path and reports whether that config file declares
-// [node] mode = "gateway". A unit with no ExecStart=, no -config flag,
-// or an unreadable config file reports false — the conservative default
-// for "leave it alone."
+// [gateway] enabled = true — the same field gateway_wire.go's
+// wireGateway itself keys on to decide whether to bind 80 and 443 at
+// all, so this check can never drift from what the runtime actually
+// does. A unit with no ExecStart=, no -config flag, or an unreadable
+// config file reports false — the conservative default for "leave it
+// alone."
 func unitReferencesGatewayConfig(unitContent string) bool {
 	for _, line := range strings.Split(unitContent, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -108,7 +108,7 @@ func unitReferencesGatewayConfig(unitContent string) bool {
 				if err != nil {
 					return false
 				}
-				return configDeclaresGatewayMode(string(cfg))
+				return configDeclaresGatewayEnabled(string(cfg))
 			}
 		}
 		break
@@ -116,25 +116,43 @@ func unitReferencesGatewayConfig(unitContent string) bool {
 	return false
 }
 
-// configDeclaresGatewayMode reports whether a config file's text sets
-// [node] mode = "gateway", scanning only inside the [node] table — the
-// same lightweight line-scan internal/config/gateway.go's
+// configDeclaresGatewayEnabled reports whether a config file's text sets
+// [gateway] enabled = true, scanning only inside the [gateway] table —
+// the same lightweight line-scan internal/config/gateway.go's
 // sitesFileListsDomain uses for its own one-fact check, rather than a
 // full TOML parse.
-func configDeclaresGatewayMode(configText string) bool {
-	inNodeTable := false
+func configDeclaresGatewayEnabled(configText string) bool {
+	inGatewayTable := false
 	for _, line := range strings.Split(configText, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") {
-			inNodeTable = trimmed == "[node]"
+			inGatewayTable = trimmed == "[gateway]"
 			continue
 		}
-		if !inNodeTable {
+		if !inGatewayTable {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "mode") {
-			return strings.Contains(trimmed, `"gateway"`)
+		if strings.HasPrefix(trimmed, "enabled") {
+			return strings.Contains(trimmed, "true")
 		}
 	}
 	return false
+}
+
+// insertAfterAnchorOnce inserts insert immediately after anchor in text
+// and reports true, but only when anchor appears in text exactly
+// once — the shape both a fresh render (renderGatewayUnit,
+// deploy_gateway.go) and an upgrade patching an older unit
+// (ensureGatewayCapabilitiesIn, above) need: insert cleanly when the
+// anchor is exactly where expected, and do nothing — rather than guess
+// where to go, insert twice, or insert after only one of several
+// matches — when it isn't. A caller that cares whether what it's about
+// to insert is already present (so running this twice stays harmless)
+// checks that itself, first; this helper only ever inserts, and only
+// ever once.
+func insertAfterAnchorOnce(text, anchor, insert string) (string, bool) {
+	if strings.Count(text, anchor) != 1 {
+		return text, false
+	}
+	return strings.Replace(text, anchor, anchor+insert, 1), true
 }

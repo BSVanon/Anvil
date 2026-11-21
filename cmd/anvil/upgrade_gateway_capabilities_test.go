@@ -73,10 +73,9 @@ func TestEnsureGatewayCapabilities_AddsToGatewayUnit(t *testing.T) {
 	}
 }
 
-// TestEnsureGatewayCapabilities_SkipsStandardUnit confirms a
-// standard-mode node's unit is left untouched: it has no [node]
-// mode = "gateway" for any peer gateway's capability directives to make
-// sense on.
+// TestEnsureGatewayCapabilities_SkipsStandardUnit confirms a node with
+// the gateway off is left untouched: it has no [gateway] enabled = true
+// for any capability directive to make sense on.
 func TestEnsureGatewayCapabilities_SkipsStandardUnit(t *testing.T) {
 	dir := t.TempDir()
 	unitPath := writeStandardFixture(t, dir, "anvil-a")
@@ -151,21 +150,131 @@ func TestEnsureGatewayCapabilities_SkipsUnrelatedUnits(t *testing.T) {
 	}
 }
 
-// TestConfigDeclaresGatewayMode exercises the lightweight [node] mode
-// scan directly, including the case a full-config fixture can't reach:
-// a mode line that exists but outside the [node] table.
-func TestConfigDeclaresGatewayMode(t *testing.T) {
+// TestConfigDeclaresGatewayEnabled exercises the lightweight
+// [gateway] enabled scan directly, including the case a full-config
+// fixture can't reach: an enabled line that exists but outside the
+// [gateway] table, and [node] mode set to "gateway" with [gateway]
+// enabled left unset or false — confirming detection really does key on
+// the field gateway_wire.go's wireGateway itself reads, not [node] mode.
+func TestConfigDeclaresGatewayEnabled(t *testing.T) {
 	cases := map[string]bool{
-		"[node]\nmode = \"gateway\"\n":  true,
-		"[node]\nmode = \"standard\"\n": false,
-		"[node]\nname = \"x\"\n":        false,
+		"[gateway]\nenabled = true\n":   true,
+		"[gateway]\nenabled = false\n":  false,
+		"[gateway]\napi_host = \"x\"\n": false,
 		"":                              false,
-		"[other]\nmode = \"gateway\"\n": false,
-		"[other]\nmode = \"gateway\"\n[node]\nname=\"x\"\n": false,
+		"[other]\nenabled = true\n":     false,
+		"[other]\nenabled = true\n[gateway]\napi_host=\"x\"\n": false,
+		// [node] mode = "gateway" alone, with no [gateway] table at all,
+		// must NOT be detected — this is the exact case the old,
+		// [node]-mode-keyed check got wrong.
+		"[node]\nmode = \"gateway\"\n": false,
+		// The inverse: [gateway] enabled = true with [node] mode left as
+		// "standard" MUST be detected — the hand-edited-config case.
+		"[node]\nmode = \"standard\"\n\n[gateway]\nenabled = true\n": true,
 	}
 	for input, want := range cases {
-		if got := configDeclaresGatewayMode(input); got != want {
-			t.Errorf("configDeclaresGatewayMode(%q) = %v, want %v", input, got, want)
+		if got := configDeclaresGatewayEnabled(input); got != want {
+			t.Errorf("configDeclaresGatewayEnabled(%q) = %v, want %v", input, got, want)
 		}
+	}
+}
+
+// TestEnsureGatewayCapabilities_DetectsByGatewayEnabledNotNodeMode is the
+// required hand-edited-config case, exercised through the full
+// ensureGatewayCapabilitiesIn path (not just the lightweight scan
+// above): [gateway] enabled = true with [node] mode left at "standard"
+// still gets the capability. The runtime binds 80 and 443 purely on
+// [gateway] enabled (gateway_wire.go's wireGateway) — [node] mode is an
+// operator-facing label this check must never depend on.
+func TestEnsureGatewayCapabilities_DetectsByGatewayEnabledNotNodeMode(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "node-a.toml")
+	config := "[node]\nmode = \"standard\"\n\n[gateway]\nenabled = true\n"
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+	unitPath := filepath.Join(dir, "anvil-a.service")
+	unit := renderUnit("a", dir, dir, "/opt/anvil")
+	if err := os.WriteFile(unitPath, []byte(unit), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	added := ensureGatewayCapabilitiesIn(dir)
+	if added != 1 {
+		t.Fatalf("ensureGatewayCapabilitiesIn modified %d unit(s), want 1 for [gateway] enabled=true with [node] mode=standard", added)
+	}
+	got, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{gatewayCapabilityAmbient, gatewayCapabilityBoundingSet} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("unit after upgrade is missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestEnsureGatewayCapabilities_MissingAnchorIsReportedAndLeftAlone
+// confirms a unit shaped unexpectedly — no LimitNOFILE=65536 line at
+// all — is never guessed at: left byte-for-byte unchanged, and the skip
+// is reported rather than silent.
+func TestEnsureGatewayCapabilities_MissingAnchorIsReportedAndLeftAlone(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "node-a.toml")
+	config := renderGatewayConfig("a", dir, dir, "gateway.example.org", "", nil)
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+	unit := strings.Replace(renderUnit("a", dir, dir, "/opt/anvil"), gatewayCapabilityInsertAnchor+"\n", "", 1)
+	if strings.Contains(unit, gatewayCapabilityInsertAnchor) {
+		t.Fatal("test setup: fixture still contains the anchor")
+	}
+	unitPath := filepath.Join(dir, "anvil-a.service")
+	if err := os.WriteFile(unitPath, []byte(unit), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var added int
+	out := captureStdout(t, func() { added = ensureGatewayCapabilitiesIn(dir) })
+	if added != 0 {
+		t.Fatalf("ensureGatewayCapabilitiesIn modified %d unit(s), want 0 when the anchor is missing", added)
+	}
+	got, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != unit {
+		t.Error("a unit with a missing anchor changed")
+	}
+	if !strings.Contains(out, "anchor not found") {
+		t.Errorf("expected the missing-anchor skip to be reported, got:\n%s", out)
+	}
+}
+
+// TestInsertAfterAnchorOnce exercises the shared insert helper directly,
+// decoupled from any unit-file fixture: exactly one anchor inserts,
+// anything else — zero, or more than one — leaves text unchanged and
+// reports false.
+func TestInsertAfterAnchorOnce(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		ok   bool
+		want string
+	}{
+		{"exactly once", "a\nANCHOR\nb\n", true, "a\nANCHOR-INSERTED\nb\n"},
+		{"missing", "a\nb\n", false, "a\nb\n"},
+		{"duplicated", "ANCHOR\nANCHOR\n", false, "ANCHOR\nANCHOR\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := insertAfterAnchorOnce(c.text, "ANCHOR", "-INSERTED")
+			if ok != c.ok {
+				t.Errorf("ok = %v, want %v", ok, c.ok)
+			}
+			if got != c.want {
+				t.Errorf("result = %q, want %q", got, c.want)
+			}
+		})
 	}
 }

@@ -13,7 +13,10 @@ import (
 // byte-for-byte the same unit.
 func TestRenderGatewayUnit_HasCapabilitiesStandardDoesNot(t *testing.T) {
 	standard := renderUnit("a", "/etc/anvil", "/var/lib/anvil", "/opt/anvil")
-	gatewayUnit := renderGatewayUnit("a", "/etc/anvil", "/var/lib/anvil", "/opt/anvil")
+	gatewayUnit, err := renderGatewayUnit("a", "/etc/anvil", "/var/lib/anvil", "/opt/anvil")
+	if err != nil {
+		t.Fatalf("renderGatewayUnit: %v", err)
+	}
 
 	for _, want := range []string{gatewayCapabilityAmbient, gatewayCapabilityBoundingSet} {
 		if strings.Contains(standard, want) {

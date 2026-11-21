@@ -314,6 +314,14 @@ const (
 	gatewayCapabilityAmbient      = "AmbientCapabilities=CAP_NET_BIND_SERVICE"
 	gatewayCapabilityBoundingSet  = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
 	gatewayCapabilityInsertAnchor = "LimitNOFILE=65536"
+	// gatewayCapabilityInsertBlock is what goes right after one, exact
+	// occurrence of gatewayCapabilityInsertAnchor — see
+	// insertAfterAnchorOnce (upgrade_gateway_capabilities.go), the one
+	// place both renderGatewayUnit and ensureGatewayCapabilitiesIn do the
+	// actual insert, so the two paths can never disagree about where or
+	// how.
+	gatewayCapabilityInsertBlock = "\n\n# Bind 80/443 without running as root.\n" +
+		gatewayCapabilityAmbient + "\n" + gatewayCapabilityBoundingSet
 )
 
 // renderGatewayUnit is renderUnit's gateway-mode counterpart: the exact
@@ -323,12 +331,18 @@ const (
 // hardening — ProtectSystem=strict and friends — is otherwise identical
 // for both modes). A standard-mode node keeps calling renderUnit
 // directly and is byte-for-byte unaffected.
-func renderGatewayUnit(node, configDir, dataDir, installDir string) string {
+//
+// Errors only if renderUnit's own template ever stops containing exactly
+// one LimitNOFILE line — a template bug, not an operator or runtime
+// condition — rather than silently installing a gateway unit that can
+// never bind 80 or 443 as the unprivileged "anvil" user.
+func renderGatewayUnit(node, configDir, dataDir, installDir string) (string, error) {
 	unit := renderUnit(node, configDir, dataDir, installDir)
-	block := gatewayCapabilityInsertAnchor +
-		"\n\n# Bind 80/443 without running as root.\n" +
-		gatewayCapabilityAmbient + "\n" + gatewayCapabilityBoundingSet
-	return strings.Replace(unit, gatewayCapabilityInsertAnchor, block, 1)
+	withCapabilities, ok := insertAfterAnchorOnce(unit, gatewayCapabilityInsertAnchor, gatewayCapabilityInsertBlock)
+	if !ok {
+		return "", fmt.Errorf("gateway unit template: %q anchor not found exactly once", gatewayCapabilityInsertAnchor)
+	}
+	return withCapabilities, nil
 }
 
 // deployGatewayNode is deployNode's gateway-mode counterpart: the same
@@ -337,7 +351,10 @@ func renderGatewayUnit(node, configDir, dataDir, installDir string) string {
 // renderGatewayUnit instead of renderUnit for the one systemd directive
 // pair gateway mode needs that a standard node doesn't.
 func deployGatewayNode(node, configDir, dataDir, installDir, apiHost string, peers []gatewayPeer, nodeName string, dryRun bool) {
-	unitContent := renderGatewayUnit(node, configDir, dataDir, installDir)
+	unitContent, err := renderGatewayUnit(node, configDir, dataDir, installDir)
+	if err != nil {
+		fatal(err.Error())
+	}
 	unitPath := fmt.Sprintf("/etc/systemd/system/%s.service", serviceName(node))
 	if dryRun {
 		fmt.Printf("  [dry-run] would write %s\n", unitPath)
