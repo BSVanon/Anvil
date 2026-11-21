@@ -3,6 +3,7 @@ package netguard
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -63,6 +64,35 @@ func TestGuardReadsGASPErrorBodyBeforeReturning(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestGuardCapsGASPSuccessAndErrorBodies(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			body := &observedResponseBody{reader: bytes.NewReader(make([]byte, 65))}
+			g := &guard{
+				base: responseRoundTripper(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: status, Body: body, ContentLength: -1,
+						Header: make(http.Header), Request: r,
+					}, nil
+				}),
+				maxBytes: 64,
+			}
+			req, _ := http.NewRequest(http.MethodPost, "https://peer.test/requestSyncResponse", nil)
+
+			resp, err := g.RoundTrip(req)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			if !errors.Is(err, ErrResponseTooLarge) {
+				t.Fatalf("status %d: error = %v, want ErrResponseTooLarge", status, err)
+			}
+			if !body.closed.Load() {
+				t.Fatalf("status %d: oversized body was not closed", status)
+			}
+		})
 	}
 }
 

@@ -97,7 +97,10 @@ func MalformedReparseBEEF(t testing.TB, n, k int, op SigOpcode) []byte {
 		case CheckSig:
 			push(der)
 			push(pk)
-			unlock = append(unlock, script.OpCHECKSIG, script.OpDROP)
+			unlock = append(unlock, script.OpCHECKSIG)
+			if i+1 < k {
+				unlock = append(unlock, script.OpDROP)
+			}
 		case CheckSigVerify:
 			push(der)
 			push(pk)
@@ -107,7 +110,10 @@ func MalformedReparseBEEF(t testing.TB, n, k int, op SigOpcode) []byte {
 			push(der)
 			unlock = append(unlock, script.Op1)
 			push(pk)
-			unlock = append(unlock, script.Op1, script.OpCHECKMULTISIG, script.OpDROP)
+			unlock = append(unlock, script.Op1, script.OpCHECKMULTISIG)
+			if i+1 < k {
+				unlock = append(unlock, script.OpDROP)
+			}
 		case CheckMultiSigVerify:
 			unlock = append(unlock, script.Op0)
 			push(der)
