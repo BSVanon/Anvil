@@ -163,8 +163,8 @@ func TestParse_RefusesATxidHeldTwice(t *testing.T) {
 		"txid-only then raw": entries(bumps, txidOnly(p), proven(0, p), raw(s)),
 		"raw then txid-only": entries(bumps, proven(0, p), txidOnly(p), raw(s)),
 	} {
-		if _, err := Parse(b); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "distinct txids") {
-			t.Errorf("%s: %v, want the repeated-txid refusal", name, err)
+		if _, err := Parse(b); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "duplicate txid") || !strings.Contains(err.Error(), "distinct txids") {
+			t.Errorf("%s: %v, want the repeated-txid refusal with an explicit message", name, err)
 		}
 	}
 	if _, err := Parse(entries(bumps, proven(0, p), raw(s))); err != nil {
