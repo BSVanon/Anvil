@@ -15,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // ensureGatewayCapabilities inspects every anvil-*.service unit file in
@@ -56,13 +58,15 @@ func ensureGatewayCapabilitiesIn(systemdDir string) int {
 		if !strings.Contains(content, "/opt/anvil/anvil") {
 			continue // not one of our units
 		}
-		if strings.Contains(content, gatewayCapabilityAmbient) && strings.Contains(content, gatewayCapabilityBoundingSet) {
+		hasAmbient := strings.Contains(content, gatewayCapabilityAmbient)
+		hasBoundingSet := strings.Contains(content, gatewayCapabilityBoundingSet)
+		if hasAmbient && hasBoundingSet {
 			continue // already present
 		}
 		if !unitReferencesGatewayConfig(content) {
 			continue // the gateway is off for this node: nothing to add
 		}
-		newContent, ok := insertAfterAnchorOnce(content, gatewayCapabilityInsertAnchor, gatewayCapabilityInsertBlock)
+		newContent, ok := insertAfterAnchorOnce(content, gatewayCapabilityInsertAnchor, missingGatewayCapabilityLines(hasAmbient, hasBoundingSet))
 		if !ok {
 			fmt.Printf("    WARNING: %s: %q anchor not found exactly once — leaving this unit untouched\n", unitPath, gatewayCapabilityInsertAnchor)
 			continue
@@ -85,6 +89,25 @@ func ensureGatewayCapabilitiesIn(systemdDir string) int {
 		modified++
 	}
 	return modified
+}
+
+// missingGatewayCapabilityLines returns the text to insert immediately
+// after gatewayCapabilityInsertAnchor for a unit missing one or both
+// capability lines: the full block (with its explanatory comment) when
+// neither line is present yet, or just the one line that's missing — no
+// comment, and never a second copy of the line already there — when
+// only one is. Only ever called when at least one is missing:
+// ensureGatewayCapabilitiesIn's own hasAmbient && hasBoundingSet check
+// skips the unit entirely before reaching here when both are present.
+func missingGatewayCapabilityLines(hasAmbient, hasBoundingSet bool) string {
+	switch {
+	case !hasAmbient && !hasBoundingSet:
+		return gatewayCapabilityInsertBlock
+	case !hasAmbient:
+		return "\n" + gatewayCapabilityAmbient
+	default: // !hasBoundingSet
+		return "\n" + gatewayCapabilityBoundingSet
+	}
 }
 
 // unitReferencesGatewayConfig reads a unit file's ExecStart= line for a
@@ -117,26 +140,27 @@ func unitReferencesGatewayConfig(unitContent string) bool {
 }
 
 // configDeclaresGatewayEnabled reports whether a config file's text sets
-// [gateway] enabled = true, scanning only inside the [gateway] table —
-// the same lightweight line-scan internal/config/gateway.go's
-// sitesFileListsDomain uses for its own one-fact check, rather than a
-// full TOML parse.
+// [gateway] enabled = true, by decoding just that one field with the
+// same TOML library internal/config uses to load the real config
+// (github.com/BurntSushi/toml, already a direct dependency) rather than
+// a line scan. A real parse is needed here, not a lightweight
+// prefix/substring check: a line scan can't tell "enabled" from
+// "enabled_metrics" (a prefix match), and can't tell a value from a
+// trailing comment that happens to contain the word "true" (a substring
+// match) — both false positives this function used to produce. A config
+// that fails to parse as TOML at all reports false, the same
+// conservative "leave it alone" default unitReferencesGatewayConfig
+// already uses for an unreadable file.
 func configDeclaresGatewayEnabled(configText string) bool {
-	inGatewayTable := false
-	for _, line := range strings.Split(configText, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") {
-			inGatewayTable = trimmed == "[gateway]"
-			continue
-		}
-		if !inGatewayTable {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "enabled") {
-			return strings.Contains(trimmed, "true")
-		}
+	var cfg struct {
+		Gateway struct {
+			Enabled bool `toml:"enabled"`
+		} `toml:"gateway"`
 	}
-	return false
+	if err := toml.Unmarshal([]byte(configText), &cfg); err != nil {
+		return false
+	}
+	return cfg.Gateway.Enabled
 }
 
 // insertAfterAnchorOnce inserts insert immediately after anchor in text

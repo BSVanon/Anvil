@@ -150,12 +150,16 @@ func TestEnsureGatewayCapabilities_SkipsUnrelatedUnits(t *testing.T) {
 	}
 }
 
-// TestConfigDeclaresGatewayEnabled exercises the lightweight
-// [gateway] enabled scan directly, including the case a full-config
+// TestConfigDeclaresGatewayEnabled exercises the real-TOML-parse
+// [gateway] enabled check directly, including the case a full-config
 // fixture can't reach: an enabled line that exists but outside the
 // [gateway] table, and [node] mode set to "gateway" with [gateway]
 // enabled left unset or false — confirming detection really does key on
 // the field gateway_wire.go's wireGateway itself reads, not [node] mode.
+// Also covers the two false-positive shapes a prefix/substring line scan
+// got wrong (a commented-out "true" on the same line, and an unrelated
+// key merely starting with "enabled") and the two spellings a real TOML
+// parser must treat alike (a trailing comment, and no space around "=").
 func TestConfigDeclaresGatewayEnabled(t *testing.T) {
 	cases := map[string]bool{
 		"[gateway]\nenabled = true\n":   true,
@@ -171,6 +175,16 @@ func TestConfigDeclaresGatewayEnabled(t *testing.T) {
 		// The inverse: [gateway] enabled = true with [node] mode left as
 		// "standard" MUST be detected — the hand-edited-config case.
 		"[node]\nmode = \"standard\"\n\n[gateway]\nenabled = true\n": true,
+		// A "true" mentioned only in a trailing comment must never flip
+		// this on — the exact false positive a substring match produced.
+		"[gateway]\nenabled = false  # flip to true once DNS is ready\n": false,
+		// A key that merely starts with "enabled" is not the field — the
+		// exact false positive a prefix match produced.
+		"[gateway]\nenabled_metrics = true\n": false,
+		// A real TOML parser tolerates a trailing comment and missing
+		// whitespace around "=" the same way; both must still detect.
+		"[gateway]\nenabled = true # comment\n": true,
+		"[gateway]\nenabled=true\n":             true,
 	}
 	for input, want := range cases {
 		if got := configDeclaresGatewayEnabled(input); got != want {
@@ -274,6 +288,51 @@ func TestInsertAfterAnchorOnce(t *testing.T) {
 			}
 			if got != c.want {
 				t.Errorf("result = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestEnsureGatewayCapabilities_InsertsOnlyTheMissingLine confirms a unit
+// that already has exactly one of the two capability lines — a
+// hand-edited unit, or one a previous, interrupted upgrade only
+// partially patched — gets only the other line added: never a second
+// copy of the line it already has.
+func TestEnsureGatewayCapabilities_InsertsOnlyTheMissingLine(t *testing.T) {
+	cases := []struct {
+		name    string
+		already string
+	}{
+		{"has only AmbientCapabilities", gatewayCapabilityAmbient},
+		{"has only CapabilityBoundingSet", gatewayCapabilityBoundingSet},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "node-a.toml")
+			config := renderGatewayConfig("a", dir, dir, "gateway.example.org", "", nil)
+			if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+				t.Fatal(err)
+			}
+			base := renderUnit("a", dir, dir, "/opt/anvil")
+			unit := strings.Replace(base, gatewayCapabilityInsertAnchor, gatewayCapabilityInsertAnchor+"\n"+c.already, 1)
+			unitPath := filepath.Join(dir, "anvil-a.service")
+			if err := os.WriteFile(unitPath, []byte(unit), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			added := ensureGatewayCapabilitiesIn(dir)
+			if added != 1 {
+				t.Fatalf("ensureGatewayCapabilitiesIn modified %d unit(s), want 1", added)
+			}
+			got, err := os.ReadFile(unitPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{gatewayCapabilityAmbient, gatewayCapabilityBoundingSet} {
+				if n := strings.Count(string(got), want); n != 1 {
+					t.Errorf("unit after upgrade contains %q %d time(s), want exactly 1:\n%s", want, n, got)
+				}
 			}
 		})
 	}
