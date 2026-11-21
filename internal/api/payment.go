@@ -240,6 +240,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		r = pg.withNodePrice(r) // read per envelope (node_price_context.go)
 		topic := r.URL.Query().Get("topic")
 		payees, tokenGated := pg.resolvePayees(r)
 		// Skip the toll only when THIS request's token gate already

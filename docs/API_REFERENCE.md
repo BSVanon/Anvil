@@ -511,24 +511,37 @@ is `{"status":"error","code":"ERR_...","description":"...","error":"..."}`.
 
 ### What a payment or app token unlocks
 
-A monetized envelope's payload is unlocked envelope by envelope, by that
-envelope's own rule, on `GET /data` and on the SSE subscription alike:
+Every envelope's payload is unlocked envelope by envelope, by that
+envelope's own rules, on `GET /data` and on the SSE subscription alike. Where
+the node charges for the route (`GET /data` or `GET /data/subscribe`), the
+node's own price is one of those rules, decided for each envelope like an
+app's:
 
-- A priced envelope (passthrough or split) is unlocked by a payment with one
-  output that pays that envelope's own payee script at least its price,
-  capped at the node's `max_app_price_sats`: the price the 402 challenge asks
-  for it.
-- The node's own toll unlocks what the node prices, which is unmonetized
-  content. It never unlocks an envelope priced to an app's payee.
+- An unmonetized or `free`-model envelope is unlocked by a payment with one
+  output that pays the node's own payee script at least the node's price for
+  the route. A node that charges nothing there serves it unpaid.
+- A split envelope needs both shares: one output that pays its own payee
+  script at least its price, capped at the node's `max_app_price_sats`, and
+  one that pays the node's script at least the node's price.
+- A passthrough envelope needs only one output that pays its own payee script
+  at least its capped price. Passthrough is the operator's choice to let that
+  app's envelope take the node's price; it never extends to other envelopes on
+  the topic.
 - A token-model envelope is unlocked only by an `X-App-Token` validated on
   its exact topic and signed by the `auth_pubkey` that envelope names. A
   payment never unlocks one.
 
-Known limit: the newest envelope on a topic sets that topic's rule. A newer
-token-model envelope naming another key cannot unlock any older envelope
-that names a different key or payee, but while it is the newest, honest
-token holders and payers of that topic are refused (401 or 403). Closing
-this needs topic ownership.
+Known limit: the newest public envelope on a topic prices the request, so its
+rule sets the 402 challenge and the token requirement for the whole topic. A
+newer envelope, one with a far-future timestamp included, can therefore hide
+the topic's older envelopes: while it is the newest, honest token holders and
+payers may be refused (401 or 403), or asked to pay only its payee, and every
+older envelope that payment does not cover stays redacted. A request the
+token rule admits free carries no payment, so it cannot unlock node-priced
+envelopes either. What a newer envelope can no longer do is unlock an older
+one, or take or waive the node's price for it: each older envelope is still
+decided by its own rules. Closing the hiding needs topic ownership and a
+bound on future timestamps.
 
 ### Topics are exact
 
@@ -548,11 +561,12 @@ curl -N "http://localhost:9333/data/subscribe?topic=oracle:rates:bsv"
 ```
 
 Each new envelope is pushed as a `data:` event with a monotonic `id:` field.
-Monetized payloads are redacted unless the client's payment or app token
-covers each envelope by that envelope's own rule, the same as `GET /data`
-(see "What a payment or app token unlocks" above). A `private` envelope is
-never streamed to a client without the operator's bearer token — a payment
-never unlocks one here either.
+A payload is redacted unless the client's payment or app token covers that
+envelope by its own rules, the node's price included, the same as `GET /data`
+(see "What a payment or app token unlocks" above). The subscribe request's
+payment, token and node price hold for the life of the stream. A `private`
+envelope is never streamed to a client without the operator's bearer token —
+a payment never unlocks one here either.
 
 On reconnect, the browser's `EventSource` sends `Last-Event-ID` automatically.
 Use `GET /data?since=TIMESTAMP` to backfill any missed events.

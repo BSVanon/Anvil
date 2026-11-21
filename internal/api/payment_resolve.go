@@ -55,17 +55,10 @@ func (r *TopicMonetizationResolver) Resolve(topic string) *envelope.Monetization
 // Returns the payee list and whether this is a token-gated topic (skip x402).
 // An empty payee list with tokenGated=false means the request is free (pass through).
 func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGated bool) {
-	// Build node payee only if node actually charges.
-	// Per-endpoint pricing overrides the default if configured.
-	nodePrice := pg.priceForPath(r.URL.Path)
-	var nodePayee *Payee
-	if nodePrice > 0 && pg.payeeScriptHex != "" {
-		nodePayee = &Payee{
-			Role:             "infrastructure",
-			LockingScriptHex: pg.payeeScriptHex,
-			AmountSats:       nodePrice,
-		}
-	}
+	// The node's payee, only when the node charges on this path; the same
+	// price and script the gate records for the per-envelope decision
+	// (nodePayee, node_price_context.go).
+	nodePayee := pg.nodePayee(r.URL.Path)
 
 	// Check if this request targets a topic with monetization metadata.
 	// Topic-level monetization (passthrough/split pricing, token gating)

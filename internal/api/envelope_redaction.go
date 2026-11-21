@@ -6,11 +6,13 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
-// mustRedactEnvelope reports whether env's own payload is hidden unless the
-// request unlocks it (envelopeCovered): any envelope priced above zero, and a
-// token-model envelope whatever its price. Token-model monetization
-// (envelope.Monetization.Validate) never requires PriceSats, so a rule on
-// PriceSats alone would serve a token-model payload to a caller with no token.
+// mustRedactEnvelope reports whether env's own monetization hides its payload
+// unless the request meets that rule (ownRuleCovered): any envelope priced
+// above zero, and a token-model envelope whatever its price. Token-model
+// monetization (envelope.Monetization.Validate) never requires PriceSats, so a
+// rule on PriceSats alone would serve a token-model payload to a caller with
+// no token. The node's own price is a separate rule (nodePriced,
+// node_price_context.go).
 func mustRedactEnvelope(env *envelope.Envelope) bool {
 	if env.Monetization == nil {
 		return false
@@ -25,7 +27,7 @@ func mustRedactEnvelope(env *envelope.Envelope) bool {
 // `private` envelope never gets here for anyone else: both callers drop it
 // first.
 func envelopeForRequest(r *http.Request, env *envelope.Envelope, authed bool) *envelope.Envelope {
-	if authed || !mustRedactEnvelope(env) || envelopeCovered(r, env) {
+	if authed || envelopeCovered(r, env) {
 		return env
 	}
 	redacted := *env
@@ -33,19 +35,37 @@ func envelopeForRequest(r *http.Request, env *envelope.Envelope, authed bool) *e
 	return &redacted
 }
 
-// envelopeCovered reports whether r unlocks env by env's own monetization
-// rule, decided for each envelope rather than once for the request:
+// envelopeCovered reports whether r unlocks env, decided for each envelope
+// rather than once for the request. env must meet both of its rules:
+//
+//   - Its own monetization (ownRuleCovered), when that hides its payload
+//     (mustRedactEnvelope).
+//   - The node's own price, when env is node-priced (nodePriced): an
+//     unmonetized, free-model or split envelope needs a verified payment that
+//     pays the node's own payee script at least the price the gate recorded
+//     for the route (nodePriceCovered, node_price_context.go). A free node,
+//     or a route the node does not price, records no price.
+//
+// So a split envelope needs both its app's share and the node's, a passthrough
+// envelope needs only its app's, and a token-model envelope needs only its
+// token. No other envelope's rule, the newest one's included, waives either.
+func envelopeCovered(r *http.Request, env *envelope.Envelope) bool {
+	if mustRedactEnvelope(env) && !ownRuleCovered(r, env) {
+		return false
+	}
+	return !nodePriced(env) || nodePriceCovered(r)
+}
+
+// ownRuleCovered reports whether r meets env's own monetization rule:
 //
 //   - A token-model envelope needs an app token validated on its exact topic
 //     and issued by the AuthPubkey its own rule names
 //     (app_token_issuer_context.go). A payment never unlocks one.
 //   - A priced envelope needs a verified payment with one output that pays
 //     its own payee script at least its own price, capped as the node caps
-//     app prices (paymentCovers, paid_outputs_context.go). The node's own
-//     toll pays the node's script, so it unlocks only what the node prices:
-//     unmonetized content, which is never redacted. It never unlocks an
-//     envelope priced to an app's payee.
-func envelopeCovered(r *http.Request, env *envelope.Envelope) bool {
+//     app prices (paymentCovers, paid_outputs_context.go). A payment to the
+//     node's script never pays an app's price.
+func ownRuleCovered(r *http.Request, env *envelope.Envelope) bool {
 	mon := env.Monetization
 	if mon.Model == envelope.MonetizationToken {
 		return appTokenTopicMatches(r, env.Topic) && appTokenIssuerMatches(r, mon.AuthPubkey)
