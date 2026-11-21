@@ -7,11 +7,13 @@ import (
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 )
 
-// Replay protection for direct payments. An X-Bsv-Payment is not bound to a
+// Replay protection for payments. An X-Bsv-Payment is not bound to a
 // challenge, so without it one transaction would pay for any number of
 // requests. BRC-121 section 5 step 5 refuses a replayed payment with 402
-// (0121.md:97). The gate remembers the txid of every direct payment it accepts
-// and refuses that txid again with ERR_PAYMENT_REPLAYED.
+// (0121.md:97). The gate remembers the txid of every payment it accepts, on
+// either payment path, in one set, and refuses that txid again on either path
+// with ERR_PAYMENT_REPLAYED: a transaction accepted as an X402-Proof cannot pay
+// again as an X-Bsv-Payment, or the other way round.
 //
 // The memory is bounded: a txid is kept for directPaymentReplayWindow, and at
 // most directPaymentReplayCapacity txids are kept, the oldest evicted first.
@@ -28,6 +30,14 @@ const (
 	directPaymentReplayCapacity = 100_000
 )
 
+// errPaymentReplayed refuses a payment whose transaction, txid, already paid
+// for a request on either payment path, or is being verified for another
+// request right now.
+func errPaymentReplayed(txid string) error {
+	return &paymentRefusal{code: codePaymentReplayed,
+		msg: "payment transaction " + txid + " was already used: one transaction pays for one request"}
+}
+
 // replayEntry is one accepted payment txid and when it was accepted, as the
 // time since the set was made (monotonic, and 8 bytes rather than 24).
 type replayEntry struct {
@@ -35,7 +45,7 @@ type replayEntry struct {
 	at   time.Duration
 }
 
-// paymentReplaySet holds the txids of accepted direct payments, and the txids
+// paymentReplaySet holds the txids of accepted payments, and the txids
 // being verified right now, so that two requests carrying the same payment at
 // once cannot both pass.
 type paymentReplaySet struct {

@@ -224,8 +224,11 @@ func TestX402UnboundProofsDoNotCountAgainstChallenge(t *testing.T) {
 }
 
 // Concurrent proofs for one challenge are counted when they start, so only
-// maxProofAttempts of them reach the expensive steps. Here they wait on a
-// blocked ARC while every other sender is refused.
+// maxProofAttempts of them reach the expensive steps. Of those, the one that
+// claims the transaction first waits on a blocked ARC; the others carry the
+// same transaction while it is in flight, so they are refused as replays
+// (payment_replay.go), and the last of them removes the spent challenge.
+// Every sender past the count is refused, as spent or as unknown.
 func TestX402ConcurrentProofsCappedPerChallenge(t *testing.T) {
 	release := make(chan struct{})
 	var arcCalls atomic.Int32
@@ -250,24 +253,32 @@ func TestX402ConcurrentProofsCappedPerChallenge(t *testing.T) {
 		go func() { results <- serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, proof) }()
 	}
 	deadline := time.After(10 * time.Second)
-	for refused := 0; refused < senders-maxProofAttempts; refused++ {
+	spent, inFlight := 0, 0
+	for spent+inFlight < senders-1 {
 		select {
 		case w := <-results:
-			if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "challenge spent") {
-				t.Fatalf("sender past the budget: got %d %s, want 402 challenge spent", w.Code, w.Body.String())
+			switch {
+			case w.Code == http.StatusPaymentRequired && (strings.Contains(w.Body.String(), "challenge spent") ||
+				strings.Contains(w.Body.String(), "unknown or expired challenge")):
+				spent++
+			case w.Code == http.StatusPaymentRequired && strings.Contains(w.Body.String(), codePaymentReplayed):
+				inFlight++
+			default:
+				t.Fatalf("a sender refused while one proof waits on ARC: got %d %s", w.Code, w.Body.String())
 			}
 		case <-deadline:
-			t.Fatalf("%d of %d senders refused after 10s; %d proofs reached ARC", refused, senders-maxProofAttempts, arcCalls.Load())
+			t.Fatalf("%d senders refused as spent and %d as in flight after 10s; %d proofs reached ARC", spent, inFlight, arcCalls.Load())
 		}
+	}
+	if spent != senders-maxProofAttempts || inFlight != maxProofAttempts-1 {
+		t.Fatalf("got %d refused as spent and %d as in flight, want %d and %d", spent, inFlight, senders-maxProofAttempts, maxProofAttempts-1)
 	}
 	releaseARC()
-	for i := 0; i < maxProofAttempts; i++ {
-		if w := <-results; w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "ARC broadcast failed") {
-			t.Fatalf("counted proof: got %d %s, want 402 from ARC", w.Code, w.Body.String())
-		}
+	if w := <-results; w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "ARC broadcast failed") {
+		t.Fatalf("the proof that claimed the transaction: got %d %s, want 402 from ARC", w.Code, w.Body.String())
 	}
-	if n := arcCalls.Load(); n != maxProofAttempts {
-		t.Fatalf("%d proofs reached ARC, want %d", n, maxProofAttempts)
+	if n := arcCalls.Load(); n != 1 {
+		t.Fatalf("%d proofs reached ARC, want 1", n)
 	}
 }
 

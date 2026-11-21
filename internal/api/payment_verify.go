@@ -156,10 +156,20 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 	}
 
 	// Step 8: Verify txid
-	txid := tx.TxID().String()
+	txHash := tx.TxID()
+	txid := txHash.String()
 	if proof.Payment.TxID != "" && proof.Payment.TxID != txid {
 		return nil, fmt.Errorf("txid mismatch: claimed %s, computed %s", proof.Payment.TxID, txid)
 	}
+
+	// Step 8b: One transaction pays for one request, on either payment path:
+	// the claim is in the same replay set direct payments use
+	// (payment_replay.go), released on every return and kept only for an
+	// accepted proof.
+	if !pg.replays.begin(*txHash) {
+		return nil, errPaymentReplayed(txid)
+	}
+	defer func() { pg.replays.end(*txHash, err == nil) }()
 
 	// Step 9: Mempool acceptance via ARC.
 	// When requireMempool is true AND an ARC client is available, broadcast
@@ -290,13 +300,13 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 		}
 	}
 
-	// One transaction pays for one request (payment_replay.go). The claim is
-	// released on every return, and kept only for an accepted payment.
+	// One transaction pays for one request, on either payment path
+	// (payment_replay.go). The claim is released on every return, and kept
+	// only for an accepted payment.
 	txHash := tx.TxID()
 	txid := txHash.String()
 	if !pg.replays.begin(*txHash) {
-		return nil, &paymentRefusal{code: codePaymentReplayed,
-			msg: "payment transaction " + txid + " was already used: a direct payment pays for one request"}
+		return nil, errPaymentReplayed(txid)
 	}
 	accepted := false
 	defer func() { pg.replays.end(*txHash, accepted) }()

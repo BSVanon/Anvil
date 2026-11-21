@@ -496,10 +496,12 @@ accepts it only when ARC reports that the network accepted it:
 a node with `X402-Proof`. An `X402-Proof` whose challenge sets
 `require_mempool_accept` is held to the same two statuses.
 
-**One direct payment pays for one request.** The node remembers the txid
-of every direct payment it accepts, for 24 hours and up to 100,000 txids,
-and refuses a reused transaction with 402 and code `ERR_PAYMENT_REPLAYED`.
-It also refuses, with code `ERR_PAYMENT_TOO_OLD`, a direct payment that ARC
+**One transaction pays for one request, on either path.** The node
+remembers the txid of every payment it accepts, by `X402-Proof` or by
+`X-Bsv-Payment`, in one set, for 24 hours and up to 100,000 txids. It
+refuses a transaction already used on either path with 402 and code
+`ERR_PAYMENT_REPLAYED`, so a transaction that answered a challenge cannot
+pay again as a direct payment, or the other way round. It also refuses, with code `ERR_PAYMENT_TOO_OLD`, a direct payment that ARC
 reports as mined more than 144 blocks below the node's header tip, or mined
 with no block height, or when the node has no header tip. A direct payment
 ARC reports as mined more than 2 blocks above the node's header tip is
