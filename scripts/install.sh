@@ -235,6 +235,50 @@ echo ""
 pause_msg
 
 # ══════════════════════════════════════════════════════════════
+# SCREEN 1b: Node type
+#
+# Non-interactive: set ANVIL_MODE=gateway before piping into this
+# script (optionally with ANVIL_API_HOST and ANVIL_GATEWAY_PEERS) and
+# this whole screen is skipped — nothing here ever reads a prompt once
+# ANVIL_MODE is already set.
+# ══════════════════════════════════════════════════════════════
+
+NODE_MODE="${ANVIL_MODE:-}"
+GATEWAY_API_HOST="${ANVIL_API_HOST:-}"
+GATEWAY_PEERS="${ANVIL_GATEWAY_PEERS:-}"
+
+if [ -z "$NODE_MODE" ]; then
+  clear
+  echo ""
+  echo ""
+  echo -e "  ${BOLD}Node type:${NC}"
+  echo ""
+  echo -e "    ${GREEN}1)${NC} Standard ${DIM}(default)${NC}"
+  echo -e "    ${GREEN}2)${NC} Gateway"
+  echo ""
+  printf "  %bChoice [1]: %b" "${BOLD}" "${NC}"
+  read -r NODE_TYPE_CHOICE < /dev/tty || NODE_TYPE_CHOICE=""
+  case "$NODE_TYPE_CHOICE" in
+    2) NODE_MODE="gateway" ;;
+    *) NODE_MODE="standard" ;;
+  esac
+  if [ "$NODE_MODE" = "gateway" ] && [ -z "$GATEWAY_API_HOST" ]; then
+    echo ""
+    printf "  %bGateway API host (the domain or IP this node will be reached at): %b" "${BOLD}" "${NC}"
+    read -r GATEWAY_API_HOST < /dev/tty || GATEWAY_API_HOST=""
+  fi
+fi
+
+if [ "$NODE_MODE" != "standard" ] && [ "$NODE_MODE" != "gateway" ]; then
+  echo -e "${RED}Error: ANVIL_MODE must be standard or gateway (got: ${NODE_MODE})${NC}"
+  exit 1
+fi
+if [ "$NODE_MODE" = "gateway" ] && [ -z "$GATEWAY_API_HOST" ]; then
+  echo -e "${RED}Error: gateway mode needs an API host (ANVIL_API_HOST, or answer the prompt above)${NC}"
+  exit 1
+fi
+
+# ══════════════════════════════════════════════════════════════
 # SCREEN 2: Download + Verify + Install
 # ══════════════════════════════════════════════════════════════
 
@@ -317,15 +361,28 @@ echo ""
 echo -e "  ${DIM}Generating identity and configuring services...${NC}"
 echo ""
 
-DEPLOY_ARGS="--nodes a --skip-health"
-if [ -n "$SEED_PEER" ]; then
-  DEPLOY_ARGS="$DEPLOY_ARGS --seed $SEED_PEER"
+# An array, not a flat string: deploy is invoked below as
+# "${DEPLOY_ARGS[@]}", so each value here reaches deploy as exactly one
+# argument no matter what it contains — unlike a flat string expanded
+# unquoted, which word-splits on any space in GATEWAY_API_HOST,
+# GATEWAY_PEERS, SEED_PEER or NODE_NAME.
+DEPLOY_ARGS=(--nodes a --skip-health)
+if [ "$NODE_MODE" = "gateway" ]; then
+  # Gateway mode never uses the default public mesh seed — it peers only
+  # with the gateways named in GATEWAY_PEERS (added now, or later via
+  # `anvil gateway peer add`).
+  DEPLOY_ARGS+=(--mode gateway --api-host "$GATEWAY_API_HOST")
+  if [ -n "$GATEWAY_PEERS" ]; then
+    DEPLOY_ARGS+=(--gateway-peers "$GATEWAY_PEERS")
+  fi
+elif [ -n "$SEED_PEER" ]; then
+  DEPLOY_ARGS+=(--seed "$SEED_PEER")
 fi
 if [ -n "$NODE_NAME" ]; then
-  DEPLOY_ARGS="$DEPLOY_ARGS --name $NODE_NAME"
+  DEPLOY_ARGS+=(--name "$NODE_NAME")
 fi
 
-"$TMPBIN" deploy $DEPLOY_ARGS >/dev/null 2>&1
+"$TMPBIN" deploy "${DEPLOY_ARGS[@]}" >/dev/null 2>&1
 
 echo -e "    ${GREEN}✓${NC} Identity generated"
 echo -e "    ${GREEN}✓${NC} Config written to /etc/anvil/"
@@ -585,6 +642,24 @@ echo -e "    API:         ${CYAN}http://localhost:${API_PORT}/status${NC}"
 echo -e "    Config:      /etc/anvil/node-a.toml"
 echo -e "    Private key: /etc/anvil/node-a.env"
 echo ""
+
+if [ "$NODE_MODE" = "gateway" ]; then
+  echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
+  echo ""
+  echo -e "  ${BOLD}PAIR WITH ANOTHER GATEWAY${NC}"
+  echo ""
+  echo -e "  ${DIM}This node peers only with the gateways you name — no public${NC}"
+  echo -e "  ${DIM}mesh, no public listing. Get the exact command to hand to${NC}"
+  echo -e "  ${DIM}your other gateway's operator:${NC}"
+  echo ""
+  echo -e "    ${CYAN}sudo anvil gateway info${NC}"
+  echo ""
+  echo -e "  ${DIM}Allow a site once you know its domain or on-chain origin:${NC}"
+  echo ""
+  echo -e "    ${CYAN}sudo anvil gateway site add <domain-or-origin>${NC}"
+  echo ""
+fi
+
 echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
 echo ""
 echo -e "  ${BOLD}USEFUL COMMANDS${NC}"
@@ -609,12 +684,22 @@ echo -e "  ${DIM}─────────────────────
 echo ""
 echo -e "  ${RED}${BOLD}  OPEN YOUR FIREWALL${NC}"
 echo ""
-echo -e "  ${RED}  Ports 8333 (mesh) and 9333 (API) MUST be open for${NC}"
-echo -e "  ${RED}  inbound connections or your node cannot join the mesh.${NC}"
-echo ""
-echo -e "    ${CYAN}sudo ufw allow 8333/tcp${NC}"
-echo -e "    ${CYAN}sudo ufw allow 9333/tcp${NC}"
-echo ""
+if [ "$NODE_MODE" = "gateway" ]; then
+  echo -e "  ${RED}  Ports 8333 (mesh) and 9333 (API) should be open only to your${NC}"
+  echo -e "  ${RED}  peer gateways' addresses — this is a closed network, not a${NC}"
+  echo -e "  ${RED}  public mesh node.${NC}"
+  echo ""
+  echo -e "  ${DIM}  Ports 80 and 443 will carry public site traffic once this${NC}"
+  echo -e "  ${DIM}  node's TLS is set up; they are not used yet.${NC}"
+  echo ""
+else
+  echo -e "  ${RED}  Ports 8333 (mesh) and 9333 (API) MUST be open for${NC}"
+  echo -e "  ${RED}  inbound connections or your node cannot join the mesh.${NC}"
+  echo ""
+  echo -e "    ${CYAN}sudo ufw allow 8333/tcp${NC}"
+  echo -e "    ${CYAN}sudo ufw allow 9333/tcp${NC}"
+  echo ""
+fi
 echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
 echo ""
 echo -e "  ${BOLD}YOUR EXPLORER${NC}"

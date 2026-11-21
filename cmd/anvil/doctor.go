@@ -305,6 +305,10 @@ func cmdDoctor(args []string) {
 		}
 	}
 
+	// ── Gateway ──
+	section("Gateway")
+	issues += doctorGatewayChecks(cfg, liveTXTStatus)
+
 	// ── 5. External connectivity ──
 	section("External Connectivity")
 

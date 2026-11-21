@@ -34,6 +34,9 @@ func cmdDeploy(args []string) {
 	seedPeer := fs.String("seed", "", "mesh seed peer URL (e.g. wss://anvil.sendbsv.com:8333)")
 	nodeName := fs.String("name", "", "node display name (default: hostname)")
 	publicURL := fs.String("public-url", "", "public HTTPS URL for this node (e.g. https://my-node.com)")
+	mode := fs.String("mode", "standard", "node type: standard or gateway")
+	apiHost := fs.String("api-host", "", "gateway api_host (gateway mode only)")
+	gatewayPeersFlag := fs.String("gateway-peers", "", "comma-separated pubkey@mesh-url@overlay-url peers (gateway mode only)")
 	dryRun := fs.Bool("dry-run", false, "validate and show what would happen without changing anything")
 	skipHealth := fs.Bool("skip-health", false, "skip post-deploy health check")
 	_ = fs.Parse(args)
@@ -42,6 +45,7 @@ func cmdDeploy(args []string) {
 	if len(nodeList) == 0 {
 		fatal("--nodes must be a, b, or ab")
 	}
+	gatewayPeers := resolveGatewayDeployArgs(*mode, *apiHost, *gatewayPeersFlag)
 
 	if !*dryRun {
 		assertRoot()
@@ -49,6 +53,9 @@ func cmdDeploy(args []string) {
 
 	fmt.Println("=== Anvil Deploy ===")
 	fmt.Printf("  nodes:       %v\n", nodeList)
+	if *mode == "gateway" {
+		fmt.Printf("  mode:        %s\n", *mode)
+	}
 	fmt.Printf("  config-dir:  %s\n", *configDir)
 	fmt.Printf("  data-dir:    %s\n", *dataBase)
 	fmt.Printf("  install-dir: %s\n", *installDir)
@@ -90,7 +97,7 @@ func cmdDeploy(args []string) {
 	for _, n := range nodeList {
 		dataDir := nodeDataDir(*dataBase, n)
 		step(fmt.Sprintf("Deploying Node %s", strings.ToUpper(n)))
-		deployNode(n, *configDir, dataDir, *installDir, *seedPeer, *nodeName, *publicURL, *dryRun)
+		deployAnyNode(*mode, n, *configDir, dataDir, *installDir, *seedPeer, *nodeName, *publicURL, *apiHost, gatewayPeers, *dryRun)
 	}
 
 	if *dryRun {
