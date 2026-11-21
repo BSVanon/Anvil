@@ -211,6 +211,8 @@ func (m *Manager) handleMessage(senderPKHex string, senderPK *ec.PublicKey, payl
 		return nil
 	case MsgForward:
 		return m.onMsgForward(senderPKHex, msg.Data)
+	case MsgACMEChallenge:
+		return m.onACMEChallenge(senderPKHex, msg.Data)
 	default:
 		m.logger.Debug("unknown mesh message type", "type", msg.Type)
 	}

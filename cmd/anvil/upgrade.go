@@ -255,6 +255,17 @@ func cmdUpgrade(args []string) {
 		fmt.Printf("    added self-heal ExecStartPre hook to %d unit file(s)\n", added)
 	}
 
+	// Same reasoning, for a gateway unit's bind-80/443 capabilities: an
+	// operator who deployed a gateway node before this existed would
+	// otherwise keep a unit that can never bind 80 or 443, forever,
+	// across every future upgrade.
+	if added := ensureGatewayCapabilities(); added > 0 {
+		if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+			fmt.Printf("    WARNING: systemctl daemon-reload failed: %v\n", err)
+		}
+		fmt.Printf("    added gateway bind capabilities to %d unit file(s)\n", added)
+	}
+
 	// One-time data migration for the v2 → v3 transition. v3.0.0 is the
 	// first release whose engine reads from `ovl3:` LevelDB keys instead
 	// of `ovl:`. The migration walks every legacy entry and writes the

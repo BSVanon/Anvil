@@ -51,7 +51,31 @@ const (
 	// MsgForward forwards a point-to-point message to the recipient's node.
 	// Used for cross-node BRC-33 message delivery.
 	MsgForward MessageType = "msg_forward"
+
+	// MsgACMEChallenge replicates one ACME challenge cache entry (a
+	// tls-alpn-01 token certificate or an http-01 token value) to a peer
+	// gateway, point-to-point, so either gateway can answer an ACME
+	// validation request for a domain both serve. It carries no
+	// certificate, private key or account key — see
+	// internal/gateway/acmecache.go, the only sender and receiver of this
+	// type. A peer on a version that predates this type ignores it
+	// (handlers.go's dispatch default case), so sending it is safe on a
+	// mixed-version mesh.
+	MsgACMEChallenge MessageType = "acme_challenge"
 )
+
+// ACMEChallengePayload is MsgACMEChallenge's wire payload: one
+// autocert.Cache entry, named exactly as the autocert package itself
+// keys it (e.g. "<domain>+token" or "<token>+http-01" — see
+// certKey.String and httpTokenCacheKey in
+// golang.org/x/crypto/acme/autocert). Expires is a Unix-seconds
+// deadline the sender sets at most 600s ahead; the receiver never
+// extends it.
+type ACMEChallengePayload struct {
+	Key     string `json:"key"`
+	Value   []byte `json:"value"`
+	Expires int64  `json:"expires"`
+}
 
 // Message is the wire format for all mesh messages, serialized as
 // the payload of an auth.GeneralMessage.
@@ -106,7 +130,7 @@ type TxRequestPayload struct {
 
 // TxResponsePayload carries the raw transaction hex.
 type TxResponsePayload struct {
-	TxID  string `json:"txid"`
+	TxID   string `json:"txid"`
 	RawHex string `json:"raw_hex"`
 }
 
@@ -128,9 +152,9 @@ type SlashWarningPayload struct {
 	// Target is the identity pubkey hex of the offending peer.
 	Target    string      `json:"target"`
 	Reason    SlashReason `json:"reason"`
-	Evidence  string      `json:"evidence,omitempty"`  // human-readable or hash of proof
-	Timestamp int64       `json:"timestamp"`           // unix seconds
-	Reporter  string      `json:"reporter"`            // identity pubkey hex of reporting peer
+	Evidence  string      `json:"evidence,omitempty"` // human-readable or hash of proof
+	Timestamp int64       `json:"timestamp"`          // unix seconds
+	Reporter  string      `json:"reporter"`           // identity pubkey hex of reporting peer
 }
 
 // SlashSeverity returns the slash percentage for a given reason.

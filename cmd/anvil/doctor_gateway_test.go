@@ -40,13 +40,23 @@ func foundTXTStatus(ctx context.Context, domain string) string {
 	return "ordfs=" + domain + "_origin_0"
 }
 
+// noAPIURL and noPortBound are this test file's default apiURL/portBound
+// stubs: a port on loopback nothing listens on (httpGet fails fast,
+// returning nil rather than hanging) and a bind check that always
+// reports unbound. Every test below that doesn't care about the TLS
+// bind/replication checks specifically uses these, so that behaviour
+// stays opt-in per test rather than the default.
+const noAPIURL = "http://127.0.0.1:1"
+
+func noPortBound(addr string) bool { return false }
+
 func TestDoctorGatewayChecks_DisabledShortCircuits(t *testing.T) {
 	cfg := &config.Config{}
 	var called bool
-	issues := doctorGatewayChecks(cfg, func(ctx context.Context, domain string) string {
+	issues := doctorGatewayChecks(cfg, noAPIURL, func(ctx context.Context, domain string) string {
 		called = true
 		return "ordfs=x"
-	})
+	}, noPortBound)
 	if issues != 0 {
 		t.Errorf("issues = %d, want 0 for a disabled gateway", issues)
 	}
@@ -58,13 +68,13 @@ func TestDoctorGatewayChecks_DisabledShortCircuits(t *testing.T) {
 func TestDoctorGatewayChecks_ModeAlwaysReported(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Node.Mode = "gateway"
-	out := captureStdout(t, func() { doctorGatewayChecks(cfg, noTXTStatus) })
+	out := captureStdout(t, func() { doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
 	if !bytes.Contains([]byte(out), []byte("mode: gateway")) {
 		t.Errorf("expected output to report the mode, got:\n%s", out)
 	}
 
 	cfg2 := &config.Config{}
-	out2 := captureStdout(t, func() { doctorGatewayChecks(cfg2, noTXTStatus) })
+	out2 := captureStdout(t, func() { doctorGatewayChecks(cfg2, noAPIURL, noTXTStatus, noPortBound) })
 	if !bytes.Contains([]byte(out2), []byte("mode: standard")) {
 		t.Errorf("expected an empty mode to report as standard, got:\n%s", out2)
 	}
@@ -78,7 +88,7 @@ func TestDoctorGatewayChecks_SitesFileParseErrorIsAnIssue(t *testing.T) {
 	// real I/O error (not os.IsNotExist), which readSiteEntries propagates.
 	cfg.Gateway.SitesFile = dir
 
-	issues := doctorGatewayChecks(cfg, noTXTStatus)
+	issues := doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound)
 	if issues < 1 {
 		t.Errorf("issues = %d, want at least 1 when the sites file fails to parse", issues)
 	}
@@ -91,7 +101,7 @@ func TestDoctorGatewayChecks_NoSitesConfiguredIsNotAnIssue(t *testing.T) {
 	cfg.Overlay.NamedPeers = []string{"https://peer.example"}
 	cfg.Mesh.AllowedPeers = []string{"02" + strings.Repeat("a", 64)}
 
-	issues := doctorGatewayChecks(cfg, noTXTStatus)
+	issues := doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound)
 	if issues != 0 {
 		t.Errorf("issues = %d, want 0 for an enabled gateway with no sites yet and a closed posture", issues)
 	}
@@ -110,7 +120,7 @@ func TestDoctorGatewayChecks_TXTStatusIsWarnNotIssue(t *testing.T) {
 
 	t.Run("missing TXT record", func(t *testing.T) {
 		var issues int
-		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noTXTStatus) })
+		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
 		if issues != 0 {
 			t.Errorf("issues = %d, want 0 — a missing TXT record is a warning, not an issue", issues)
 		}
@@ -121,7 +131,7 @@ func TestDoctorGatewayChecks_TXTStatusIsWarnNotIssue(t *testing.T) {
 
 	t.Run("found TXT record", func(t *testing.T) {
 		var issues int
-		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, foundTXTStatus) })
+		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noAPIURL, foundTXTStatus, noPortBound) })
 		if issues != 0 {
 			t.Errorf("issues = %d, want 0", issues)
 		}
@@ -138,13 +148,14 @@ func TestDoctorGatewayChecks_ClosedPostureWarnings(t *testing.T) {
 		cfg.Gateway.SitesFile = t.TempDir() + "/gateway-sites.conf"
 		cfg.Overlay.NamedPeers = []string{"https://peer.example"}
 		cfg.Mesh.AllowedPeers = []string{"02" + strings.Repeat("a", 64)}
+		cfg.Gateway.AcceptTOS = true // part of a genuinely warning-free posture now too
 		return cfg
 	}
 
 	t.Run("fully closed posture: no warnings, no issues", func(t *testing.T) {
 		cfg := base()
 		var issues int
-		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noTXTStatus) })
+		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
 		if issues != 0 {
 			t.Errorf("issues = %d, want 0", issues)
 		}
@@ -157,7 +168,7 @@ func TestDoctorGatewayChecks_ClosedPostureWarnings(t *testing.T) {
 		cfg := base()
 		cfg.Node.PublicURL = "https://gateway.example.org:9333"
 		var issues int
-		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noTXTStatus) })
+		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
 		if issues != 0 {
 			t.Errorf("issues = %d, want 0", issues)
 		}
@@ -170,7 +181,7 @@ func TestDoctorGatewayChecks_ClosedPostureWarnings(t *testing.T) {
 		cfg := base()
 		cfg.Overlay.NamedPeers = nil
 		var issues int
-		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noTXTStatus) })
+		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
 		if issues != 0 {
 			t.Errorf("issues = %d, want 0", issues)
 		}
@@ -183,7 +194,7 @@ func TestDoctorGatewayChecks_ClosedPostureWarnings(t *testing.T) {
 		cfg := base()
 		cfg.Mesh.AllowedPeers = nil
 		var issues int
-		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noTXTStatus) })
+		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
 		if issues != 0 {
 			t.Errorf("issues = %d, want 0", issues)
 		}
@@ -197,7 +208,7 @@ func TestDoctorGatewayChecks_ClosedPostureWarnings(t *testing.T) {
 		cfg := base()
 		cfg.BSV.HeaderFallbackPeers = []string{defaultPeer}
 		var issues int
-		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noTXTStatus) })
+		out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
 		if issues != 0 {
 			t.Errorf("issues = %d, want 0", issues)
 		}
@@ -210,7 +221,7 @@ func TestDoctorGatewayChecks_ClosedPostureWarnings(t *testing.T) {
 		defaultPeer := config.DefaultHeaderFallbackPeers()[0]
 		cfg := base()
 		cfg.BSV.HeaderFallbackPeers = []string{"https://peer.example"}
-		out := captureStdout(t, func() { doctorGatewayChecks(cfg, noTXTStatus) })
+		out := captureStdout(t, func() { doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
 		if bytes.Contains([]byte(out), []byte(defaultPeer)) {
 			t.Errorf("did not expect the default-peer warning when it is not configured, got:\n%s", out)
 		}

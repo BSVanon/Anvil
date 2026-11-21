@@ -106,6 +106,12 @@ type Manager struct {
 	// Point-to-point messaging (BRC-33)
 	msgStore    *messaging.Store // nil = messaging forwarding disabled
 	identityKey *ec.PrivateKey   // node identity key for signing messages
+
+	// onACMEChallengeHook receives a decoded MsgACMEChallenge (the
+	// gateway's replicated ACME challenge cache). nil (gateway mode off,
+	// or not wired up yet) means the message is decoded then dropped — see
+	// acme_relay.go.
+	onACMEChallengeHook func(senderPKHex, key string, value []byte, expires time.Time)
 	// messagingPolicy holds the Home Rule, forward_copy_ttl
 	// and forward_peers configuration (handlers_msg_policy.go). The zero
 	// value reproduces today's behaviour exactly.

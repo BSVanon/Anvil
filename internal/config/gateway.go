@@ -12,7 +12,7 @@ import (
 // whose content lives entirely on-chain, resolved through the ORDFS
 // custom-domain convention (a DNS TXT record naming a 1Sat origin). See
 // internal/gateway for the mechanism this drives; this struct only carries
-// the operator-facing settings — B8 (version tracking) and B9 (TLS) read
+// the operator-facing settings — version tracking and TLS both read
 // these same fields rather than adding their own copies.
 type GatewayConfig struct {
 	// Enabled turns gateway serving on. Off (the default) is a standard
@@ -54,9 +54,37 @@ type GatewayConfig struct {
 
 	// ContentScope is "" (defaults to "site"), "site" (internal/gateway's
 	// reference-reachability check) or "any" (today's unrestricted
-	// /content/ behaviour) — decision 6, tightened by D3: Load rejects
-	// anything else outright rather than silently falling back to "site".
+	// /content/ behaviour), tightened by D3: Load rejects anything else
+	// outright rather than silently falling back to "site".
 	ContentScope string `toml:"content_scope"`
+
+	// HTTPSListen is the address the TLS listener binds. Default ":443".
+	// Active only when Enabled — with gateway off, nothing listens here.
+	HTTPSListen string `toml:"https_listen"`
+
+	// HTTPListen is the address the plain-HTTP listener binds: ACME
+	// http-01 tokens and a 308 redirect to https for every other allowed
+	// host. Default ":80". Active only when Enabled.
+	HTTPListen string `toml:"http_listen"`
+
+	// ACMEDirectory is the ACME directory URL the autocert.Manager talks
+	// to. Default: Let's Encrypt production — the same value as
+	// golang.org/x/crypto/acme/autocert.DefaultACMEDirectory, kept as a
+	// literal here rather than importing autocert just for one constant
+	// (internal/gateway's own tests pin the two values equal).
+	ACMEDirectory string `toml:"acme_directory"`
+
+	// ACMEEmail is the optional contact address autocert registers with
+	// the ACME account. Unset means no contact is sent.
+	ACMEEmail string `toml:"acme_email"`
+
+	// AcceptTOS must be true before the autocert.Manager will ever
+	// attempt issuance (autocert.Manager.Prompt stays nil otherwise).
+	// Left false — the default — issuance fails with a clear "missing
+	// Manager.Prompt" error on every attempt, and doctor reports a
+	// gateway that needs it. There is no implicit agreement to a CA's
+	// terms of service.
+	AcceptTOS bool `toml:"acme_accept_tos"`
 }
 
 const (
@@ -64,6 +92,9 @@ const (
 	defaultGatewayTXTStaleGrace = 86400 // 24h
 	defaultGatewayRootMaxAge    = 60
 	defaultGatewayContentScope  = "site"
+	defaultGatewayHTTPSListen   = ":443"
+	defaultGatewayHTTPListen    = ":80"
+	defaultGatewayACMEDirectory = "https://acme-v02.api.letsencrypt.org/directory"
 )
 
 // validateNodeMode rejects anything but [node] mode's two recognised
@@ -80,7 +111,7 @@ func validateNodeMode(mode string) error {
 }
 
 // finalizeGateway is the one call Load makes for every gateway-related
-// default and validation (B3): [node] mode (validateNodeMode),
+// default and validation: [node] mode (validateNodeMode),
 // GatewayConfig's own numeric/path defaults, D3's strict content_scope
 // check, and D2's api_host resolution and its two overlap rules with the
 // sites file. configPath is Load's own config-file path, needed for
@@ -99,6 +130,15 @@ func finalizeGateway(cfg *Config, configPath string) error {
 	if cfg.Gateway.RootMaxAge <= 0 {
 		cfg.Gateway.RootMaxAge = defaultGatewayRootMaxAge
 	}
+	if cfg.Gateway.HTTPSListen == "" {
+		cfg.Gateway.HTTPSListen = defaultGatewayHTTPSListen
+	}
+	if cfg.Gateway.HTTPListen == "" {
+		cfg.Gateway.HTTPListen = defaultGatewayHTTPListen
+	}
+	if cfg.Gateway.ACMEDirectory == "" {
+		cfg.Gateway.ACMEDirectory = defaultGatewayACMEDirectory
+	}
 	switch cfg.Gateway.ContentScope {
 	case "":
 		cfg.Gateway.ContentScope = defaultGatewayContentScope
@@ -108,7 +148,7 @@ func finalizeGateway(cfg *Config, configPath string) error {
 		return fmt.Errorf(`invalid [gateway] content_scope %q: must be "" (defaults to "site"), "site" or "any"`, cfg.Gateway.ContentScope)
 	}
 	if cfg.Gateway.SitesFile == "" {
-		// "the config dir" (decision 7) is wherever this node's own config
+		// "the config dir" is wherever this node's own config
 		// file lives, whatever it's named — not a hardcoded path — so a
 		// gateway's sites file always sits next to its anvil.toml.
 		cfg.Gateway.SitesFile = filepath.Join(filepath.Dir(configPath), "gateway-sites.conf")
@@ -116,7 +156,7 @@ func finalizeGateway(cfg *Config, configPath string) error {
 
 	// D2: api_host is resolved from, and reconciled against, [node]
 	// public_url. With the gateway off, none of this can stop the node
-	// from starting (fix cycle 2, item 1): a disagreeing api_host/
+	// from starting: a disagreeing api_host/
 	// public_url and an api_host that happens to also be listed in the
 	// sites file are both only real problems once the gateway is
 	// actually serving anything — the same reasoning the "both empty"
