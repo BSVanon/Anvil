@@ -62,11 +62,15 @@ func (b *internalLogs) assertLogged(t *testing.T, status int, reason refusallog.
 // default branch used to log every otherwise-unnamed error, including a
 // genuinely invalid transaction (engine.ErrInvalidTransaction or
 // engine.ErrInvalidBeef) under the same ReasonOtherGuardError as any other
-// unclassified guard failure (cold review round 4 cycle 6 NIT). It now logs
-// those two under their own ReasonInvalidTransaction, while every other
-// default-branch error still logs under ReasonOtherGuardError -- and the
-// status either way is still whatever statusForSubmitError already answered,
-// unchanged by the reason split (422 for both named errors here).
+// unclassified guard failure (cold review round 4 cycle 6 NIT), and answered
+// a bare verification-stage error (statusForSubmitError's generic case) with
+// a 500. It now logs the two named engine sentinels under their own
+// ReasonInvalidTransaction with their status unchanged (422, from
+// statusForSubmitError), and reclassifies any other error that would have
+// fallen to statusForSubmitError's generic 500 -- a plain spv.Verify script,
+// fee or merkle failure, unwrapped by routeguard/verify.go's final switch
+// (cycle-6b re-review, NIT 1) -- as an invalid transaction too, answered 400
+// with invalidTransactionCode instead of 500.
 func TestWriteLegacyGuardError_ClassifiesInvalidTransaction(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/overlay/submit", nil)
 	r.RemoteAddr = "127.0.0.1:9"
@@ -90,8 +94,16 @@ func TestWriteLegacyGuardError_ClassifiesInvalidTransaction(t *testing.T) {
 	logs = watchRefusalsInternal(t)
 	w = httptest.NewRecorder()
 	writeLegacyGuardError(w, r, errors.New("some other guard failure"))
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("other error: status = %d, want 500 (statusForSubmitError's generic case)", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("other error: status = %d, want 400 (reclassified as an invalid transaction, not statusForSubmitError's generic 500)", w.Code)
 	}
-	logs.assertLogged(t, http.StatusInternalServerError, refusallog.ReasonOtherGuardError, "/overlay/submit")
+	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonInvalidTransaction, "/overlay/submit")
+
+	logs = watchRefusalsInternal(t)
+	w = httptest.NewRecorder()
+	writeLegacyGuardError(w, r, engine.ErrUnknownTopic)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("ErrUnknownTopic: status = %d, want 400 (statusForSubmitError's own named case, not the reclassification)", w.Code)
+	}
+	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonOtherGuardError, "/overlay/submit")
 }

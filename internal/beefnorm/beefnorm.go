@@ -87,8 +87,15 @@ type BEEF struct {
 }
 
 // Parse prices b with beefscan.Inspect, parses it and normalizes it. It
-// returns beefscan's refusal (wrapping beefscan.ErrTooComplex), go-sdk's parse
-// error, ErrNoSubject, or an error wrapping ErrRefused.
+// returns beefscan's refusal (wrapping beefscan.ErrTooComplex), go-sdk's
+// envelope error from split, ErrNoSubject, or an error wrapping ErrRefused —
+// which now also covers go-sdk's own parse error from NewBeefFromBytes: bytes
+// that are not a BEEF at all, a raw transaction included, parse only as far
+// as go-sdk's own version check, which fails with its bare "invalid BEEF
+// version" error. Wrapping it here, the one place Parse calls
+// NewBeefFromBytes, is what lets both guarded.go files' existing ErrRefused
+// case (aliased there as routeguard.ErrMalformed) answer 400 for it instead
+// of falling through to each route's own unnamed-error default.
 func Parse(b []byte) (n *BEEF, err error) {
 	shape, err := beefscan.Inspect(b)
 	if err != nil {
@@ -100,7 +107,7 @@ func Parse(b []byte) (n *BEEF, err error) {
 	}
 	raw, err := transaction.NewBeefFromBytes(inner)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: expected BEEF; a raw transaction cannot be verified (%v)", ErrRefused, err)
 	}
 	// Parsing keeps one entry per txid, the last; inputs read before it are
 	// linked to the earlier one. Which copy is verified and which is stored

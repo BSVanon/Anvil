@@ -90,6 +90,15 @@ func (h *Handlers) submitBEEF(w http.ResponseWriter, r *http.Request, topics []s
 	writeJSON(w, http.StatusOK, canonicalSteak(steak))
 }
 
+// invalidTransactionCode is the error code of a BEEF that reached
+// PreVerify's own verification stage and was classified invalid there --
+// engine.ErrInvalidTransaction or engine.ErrInvalidBeef directly, or, now,
+// any other verification verdict PreVerify returns (routeguard/verify.go's
+// final switch passes a plain script, fee or merkle failure from go-sdk's
+// spv.Verify straight through, unwrapped, since that failure is not one of
+// PreVerify's own named sentinels). The route answers 400.
+const invalidTransactionCode = "ERR_INVALID_TRANSACTION"
+
 // writeGuardError answers a request the guard refused, or whose submit failed
 // before the engine saw it: 503 with Retry-After when the node is busy, 408
 // when the body was too slow, 400 with beefscan.Code for a BEEF over a cap,
@@ -104,16 +113,22 @@ func (h *Handlers) submitBEEF(w http.ResponseWriter, r *http.Request, topics []s
 // script, validation budget) are rate-limit logged via refusallog so an
 // operator or the canary watching this node can see refusals sent straight to
 // its port without every one of a flood becoming its own log line; so is the
-// default case, under ReasonInvalidTransaction for engine.ErrInvalidTransaction
-// or engine.ErrInvalidBeef (PreVerify's own fallback for scripts that simply
-// did not verify, or a BEEF with no subject) and ReasonOtherGuardError for
-// anything else reaching here, since both are still the guard refusing a
-// submit before the engine saw it, just for reasons the other named Reasons
-// do not cover (cold review round 4's NITs: this branch was unlogged; cold
-// review round 4 cycle 6's NITs: it was logged but not split from a flood of
-// genuinely invalid transactions). The deadline-exceeded case is an ordinary
-// request outcome, not the guard protecting the node, so it is not logged
-// here.
+// default case, under ReasonInvalidTransaction and invalidTransactionCode for
+// engine.ErrInvalidTransaction or engine.ErrInvalidBeef (PreVerify's own
+// fallback for scripts that simply did not verify, or a BEEF with no subject)
+// and any other verification verdict PreVerify returns (cycle-6b re-review,
+// NIT 1: go-sdk's spv.Verify returns script, fee and merkle failures as plain
+// errors, which PreVerify's final switch cannot wrap in a named sentinel
+// without routeguard losing the distinction go-sdk already drew) -- except
+// engine.ErrUnknownTopic, which is the guard refusing a topic name this node
+// does not host, not a verdict on the transaction, and keeps
+// ReasonOtherGuardError uncoded as before. Both remaining buckets are still
+// the guard refusing a submit before the engine saw it, just for reasons the
+// other named Reasons do not cover (cold review round 4's NITs: this branch
+// was unlogged; cold review round 4 cycle 6's NITs: it was logged but not
+// split from a flood of genuinely invalid transactions). The deadline-exceeded
+// case is an ordinary request outcome, not the guard protecting the node, so
+// it is not logged here.
 func writeGuardError(w http.ResponseWriter, r *http.Request, err error, prefix string) {
 	switch {
 	case errors.Is(err, routeguard.ErrTooComplex):
@@ -137,20 +152,11 @@ func writeGuardError(w http.ResponseWriter, r *http.Request, err error, prefix s
 		writeError(w, http.StatusRequestTimeout, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, submitErrorStatus(err), prefix+err.Error())
-	default:
-		refusallog.Log(r, http.StatusBadRequest, invalidTransactionReason(err))
+	case errors.Is(err, engine.ErrUnknownTopic):
+		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonOtherGuardError)
 		writeError(w, http.StatusBadRequest, prefix+err.Error())
+	default:
+		refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonInvalidTransaction)
+		writeJSON(w, http.StatusBadRequest, errorEnvelope{Status: "error", Code: invalidTransactionCode, Message: prefix + err.Error()})
 	}
-}
-
-// invalidTransactionReason is ReasonInvalidTransaction for
-// engine.ErrInvalidTransaction or engine.ErrInvalidBeef, and
-// ReasonOtherGuardError for every other error writeGuardError's default
-// branch logs (cold review round 4 cycle 6 NIT). It changes no status code:
-// callers still answer 400 either way.
-func invalidTransactionReason(err error) refusallog.Reason {
-	if errors.Is(err, engine.ErrInvalidTransaction) || errors.Is(err, engine.ErrInvalidBeef) {
-		return refusallog.ReasonInvalidTransaction
-	}
-	return refusallog.ReasonOtherGuardError
 }

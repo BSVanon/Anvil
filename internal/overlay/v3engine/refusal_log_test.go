@@ -79,10 +79,13 @@ func TestSubmit_LogsARefusedBEEF(t *testing.T) {
 // branch used to log every otherwise-unnamed error, including a genuinely
 // invalid transaction (engine.ErrInvalidTransaction or engine.ErrInvalidBeef)
 // under the same ReasonOtherGuardError as any other unclassified guard
-// failure (cold review round 4 cycle 6 NIT). It now logs those two under
-// their own ReasonInvalidTransaction, while every other default-branch error
-// still logs under ReasonOtherGuardError -- and the status code either way is
-// still the unchanged flat 400.
+// failure (cold review round 4 cycle 6 NIT). It now logs those two, and any
+// other verification verdict PreVerify returns -- a bare error such as a
+// plain spv.Verify script, fee or merkle failure (cycle-6b re-review, NIT 1)
+// -- under their own ReasonInvalidTransaction, while engine.ErrUnknownTopic
+// (a request for a topic this node does not host, not a verdict on the
+// transaction) still logs under ReasonOtherGuardError. The status code is
+// still the unchanged flat 400 throughout.
 func TestWriteGuardError_ClassifiesInvalidTransaction(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/submit", nil)
 	r.RemoteAddr = "127.0.0.1:9"
@@ -108,6 +111,14 @@ func TestWriteGuardError_ClassifiesInvalidTransaction(t *testing.T) {
 	writeGuardError(w, r, errors.New("some other guard failure"), "")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("other error: status = %d, want 400", w.Code)
+	}
+	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonInvalidTransaction, "/submit")
+
+	logs = watchRefusals(t)
+	w = httptest.NewRecorder()
+	writeGuardError(w, r, engine.ErrUnknownTopic, "submit failed: ")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("ErrUnknownTopic: status = %d, want 400", w.Code)
 	}
 	logs.assertLogged(t, http.StatusBadRequest, refusallog.ReasonOtherGuardError, "/submit")
 }
