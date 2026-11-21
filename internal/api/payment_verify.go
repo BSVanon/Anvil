@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -253,8 +254,9 @@ func verifyNonceInputSignature(tx *transaction.Transaction, nonce *NonceUTXO) er
 // verifyDirectPayment handles the X-Bsv-Payment header: an Extended Format
 // (BRC-30) transaction, as hex or base64, that pays the declared payees, with
 // no challenge binding. It needs ARC: a node with no ARC client refuses every
-// direct payment (errDirectPaymentUnavailable, payment_refusal.go).
-func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee) (*X402Receipt, error) {
+// direct payment (errDirectPaymentUnavailable, payment_refusal.go). ctx is the
+// request's context, which bounds the ARC submit (payment_submit.go).
+func (pg *PaymentGate) verifyDirectPayment(ctx context.Context, paymentHeader string, payees []Payee) (*X402Receipt, error) {
 	if pg.arcClient == nil {
 		return nil, errDirectPaymentUnavailable
 	}
@@ -325,10 +327,11 @@ func (pg *PaymentGate) verifyDirectPayment(paymentHeader string, payees []Payee)
 
 	// Broadcast the payment: a direct payment has no challenge binding, so
 	// only the network's acceptance shows that its inputs exist and are
-	// unspent.
-	arcResp, err := pg.arcClient.Submit(txBytes)
+	// unspent. The submit is bounded in time and in number
+	// (payment_submit.go).
+	arcResp, err := submitDirectPayment(ctx, pg.arcClient, txBytes)
 	if err != nil {
-		return nil, fmt.Errorf("ARC broadcast failed: %w", err)
+		return nil, err
 	}
 	if err := checkARCAcceptance(arcResp); err != nil {
 		return nil, err

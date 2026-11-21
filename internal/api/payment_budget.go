@@ -151,10 +151,16 @@ func withMintBudget(p NonceProvider, budget *mintBudget) NonceProvider {
 
 // writeUnavailable answers 503 with a Retry-After of at least one second.
 func writeUnavailable(w http.ResponseWriter, retryAfter time.Duration, msg string) {
+	setRetryAfter(w, retryAfter)
+	writeError(w, http.StatusServiceUnavailable, msg)
+}
+
+// setRetryAfter sets a Retry-After of retryAfter, rounded up to whole
+// seconds and at least one.
+func setRetryAfter(w http.ResponseWriter, retryAfter time.Duration) {
 	secs := int64(math.Ceil(retryAfter.Seconds()))
 	if secs < 1 {
 		secs = 1
 	}
 	w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
-	writeError(w, http.StatusServiceUnavailable, msg)
 }

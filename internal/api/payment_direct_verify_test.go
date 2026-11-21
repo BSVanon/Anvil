@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -100,7 +101,7 @@ func TestDirectPaymentRejectsUnsignedTxNoARC(t *testing.T) {
 
 	payeeBytes, _ := hex.DecodeString(payeeScript)
 	txHex := hex.EncodeToString(buildRawTx(payeeBytes, 100)) // no unlocking script, no embedded source output
-	_, err := pg.verifyDirectPayment(txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	_, err := pg.verifyDirectPayment(context.Background(), txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if !errors.Is(err, errDirectPaymentUnavailable) {
 		t.Fatalf("an unsigned direct payment on a node with no ARC client: want errDirectPaymentUnavailable, got %v", err)
 	}
@@ -121,7 +122,7 @@ func TestDirectPaymentRejectsUnsignedTxWithARC(t *testing.T) {
 
 	payeeBytes, _ := hex.DecodeString(payeeScript)
 	txHex := hex.EncodeToString(buildRawTx(payeeBytes, 100))
-	_, err := pg.verifyDirectPayment(txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	_, err := pg.verifyDirectPayment(context.Background(), txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err == nil {
 		t.Fatal("an unsigned transaction must be rejected by Anvil's own check even when ARC is configured")
 	}
@@ -145,7 +146,7 @@ func TestDirectPaymentAcceptsSignedTxWithARC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serialize extended format: %v", err)
 	}
-	receipt, err := pg.verifyDirectPayment(efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	receipt, err := pg.verifyDirectPayment(context.Background(), efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err != nil {
 		t.Fatalf("a validly signed direct payment should be accepted with ARC configured: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestDirectPaymentRejectsForgedSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serialize extended format: %v", err)
 	}
-	_, err = pg.verifyDirectPayment(efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	_, err = pg.verifyDirectPayment(context.Background(), efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err == nil {
 		t.Fatal("a forged unlocking script must be rejected")
 	}
@@ -255,7 +256,7 @@ func TestDirectPaymentRejectsTxAlteredAfterSigning(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: serialize extended format: %v", name, err)
 		}
-		if _, err := pg.verifyDirectPayment(efHex, payees); err == nil {
+		if _, err := pg.verifyDirectPayment(context.Background(), efHex, payees); err == nil {
 			t.Fatalf("%s: a payment altered after signing must be refused", name)
 		}
 	}

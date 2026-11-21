@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -163,7 +164,7 @@ func TestDirectPaymentMinedDepth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serialize extended format: %v", err)
 		}
-		_, err = NewPaymentGate(cfg).verifyDirectPayment(ef, payees)
+		_, err = NewPaymentGate(cfg).verifyDirectPayment(context.Background(), ef, payees)
 		return err
 	}
 	const tip = 900_000

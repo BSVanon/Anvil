@@ -265,7 +265,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		// X-Bsv-Payment: a raw or Extended Format tx that pays the payees
 		// directly, with no challenge (verifyDirectPayment).
 		if bsvPayment != "" && proofHeader == "" {
-			receipt, err := pg.verifyDirectPayment(bsvPayment, payees)
+			receipt, err := pg.verifyDirectPayment(r.Context(), bsvPayment, payees)
 			if err != nil {
 				writePaymentRejection(w, r, "direct payment rejected: ", err)
 				return

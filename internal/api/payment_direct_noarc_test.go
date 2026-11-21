@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -147,7 +148,7 @@ func TestDirectPaymentRefusedWithoutARC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serialize extended format: %v", err)
 	}
-	receipt, err := pg.verifyDirectPayment(efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	receipt, err := pg.verifyDirectPayment(context.Background(), efHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err == nil {
 		t.Fatalf("a direct payment must be refused when the node has no ARC client, got receipt %+v", receipt)
 	}

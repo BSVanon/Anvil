@@ -3,12 +3,16 @@ package api
 import (
 	"errors"
 	"net/http"
+	"time"
+
+	"github.com/BSVanon/Anvil/internal/refusallog"
 )
 
 // Stable codes for the payment refusals a client can act on. Each one is
 // answered 402, like every other refused payment, with the body shape of
 // BRC-105 section 6.2 (status, code, description; writeCodedError,
-// coded_error.go).
+// coded_error.go), except the ones for a node too busy to take the payment
+// now, which are answered 503 with a Retry-After.
 const (
 	// codeDirectPaymentUnavailable: the node has no ARC client, so it takes
 	// no X-Bsv-Payment (errDirectPaymentUnavailable).
@@ -33,12 +37,18 @@ const (
 	// accept the payment, and the node has no ARC client to ask
 	// (errMempoolCheckUnavailable).
 	codeMempoolCheckUnavailable = "ERR_MEMPOOL_CHECK_UNAVAILABLE"
+	// codeDirectPaymentBusy (503): every direct-payment ARC submit slot is
+	// taken (errDirectPaymentSubmitsBusy, payment_submit.go).
+	codeDirectPaymentBusy = "ERR_DIRECT_PAYMENT_BUSY"
 )
 
-// paymentRefusal is a payment refused with one of the codes above.
+// paymentRefusal is a payment refused with one of the codes above. One with a
+// retryAfter refuses it because the node is busy, not because the payment is
+// wrong: it is answered 503 with that Retry-After.
 type paymentRefusal struct {
-	code string
-	msg  string
+	code       string
+	msg        string
+	retryAfter time.Duration
 }
 
 func (e *paymentRefusal) Error() string { return e.msg }
@@ -67,9 +77,10 @@ var errMempoolCheckUnavailable = &paymentRefusal{
 // writePaymentRejection answers a refused payment: the body-read status for
 // a request body that could not be read (writePaymentBodyError,
 // payment_bodyread.go), 431 for a payment header refused by its size
-// (paymentRejectionStatus, payment_bounds.go), a coded 402 for a
-// paymentRefusal, and a plain 402 for any other payment failure. prefix names
-// the payment path in the message.
+// (paymentRejectionStatus, payment_bounds.go), a coded 503 for a busy
+// paymentRefusal, a coded 402 for any other paymentRefusal, and a plain 402
+// for any other payment failure. prefix names the payment path in the
+// message.
 func writePaymentRejection(w http.ResponseWriter, r *http.Request, prefix string, err error) {
 	var bodyErr *paymentBodyError
 	if errors.As(err, &bodyErr) {
@@ -79,8 +90,20 @@ func writePaymentRejection(w http.ResponseWriter, r *http.Request, prefix string
 	status := paymentRejectionStatus(r, err)
 	var refusal *paymentRefusal
 	if status == http.StatusPaymentRequired && errors.As(err, &refusal) {
+		if refusal.retryAfter > 0 {
+			refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonBusy)
+			writeCodedUnavailable(w, refusal.retryAfter, refusal.code, prefix+err.Error())
+			return
+		}
 		writeCodedError(w, status, refusal.code, prefix+err.Error())
 		return
 	}
 	writeError(w, status, prefix+err.Error())
+}
+
+// writeCodedUnavailable answers 503 with a stable code and a Retry-After of
+// at least one second.
+func writeCodedUnavailable(w http.ResponseWriter, retryAfter time.Duration, code, msg string) {
+	setRetryAfter(w, retryAfter)
+	writeCodedError(w, http.StatusServiceUnavailable, code, msg)
 }

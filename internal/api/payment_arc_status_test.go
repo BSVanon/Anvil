@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -44,7 +45,7 @@ func TestDirectPaymentNeedsNetworkAcceptance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serialize extended format: %v", err)
 		}
-		_, err = pg.verifyDirectPayment(ef, payees)
+		_, err = pg.verifyDirectPayment(context.Background(), ef, payees)
 		return err
 	}
 	for _, status := range refusedARCStatuses {

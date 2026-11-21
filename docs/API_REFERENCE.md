@@ -516,8 +516,17 @@ kept across a restart, so after a restart a direct payment accepted in the
 last 24 hours that is still unmined, or mined at most 144 blocks deep, can
 pay once more.
 
-A refused payment answers 402. When the refusal has a stable code, the body
-is `{"status":"error","code":"ERR_...","description":"...","error":"..."}`.
+**Direct-payment broadcasts are bounded.** The node waits at most 10
+seconds for ARC to answer a direct payment's broadcast, and no longer than
+the request itself lasts; a broadcast cut off this way refuses the payment,
+and the same transaction can be sent again. At most 16 direct payments are
+broadcast at once, node-wide. One more is answered 503 with code
+`ERR_DIRECT_PAYMENT_BUSY` and a `Retry-After`, without being broadcast, and
+the same transaction can be sent again.
+
+A refused payment answers 402, except where this section names 503. When
+the refusal has a stable code, the body is
+`{"status":"error","code":"ERR_...","description":"...","error":"..."}`.
 
 ### What a payment or app token unlocks
 
