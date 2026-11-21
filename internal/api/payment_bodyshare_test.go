@@ -201,9 +201,8 @@ func TestStalledBodiesFromOneClientLeavePermitsForOthers(t *testing.T) {
 // the grace, over that floor and under bodyread.MinReadRate, is read in full.
 func TestPaymentBodyKeepsTheSharedFloor(t *testing.T) {
 	l := paymentBodyLimits
-	if l.MinRate != bodyread.MinReadRate/2 || l.Grace != bodyread.ReadGrace ||
-		l.Timeout != l.Grace+time.Duration(l.Max)*time.Second/time.Duration(l.MinRate) {
-		t.Fatalf("payment body limits %+v, want a floor of %d bytes a second after %v, and a timeout of a 1 MiB body at it", l, bodyread.MinReadRate/2, bodyread.ReadGrace)
+	if l.MinRate != bodyread.MinReadRate/2 || l.Grace != bodyread.ReadGrace || l.Timeout > 60*time.Second {
+		t.Fatalf("payment body limits %+v, want a floor of %d bytes a second after %v and at most the default challenge lifetime", l, bodyread.MinReadRate/2, bodyread.ReadGrace)
 	}
 	shrinkPaymentBodyGrace(t, 300*time.Millisecond)
 	srv := testServerWithPaymentGate(t, 100)

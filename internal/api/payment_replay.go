@@ -16,20 +16,16 @@ import (
 // again as an X-Bsv-Payment, or the other way round.
 //
 // The memory is bounded: a txid is kept for directPaymentReplayWindow, and at
-// most directPaymentReplayCapacity txids are kept, the oldest evicted first.
+// most directPaymentReplayCapacity txids are kept. Once full, the set refuses
+// new payments until an entry expires. It never evicts an accepted payment to
+// admit another one.
 // Measured full (TestDirectPaymentReplaySetMemory): 9.2 MB (8.8 MiB) of heap.
 // The set lives in memory only, so a restart empties it. A direct payment
 // that ARC reports as mined deeper than maxDirectPaymentDepth blocks is
 // refused whether or not the set remembers it (checkPaymentDepth,
 // payment_arc.go), so neither eviction nor a restart reopens an old mined
-// payment. The known limit: each time the set forgets a txid, when the
-// window passes, by evicting it or on a restart, that transaction can pay
-// once more as a direct payment while it is still unmined or at most
-// maxDirectPaymentDepth blocks deep. A client that cycles more than
-// directPaymentReplayCapacity paid transactions through the set can
-// therefore reuse each of them repeatedly, but none later than
-// maxDirectPaymentDepth blocks after it is mined; one that stays unmined has
-// no such bound.
+// payment. The known limit is that the in-memory set is empty after a restart,
+// and an entry is forgotten after its window.
 const (
 	directPaymentReplayWindow   = 24 * time.Hour
 	directPaymentReplayCapacity = 100_000
@@ -41,6 +37,12 @@ const (
 func errPaymentReplayed(txid string) error {
 	return &paymentRefusal{code: codePaymentReplayed,
 		msg: "payment transaction " + txid + " was already used: one transaction pays for one request"}
+}
+
+var errPaymentReplayFull = &paymentRefusal{
+	code:       codePaymentReplayFull,
+	msg:        "payment replay protection is full; retry the same transaction after capacity expires",
+	retryAfter: time.Minute,
 }
 
 // replayEntry is one accepted payment txid and when it was accepted, as the
@@ -72,6 +74,7 @@ const (
 	replayClaimed paymentReplayClaim = iota
 	replayAccepted
 	replayInFlight
+	replayFull
 )
 
 // newPaymentReplaySet returns a set that remembers txids for window, and at
@@ -107,6 +110,11 @@ func (s *paymentReplaySet) claim(txid chainhash.Hash) paymentReplayClaim {
 	if _, ok := s.inFlight[txid]; ok {
 		return replayInFlight
 	}
+	// Reserve capacity for every verification in flight. If they all pass,
+	// end can remember every one without evicting an earlier acceptance.
+	if s.size+len(s.inFlight) >= s.capacity {
+		return replayFull
+	}
 	s.inFlight[txid] = struct{}{}
 	return replayClaimed
 }
@@ -122,9 +130,6 @@ func (s *paymentReplaySet) end(txid chainhash.Hash, accepted bool) {
 		return
 	}
 	s.expire()
-	if s.size >= s.capacity {
-		s.popOldest()
-	}
 	s.push(replayEntry{txid: txid, at: s.now().Sub(s.base)})
 	s.accepted[txid] = struct{}{}
 }

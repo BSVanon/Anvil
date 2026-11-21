@@ -126,10 +126,14 @@ func (pg *PaymentGate) reserveProofAttempt(hash string, pending *pendingChalleng
 // endProofAttempt removes the challenge after a proof that passed, since a
 // challenge pays for one request, and after a failed proof that used its last
 // attempt.
-func (pg *PaymentGate) endProofAttempt(hash string, pending *pendingChallenge, passed bool) {
+func (pg *PaymentGate) endProofAttempt(hash string, pending *pendingChallenge, passed, ambiguous bool) {
 	pg.mu.Lock()
 	defer pg.mu.Unlock()
 	if pg.pendingChallenges[hash] != pending {
+		return
+	}
+	if ambiguous {
+		pending.attempts--
 		return
 	}
 	if passed || pending.attempts >= maxProofAttempts {

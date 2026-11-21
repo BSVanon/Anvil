@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,7 +15,7 @@ import (
 // returns it.
 type fakeReplayNonceProvider struct{}
 
-func (*fakeReplayNonceProvider) MintNonce() (*NonceUTXO, error) {
+func (*fakeReplayNonceProvider) MintNonce(context.Context) (*NonceUTXO, error) {
 	return nil, sdkauth.ErrReplayedNonce
 }
 
@@ -22,7 +23,7 @@ func (*fakeReplayNonceProvider) MintNonce() (*NonceUTXO, error) {
 // confirm the generic-failure fallback is unchanged (still 500).
 type fakeOpaqueFailureNonceProvider struct{}
 
-func (*fakeOpaqueFailureNonceProvider) MintNonce() (*NonceUTXO, error) {
+func (*fakeOpaqueFailureNonceProvider) MintNonce(context.Context) (*NonceUTXO, error) {
 	return nil, errOpaqueMintFailure
 }
 

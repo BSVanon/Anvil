@@ -32,6 +32,9 @@ const (
 	// codePaymentReplayed: the payment's transaction already paid for a
 	// request, on either payment path (paymentReplaySet, payment_replay.go).
 	codePaymentReplayed = "ERR_PAYMENT_REPLAYED"
+	// codePaymentReplayFull (503): replay protection is full, so accepting a
+	// new transaction could make an accepted one replayable.
+	codePaymentReplayFull = "ERR_PAYMENT_REPLAY_FULL"
 	// codePaymentTooOld: ARC reports the direct payment mined deeper than this
 	// node accepts, or at a depth it cannot work out (checkPaymentDepth,
 	// payment_arc.go).
@@ -49,6 +52,9 @@ const (
 	// codeDirectPaymentBusy (503): every direct-payment ARC submit slot is
 	// taken (errDirectPaymentSubmitsBusy, payment_submit.go).
 	codeDirectPaymentBusy = "ERR_DIRECT_PAYMENT_BUSY"
+	// codePaymentSubmitUncertain (503): ARC may have accepted the transaction,
+	// but its answer was lost or could not be interpreted.
+	codePaymentSubmitUncertain = "ERR_PAYMENT_SUBMIT_UNCERTAIN"
 	// codePaymentBodyShare (503): the client already has its share of
 	// payment request bodies being read (errPaymentBodyShare,
 	// payment_bodyshare.go).
@@ -62,9 +68,11 @@ type paymentRefusal struct {
 	code       string
 	msg        string
 	retryAfter time.Duration
+	cause      error
 }
 
 func (e *paymentRefusal) Error() string { return e.msg }
+func (e *paymentRefusal) Unwrap() error { return e.cause }
 
 // errDirectPaymentUnavailable refuses every X-Bsv-Payment on a node with no
 // ARC client. A direct payment carries its inputs' source outputs as the

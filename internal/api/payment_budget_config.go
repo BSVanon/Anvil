@@ -8,10 +8,11 @@ import (
 // The ceilings of the configured mint budget. Without them a huge
 // x402_mints_per_minute rounds the refill interval down to zero and a huge
 // x402_mint_burst gives the bucket years of slack, and either one lets
-// callers mint without limit. At the ceilings the node mints at most
-// maxMintBurst + maxMintsPerMinute*60 = 4,600 nonces in an hour, which costs
-// 4,600 nonce sats plus 23..76 sats of fees each (payment_budget.go):
-// 110,400..354,200 sats.
+// callers mint without limit. At the ceilings one uninterrupted process
+// starts at most maxMintBurst + maxMintsPerMinute*60 = 4,600 nonce mints in
+// an hour. This is an attempt bound, not a satoshi ceiling: wallet input
+// fragmentation can make a transaction larger than the examples in
+// payment_budget.go, and another process or a restart has its own bucket.
 const (
 	maxMintBurst      = 1000
 	maxMintsPerMinute = 60

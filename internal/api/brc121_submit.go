@@ -44,7 +44,7 @@ func submitBRC121With(ctx context.Context, p *brc121Payment, sweep bool,
 		if err != nil {
 			return resp, fmt.Errorf("ARC broadcast failed: %w", err)
 		}
-		if err := checkARCAcceptance(resp); err != nil {
+		if err := checkARCAcceptance(resp, tx.TxID()); err != nil {
 			return resp, err
 		}
 		subject = resp

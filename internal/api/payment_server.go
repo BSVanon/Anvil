@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -46,7 +47,13 @@ func newServerPaymentGate(cfg ServerConfig, resolver *TopicMonetizationResolver)
 		MaxAppPriceSats:  cfg.MaxAppPriceSats,
 		EndpointPrices:   cfg.EndpointPrices,
 		HeaderTip:        tip,
-		HeadersFresh:     fresh,
+		HeaderAtHeight: func(height uint32) ([]byte, error) {
+			if cfg.HeaderStore == nil {
+				return nil, fmt.Errorf("no header store")
+			}
+			return cfg.HeaderStore.HeaderAtHeight(height)
+		},
+		HeadersFresh: fresh,
 	})
 	if pg != nil { // nil when the node takes no payment
 		pg.clientKey = func(r *http.Request) string {

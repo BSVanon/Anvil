@@ -186,6 +186,14 @@ func (pg *PaymentGate) brc121Offer(r *http.Request, payees []Payee, tokenGated, 
 	return node.AmountSats
 }
 
+// issueBRC121Offer answers a node-only 402 with BRC-121 headers and no proof
+// challenge. Existing proof submissions remain accepted by Middleware.
+func (pg *PaymentGate) issueBRC121Offer(w http.ResponseWriter, sats int) {
+	pg.brc121.setOffer(w, sats)
+	pg.brc121.counts.add(&pg.brc121.counts.offered)
+	w.WriteHeader(http.StatusPaymentRequired)
+}
+
 // takesBRC121 reports whether r is a BRC-121 payment the gate takes: it
 // carries x-bsv-beef, the gate takes BRC-121 and the node prices r's route
 // above 0. Otherwise the BRC-121 headers are ignored: a route the node does

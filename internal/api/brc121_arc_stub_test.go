@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/BSVanon/Anvil/internal/txrelay"
+	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 func newBRC121Stub() (*brc121ARC, *txrelay.ARCClient) {
@@ -26,5 +27,9 @@ func (a *brc121ARC) send(ctx context.Context, raw []byte) (*txrelay.ARCResponse,
 	if code != 0 {
 		return nil, &txrelay.ARCHTTPError{StatusCode: code, Body: `{"title":"refused"}`}
 	}
-	return &txrelay.ARCResponse{TxID: "mock", Status: status}, nil
+	tx, err := transaction.NewTransactionFromBytes(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &txrelay.ARCResponse{TxID: tx.TxID().String(), Status: status}, nil
 }

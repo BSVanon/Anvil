@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,11 +22,11 @@ func holdingARC(t *testing.T) (arc *txrelay.ARCClient, arrived <-chan struct{}, 
 	got := make(chan struct{}, 4*maxDirectPaymentSubmits)
 	hold := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.ReadAll(r.Body) // read to its end, so the server sees the client go
+		txid := submittedTxID(t, r) // also reads to the end, so the server sees the client go
 		got <- struct{}{}
 		select {
 		case <-hold:
-			_ = json.NewEncoder(w).Encode(txrelay.ARCResponse{TxID: "mock", Status: "SEEN_ON_NETWORK"})
+			_ = json.NewEncoder(w).Encode(txrelay.ARCResponse{TxID: txid, Status: "SEEN_ON_NETWORK"})
 		case <-r.Context().Done():
 		}
 	}))
@@ -117,6 +116,17 @@ func TestDirectPaymentSubmitEndsAtItsBound(t *testing.T) {
 	}
 }
 
+func TestAmbiguousPaymentSubmitPreservesDeadlineCause(t *testing.T) {
+	err := ambiguousPaymentSubmit(context.DeadlineExceeded)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ambiguous submit hid its deadline cause: %v", err)
+	}
+	var refusal *paymentRefusal
+	if !errors.As(err, &refusal) || refusal.code != codePaymentSubmitUncertain {
+		t.Fatalf("deadline was not classified as an uncertain submit: %v", err)
+	}
+}
+
 // TestDirectPaymentSubmitEndsWithItsRequest: a direct payment's ARC submit
 // carries the request's context, so it ends when the request does, well
 // before its own bound.
@@ -146,5 +156,36 @@ func TestDirectPaymentSubmitEndsWithItsRequest(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the submit outlived its request")
+	}
+}
+
+func TestProofSubmitEndsWithItsRequest(t *testing.T) {
+	arc, arrived, _ := holdingARC(t)
+	payee := testPayeeScript(t)
+	pg := NewPaymentGate(PaymentGateConfig{
+		PriceSats: 100, PayeeScriptHex: payee, NonceProvider: &DevNonceProvider{},
+		RequireMempool: true, ARCClient: arc,
+	})
+	ch := gateChallenge(t, pg, "/status")
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/status", nil).WithContext(ctx)
+	req.Host = "localhost"
+	req.Header.Set(HeaderX402Proof, buildProof(t, ch, 100, payee))
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		pg.Middleware(func(http.ResponseWriter, *http.Request) {})(w, req)
+		close(done)
+	}()
+	<-arrived
+	cancel()
+	select {
+	case <-done:
+		var body codedError
+		if w.Code != http.StatusServiceUnavailable || json.Unmarshal(w.Body.Bytes(), &body) != nil || body.Code != codePaymentSubmitUncertain {
+			t.Fatalf("canceled proof submit: got %d %s, want an uncertain 503", w.Code, w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("proof ARC submission outlived its request")
 	}
 }

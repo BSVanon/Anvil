@@ -19,6 +19,12 @@ import (
 //     challenge, before the client has paid anything, so no payment exists
 //     yet that could be replayed or answered with 402.
 func writeMintNonceError(w http.ResponseWriter, r *http.Request, err error) {
+	var busy *mintCapacityError
+	if errors.As(err, &busy) {
+		refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonBusy)
+		writeUnavailable(w, busy.retryAfter, "no payment nonce available: "+busy.Error()+", retry later")
+		return
+	}
 	var spent *mintBudgetError
 	if errors.As(err, &spent) {
 		refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonMintBudgetExceeded)

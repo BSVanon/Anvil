@@ -113,10 +113,14 @@ Unacknowledged messages expire after 7 days.
 ## Payment flow (x402)
 
 1. Request a gated endpoint without payment
-2. Receive `402 Payment Required` with challenge (nonce, payees, amount)
-3. Build BSV transaction paying the challenge
-4. Resend request with `X402-Proof` header
+2. Receive a BRC-121 `402 Payment Required` offer for the node's own price
+3. Build the payment with a BRC-42 wallet
+4. Resend the request with the BRC-121 `x-bsv-*` headers
 5. Receive data + receipt
+
+The older `X402-Proof` challenge path is deprecated in favor of BRC-121. It
+remains accepted for existing challenges and for offers BRC-121 cannot cover.
+App passthrough and split payments use `X-Bsv-Payment`.
 
 Price discovery: `GET /.well-known/x402` returns all gated endpoints and prices.
 

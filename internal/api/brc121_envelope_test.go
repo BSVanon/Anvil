@@ -44,6 +44,9 @@ func TestBRC121OfferOnNodeOnlyChallengesOnly(t *testing.T) {
 	if w.Code != http.StatusPaymentRequired || w.Header().Get(headerBRC121Sats) != "100" || w.Header().Get(headerBRC121Server) != wallet.root.PubKey().ToDERHex() {
 		t.Fatalf("a node-only challenge offers BRC-121: got %d, %q %q", w.Code, w.Header().Get(headerBRC121Sats), w.Header().Get(headerBRC121Server))
 	}
+	if got := w.Header().Get(HeaderX402Challenge); got != "" {
+		t.Fatal("a BRC-121 offer also advertised the node-only proof path")
+	}
 	expose := strings.ToLower(w.Header().Get("Access-Control-Expose-Headers"))
 	if !strings.Contains(expose, headerBRC121Sats) || !strings.Contains(expose, headerBRC121Server) {
 		t.Fatalf("the offer headers must be exposed to browsers, got %q", expose)
@@ -57,8 +60,8 @@ func TestBRC121OfferOnNodeOnlyChallengesOnly(t *testing.T) {
 	srv.paymentGate.allowPassthrough, srv.paymentGate.allowSplit = false, false
 	for _, topic := range []string{"pass", "split"} {
 		w := getWithHeaders(srv, "/data?topic="+topic, nil)
-		if w.Code != http.StatusPaymentRequired || w.Header().Get(HeaderX402Challenge) == "" {
-			t.Fatalf("%s: disabling the app model must retain the node's x402 challenge", topic)
+		if w.Code != http.StatusOK || w.Header().Get(HeaderX402Challenge) != "" {
+			t.Fatalf("%s: a disabled app model offered a payment that cannot unlock the content: %d", topic, w.Code)
 		}
 		assertNoBRC121Offer(t, w)
 	}

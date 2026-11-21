@@ -104,16 +104,15 @@ payment_satoshis = 0              # x402 price per request (0 = free, experiment
 # unset on either key below → the compiled-in default: 10 burst, 2/minute.
 # Worst-case mints in any T minutes = x402_mint_burst + x402_mints_per_minute*T,
 # so in one hour: x402_mint_burst + x402_mints_per_minute*60. At the default
-# (10, 2) that is 130 mints/hour. Each mint is one wallet tx paying ~23-76 sat
-# in fees (one P2PKH input/output up to three inputs, wallet-toolbox's default
-# fee model — see payment_budget.go) plus 1 sat locked in the nonce output
-# itself, so the worst-case hourly cost at the default is roughly
-# 130 sats (nonce outputs) + 130 * 23..76 sats (fees) = 3,120..10,010 sats/hour.
-# Recompute both terms with your own values before raising them.
+# (10, 2) that is 130 mint attempts/hour. The bound is on attempts, not sats:
+# every successful mint locks 1 sat, but wallet input fragmentation can make
+# its transaction fee larger than the examples in payment_budget.go. At most
+# 4 wallet mints run concurrently, and each ends with its request or after 10s.
 # Each key is bounded: a negative value takes its default, and a value above
 # its ceiling (1000 burst, 60/minute) takes the ceiling; both are logged as a
-# warning, and the budget in effect is logged at startup. At the ceilings the
-# worst hour is 4,600 mints: 110,400..354,200 sats.
+# warning, and the budget in effect is logged at startup. At the ceilings one
+# uninterrupted process starts at most 4,600 mint attempts in an hour. A
+# restart or another process has its own budget.
 x402_mint_burst = 10               # mints allowed at once before the per-minute rate applies
 x402_mints_per_minute = 2          # sustained mint rate once the burst is spent
 

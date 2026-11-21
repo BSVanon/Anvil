@@ -3,10 +3,21 @@ package api
 import (
 	"bytes"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMintBudgetDocumentationDoesNotClaimUnenforcedSatoshiCeiling(t *testing.T) {
+	source, err := os.ReadFile("payment_budget_config.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), "110,400..354,200 sats") {
+		t.Fatal("mint-attempt ceilings were documented as an unenforced satoshi ceiling")
+	}
+}
 
 // useMintBudget restores defaultMintBudget when the test ends.
 func useMintBudget(t *testing.T) {

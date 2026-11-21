@@ -17,7 +17,7 @@ func mockARCWithStatus(t *testing.T, status string, height uint32) *txrelay.ARCC
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(txrelay.ARCResponse{TxID: "mock", Status: status, BlockHeight: height})
+		_ = json.NewEncoder(w).Encode(txrelay.ARCResponse{TxID: submittedTxID(t, r), Status: status, BlockHeight: height})
 	}))
 	t.Cleanup(srv.Close)
 	return txrelay.NewARCClient(srv.URL, "")
@@ -60,8 +60,8 @@ func TestDirectPaymentNeedsNetworkAcceptance(t *testing.T) {
 	}
 }
 
-// A challenge-bound proof whose challenge requires mempool acceptance is
-// accepted only when ARC reports SEEN_ON_NETWORK or MINED.
+// A challenge-bound proof whose challenge requires mempool acceptance takes
+// SEEN_ON_NETWORK. MINED additionally needs a local-header merkle proof.
 func TestProofPaymentNeedsNetworkAcceptance(t *testing.T) {
 	pay := func(status string) *httptest.ResponseRecorder {
 		srv := testServer(t)
@@ -85,9 +85,10 @@ func TestProofPaymentNeedsNetworkAcceptance(t *testing.T) {
 	for _, status := range refusedARCStatuses {
 		requirePaymentCode(t, pay(status), codePaymentNotAccepted)
 	}
-	for _, status := range []string{"SEEN_ON_NETWORK", "MINED"} {
-		if w := pay(status); w.Code != http.StatusOK {
-			t.Fatalf("ARC status %s: got %d %s, want 200", status, w.Code, w.Body.String())
-		}
+	if w := pay("SEEN_ON_NETWORK"); w.Code != http.StatusOK {
+		t.Fatalf("ARC status SEEN_ON_NETWORK: got %d %s, want 200", w.Code, w.Body.String())
+	}
+	if w := pay("MINED"); w.Code != http.StatusPaymentRequired {
+		t.Fatalf("unproved ARC status MINED: got %d %s, want 402", w.Code, w.Body.String())
 	}
 }

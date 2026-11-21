@@ -1,83 +1,61 @@
 package api
 
 import (
+	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/BSVanon/Anvil/internal/txrelay"
+	"github.com/bsv-blockchain/go-sdk/chainhash"
+	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/libsv/go-p2p/wire"
 )
 
-// arcAccepted reports whether an ARC txStatus shows that the network accepted
-// a payment transaction, which means its inputs exist and are unspent. Both
-// payment paths ask it after broadcasting (verifyProof when the challenge
-// requires mempool acceptance, and verifyDirectPayment always).
-//
-// The statuses, in ARC's own order (ARC metamorph_api.pb.go:32-45; each
-// meaning is ARC's README, lines 197-210):
-//
-//   - UNKNOWN, QUEUED, RECEIVED, STORED: still inside ARC, before any node
-//     has seen the transaction. Refused.
-//   - ANNOUNCED_TO_NETWORK, REQUESTED_BY_NETWORK, SENT_TO_NETWORK: a node was
-//     told about it, asked for it or sent it; none of these says the node
-//     accepted it. Refused.
-//   - ACCEPTED_BY_NETWORK: "accepted by a connected Bitcoin node on the ZMQ
-//     interface", and never set when ARC has no ZMQ connection. Refused, as
-//     the narrower choice; accepting it is still an open question.
-//   - SEEN_IN_ORPHAN_MEMPOOL: sent to a node, but "parent transaction was not
-//     found", so an input may not exist. Refused. go-sdk's ARC broadcaster
-//     treats any status containing ORPHAN as a failure (go-sdk v1.7.7
-//     transaction/broadcaster/arc.go:186-196,219-225).
-//   - SEEN_ON_NETWORK: "seen on the Bitcoin network and propagated to other
-//     nodes", set when ARC hears the transaction announced back from a node
-//     other than the one it sent it to. Accepted. It is also the status ARC
-//     waits for by default before it answers a submit (ARC
-//     internal/metamorph/server.go:276-278), for up to 5 seconds by default
-//     (internal/api/handler/default.go:32).
-//   - DOUBLE_SPEND_ATTEMPTED, REJECTED, MINED_IN_STALE_BLOCK: failures, as
-//     go-sdk's ARC broadcaster also treats them. Refused.
-//   - MINED: "mined into a block by a mining node". Accepted.
-//
-// txrelay's own broadcast path counts the same two statuses as accepted
-// (internal/txrelay/broadcast.go).
+// arcAccepted reports whether ARC says the network has accepted a payment.
+// SEEN_ON_NETWORK is the unmined acceptance state. MINED is only final after
+// checkPaymentFinality verifies ARC's proof against this node's header.
 func arcAccepted(status string) bool {
 	return status == "SEEN_ON_NETWORK" || status == "MINED"
 }
 
-// checkARCAcceptance refuses a payment whose broadcast ARC did not report as
-// accepted by the network (arcAccepted).
-func checkARCAcceptance(resp *txrelay.ARCResponse) error {
-	if !arcAccepted(resp.Status) {
-		return &paymentRefusal{
-			code: codePaymentNotAccepted,
-			msg: fmt.Sprintf("ARC did not report the payment as accepted by the network: status %q, want SEEN_ON_NETWORK or MINED; "+
-				"retry the same transaction shortly, as the network may still accept it, rather than paying with a new one", resp.Status),
+// checkARCAcceptance binds ARC's response to the transaction just submitted
+// before considering its status.
+func checkARCAcceptance(resp *txrelay.ARCResponse, expected *chainhash.Hash) error {
+	if resp == nil || expected == nil || resp.TxID != expected.String() {
+		got, want := "", ""
+		if resp != nil {
+			got = resp.TxID
 		}
+		if expected != nil {
+			want = expected.String()
+		}
+		return paymentNotAccepted(fmt.Sprintf("ARC answered for transaction %q, want %q", got, want))
+	}
+	if !arcAccepted(resp.Status) {
+		return paymentNotAccepted(fmt.Sprintf("ARC did not report the payment as accepted by the network: status %q, want SEEN_ON_NETWORK or MINED", resp.Status))
 	}
 	return nil
 }
 
-// maxDirectPaymentDepth is the deepest a direct payment that ARC reports as
-// MINED may be below this node's header tip: 144 blocks, about 24 hours at
-// 10 minutes a block, the same span as directPaymentReplayWindow
-// (payment_replay.go).
+func paymentNotAccepted(reason string) error {
+	return &paymentRefusal{
+		code: codePaymentNotAccepted,
+		msg:  reason + "; retry the same transaction shortly, as the network may still accept it, rather than paying with a new one",
+	}
+}
+
+// maxDirectPaymentDepth is the deepest a mined payment may be below this
+// node's header tip: 144 blocks, about the replay window at ten minutes per
+// block.
 const maxDirectPaymentDepth = 144
 
-// maxPaymentHeightAboveTip is how far above this node's header tip ARC may
-// report a MINED direct payment: 2 blocks, the lag ordinary block
-// propagation leaves between ARC and this node. A height further above the
-// tip means this node's headers are behind, so it cannot tell how deep the
-// payment is.
-const maxPaymentHeightAboveTip = 2
+// maxPaymentMerklePathHex bounds ARC's BRC-74 proof before parsing it.
+const maxPaymentMerklePathHex = 512 << 10
 
-// checkPaymentDepth refuses a direct payment that ARC reports as MINED more
-// than maxDirectPaymentDepth blocks below the node's header tip, so a payment
-// the replay set no longer remembers, after eviction or a restart, cannot pay
-// again once it is buried. A MINED report whose depth the node cannot work
-// out is refused as well: one with no block height, one when the node has no
-// header tip, and one more than maxPaymentHeightAboveTip blocks above the
-// tip, which a node whose headers have stopped syncing would otherwise accept
-// whatever the payment's real depth. Other accepted statuses are unmined and
-// pass.
-func (pg *PaymentGate) checkPaymentDepth(resp *txrelay.ARCResponse) error {
+// checkPaymentFinality verifies every MINED response against the submitted
+// txid and this node's own header at the reported height. Other accepted
+// statuses are unmined and need no merkle proof.
+func (pg *PaymentGate) checkPaymentFinality(resp *txrelay.ARCResponse, txid *chainhash.Hash) error {
 	if resp.Status != "MINED" {
 		return nil
 	}
@@ -85,26 +63,54 @@ func (pg *PaymentGate) checkPaymentDepth(resp *txrelay.ARCResponse) error {
 	if pg.headerTip != nil {
 		tip = pg.headerTip()
 	}
-	if resp.BlockHeight == 0 || tip == 0 {
+	if resp.BlockHeight == 0 || tip == 0 || pg.headerAtHeight == nil {
+		return paymentNotFinal(fmt.Sprintf("ARC reports the payment mined at height %d, but this node has no header there", resp.BlockHeight))
+	}
+	if resp.BlockHeight > tip {
+		return paymentNotFinal(fmt.Sprintf("ARC reports the payment mined at height %d above this node's header tip %d", resp.BlockHeight, tip))
+	}
+	if tip-resp.BlockHeight > maxDirectPaymentDepth {
 		return &paymentRefusal{
 			code: codePaymentTooOld,
-			msg: fmt.Sprintf("ARC reports the payment mined at height %d and this node's header tip is %d, so the node cannot confirm it is recent; pay with a new transaction",
-				resp.BlockHeight, tip),
-		}
-	}
-	if resp.BlockHeight > tip && resp.BlockHeight-tip > maxPaymentHeightAboveTip {
-		return &paymentRefusal{
-			code: codePaymentHeadersBehind,
-			msg: fmt.Sprintf("ARC reports the payment mined at height %d, %d blocks above this node's header tip %d: this node's headers are behind, so it cannot confirm how deep the payment is; retry the same transaction once they have caught up",
-				resp.BlockHeight, resp.BlockHeight-tip, tip),
-		}
-	}
-	if tip > resp.BlockHeight && tip-resp.BlockHeight > maxDirectPaymentDepth {
-		return &paymentRefusal{
-			code: codePaymentTooOld,
-			msg: fmt.Sprintf("the payment was mined at height %d, %d blocks below this node's header tip %d, and a direct payment may be at most %d blocks deep; pay with a new transaction",
+			msg: fmt.Sprintf("the payment was mined at height %d, %d blocks below this node's header tip %d, and a payment may be at most %d blocks deep; pay with a new transaction",
 				resp.BlockHeight, tip-resp.BlockHeight, tip, maxDirectPaymentDepth),
 		}
 	}
+	if len(resp.MerklePath) == 0 || len(resp.MerklePath) > maxPaymentMerklePathHex {
+		return paymentNotFinal("ARC's MINED answer has no bounded BRC-74 merkle path")
+	}
+	path, err := transaction.NewMerklePathFromHex(resp.MerklePath)
+	if err != nil || path.BlockHeight != resp.BlockHeight {
+		return paymentNotFinal("ARC's MINED answer has an invalid merkle path or height")
+	}
+	root, err := path.ComputeRoot(txid)
+	if err != nil {
+		return paymentNotFinal("ARC's MINED answer does not prove the submitted transaction")
+	}
+	raw, err := pg.headerAtHeight(resp.BlockHeight)
+	if err != nil {
+		return paymentNotFinal(fmt.Sprintf("this node does not yet have header %d", resp.BlockHeight))
+	}
+	var header wire.BlockHeader
+	if len(raw) != 80 || header.Deserialize(bytes.NewReader(raw)) != nil {
+		return paymentNotFinal(fmt.Sprintf("this node cannot read header %d", resp.BlockHeight))
+	}
+	if root.String() != header.MerkleRoot.String() {
+		return paymentNotFinal("ARC's merkle path does not match this node's header")
+	}
+	if resp.BlockHash == "" || !strings.EqualFold(resp.BlockHash, header.BlockHash().String()) {
+		return paymentNotFinal("ARC's block hash does not match this node's header")
+	}
 	return nil
+}
+
+func paymentNotFinal(reason string) error {
+	return &paymentRefusal{
+		code: codePaymentHeadersBehind,
+		msg:  reason + "; retry the same transaction once this node can verify it",
+	}
+}
+
+func (pg *PaymentGate) checkPaymentDepth(resp *txrelay.ARCResponse, txid *chainhash.Hash) error {
+	return pg.checkPaymentFinality(resp, txid)
 }

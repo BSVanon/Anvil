@@ -118,15 +118,24 @@ GET /data?topic=oracle:rates:bsv → 402 Payment Required (if priced)
 
 ### 4. Pay
 
-Build a BSV transaction paying the challenge amount. Standard P2PKH —
-any BSV wallet SDK can build it.
+For the node's own price, use the BRC-121 offer in `x-bsv-sats` and
+`x-bsv-server` with a BRC-42 wallet. App passthrough and split prices use an
+`X-Bsv-Payment` direct payment.
 
 ### 5. Prove and consume
 
 ```
 GET /data?topic=oracle:rates:bsv
-X402-Proof: <base64-encoded payment proof>
+x-bsv-beef: <atomic BEEF payment>
+x-bsv-sender: <payer identity key>
+x-bsv-nonce: <derivation prefix>
+x-bsv-time: <unix milliseconds>
+x-bsv-vout: <payment output index>
 ```
+
+`X402-Proof` is deprecated in favor of BRC-121. Existing proof challenges are
+still accepted, but a 402 that offers BRC-121 advertises no proof challenge
+and mints no proof-path nonce coin.
 
 ### 6. Subscribe for real-time
 
@@ -147,7 +156,7 @@ If you're building an AI agent that needs to:
 
 - **Find data** — `GET /topics` lists all available topics with metadata
 - **Read real-time data** — `GET /data/subscribe?topic=...` for SSE push
-- **Pay for premium data** — read `/.well-known/x402`, build payment, include proof
+- **Pay for premium data** — read `/.well-known/x402`, then use BRC-121 or `X-Bsv-Payment`
 - **Publish data** — sign an envelope and POST to `/data`
 - **Send messages to other agents** — `POST /sendMessage` with recipient pubkey
 - **Verify data authenticity** — check envelope signatures (all fields are signed)

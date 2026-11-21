@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -99,7 +100,7 @@ type X402Receipt struct {
 
 // NonceProvider mints nonce UTXOs for 402 challenges.
 type NonceProvider interface {
-	MintNonce() (*NonceUTXO, error)
+	MintNonce(context.Context) (*NonceUTXO, error)
 }
 
 // DevNonceProvider generates deterministic nonces without real UTXOs.
@@ -108,7 +109,10 @@ type DevNonceProvider struct {
 	counter atomic.Int64
 }
 
-func (d *DevNonceProvider) MintNonce() (*NonceUTXO, error) {
+func (d *DevNonceProvider) MintNonce(ctx context.Context) (*NonceUTXO, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	n := d.counter.Add(1)
 	h := sha256.Sum256([]byte(fmt.Sprintf("dev-nonce-%d-%d", n, time.Now().UnixNano())))
 	return &NonceUTXO{
@@ -145,6 +149,7 @@ type PaymentGate struct {
 	endpointPrices map[string]int
 
 	headerTip         func() uint32 // the node's header tip (checkPaymentDepth, payment_arc.go)
+	headerAtHeight    func(uint32) ([]byte, error)
 	headersFresh      func(time.Time) bool
 	replays           *paymentReplaySet // accepted payments, on either path (payment_replay.go)
 	mu                sync.Mutex
@@ -173,6 +178,7 @@ type PaymentGateConfig struct {
 	MaxAppPriceSats  int
 	EndpointPrices   map[string]int // path → satoshis override
 	HeaderTip        func() uint32  // the node's header tip, nil if it has none
+	HeaderAtHeight   func(uint32) ([]byte, error)
 	HeadersFresh     func(time.Time) bool
 
 	// mintBudget bounds the wallet mints of a NonceProvider that is not a
@@ -217,6 +223,7 @@ func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 		maxAppPriceSats:   cfg.MaxAppPriceSats,
 		endpointPrices:    cfg.EndpointPrices,
 		headerTip:         cfg.HeaderTip,
+		headerAtHeight:    cfg.HeaderAtHeight,
 		headersFresh:      cfg.HeadersFresh,
 		replays:           newPaymentReplaySet(directPaymentReplayWindow, directPaymentReplayCapacity, time.Now),
 		pendingChallenges: make(map[string]*pendingChallenge),
@@ -254,6 +261,13 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
+		// A disabled content-payment model cannot be unlocked by the node's
+		// own fallback payee. Serve the ordinary redacted response without
+		// offering a payment that cannot reveal it.
+		if disabledFallback {
+			next(w, r)
+			return
+		}
 		if len(payees) == 0 {
 			next(w, r)
 			return
@@ -267,7 +281,11 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		bsvPayment := r.Header.Get(HeaderBSVPayment)
 		if proofHeader == "" && bsvPayment == "" {
 			offer := pg.brc121Offer(r, payees, tokenGated, disabledFallback)
-			pg.issueChallengeForPayees(w, r, payees, offer)
+			if offer > 0 {
+				pg.issueBRC121Offer(w, offer)
+				return
+			}
+			pg.issueChallengeForPayees(w, r, payees, 0)
 			return
 		}
 
@@ -323,7 +341,7 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 	}
 	defer place.release()
 
-	nonce, err := pg.nonceProvider.MintNonce()
+	nonce, err := pg.nonceProvider.MintNonce(r.Context())
 	if err != nil {
 		// Classified in payment_nonce_errors.go: budget-exceeded gets 503,
 		// anything else gets 500.

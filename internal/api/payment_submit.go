@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -40,18 +41,22 @@ var errDirectPaymentSubmitsBusy = &paymentRefusal{
 	retryAfter: directPaymentBusyRetry,
 }
 
-// submitDirectPayment broadcasts a direct payment's transaction raw through
-// arc, holding one of directPaymentSubmitSlots, under ctx (the request's
-// context) and directPaymentSubmitTimeout. It refuses at once with
-// errDirectPaymentSubmitsBusy when no slot is free.
-func submitDirectPayment(ctx context.Context, arc *txrelay.ARCClient, raw []byte) (*txrelay.ARCResponse, error) {
+// takePaymentSubmitSlot takes shared admission for payment verification and
+// ARC submission. Direct payments take it before decoding; proofs take it
+// immediately before ARC because their challenge checks are separately
+// bounded.
+func takePaymentSubmitSlot() (func(), error) {
 	slots := directPaymentSubmitSlots
 	select {
 	case slots <- struct{}{}:
 	default:
 		return nil, errDirectPaymentSubmitsBusy
 	}
-	defer func() { <-slots }()
+	return func() { <-slots }, nil
+}
+
+// submitPaymentWithSlot broadcasts raw while the caller holds a shared slot.
+func submitPaymentWithSlot(ctx context.Context, arc *txrelay.ARCClient, raw []byte) (*txrelay.ARCResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, directPaymentSubmitTimeout)
 	defer cancel()
 	resp, err := arc.SubmitContext(ctx, raw)
@@ -59,4 +64,38 @@ func submitDirectPayment(ctx context.Context, arc *txrelay.ARCClient, raw []byte
 		return nil, fmt.Errorf("ARC broadcast failed: %w", err)
 	}
 	return resp, nil
+}
+
+// submitPayment takes a shared slot for a proof-path ARC submission.
+func submitPayment(ctx context.Context, arc *txrelay.ARCClient, raw []byte) (*txrelay.ARCResponse, error) {
+	release, err := takePaymentSubmitSlot()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return submitPaymentWithSlot(ctx, arc, raw)
+}
+
+// ambiguousPaymentSubmit turns a submit error that does not prove ARC
+// rejected the transaction into a retryable 503. ARC's transaction-policy
+// status range is a definite rejection; transport, parse and other HTTP
+// failures may have happened after acceptance.
+func ambiguousPaymentSubmit(err error) error {
+	if !paymentSubmitIsAmbiguous(err) {
+		return err
+	}
+	return &paymentRefusal{
+		code:       codePaymentSubmitUncertain,
+		msg:        err.Error() + "; ARC may have accepted this transaction, so retry the same transaction rather than paying again",
+		retryAfter: directPaymentBusyRetry,
+		cause:      err,
+	}
+}
+
+func paymentSubmitIsAmbiguous(err error) bool {
+	var httpErr *txrelay.ARCHTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode >= 460 && httpErr.StatusCode <= 475 {
+		return false
+	}
+	return true
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -81,10 +82,25 @@ func mockARCServer(t *testing.T) *txrelay.ARCClient {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(txrelay.ARCResponse{TxID: "mock", Status: "SEEN_ON_NETWORK"})
+		_ = json.NewEncoder(w).Encode(txrelay.ARCResponse{TxID: submittedTxID(t, r), Status: "SEEN_ON_NETWORK"})
 	}))
 	t.Cleanup(srv.Close)
 	return txrelay.NewARCClient(srv.URL, "")
+}
+
+func submittedTxID(t *testing.T, r *http.Request) string {
+	t.Helper()
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Errorf("read ARC request: %v", err)
+		return ""
+	}
+	tx, err := transaction.NewTransactionFromBytes(raw)
+	if err != nil {
+		t.Errorf("parse ARC request: %v", err)
+		return ""
+	}
+	return tx.TxID().String()
 }
 
 // TestDirectPaymentRejectsUnsignedTxNoARC: an X-Bsv-Payment with correct

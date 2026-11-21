@@ -27,14 +27,15 @@ const paymentBodyMinRate = bodyread.MinReadRate / 2
 // paymentBodyLimits bound one payment-route body read (readPaymentBody): at
 // most 1 MiB, the cap these reads always had; after bodyread.ReadGrace (2 s)
 // the body must keep up paymentBodyMinRate on average; and the whole read
-// ends by ReadGrace + 1 MiB / paymentBodyMinRate (66 s), the time a 1 MiB body
-// takes at that rate. No body within the cap is long enough for the overlay
+// ends within 60 seconds, no later than the default challenge expires. A
+// gate with a shorter challenge lifetime shortens the read again. No body
+// within the cap is long enough for the overlay
 // routes' schedule to ask more of it than that floor: it raises the rate only
 // for a body over 1 MiB, or one too long to arrive within its route's
 // timeout at the floor. A var so tests can shrink it.
 var paymentBodyLimits = bodyread.Limits{
 	Max:     1 << 20,
-	Timeout: bodyread.ReadGrace + (1<<20)*time.Second/paymentBodyMinRate,
+	Timeout: 60 * time.Second,
 	MinRate: paymentBodyMinRate,
 	Grace:   bodyread.ReadGrace,
 }
@@ -77,10 +78,25 @@ func (e *paymentBodyError) Unwrap() error { return e.err }
 // connection's read deadline along the same schedule before every Read
 // (pacedBody.due), and a stalled body fails at its due time.
 func (pg *PaymentGate) readPaymentBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	return pg.readPaymentBodyUntil(w, r, time.Now().Add(pg.challengeTTL))
+}
+
+// readPaymentBodyUntil reads a payment body without retaining its global or
+// per-client capacity past until. Proof bodies use their existing challenge's
+// expiry; challenge bodies use the lifetime the challenge will receive.
+func (pg *PaymentGate) readPaymentBodyUntil(w http.ResponseWriter, r *http.Request, until time.Time) ([]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return []byte{}, nil
 	}
-	p := &pacedBody{body: r.Body, rc: http.NewResponseController(w), limits: paymentBodyLimits}
+	limits := paymentBodyLimits
+	remaining := time.Until(until)
+	if remaining <= 0 {
+		return nil, &paymentBodyError{bodyread.ErrTimeout}
+	}
+	if limits.Timeout <= 0 || remaining < limits.Timeout {
+		limits.Timeout = remaining
+	}
+	p := &pacedBody{body: r.Body, rc: http.NewResponseController(w), limits: limits}
 	body, err := p.read(r.Context(), pg.clientKeyFor(r), r.ContentLength)
 	if err != nil {
 		p.expire()

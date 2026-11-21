@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -51,7 +52,7 @@ func newUTXONoncePool(inner NonceProvider, poolSize int, logger *slog.Logger, bu
 // MintNonce returns a ready nonce UTXO from the pool. If the pool is empty it
 // mints one on demand, which the mint budget may refuse with a
 // *mintBudgetError.
-func (p *UTXONoncePool) MintNonce() (*NonceUTXO, error) {
+func (p *UTXONoncePool) MintNonce(ctx context.Context) (*NonceUTXO, error) {
 	p.mu.Lock()
 	if len(p.pool) > 0 {
 		nonce := p.pool[len(p.pool)-1]
@@ -68,7 +69,7 @@ func (p *UTXONoncePool) MintNonce() (*NonceUTXO, error) {
 	}
 	p.mu.Unlock()
 
-	nonce, err := p.inner.MintNonce()
+	nonce, err := p.inner.MintNonce(ctx)
 	if err != nil {
 		var spent *mintBudgetError
 		if errors.As(err, &spent) {
@@ -113,7 +114,9 @@ func (p *UTXONoncePool) replenish() {
 	p.logger.Info("replenishing nonce pool", "needed", needed)
 	minted := 0
 	for i := 0; i < needed; i++ {
-		nonce, err := p.inner.MintNonce()
+		ctx, cancel := context.WithTimeout(context.Background(), nonceMintTimeout)
+		nonce, err := p.inner.MintNonce(ctx)
+		cancel()
 		if err != nil {
 			var spent *mintBudgetError
 			if errors.As(err, &spent) {

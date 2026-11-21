@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -45,6 +46,12 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 	}
 	challenge := pending.challenge
 	payees := pending.payees
+	if time.Now().Unix() > challenge.ExpiresAt {
+		pg.mu.Lock()
+		delete(pg.pendingChallenges, proof.ChallengeSHA256)
+		pg.mu.Unlock()
+		return nil, fmt.Errorf("challenge expired")
+	}
 
 	// Step 3: Three-way request binding verification
 	if proof.Request.Method != challenge.Method || proof.Request.Method != r.Method {
@@ -60,7 +67,7 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 	liveHeaderHash := canonicalHeaderHash(r)
 	// Read under the payment-body bounds (payment_bodyread.go), which also
 	// leaves the body readable for the handler after the gate (e.g. POST /data).
-	liveBodyBytes, err := pg.readPaymentBody(w, r)
+	liveBodyBytes, err := pg.readPaymentBodyUntil(w, r, time.Unix(challenge.ExpiresAt, 0))
 	if err != nil {
 		return nil, err
 	}
@@ -79,14 +86,6 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 		return nil, fmt.Errorf("req_body_sha256: challenge does not match live request")
 	}
 
-	// Step 4: Check expiry
-	if time.Now().Unix() > challenge.ExpiresAt {
-		pg.mu.Lock()
-		delete(pg.pendingChallenges, proof.ChallengeSHA256)
-		pg.mu.Unlock()
-		return nil, fmt.Errorf("challenge expired")
-	}
-
 	// Step 4b: Count this proof against the challenge (payment_bounds.go). The
 	// checks above are cheap; the steps below decode the transaction and run
 	// the nonce input's scripts. The challenge is removed once a proof passes
@@ -94,7 +93,8 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 	if err := pg.reserveProofAttempt(proof.ChallengeSHA256, pending); err != nil {
 		return nil, err
 	}
-	defer func() { pg.endProofAttempt(proof.ChallengeSHA256, pending, err == nil) }()
+	ambiguousSubmit := false
+	defer func() { pg.endProofAttempt(proof.ChallengeSHA256, pending, err == nil, ambiguousSubmit) }()
 
 	// Step 5: Decode transaction
 	txBytes, err := base64.StdEncoding.DecodeString(proof.Payment.RawTxB64)
@@ -136,24 +136,10 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 		}
 	}
 
-	// Step 7: Verify ALL payees are paid.
-	totalPaid := 0
-	for _, payee := range payees {
-		payeeBytes, err := hex.DecodeString(payee.LockingScriptHex)
-		if err != nil {
-			return nil, fmt.Errorf("invalid payee script (%s): %w", payee.Role, err)
-		}
-		found := false
-		for _, out := range tx.Outputs {
-			if payee.AmountSats >= 0 && out.Satoshis >= uint64(payee.AmountSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
-				found = true
-				totalPaid += payee.AmountSats
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("no output pays %d sats to %s payee", payee.AmountSats, payee.Role)
-		}
+	// Step 7: Verify every payee has its own output.
+	totalPaid, err := matchPayees(tx, payees)
+	if err != nil {
+		return nil, err
 	}
 
 	// Step 8: Verify txid
@@ -167,8 +153,11 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 	// the claim is in the same replay set direct payments use
 	// (payment_replay.go), released on every return and kept only for an
 	// accepted proof.
-	if !pg.replays.begin(*txHash) {
+	switch pg.replays.claim(*txHash) {
+	case replayAccepted, replayInFlight:
 		return nil, errPaymentReplayed(txid)
+	case replayFull:
+		return nil, errPaymentReplayFull
 	}
 	defer func() { pg.replays.end(*txHash, err == nil) }()
 
@@ -182,11 +171,18 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 		if pg.arcClient == nil {
 			return nil, errMempoolCheckUnavailable
 		}
-		arcResp, err := pg.arcClient.Submit(txBytes)
+		arcResp, err := submitPayment(r.Context(), pg.arcClient, txBytes)
 		if err != nil {
-			return nil, fmt.Errorf("ARC broadcast failed: %w", err)
+			if !errors.Is(err, errDirectPaymentSubmitsBusy) && paymentSubmitIsAmbiguous(err) {
+				ambiguousSubmit = true
+				err = ambiguousPaymentSubmit(err)
+			}
+			return nil, err
 		}
-		if err := checkARCAcceptance(arcResp); err != nil {
+		if err := checkARCAcceptance(arcResp, txHash); err != nil {
+			return nil, err
+		}
+		if err := pg.checkPaymentFinality(arcResp, txHash); err != nil {
 			return nil, err
 		}
 	}
@@ -260,6 +256,11 @@ func (pg *PaymentGate) verifyDirectPayment(ctx context.Context, paymentHeader st
 	if pg.arcClient == nil {
 		return nil, errDirectPaymentUnavailable
 	}
+	releaseSlot, err := takePaymentSubmitSlot()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseSlot()
 	// Refuse an oversized header before decoding it (payment_bounds.go).
 	if err := checkPaymentHeaderSize(HeaderBSVPayment, paymentHeader); err != nil {
 		return nil, err
@@ -286,24 +287,10 @@ func (pg *PaymentGate) verifyDirectPayment(ctx context.Context, paymentHeader st
 		return nil, errPaymentMalformed("invalid transaction in payment header: " + err.Error())
 	}
 
-	// Verify all payees are paid (same logic as challenge-proof path)
-	totalPaid := 0
-	for _, payee := range payees {
-		payeeBytes, err := hex.DecodeString(payee.LockingScriptHex)
-		if err != nil {
-			return nil, fmt.Errorf("invalid payee script (%s): %w", payee.Role, err)
-		}
-		found := false
-		for _, out := range tx.Outputs {
-			if payee.AmountSats >= 0 && out.Satoshis >= uint64(payee.AmountSats) && fmt.Sprintf("%x", *out.LockingScript) == fmt.Sprintf("%x", payeeBytes) {
-				found = true
-				totalPaid += payee.AmountSats
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("no output pays %d sats to %s payee", payee.AmountSats, payee.Role)
-		}
+	// Verify every payee has its own output.
+	totalPaid, err := matchPayees(tx, payees)
+	if err != nil {
+		return nil, err
 	}
 
 	// One transaction pays for one request, on either payment path
@@ -311,8 +298,11 @@ func (pg *PaymentGate) verifyDirectPayment(ctx context.Context, paymentHeader st
 	// only for an accepted payment.
 	txHash := tx.TxID()
 	txid := txHash.String()
-	if !pg.replays.begin(*txHash) {
+	switch pg.replays.claim(*txHash) {
+	case replayAccepted, replayInFlight:
 		return nil, errPaymentReplayed(txid)
+	case replayFull:
+		return nil, errPaymentReplayFull
 	}
 	accepted := false
 	defer func() { pg.replays.end(*txHash, accepted) }()
@@ -329,14 +319,14 @@ func (pg *PaymentGate) verifyDirectPayment(ctx context.Context, paymentHeader st
 	// only the network's acceptance shows that its inputs exist and are
 	// unspent. The submit is bounded in time and in number
 	// (payment_submit.go).
-	arcResp, err := submitDirectPayment(ctx, pg.arcClient, txBytes)
+	arcResp, err := submitPaymentWithSlot(ctx, pg.arcClient, txBytes)
 	if err != nil {
+		return nil, ambiguousPaymentSubmit(err)
+	}
+	if err := checkARCAcceptance(arcResp, txHash); err != nil {
 		return nil, err
 	}
-	if err := checkARCAcceptance(arcResp); err != nil {
-		return nil, err
-	}
-	if err := pg.checkPaymentDepth(arcResp); err != nil {
+	if err := pg.checkPaymentFinality(arcResp, txHash); err != nil {
 		return nil, err
 	}
 	accepted = true

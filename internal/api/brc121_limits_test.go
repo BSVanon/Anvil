@@ -80,20 +80,24 @@ func TestBRC121ThirtySeventhPaymentRefusedWithoutOffer(t *testing.T) {
 
 type failedBRC121Nonce struct{}
 
-func (failedBRC121Nonce) MintNonce() (*NonceUTXO, error) { return nil, errors.New("mint failed") }
+func (failedBRC121Nonce) MintNonce(context.Context) (*NonceUTXO, error) {
+	return nil, errors.New("mint failed")
+}
 
-func TestBRC121OfferOnlyAfterChallengeSucceeds(t *testing.T) {
+func TestBRC121OfferDoesNotMintChallengeNonce(t *testing.T) {
 	pg := NewPaymentGate(PaymentGateConfig{PriceSats: 100, PayeeScriptHex: testPayeeScript(t), NonceProvider: failedBRC121Nonce{}})
 	pg.brc121 = &brc121Gate{server: "server"}
 	req := httptest.NewRequest(http.MethodGet, brc121Path, nil)
 	w := httptest.NewRecorder()
 	pg.Middleware(func(http.ResponseWriter, *http.Request) {})(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("want mint failure 500, got %d", w.Code)
+	if w.Code != http.StatusPaymentRequired || w.Header().Get(headerBRC121Sats) != "100" {
+		t.Fatalf("want a BRC-121-only 402 without minting, got %d %s", w.Code, w.Body.String())
 	}
-	assertNoBRC121Offer(t, w)
-	if pg.brc121.counts.offered != 0 {
-		t.Fatalf("counted %d offers without a 402", pg.brc121.counts.offered)
+	if w.Header().Get(HeaderX402Challenge) != "" {
+		t.Fatal("BRC-121 offer also minted an X402 challenge")
+	}
+	if pg.brc121.counts.offered != 1 {
+		t.Fatalf("counted %d offers for one 402", pg.brc121.counts.offered)
 	}
 }
 

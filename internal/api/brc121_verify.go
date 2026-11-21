@@ -157,7 +157,7 @@ func (pg *PaymentGate) brc121Network(ctx context.Context, p *brc121Payment) (boo
 	if err != nil {
 		return arcRefusedOutright(resp, err), err
 	}
-	if err := pg.checkPaymentDepth(resp); err != nil {
+	if err := pg.checkPaymentDepth(resp, &p.txid); err != nil {
 		return false, err
 	}
 	return false, nil
