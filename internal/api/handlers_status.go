@@ -139,6 +139,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		warnings = append(warnings, spvWarnings...)
 	}
 
+	if s.isAuthed(r) { // the operator's view only (brc121.go)
+		stats["brc121"] = s.paymentGate.brc121Status()
+	}
 	if len(warnings) > 0 {
 		stats["warnings"] = warnings
 	}
