@@ -35,7 +35,8 @@ func TestBRC121ARCRefusalNotJournaled(t *testing.T) {
 	for _, a := range []struct {
 		status string
 		code   int
-	}{{"REJECTED", 0}, {"DOUBLE_SPEND_ATTEMPTED", 0}, {"", 465}, {"", 462}} {
+	}{{"REJECTED", 0}, {"DOUBLE_SPEND_ATTEMPTED", 0}, {"SEEN_IN_ORPHAN_MEMPOOL", 0}, {"INVALID", 0}, {"MALFORMED", 0},
+		{"", 465}, {"", 462}} {
 		f := newBRC121Fix(t, 100)
 		f.arc.answer(a.status, a.code)
 		w := f.serve(brc121Path, "10.0.0.1:1", f.payment(t, 100, brc121Pay{}))
