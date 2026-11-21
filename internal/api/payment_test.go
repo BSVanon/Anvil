@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -603,7 +602,7 @@ func TestDirectPaymentRejectsEmptyHeader(t *testing.T) {
 		ARCClient:      mockARCServer(t), // direct payments need ARC
 	})
 
-	_, err := pg.verifyDirectPayment(context.Background(), "", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	_, err := pg.verifyDirectPayment(t.Context(), "", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err == nil {
 		t.Fatal("should reject empty payment header")
 	}
@@ -621,7 +620,7 @@ func TestDirectPaymentRejectsGarbage(t *testing.T) {
 		ARCClient:      mockARCServer(t), // direct payments need ARC
 	})
 
-	_, err := pg.verifyDirectPayment(context.Background(), "not-a-transaction", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	_, err := pg.verifyDirectPayment(t.Context(), "not-a-transaction", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err == nil {
 		t.Fatal("should reject invalid transaction data")
 	}
@@ -639,7 +638,7 @@ func TestDirectPaymentRejectsInsufficientOutputs(t *testing.T) {
 	// Build a raw tx paying a WRONG script
 	wrongScript, _ := hex.DecodeString("76a914000000000000000000000000000000000000000088ac")
 	txHex := hex.EncodeToString(buildRawTx(wrongScript, 200))
-	_, err := pg.verifyDirectPayment(context.Background(), txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	_, err := pg.verifyDirectPayment(t.Context(), txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err == nil {
 		t.Fatal("should reject tx that doesn't pay the declared payee")
 	}
