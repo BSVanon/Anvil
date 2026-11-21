@@ -304,13 +304,40 @@ func deployAnyNode(mode, node, configDir, dataDir, installDir, seedPeer, nodeNam
 	deployNode(node, configDir, dataDir, installDir, seedPeer, nodeName, publicURL, dryRun)
 }
 
-// deployGatewayNode is deployNode's gateway-mode counterpart: same
-// systemd unit template (renderUnit, unchanged — a gateway node is still
-// "anvil -config <path>", nothing about the unit itself differs) and the
-// same "never overwrite an existing config" guard, writing
-// renderGatewayConfig's template instead of renderConfig's.
+// gatewayCapabilityAmbient and gatewayCapabilityBoundingSet are the two
+// systemd directives a gateway unit needs to bind 80 and 443 without
+// running as root. Matched and inserted as exact, whole lines by both
+// renderGatewayUnit (a fresh deploy) and ensureGatewayCapabilitiesIn
+// (upgrade_gateway_capabilities.go, for a unit that predates this), so
+// the two paths can never disagree about what "present" means.
+const (
+	gatewayCapabilityAmbient      = "AmbientCapabilities=CAP_NET_BIND_SERVICE"
+	gatewayCapabilityBoundingSet  = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
+	gatewayCapabilityInsertAnchor = "LimitNOFILE=65536"
+)
+
+// renderGatewayUnit is renderUnit's gateway-mode counterpart: the exact
+// same unit, with the two capability directives inserted right after the
+// LimitNOFILE line, so the process can bind 80 and 443 while still
+// running as the unprivileged "anvil" user (the rest of the unit's
+// hardening — ProtectSystem=strict and friends — is otherwise identical
+// for both modes). A standard-mode node keeps calling renderUnit
+// directly and is byte-for-byte unaffected.
+func renderGatewayUnit(node, configDir, dataDir, installDir string) string {
+	unit := renderUnit(node, configDir, dataDir, installDir)
+	block := gatewayCapabilityInsertAnchor +
+		"\n\n# Bind 80/443 without running as root.\n" +
+		gatewayCapabilityAmbient + "\n" + gatewayCapabilityBoundingSet
+	return strings.Replace(unit, gatewayCapabilityInsertAnchor, block, 1)
+}
+
+// deployGatewayNode is deployNode's gateway-mode counterpart: the same
+// "never overwrite an existing config" guard, writing
+// renderGatewayConfig's template instead of renderConfig's, and
+// renderGatewayUnit instead of renderUnit for the one systemd directive
+// pair gateway mode needs that a standard node doesn't.
 func deployGatewayNode(node, configDir, dataDir, installDir, apiHost string, peers []gatewayPeer, nodeName string, dryRun bool) {
-	unitContent := renderUnit(node, configDir, dataDir, installDir)
+	unitContent := renderGatewayUnit(node, configDir, dataDir, installDir)
 	unitPath := fmt.Sprintf("/etc/systemd/system/%s.service", serviceName(node))
 	if dryRun {
 		fmt.Printf("  [dry-run] would write %s\n", unitPath)
