@@ -479,8 +479,8 @@ func main() {
 			// cfg.Overlay.EnableGASPSync = false.
 			// W-10.3 federation wiring + B5 [overlay] named_peers
 			// closed-network override both live in wireV3Federation
-			// (federation_loops.go) so this file doesn't grow.
-			wireV3Federation(cfg, v3Eng, gaspTracker, shipStore, slapStore, anvilStore, nodeWallet, logger)
+			// (federation_loops.go); deferred to stop its background loop(s) at shutdown.
+			defer wireV3Federation(cfg, v3Eng, gaspTracker, shipStore, slapStore, anvilStore, nodeWallet, logger)()
 
 			// W-10.5: Bespoke on-chain SHIP publish retired. The
 			// canonical federation Advertiser wired above publishes

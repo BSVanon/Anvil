@@ -141,6 +141,13 @@ func sanitizeNamedPeers(raw []string) []string {
 // consulted; named_peers is the sole source of truth for
 // SHIPTrackers/SLAPTrackers in that mode, so the node never contacts a
 // baked-in Anvil endpoint or a public tracker.
+//
+// Returns a cancel func that stops whatever background loop(s) this call
+// started (runSyncAdvertisements and/or runGASPSync, both previously on
+// context.Background(), which no caller could ever stop). Always safe to
+// call, including on every early return above, where it is a no-op — so
+// a caller can unconditionally do defer wireV3Federation(...)() without
+// checking which path was taken.
 func wireV3Federation(
 	cfg *config.Config,
 	v3Eng *engine.Engine,
@@ -150,19 +157,20 @@ func wireV3Federation(
 	anvilStore *anvilstorage.Storage,
 	nodeWallet *anvilwallet.NodeWallet,
 	logger *slog.Logger,
-) {
+) func() {
+	noop := func() {}
 	if v3Eng == nil {
-		return
+		return noop
 	}
 	if !cfg.Overlay.EnableGASPSync {
 		log.Printf("v3 federation disabled (cfg.Overlay.EnableGASPSync = false); GASP routes still serve inbound requests")
-		return
+		return noop
 	}
 
 	namedPeers := sanitizeNamedPeers(cfg.Overlay.NamedPeers)
 	closedNetwork := len(namedPeers) > 0
 	if !closedNetwork && cfg.Node.PublicURL == "" {
-		return
+		return noop
 	}
 
 	shipTrackers, slapTrackers := resolveFederationTrackers(cfg, namedPeers)
@@ -177,12 +185,14 @@ func wireV3Federation(
 	v3Eng.SLAPTrackers = slapTrackers
 	v3Eng.SyncConfiguration = buildSyncConfiguration(v3Eng, namedPeers)
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	if closedNetwork {
 		log.Printf("v3 federation: named_peers set, SHIP/SLAP advertiser disabled (closed network — no on-chain ads)")
 	} else {
 		adv := federation.NewAdvertiser(nodeWallet.Wallet(), cfg.Node.PublicURL, shipStore, slapStore, anvilStore)
 		v3Eng.Advertiser = adv
-		go runSyncAdvertisements(context.Background(), v3Eng, logger, cfg.Overlay.AdvertiseIntervalSecs)
+		go runSyncAdvertisements(ctx, v3Eng, logger, cfg.Overlay.AdvertiseIntervalSecs)
 	}
 
 	log.Printf("v3 federation wired: %d topics syncable via canonical SHIP/SLAP (trackers=%d)",
@@ -191,7 +201,8 @@ func wireV3Federation(
 	if gaspTracker != nil {
 		gaspTracker.MarkEnabled()
 	}
-	go runGASPSync(context.Background(), v3Eng, logger, cfg.Overlay.GASPSyncIntervalSecs, gaspTracker)
+	go runGASPSync(ctx, v3Eng, logger, cfg.Overlay.GASPSyncIntervalSecs, gaspTracker)
+	return cancel
 }
 
 // runSyncAdvertisements ticks engine.SyncAdvertisements at the
