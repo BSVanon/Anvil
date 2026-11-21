@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +12,76 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/sitesfile"
 )
+
+// forbiddenUpgradeCalls are every function in this package that renders
+// or writes a node config or a gateway sites file, called as a plain,
+// unqualified identifier. `anvil upgrade` must call none of them:
+// upgrading a binary must never rewrite a gateway's configuration or
+// its sites file.
+var forbiddenUpgradeCalls = map[string]bool{
+	"renderConfig":             true,
+	"renderGatewayConfig":      true,
+	"renderGatewayPeersBlock":  true,
+	"deployNode":               true,
+	"deployGatewayNode":        true,
+	"deployAnyNode":            true,
+	"resolveGatewayDeployArgs": true,
+	"applyGatewayPeers":        true,
+}
+
+// forbiddenSitesfileCalls are internal/sitesfile's own writing
+// functions (Read alone is harmless, these three are not), called as
+// sitesfile.<name>(...) — a package-qualified selector, which
+// forbiddenUpgradeCalls' plain-identifier check can't see. The sites
+// file's reader/writer live in that package, outside this one, so this
+// second map is what actually closes the invariant now.
+var forbiddenSitesfileCalls = map[string]bool{
+	"Add":             true,
+	"Remove":          true,
+	"AtomicWriteFile": true,
+}
+
+// TestUpgradeNeverRewritesGatewayConfigOrSites parses upgrade.go's own
+// source and walks every call expression in it structurally, rather
+// than running cmdUpgrade end-to-end (which would need a real systemd
+// and a real release to download). It catches a forbidden call added
+// anywhere in the file, including in code paths
+// TestUpgradeFileHandling_LeavesGatewayConfigAndSitesFileUntouched
+// (below) can't reach without that same systemd/network dependency;
+// that other test instead proves the actual on-disk outcome of the one
+// function upgrade.go does call locally. Keeping both: this one is
+// structural coverage of the whole file, that one is a real fixture's
+// real before/after bytes for the one reachable path.
+func TestUpgradeNeverRewritesGatewayConfigOrSites(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "upgrade.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse upgrade.go: %v", err)
+	}
+
+	var hits []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := call.Fun.(type) {
+		case *ast.Ident:
+			if forbiddenUpgradeCalls[fun.Name] {
+				hits = append(hits, fset.Position(call.Pos()).String()+": "+fun.Name+"(...)")
+			}
+		case *ast.SelectorExpr:
+			if pkg, ok := fun.X.(*ast.Ident); ok && pkg.Name == "sitesfile" && forbiddenSitesfileCalls[fun.Sel.Name] {
+				hits = append(hits, fset.Position(call.Pos()).String()+": sitesfile."+fun.Sel.Name+"(...)")
+			}
+		}
+		return true
+	})
+
+	if len(hits) > 0 {
+		t.Errorf("upgrade.go calls a config/sites-file-writing function — anvil upgrade must leave a gateway's config and sites file untouched:\n%s", strings.Join(hits, "\n"))
+	}
+}
 
 // TestUpgradeFileHandling_LeavesGatewayConfigAndSitesFileUntouched runs
 // cmdUpgrade's actual local, in-process file-handling step —
@@ -24,10 +97,9 @@ import (
 // binary install path, the backup/staging files and the symlink all live
 // under -install-dir/ and /usr/local/bin, never under the config
 // directory. This test exercises that one real function against a real
-// fixture, rather than asking an AST walk to prove a negative about every
-// other call in the file: a walk can only ever rule out the exact call
-// shapes it knows to look for (plain, unqualified calls to 11 hardcoded
-// names), where this proves the actual outcome on disk.
+// fixture and checks the real bytes; see
+// TestUpgradeNeverRewritesGatewayConfigOrSites, above, for the
+// structural half of this invariant.
 func TestUpgradeFileHandling_LeavesGatewayConfigAndSitesFileUntouched(t *testing.T) {
 	dir := t.TempDir()
 	configDir := filepath.Join(dir, "etc")
