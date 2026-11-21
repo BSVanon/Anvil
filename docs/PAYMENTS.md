@@ -27,20 +27,11 @@ sudo anvil token
 
 ## Paying a request
 
-A priced request without payment answers 402. There are three payment paths:
+A production node offers two payment paths for a priced request:
 
 - **BRC-121** (`x-bsv-*` headers): any BRC-42 wallet pays the node's own
   price to a one-time key. This is how clients pay the node; see
   [Paying the node's price with BRC-121](#paying-the-nodes-price-with-brc-121).
-- **`X402-Proof`** (bound to an `X402-Challenge`) is deprecated in favor of
-  BRC-121. Existing proofs remain accepted. On a route where BRC-121 is not
-  offered, a client with access to the nonce key can build a
-  transaction that spends the challenge's nonce output and pays every payee
-  the challenge names, then repeat the request with the proof in
-  `X402-Proof`. One challenge pays for one request. Known limit: an external
-  client cannot complete an `X402-Proof` on a production node, because the
-  challenge's nonce output is locked to a key the node derives for itself,
-  and the proof must spend it. Clients pay the node's price with BRC-121.
 - **`X-Bsv-Payment`** (direct, no challenge), unchanged: it pays app prices
   (passthrough envelopes, a split envelope's app share) and serves x402
   clients. Send an Extended Format
@@ -54,6 +45,15 @@ A priced request without payment answers 402. There are three payment paths:
   node parses, Atomic BEEF included, is refused with 402 and code
   `ERR_PAYMENT_MALFORMED`.
 
+`X402-Proof` is deprecated, development-only, and off by default. A node
+offers it only when `[api] x402_proof_scheme = true`. When it is off, an
+unpaid request receives a proof-free direct offer with `ERR_PAYMENT_REQUIRED`
+and no challenge coin is minted. An `X402-Proof` is not verified and receives
+`ERR_PROOF_PAYMENT_UNAVAILABLE` with the same direct offer. When the switch is
+on, the node mints challenge coins and accepts proofs as before. The scheme is
+unsuitable for outside payers because the challenge output is locked to a key
+derived by the node, while the payer is expected to spend it.
+
 When a 402 offers BRC-121 it carries no `X402-Challenge`: the node does not
 mint a nonce coin that the advertised payment path does not need.
 
@@ -66,10 +66,9 @@ code `ERR_PAYMENT_NOT_ACCEPTED`. Every other ARC transaction status, including
 retry the same transaction. A node
 with no ARC client refuses every `X-Bsv-Payment` with 402 and code
 `ERR_DIRECT_PAYMENT_UNAVAILABLE`. Such a node cannot take a payment from a
-client. An `X402-Proof` whose challenge sets `require_mempool_accept` (the
-operator's `require_mempool` setting, off by default) is held to the same
-two statuses. A node with that setting and no ARC client cannot check them,
-so it refuses every such proof with 402 and code
+client. When the deprecated proof scheme is enabled, a proof whose challenge
+sets `require_mempool_accept` is held to the same two statuses. A node with
+that setting and no ARC client refuses the proof with 402 and code
 `ERR_MEMPOOL_CHECK_UNAVAILABLE`.
 
 The ARC answer must name the submitted txid. A mismatched answer is ambiguous.
@@ -83,12 +82,11 @@ have accepted the transaction. It answers 503 with
 `ERR_PAYMENT_SUBMIT_UNCERTAIN`, no new payment offer, and tells the client to
 retry the same transaction.
 
-**One transaction pays for one request, on either path.** The node
-remembers the txid of every payment it accepts, by `X402-Proof` or by
-`X-Bsv-Payment`, in one set, for 24 hours and up to 100,000 txids. It
-refuses a transaction already used on either path with 402 and code
-`ERR_PAYMENT_REPLAYED`, so a transaction that answered a challenge cannot
-pay again as a direct payment, or the other way round. When the set is full,
+**One transaction pays for one request.** The node remembers the txid of every
+direct payment it accepts for 24 hours and up to 100,000 txids. When the
+deprecated proof scheme is enabled, accepted proofs share that same set. It
+refuses a reused transaction with 402 and code `ERR_PAYMENT_REPLAYED`. When
+the set is full,
 it evicts nothing: a new payment is refused with 503
 `ERR_PAYMENT_REPLAY_FULL` and no new offer until an entry expires. It also
 refuses with code `ERR_PAYMENT_TOO_OLD` a payment mined more than 144 blocks
@@ -108,17 +106,18 @@ pays the node's payee script at least the price, unmined or mined at most
 144 blocks deep, buys one request for whoever presents it.
 
 **Payment broadcasts are bounded.** The node waits at most 10 seconds for ARC
-to answer a direct payment or proof-path broadcast, and no longer than the
-request itself lasts. A broadcast cut off this way has an ambiguous result,
+to answer a direct payment, or a proof-path broadcast when that scheme is
+enabled, and no longer than the request itself lasts. A broadcast cut off this way has an ambiguous result,
 so the same transaction—not a new payment—must be retried. Direct payments
 take one of the 16 process-wide slots before any header decoding or
-verification; proof-path ARC submits share those slots. One more is answered
+verification; enabled proof-path ARC submits share those slots. One more is answered
 503 with code
 `ERR_DIRECT_PAYMENT_BUSY` and a `Retry-After`, without being broadcast, and
 the same transaction can be sent again.
 
-**Request bodies on priced routes are read under bounds.** The node reads
-a priced request's body before it checks the payment: at most 1 MiB, which
+**Proof-bound request bodies are read under bounds.** When the deprecated
+proof scheme is enabled, the node reads a priced request's body before it
+checks the payment: at most 1 MiB, which
 must start within 2 seconds and then arrive at 16 KiB a second or faster on
 average. The read ends within 60 seconds and no later than its challenge
 expires. A body over the cap gets 413, and one too slow gets 408. The node
@@ -159,12 +158,12 @@ Both headers are exposed to browsers (`Access-Control-Expose-Headers`), and
 the five request headers are allowed by CORS. A route the node does not
 price never makes an offer, and there the `x-bsv-*` request headers are
 ignored: nothing is checked, broadcast or recorded. A node without its
-wallet or ARC makes no offer either, and ignores the headers: the request
-gets the plain x402 challenge.
+wallet or ARC makes no offer either, and ignores the headers.
 
 The BRC-121 402 has an empty body and no `X402-Challenge`. It therefore mints
-no proof-path nonce coin. If BRC-121 is unavailable, the ordinary deprecated
-proof challenge remains the fallback.
+no proof-path nonce coin. If BRC-121 is unavailable, the response advertises
+`X-Bsv-Payment` with the required amount and payees. A proof challenge is a
+fallback only when the deprecated development switch is on.
 
 **The paid request** repeats the request with five headers: `x-bsv-beef`
 (the payment as a canonical-base64 Atomic BEEF, BRC-95), `x-bsv-sender`

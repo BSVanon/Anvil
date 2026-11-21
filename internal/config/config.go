@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -390,19 +391,15 @@ type APIConfig struct {
 	TrustProxyHops      int              `toml:"trust_proxy_hops"`
 	MessageboxRateLimit int              `toml:"messagebox_rate_limit"`
 	MessageboxRateBurst int              `toml:"messagebox_rate_burst"`
-	PaymentSatoshis     int              `toml:"payment_satoshis"` // default per-request price; 0 = free
-	RequireMempool      bool             `toml:"require_mempool"`  // require ARC SEEN_ON_NETWORK or MINED before accepting an X402-Proof; refused without ARC
-	EndpointPrices      map[string]int   `toml:"endpoint_prices"`  // per-endpoint price overrides (path → sats)
-	X402MintBurst       int              `toml:"x402_mint_burst"`
-	X402MintsPerMinute  int              `toml:"x402_mints_per_minute"`
+	PaymentSatoshis     int              `toml:"payment_satoshis"`      // default per-request price; 0 = free
+	RequireMempool      bool             `toml:"require_mempool"`       // require ARC SEEN_ON_NETWORK or MINED before accepting an X402-Proof; refused without ARC
+	EndpointPrices      map[string]int   `toml:"endpoint_prices"`       // per-endpoint price overrides (path → sats)
+	X402ProofScheme     bool             `toml:"x402_proof_scheme"`     // deprecated development-only proof scheme; default false
+	X402MintBurst       int              `toml:"x402_mint_burst"`       // proof nonce budget; only used with x402_proof_scheme
+	X402MintsPerMinute  int              `toml:"x402_mints_per_minute"` // proof nonce rate; only used with x402_proof_scheme
 	AppPayments         AppPaymentConfig `toml:"app_payments"`
 	ExplorerOrigin      string           `toml:"explorer_origin"` // fallback content_origin for /explorer (survives catalog expiry)
-	// NoncePoolSize is the target number of pre-minted x402 nonce UTXOs kept warm
-	// for fast challenge issuance on a CHARGING node (payment_satoshis > 0). Each
-	// nonce is a real on-chain output (~23 sat fee), so a charging node's revenue
-	// covers the pool. A FREE node never pre-mints (it mints on demand) to avoid
-	// burning fees on nonces it may never use. 0 or unset → default 100.
-	NoncePoolSize int `toml:"nonce_pool_size"`
+	NoncePoolSize       int              `toml:"nonce_pool_size"` // charging-node proof nonce target; only with x402_proof_scheme; 0 defaults to 100
 }
 
 // AppPaymentConfig controls which non-custodial payment models apps can use.
@@ -504,6 +501,9 @@ func Load(path string) (*Config, error) {
 	}
 	if err := finalizeCertGate(data, cfg); err != nil {
 		return nil, err
+	}
+	if cfg.API.X402ProofScheme {
+		log.Printf("x402: x402_proof_scheme is deprecated and for development only")
 	}
 	if cfg.API.TrustProxyHops < 1 {
 		cfg.API.TrustProxyHops = 1

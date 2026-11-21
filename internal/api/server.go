@@ -123,6 +123,7 @@ type ServerConfig struct {
 	PaymentSatoshis      int
 	PayeeScriptHex       string
 	NonceProvider        NonceProvider
+	NoProofScheme        bool
 	AllowPassthrough     bool
 	AllowSplit           bool
 	AllowTokenGating     bool
@@ -532,14 +533,15 @@ func (s *Server) handleX402Discovery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"version":        "0.1",
-		"network":        "bsv-mainnet",
-		"node":           s.nodeName,
-		"settlement":     "BSV",
-		"non_custodial":  true,
-		"endpoints":      gatedEndpoints,
-		"payment_models": models,
-		"contact":        "https://x.com/SendBSV",
+		"version":         "0.1",
+		"network":         "bsv-mainnet",
+		"node":            s.nodeName,
+		"settlement":      "BSV",
+		"non_custodial":   true,
+		"endpoints":       gatedEndpoints,
+		"payment_models":  models,
+		"payment_methods": s.paymentMethods(),
+		"contact":         "https://x.com/SendBSV",
 	})
 }
 
@@ -604,11 +606,8 @@ func (s *Server) handleX402Info(w http.ResponseWriter, r *http.Request) {
 		"payment": map[string]interface{}{
 			"settlement":    "BSV",
 			"non_custodial": true,
-			"methods": []string{
-				"X402-Challenge/Proof (nonce-bound, replay-safe)",
-				"X-Bsv-Payment (direct raw tx in header, hex or base64)",
-			},
-			"discovery": "/.well-known/x402",
+			"methods":       s.paymentMethods(),
+			"discovery":     "/.well-known/x402",
 		},
 		"authentication": map[string]interface{}{
 			"method":         "BRC-31 mutual auth via auth.Peer",
@@ -760,6 +759,7 @@ func (s *Server) handleAnvilManifest(w http.ResponseWriter, r *http.Request) {
 			"standard":      "HTTP-402",
 			"settlement":    "BSV",
 			"non_custodial": true,
+			"methods":       s.paymentMethods(),
 			"discovery":     "/.well-known/x402",
 		},
 		"mesh":    meshInfo,

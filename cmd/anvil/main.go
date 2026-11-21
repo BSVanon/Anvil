@@ -44,8 +44,6 @@ import (
 	sdkwallet "github.com/bsv-blockchain/go-sdk/wallet"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
-	bsvscript "github.com/bsv-blockchain/go-sdk/script"
-	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/libsv/go-p2p/wire"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
@@ -709,48 +707,9 @@ func main() {
 			log.Printf("feeds: heartbeat (60s) publisher started")
 		}
 	}
-	api.ConfigureMintBudget(cfg.API.X402MintBurst, cfg.API.X402MintsPerMinute)
-	// x402 payment gating — requires identity.wif + wallet; forced off without both
-	paymentSatoshis := cfg.API.PaymentSatoshis
-	var payeeScriptHex string
-	var nonceProvider api.NonceProvider
-	// Nonce provider: needed for app passthrough/split even when node is free
-	if cfg.Identity.WIF != "" && nodeWallet != nil {
-		payeeKey, err := ec.PrivateKeyFromWif(cfg.Identity.WIF)
-		if err != nil {
-			log.Fatalf("x402: invalid identity WIF: %v", err)
-		}
-		addr, err := bsvscript.NewAddressFromPublicKey(payeeKey.PubKey(), true)
-		if err != nil {
-			log.Fatalf("x402: derive address: %v", err)
-		}
-		lockScript, err := p2pkh.Lock(addr)
-		if err != nil {
-			log.Fatalf("x402: build locking script: %v", err)
-		}
-		payeeScriptHex = fmt.Sprintf("%x", []byte(*lockScript))
-		walletNonce := api.NewWalletNonceProvider(nodeWallet.Wallet())
-		if paymentSatoshis > 0 {
-			// Charging node: keep a warm pre-minted nonce pool for fast challenge
-			// issuance — the per-request price covers the ~23 sat/nonce mint fee.
-			poolSize := cfg.API.NoncePoolSize
-			if poolSize <= 0 {
-				poolSize = 100
-			}
-			nonceProvider = api.NewUTXONoncePool(walletNonce, poolSize, logger)
-			log.Printf("x402: payment gating enabled (%d sats/request, payee=%s, nonce pool=%d)",
-				paymentSatoshis, addr.AddressString, poolSize)
-		} else {
-			// Free node: mint nonces on demand only. Pre-minting a pool here burns
-			// ~23 sat/nonce on every restart for nonces a free node may never use
-			// (app passthrough/split is rare) — the wallet-drain observed on
-			// lightly-funded nodes. On-demand minting costs nothing until used.
-			nonceProvider = walletNonce
-			log.Printf("x402: node is free, nonces minted on demand (no pre-mint pool)")
-		}
-	} else if paymentSatoshis > 0 {
-		log.Printf("x402: payment_satoshis=%d but identity.wif or wallet missing — payment gating DISABLED", paymentSatoshis)
-		paymentSatoshis = 0
+	paymentSatoshis, payeeScriptHex, nonceProvider, err := wireX402Payment(cfg.API, cfg.Identity.WIF, nodeWallet, logger)
+	if err != nil {
+		log.Fatal(err)
 	}
 	var p2pTxFetcher *p2p.TxFetcher
 	var p2pBlockFetcher *p2p.BlockTxFetcher
@@ -779,6 +738,7 @@ func main() {
 		PaymentSatoshis:      paymentSatoshis,
 		PayeeScriptHex:       payeeScriptHex,
 		NonceProvider:        nonceProvider,
+		NoProofScheme:        !cfg.API.X402ProofScheme,
 		AllowPassthrough:     cfg.API.AppPayments.AllowPassthrough,
 		AllowSplit:           cfg.API.AppPayments.AllowSplit,
 		AllowTokenGating:     cfg.API.AppPayments.AllowTokenGating,

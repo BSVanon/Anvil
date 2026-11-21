@@ -39,6 +39,7 @@ func newServerPaymentGate(cfg ServerConfig, resolver *TopicMonetizationResolver)
 		PriceSats:        cfg.PaymentSatoshis,
 		PayeeScriptHex:   cfg.PayeeScriptHex,
 		NonceProvider:    cfg.NonceProvider,
+		NoProofScheme:    cfg.NoProofScheme,
 		RequireMempool:   cfg.RequireMempool,
 		ARCClient:        cfg.ARCClient,
 		Resolver:         resolver,

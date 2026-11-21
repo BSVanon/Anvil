@@ -139,6 +139,7 @@ type PaymentGate struct {
 	clientKey      func(*http.Request) string // the key a client's body reads are shared out under (payment_bodyshare.go)
 	brc121         *brc121Gate                // BRC-121 payments, nil when the gate takes none (brc121.go)
 	brc121Off      string                     // why the gate takes no BRC-121 payments
+	noProofScheme  bool
 
 	allowPassthrough bool
 	allowSplit       bool
@@ -180,6 +181,7 @@ type PaymentGateConfig struct {
 	HeaderTip        func() uint32  // the node's header tip, nil if it has none
 	HeaderAtHeight   func(uint32) ([]byte, error)
 	HeadersFresh     func(time.Time) bool
+	NoProofScheme    bool // disable challenge issuance and X402-Proof verification
 
 	// mintBudget bounds the wallet mints of a NonceProvider that is not a
 	// UTXONoncePool; nil means the process-wide defaultMintBudget
@@ -196,7 +198,7 @@ func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 	if !nodeCharges && !appMonetizationEnabled {
 		return nil
 	}
-	if cfg.NonceProvider == nil {
+	if cfg.NonceProvider == nil && !cfg.NoProofScheme {
 		return nil
 	}
 	if nodeCharges && cfg.PayeeScriptHex == "" {
@@ -206,14 +208,19 @@ func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 	if ttl == 0 {
 		ttl = 60 * time.Second
 	}
-	budget := cfg.mintBudget
-	if budget == nil {
-		budget = defaultMintBudget
+	nonceProvider := cfg.NonceProvider
+	if nonceProvider != nil {
+		budget := cfg.mintBudget
+		if budget == nil {
+			budget = defaultMintBudget
+		}
+		nonceProvider = withMintBudget(nonceProvider, budget)
 	}
 	return &PaymentGate{
 		priceSats:         cfg.PriceSats,
 		payeeScriptHex:    cfg.PayeeScriptHex,
-		nonceProvider:     withMintBudget(cfg.NonceProvider, budget),
+		nonceProvider:     nonceProvider,
+		noProofScheme:     cfg.NoProofScheme,
 		challengeTTL:      ttl,
 		requireMempool:    cfg.RequireMempool,
 		arcClient:         cfg.ARCClient,
@@ -285,7 +292,11 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 				pg.issueBRC121Offer(w, offer)
 				return
 			}
-			pg.issueChallengeForPayees(w, r, payees, 0)
+			if pg.noProofScheme {
+				pg.issueDirectPaymentOffer(w, r, payees, codePaymentRequired, "")
+			} else {
+				pg.issueChallengeForPayees(w, r, payees, 0)
+			}
 			return
 		}
 
@@ -301,6 +312,10 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
 			// Paid, never authenticated (withPayment, paid_outputs_context.go).
 			next(w, r.WithContext(pg.withPayment(r.Context(), receipt)))
+			return
+		}
+		if pg.noProofScheme {
+			pg.issueDirectPaymentOffer(w, r, payees, codeProofPaymentUnavailable, "proof payments aren't offered by this node")
 			return
 		}
 
