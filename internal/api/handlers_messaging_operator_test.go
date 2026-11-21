@@ -110,7 +110,7 @@ func TestHandleMessageSubscribeOperatorSwitch(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		u := ts.URL + "/messages/subscribe?messageBox=box&token=" + srv.authToken
+		u := ts.URL + "/messages/subscribe?messageBox=box"
 		if recipient != "" {
 			u += "&recipient=" + url.QueryEscape(recipient)
 		}
@@ -118,6 +118,7 @@ func TestHandleMessageSubscribeOperatorSwitch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		req.Header.Set("X-Anvil-Auth", srv.authToken)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("request: %v", err)
