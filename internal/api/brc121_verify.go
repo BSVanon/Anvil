@@ -200,10 +200,10 @@ func (b *brc121Gate) record(ctx context.Context, p *brc121Payment) error {
 // transaction) may still end with the payment accepted, so it is kept.
 //
 // The statuses are the ones go-sdk's ARC broadcaster treats as failures
-// (transaction/broadcaster/arc.go:190-196, 218-225) and the toolbox treats as
-// problematic (services/internal/arc/tx_status.go:42-44), less
-// MINED_IN_STALE_BLOCK and MALFORMED: a stale block's transaction is mined
-// again, and ARC reports a malformed transaction by HTTP status instead.
+// (transaction/broadcaster/arc.go:190-196, with any ORPHAN status at
+// 218-225), less MINED_IN_STALE_BLOCK, whose transaction is mined again. The
+// toolbox's problematic statuses (services/internal/arc/tx_status.go:42-44)
+// add UNKNOWN, which is kept: it says nothing about the transaction.
 // The HTTP statuses are ARC's codes for an invalid transaction
 // (pkg/api/status.go:14-31 and 53-120): unlocking scripts (461), inputs
 // missing or spent (462), malformed (463), outputs (464), fee too low (465),
@@ -212,7 +212,7 @@ func (b *brc121Gate) record(ctx context.Context, p *brc121Payment) error {
 // and 475 (mined ancestors without a BUMP) are about the form the node sent,
 // and are retried.
 var (
-	arcRefusedStatuses = map[string]bool{"REJECTED": true, "DOUBLE_SPEND_ATTEMPTED": true, "SEEN_IN_ORPHAN_MEMPOOL": true}
+	arcRefusedStatuses = map[string]bool{"REJECTED": true, "DOUBLE_SPEND_ATTEMPTED": true, "SEEN_IN_ORPHAN_MEMPOOL": true, "INVALID": true, "MALFORMED": true}
 	arcRefusedHTTP     = map[int]bool{461: true, 462: true, 463: true, 464: true, 465: true, 466: true, 471: true, 472: true, 473: true, 474: true}
 )
 

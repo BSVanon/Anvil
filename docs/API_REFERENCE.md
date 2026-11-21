@@ -671,8 +671,8 @@ again:
 
 - **Accepted or mined:** it is recorded in the wallet.
 - **Refused outright:** it is dropped. That is the status `REJECTED`,
-  `DOUBLE_SPEND_ATTEMPTED` or `SEEN_IN_ORPHAN_MEMPOOL`, or HTTP 461 to 466
-  or 471 to 474.
+  `DOUBLE_SPEND_ATTEMPTED`, `SEEN_IN_ORPHAN_MEMPOOL`, `INVALID` or
+  `MALFORMED`, or HTTP 461 to 466 or 471 to 474.
 - **Anything else:** it is kept for the next sweep.
 
 A payment ARC refuses outright at request time is never kept. A request
