@@ -12,8 +12,8 @@
 | `/data` | DELETE | Bearer | Delete a stored envelope by `topic` + `key` |
 | `/broadcast` | POST | Bearer or x402 | Submit BEEF for validation; forwards to ARC if `?arc=true`. Returns derived `status` field. x402 accepted only when node sets a positive broadcast price. |
 | `/messages/subscribe` | GET | Session ticket, or operator token in a header | SSE stream of new BRC-33 messages in real time |
-| `/mesh/status` | GET | No | Rich live health snapshot; carries `upstream_status` for wallet failover decisions |
-| `/mesh/nodes` | GET | No | Authoritative federation directory (merged from SHIP + heartbeat + gossip adjacency) |
+| `/mesh/status` | GET | No | Rate-limited health snapshot; up to 1,000 newest topics and `upstream_status` for wallet failover decisions |
+| `/mesh/nodes` | GET | No | Rate-limited federation directory; up to 500 nodes with up to 100 topics each |
 
 ## Discovery Endpoints
 
@@ -294,7 +294,7 @@ finish and populate the cache after the current response has returned.
 ## Mesh status response shape (v2.1.0+)
 
 `GET /mesh/status` is the recommended wallet failover-decision endpoint
-(CORS-only, no rate limit, no x402). Poll every 30–60 seconds.
+(CORS and rate-limited, no x402). Poll every 30–60 seconds.
 
 ```json
 {
@@ -305,6 +305,8 @@ finish and populate the cache after the current response has returned.
   "mesh": { "peers": 2, "peer_list": [...], "started_at": "...", "uptime_secs": 3600 },
   "activity": { "envelopes_received": 100, "envelopes_sent": 42 },
   "topics": [{ "topic": "oracle:rates", "count": 100, "age_secs": 30 }],
+  "topics_total": 1,
+  "topics_truncated": false,
   "overlay": { "ship_count": 7 },
   "upstream_status": {
     "broadcast": "healthy" | "degraded" | "down",
@@ -313,6 +315,10 @@ finish and populate the cache after the current response has returned.
   }
 }
 ```
+
+`topics` contains at most 1,000 public topics, ordered by `latest_at` newest
+first and then topic name. `topics_total` is the number of public topics before
+that cap, and `topics_truncated` reports whether the cap removed entries.
 
 `broadcast` reflects the ARC (or Arcade, post-migration) upstream health;
 `service_health` is the *host-level* health of the anvil service itself
@@ -333,6 +339,16 @@ the legacy name is still accepted for backward compatibility).
 Heartbeat envelopes published on the `mesh:heartbeat` topic carry the
 same `upstream_status` so federation consumers can observe node health
 without direct-polling every node.
+
+## Mesh nodes response shape
+
+`GET /mesh/nodes` returns at most 500 nodes. `count` is the number returned,
+`total` is the number before the cap, and `truncated` reports whether nodes
+were omitted. Nodes remain ordered by source rank (self, direct peer,
+heartbeat, overlay) and then name. Each node contains at most 100 topics. The
+self node's topics are sorted by name; heartbeat topics keep their heartbeat
+order. When a node's topics are capped, its optional `topics_total` gives the
+number before that cap.
 
 ## Operator self-healing (v2.2.0+; ergonomics overhauled v2.3.0)
 

@@ -12,16 +12,22 @@ import (
 // MeshNode represents a single node in the merged read-model.
 // Evidence flags preserve the source of each piece of data.
 type MeshNode struct {
-	Identity string       `json:"identity"`
-	Name     string       `json:"name"`
-	Version  string       `json:"version"`
-	URL      string       `json:"url"`
-	Height   uint32       `json:"height,omitempty"`
-	Peers    int          `json:"peers,omitempty"`
-	Topics   []string     `json:"topics,omitempty"`
-	LastSeen string       `json:"last_seen"`
-	Evidence MeshEvidence `json:"evidence"`
+	Identity    string       `json:"identity"`
+	Name        string       `json:"name"`
+	Version     string       `json:"version"`
+	URL         string       `json:"url"`
+	Height      uint32       `json:"height,omitempty"`
+	Peers       int          `json:"peers,omitempty"`
+	Topics      []string     `json:"topics,omitempty"`
+	TopicsTotal int          `json:"topics_total,omitempty"`
+	LastSeen    string       `json:"last_seen"`
+	Evidence    MeshEvidence `json:"evidence"`
 }
+
+const (
+	maxMeshNodes      = 500
+	maxMeshNodeTopics = 100
+)
 
 // MeshEvidence records which data sources contributed to this node entry.
 type MeshEvidence struct {
@@ -63,7 +69,7 @@ func (s *Server) handleMeshNodes(w http.ResponseWriter, r *http.Request) {
 			Evidence: MeshEvidence{Self: true},
 		},
 	}
-	// This route carries no auth layer at all (cors only) — PublicTopics so a
+	// This public, rate-limited route carries no auth layer — PublicTopics so a
 	// private topic's name never appears here. Peer topics (below) are
 	// already public-only at the source: they come from the gossiped
 	// heartbeat, which only ever names public topics (internal/feeds).
@@ -72,6 +78,11 @@ func (s *Server) handleMeshNodes(w http.ResponseWriter, r *http.Request) {
 		names := make([]string, 0, len(topics))
 		for t := range topics {
 			names = append(names, t)
+		}
+		sort.Strings(names)
+		if len(names) > maxMeshNodeTopics {
+			selfNode.node.TopicsTotal = len(names)
+			names = names[:maxMeshNodeTopics]
 		}
 		selfNode.node.Topics = names
 	}
@@ -155,7 +166,14 @@ func (s *Server) handleMeshNodes(w http.ResponseWriter, r *http.Request) {
 				b.node.Height = hb.Height
 				b.node.Peers = hb.Peers
 				if len(hb.Topics) > 0 {
-					b.node.Topics = hb.Topics
+					b.node.Topics = make([]string, 0, min(len(hb.Topics), maxMeshNodeTopics))
+					for _, topic := range hb.Topics {
+						if len(b.node.Topics) == maxMeshNodeTopics {
+							b.node.TopicsTotal = len(hb.Topics)
+							break
+						}
+						b.node.Topics = append(b.node.Topics, topic)
+					}
 				}
 
 				// last_seen from local ReceivedAt (not remote clock)
@@ -212,9 +230,16 @@ func (s *Server) handleMeshNodes(w http.ResponseWriter, r *http.Request) {
 		return result[i].Name < result[j].Name
 	})
 
+	total := len(result)
+	truncated := total > maxMeshNodes
+	if truncated {
+		result = result[:maxMeshNodes]
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"nodes": result,
-		"count": len(result),
+		"nodes":     result,
+		"count":     len(result),
+		"total":     total,
+		"truncated": truncated,
 	})
 }
 

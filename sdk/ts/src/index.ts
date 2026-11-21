@@ -59,6 +59,7 @@ export interface MeshNode {
   height?: number;
   peers?: number;
   topics?: string[];
+  topics_total?: number;
   last_seen: string;
   evidence: {
     self: boolean;
@@ -74,6 +75,8 @@ export interface MeshNode {
 export interface MeshNodesResponse {
   nodes: MeshNode[];
   count: number;
+  total?: number;
+  truncated?: boolean;
 }
 
 /** Upstream health reported by a federation node on its heartbeat. See
@@ -113,6 +116,8 @@ export interface MeshStatus {
     envelopes_sent: number;
   };
   topics?: Array<{ topic: string; count: number; latest_at?: string; age_secs?: number }>;
+  topics_total?: number;
+  topics_truncated?: boolean;
   overlay?: { ship_count: number };
   upstream_status?: UpstreamStatus;
 }

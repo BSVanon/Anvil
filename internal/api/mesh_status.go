@@ -3,12 +3,15 @@ package api
 import (
 	"bytes"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/version"
 	"github.com/libsv/go-p2p/wire"
 )
+
+const maxMeshStatusTopics = 1000
 
 // topicCache caches the expensive envelope store aggregation for /mesh/status.
 // Public endpoint + full LevelDB scan = DoS vector without caching.
@@ -82,8 +85,8 @@ func (s *Server) handleMeshStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Topics with counts and freshness (cached to avoid LevelDB scan per
-	// request). This route carries no auth layer at all (cors only, no
-	// openRead) — PublicTopicSummary so a private-only topic's name, count,
+	// request). This public, rate-limited route carries no auth layer —
+	// PublicTopicSummary so a private-only topic's name, count,
 	// and last-write time never appear here for any caller.
 	if s.envelopeStore != nil {
 		counts, latest := s.meshTopicCache.get(s.envelopeStore.PublicTopicSummary)
@@ -104,6 +107,18 @@ func (s *Server) handleMeshStatus(w http.ResponseWriter, r *http.Request) {
 				ti.AgeSecs = int(now - ts)
 			}
 			topics = append(topics, ti)
+		}
+		sort.Slice(topics, func(i, j int) bool {
+			left, right := latest[topics[i].Topic], latest[topics[j].Topic]
+			if left != right {
+				return left > right
+			}
+			return topics[i].Topic < topics[j].Topic
+		})
+		result["topics_total"] = len(topics)
+		result["topics_truncated"] = len(topics) > maxMeshStatusTopics
+		if len(topics) > maxMeshStatusTopics {
+			topics = topics[:maxMeshStatusTopics]
 		}
 		result["topics"] = topics
 	}
