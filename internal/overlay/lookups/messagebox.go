@@ -37,14 +37,9 @@ package lookups
 //     case. This port lowercases both the stored and queried identityKey
 //     explicitly, matching Anvil's existing controller/identity-field
 //     convention elsewhere (e.g. kvstore.go's Controller).
-//   - No limit/skip/pagination. Canon's findAdvertisements takes none
-//     either (MessageBoxStorage.ts:78-94) — a live advert set per
-//     identity is small (bounded by how many adverts that identity
-//     hasn't spent yet), so this port originally returned every match,
-//     unbounded, exactly like canon; a cap now limits CurrentHosts's own scan
-//     at the newest maxCurrentHostsScan adverts (documented there) —
-//     Lookup's own LookupFormula answer (this file's exported contract)
-//     stays unbounded, matching canon exactly.
+//   - Lookup answers are capped at 10,000 BEEFs or 2 MiB of admitted BEEF
+//     bytes. Results truncate newest-first; records written before byte
+//     accounting are omitted because their hydration cost is unknown.
 //
 // See messagebox.go for the admission-side divergences.
 
@@ -55,6 +50,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
@@ -66,6 +62,10 @@ import (
 
 const (
 	mbItemPrefix = "lk_messagebox:item:" // lk_messagebox:item:<txid>:<vout> -> JSON messageboxRecord
+	// mbStoredBEEFPrefix is the canonical overlay store's per-transaction
+	// BEEF key. Records written before BEEFBytes was added obtain their
+	// accounting from this already-stored value during a bounded lookup scan.
+	mbStoredBEEFPrefix = "beef3:"
 	// mbIDPrefix indexes
 	// lk_messagebox:id:<hex(identityKeyLower)>:<invertedTime>:<txid>:<vout> -> nil.
 	// The inverted-time segment (mbInvertedTimeWidth fixed-width
@@ -82,9 +82,15 @@ const (
 	// still hold arbitrarily many live, unspent ones) must not make
 	// every message to it cost O(N) Gets and JSON decodes. 32 is a
 	// generous ceiling for a real recipient's genuinely live host count
-	// while bounding the worst case; Lookup's own external answer (the
-	// BRC-33 contract) stays unbounded, matching canon.
+	// while bounding the worst case.
 	maxCurrentHostsScan = 32
+
+	// MessageBox lookup results use the same per-answer count and BEEF-byte
+	// bounds as peer lookup answers. The engine hydrates formula references
+	// before writing the public response, so the limit belongs here, before
+	// that unbounded hydration loop.
+	maxMessageBoxLookupBEEFs     = peerhygiene.MaxLookupOutputs
+	maxMessageBoxLookupBEEFBytes = peerhygiene.MaxAnswerBEEFBytes
 
 	// mbInvertedTimeWidth is the zero-padded decimal width of the
 	// inverted-time index segment: math.MaxInt64 is 19 digits, so 20
@@ -99,6 +105,7 @@ type messageboxRecord struct {
 	IdentityKey string `json:"identityKey"`
 	Host        string `json:"host"`
 	AdmittedAt  int64  `json:"admittedAt"`
+	BEEFBytes   int64  `json:"beefBytes"`
 }
 
 // MessageBoxLookupService implements engine.LookupService for
@@ -116,8 +123,8 @@ func NewMessageBoxLookupService(db *leveldb.DB) *MessageBoxLookupService {
 		db: db,
 		docs: "MessageBox Lookup Service (BRC-33): resolve which host(s) a recipient identity has " +
 			"advertised for message routing. Query by identityKey (required), optionally narrowed to " +
-			"an exact host. Returns output references, newest first; the client decodes the PushDrop " +
-			"fields itself.",
+			"an exact host. Returns output references, newest first, truncated at 10000 BEEFs or 2 MiB " +
+			"of admitted BEEF bytes. Legacy records obtain their byte accounting from stored BEEF; the client decodes the PushDrop fields itself.",
 		meta: &overlay.MetaData{
 			Name:        topics.MessageBoxLookupServiceName,
 			Description: "BRC-33 MessageBox host-advertisement resolution",
@@ -160,6 +167,7 @@ func (s *MessageBoxLookupService) OutputAdmittedByTopic(ctx context.Context, pay
 		IdentityKey: strings.ToLower(entry.IdentityKey),
 		Host:        entry.Host,
 		AdmittedAt:  nowUnixNano(),
+		BEEFBytes:   int64(len(payload.AtomicBEEF)),
 	}
 	body, err := json.Marshal(&rec)
 	if err != nil {
@@ -215,9 +223,10 @@ func (s *MessageBoxLookupService) OutputBlockHeightUpdated(ctx context.Context, 
 
 // --- query path ------------------------------------------------------------
 
-// Lookup answers a MessageBox query: every current advert for
-// identityKey (required), optionally narrowed to an exact host, newest
-// first.
+// Lookup answers a MessageBox query: current adverts for identityKey
+// (required), optionally narrowed to an exact host, newest first. It
+// truncates at maxMessageBoxLookupBEEFs or maxMessageBoxLookupBEEFBytes;
+// callers needing a record beyond the stable bound must query a narrower host.
 func (s *MessageBoxLookupService) Lookup(ctx context.Context, question *lookup.LookupQuestion) (*lookup.LookupAnswer, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -236,21 +245,9 @@ func (s *MessageBoxLookupService) Lookup(ctx context.Context, question *lookup.L
 		return nil, errors.New("messagebox lookup: identityKey query missing")
 	}
 
-	// Lookup is the external BRC-33 contract: unbounded, matching canon
-	// (see this file's header comment). Only CurrentHosts, the internal
-	// Home-rule hot path, is bounded.
-	recs, err := s.currentRecords(strings.ToLower(q.IdentityKey), 0)
+	recs, err := s.currentRecords(strings.ToLower(q.IdentityKey), q.Host, maxMessageBoxLookupBEEFs, maxMessageBoxLookupBEEFBytes)
 	if err != nil {
 		return nil, err
-	}
-	if q.Host != "" {
-		filtered := recs[:0]
-		for _, r := range recs {
-			if r.host == q.Host {
-				filtered = append(filtered, r)
-			}
-		}
-		recs = filtered
 	}
 
 	ops := make([]*transaction.Outpoint, 0, len(recs))

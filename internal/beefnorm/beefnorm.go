@@ -87,8 +87,15 @@ type BEEF struct {
 }
 
 // Parse prices b with beefscan.Inspect, parses it and normalizes it. It
-// returns beefscan's refusal (wrapping beefscan.ErrTooComplex), go-sdk's parse
-// error, ErrNoSubject, or an error wrapping ErrRefused.
+// returns beefscan's refusal (wrapping beefscan.ErrTooComplex), go-sdk's
+// envelope error from split, ErrNoSubject, or an error wrapping ErrRefused —
+// which now also covers go-sdk's own parse error from NewBeefFromBytes: bytes
+// that are not a BEEF at all, a raw transaction included, parse only as far
+// as go-sdk's own version check, which fails with its bare "invalid BEEF
+// version" error. Wrapping it here, the one place Parse calls
+// NewBeefFromBytes, is what lets both guarded.go files' existing ErrRefused
+// case (aliased there as routeguard.ErrMalformed) answer 400 for it instead
+// of falling through to each route's own unnamed-error default.
 func Parse(b []byte) (n *BEEF, err error) {
 	shape, err := beefscan.Inspect(b)
 	if err != nil {
@@ -100,13 +107,17 @@ func Parse(b []byte) (n *BEEF, err error) {
 	}
 	raw, err := transaction.NewBeefFromBytes(inner)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: expected BEEF; a raw transaction cannot be verified (%v)", ErrRefused, err)
 	}
 	// Parsing keeps one entry per txid, the last; inputs read before it are
 	// linked to the earlier one. Which copy is verified and which is stored
-	// would then differ.
+	// would then differ. Refusing outright, rather than tolerating it the
+	// way Parse tolerates an Atomic BEEF's unrelated older entries, is an
+	// Anvil restriction: parsers can retain duplicate wire entries and
+	// re-emit the original bytes even when their construction helpers key
+	// transactions by txid.
 	if len(raw.Transactions) != shape.Txs {
-		return nil, fmt.Errorf("%w: %d entries hold %d distinct txids", ErrRefused, shape.Txs, len(raw.Transactions))
+		return nil, fmt.Errorf("%w: duplicate txid: %d entries hold only %d distinct txids", ErrRefused, shape.Txs, len(raw.Transactions))
 	}
 	if subject == nil {
 		subject = raw.NewestTxID
@@ -132,7 +143,7 @@ func Parse(b []byte) (n *BEEF, err error) {
 	if err != nil {
 		return nil, err
 	}
-	unlinkDropped(kept)
+	relink(kept)
 	beef := &transaction.Beef{Version: transaction.BEEF_V2, BUMPs: bumps, Transactions: kept, NewestTxID: subject}
 	return &BEEF{
 		Beef:    beef,
@@ -227,16 +238,27 @@ func holds(raw *transaction.Beef, i int, id chainhash.Hash, leaves map[int]map[c
 	return ok
 }
 
-// unlinkDropped clears the links from kept proven transactions to sources
-// Parse dropped, so the Beef holds what its bytes say. Verification never
-// follows a proven transaction's inputs.
-func unlinkDropped(kept map[chainhash.Hash]*transaction.BeefTx) {
+// relink sets every kept entry's input links from kept itself, in place of
+// whatever go-sdk's own parse set: a source still kept, with a transaction,
+// is linked to it; a source that is dropped, or kept only as a txid-only
+// stub, is unlinked. go-sdk's readBeefTxFull links an input only to a
+// source transaction the map it is given already holds when that input is
+// reached (transaction/beef.go:157-162) -- the entries read earlier in the
+// bytes, not the whole BEEF -- so a V2 BEEF listing an unproven transaction
+// before the parent it spends leaves that link nil even though Parse's own
+// selectGraph, reading the complete map, kept both. Verification never
+// follows a proven transaction's own inputs, so relinking them changes
+// nothing it checks; relink does not special-case them.
+func relink(kept map[chainhash.Hash]*transaction.BeefTx) {
 	for _, e := range kept {
-		if e.DataFormat != transaction.RawTxAndBumpIndex {
+		if e.Transaction == nil {
 			continue
 		}
 		for _, in := range e.Transaction.Inputs {
-			if _, ok := kept[*in.SourceTXID]; !ok {
+			src := kept[*in.SourceTXID]
+			if src != nil && src.Transaction != nil {
+				in.SourceTransaction = src.Transaction
+			} else {
 				in.SourceTransaction = nil
 			}
 		}

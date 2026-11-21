@@ -176,6 +176,15 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 			}
 		}
 		consecutiveRefusals = 0
+		// Raise this connection's per-frame cap back to the library
+		// default now that it is authenticated and allowed — see
+		// ServerWSTransport.MarkAuthorized and the pre-auth cap it pairs
+		// with (transport.go). Without this call, every seed connection —
+		// the normal way nodes peer in production, per [mesh] seeds — would
+		// stay capped at preAuthMaxFrameBytes for its entire connected
+		// lifetime, breaking any gossip payload over that size on exactly
+		// the path real mesh traffic uses most.
+		transport.MarkAuthorized()
 
 		if err := m.announceInterests(peer); err != nil {
 			m.logger.Warn("seed peer interest announce failed", "endpoint", endpoint, "error", err)

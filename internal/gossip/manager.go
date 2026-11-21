@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,7 +12,6 @@ import (
 	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/wallet"
-	"golang.org/x/net/websocket"
 
 	"github.com/BSVanon/Anvil/internal/bond"
 	"github.com/BSVanon/Anvil/internal/envelope"
@@ -135,6 +133,10 @@ type Manager struct {
 	dedupEvictions    atomic.Int64
 	duplicateArrivals atomic.Int64
 	catchupTruncated  atomic.Int64
+
+	// unauthConns counts inbound MeshHandler connections currently open
+	// that have not yet reached MarkAuthorized (see reserveUnauthConn).
+	unauthConns atomic.Int32
 }
 
 // peerRate tracks token-bucket rate limiting for a single peer.
@@ -276,9 +278,12 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 	})
 
 	// Register message handler before starting. By the time this fires,
-	// establishAndAuthorizePeer below has already re-keyed this peer's
-	// map entry to its identity hex and checked allowed_peers — this
-	// callback only still needs to run the one-time bond check.
+	// establishAndAuthorizePeer below has usually already re-keyed this
+	// peer's map entry to its identity hex and checked allowed_peers —
+	// but go-sdk gives no ordering guarantee between that call returning
+	// and this callback firing for the peer's first general message, so
+	// the check below runs here too, defensively, the same as AcceptPeer
+	// already does for the symmetric inbound case.
 	peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
 		pkHex := fmt.Sprintf("%x", senderPK.Compressed())
 
@@ -289,6 +294,18 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 			needsBondCheck = true
 		}
 		m.mu.Unlock()
+
+		// [mesh] allowed_peers, defense in depth: establishAndAuthorizePeer
+		// below is the primary check for an outbound dial, but if this
+		// callback's first message ever ran before that check returns, a
+		// message from a peer about to be refused must still never reach
+		// handleMessage below. Factored into outboundAllowlistGate so the
+		// check can be exercised directly in a test: the ordering this
+		// guards against has no documented guarantee either way and no
+		// deterministic reproduction from outside go-sdk's internals.
+		if err := m.outboundAllowlistGate(needsBondCheck, pkHex, endpoint); err != nil {
+			return err
+		}
 
 		// Verify bond on first message (identity just revealed)
 		if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
@@ -360,6 +377,7 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 	if _, err := m.establishAndAuthorizePeer(ctx, peer, endpoint, "outbound", endpoint, 5000); err != nil {
 		return fmt.Errorf("peer identity not established: %w", err)
 	}
+	transport.MarkAuthorized()
 
 	// Announce our topic interests
 	if err := m.announceInterests(peer); err != nil {
@@ -459,6 +477,7 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 		}
 		if needsBondCheck {
 			m.notePeerIdentity(pkHex)
+			transport.MarkAuthorized()
 			// Reply with our own announces now that this peer's identity
 			// has passed allowed_peers — never before. (We are the
 			// acceptor: the dialer always speaks first, so replying here,
@@ -553,24 +572,6 @@ func (m *Manager) removePeerWithReason(origKey, reason string) {
 		}
 	}
 	m.mu.Unlock()
-}
-
-// MeshHandler returns an http.Handler that accepts inbound WebSocket
-// connections for mesh peering. Mount this on the mesh listen address.
-func (m *Manager) MeshHandler() http.Handler {
-	return websocket.Handler(func(conn *websocket.Conn) {
-		transport := NewServerWSTransport(conn)
-		peerKey, err := m.AcceptPeer(transport)
-		if err != nil {
-			m.logger.Warn("inbound peer accept failed", "error", err)
-			return
-		}
-
-		// Block until the connection closes, then clean up the peer.
-		<-transport.Done()
-		m.removePeerWithReason(peerKey, "transport_closed")
-		m.logger.Info("inbound peer disconnected, cleaned up", "key", truncate(peerKey))
-	})
 }
 
 // SetOnEnvelopeHook adds an additional callback invoked for each mesh-received

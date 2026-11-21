@@ -3,12 +3,27 @@ package gossip
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/bsv-blockchain/go-sdk/auth"
 	"golang.org/x/net/websocket"
 )
+
+// preAuthMaxFrameBytes caps the size of a single WebSocket frame this
+// transport will accept before its peer has completed BRC-31
+// authentication and this node's own allowed_peers/bond checks
+// (MarkAuthorized). golang.org/x/net/websocket's own default
+// (DefaultMaxPayloadBytes, 32 MiB) otherwise applies from the first frame
+// of every connection, authenticated or not — letting an unauthenticated
+// sender force up to 32 MiB of read buffer per connection before it has
+// proven anything about who it is. The handshake messages that establish
+// identity are small (BRC-31 initial request/response, certificates), so
+// this never affects a legitimate peer; MarkAuthorized raises the limit
+// back to the library default once this connection no longer needs the
+// smaller one.
+const preAuthMaxFrameBytes = 64 << 10 // 64 KiB
 
 // --- Outbound (client-side) transport ---
 
@@ -34,15 +49,50 @@ type ServerWSTransport struct {
 	mu         sync.Mutex
 	onDataFunc func(context.Context, *auth.AuthMessage) error
 	done       chan struct{} // closed when the read loop exits
+
+	authorized chan struct{} // closed by MarkAuthorized
+	authOnce   sync.Once
 }
 
-// NewServerWSTransport wraps an accepted WebSocket connection.
+// NewServerWSTransport wraps an accepted or dialled WebSocket connection,
+// capping its per-frame size at preAuthMaxFrameBytes until MarkAuthorized
+// is called.
 func NewServerWSTransport(conn *websocket.Conn) *ServerWSTransport {
-	return &ServerWSTransport{conn: conn, done: make(chan struct{})}
+	if conn != nil {
+		conn.MaxPayloadBytes = preAuthMaxFrameBytes
+	}
+	return &ServerWSTransport{conn: conn, done: make(chan struct{}), authorized: make(chan struct{})}
 }
 
 // Done returns a channel that is closed when the connection is lost.
 func (s *ServerWSTransport) Done() <-chan struct{} { return s.done }
+
+// MarkAuthorized signals that this connection's remote peer has completed
+// BRC-31 authentication and passed this node's own allowed_peers/bond
+// checks. Idempotent and safe to call from any goroutine. Its one
+// deferred effect — raising the per-frame size cap back to the library
+// default — happens inside StartReceive's own loop (see there), which is
+// the only code that ever touches conn.MaxPayloadBytes after
+// construction, so that write is never concurrent with this call.
+func (s *ServerWSTransport) MarkAuthorized() {
+	s.authOnce.Do(func() { close(s.authorized) })
+}
+
+// Authorized returns a channel that is closed once MarkAuthorized has
+// been called for this connection.
+func (s *ServerWSTransport) Authorized() <-chan struct{} { return s.authorized }
+
+// raiseFrameLimitIfAuthorized raises the receive cap only from StartReceive's
+// goroutine. It reports whether authorization was already observed.
+func (s *ServerWSTransport) raiseFrameLimitIfAuthorized() bool {
+	select {
+	case <-s.authorized:
+		s.conn.MaxPayloadBytes = 0
+		return true
+	default:
+		return false
+	}
+}
 
 func (s *ServerWSTransport) RemoteAddr() string {
 	if s.conn == nil {
@@ -87,9 +137,22 @@ func (s *ServerWSTransport) GetRegisteredOnData() (func(context.Context, *auth.A
 // When the connection is lost, the done channel is closed.
 func (s *ServerWSTransport) StartReceive() {
 	defer close(s.done)
+	raised := false
 	for {
+		if !raised {
+			raised = s.raiseFrameLimitIfAuthorized()
+		}
 		var raw []byte
 		if err := websocket.Message.Receive(s.conn, &raw); err != nil {
+			// Receive reads the frame header before it checks MaxPayloadBytes.
+			// Authorization can therefore close between the check at the top of
+			// this loop and that size check. Retry this frame with the raised
+			// limit when that happened; the codec retains the frame for the next
+			// Receive call, so no bytes are lost or accepted pre-authorization.
+			if !raised && errors.Is(err, websocket.ErrFrameTooLarge) && s.raiseFrameLimitIfAuthorized() {
+				raised = true
+				continue
+			}
 			return // connection closed
 		}
 		var msg auth.AuthMessage

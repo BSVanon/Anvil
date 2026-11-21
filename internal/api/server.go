@@ -906,7 +906,7 @@ func (s *Server) Handler() http.Handler {
 		// content it never authenticated for. Server middleware re-sets it
 		// downstream on genuine success, so legitimate auth is unaffected.
 		r.Header.Del("X-Anvil-Authed")
-		s.mux.ServeHTTP(w, r)
+		serveAndAbandonUnread(s.mux, w, r)
 	})
 }
 

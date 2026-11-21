@@ -2,11 +2,13 @@ package storage
 
 import (
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/BSVanon/Anvil/internal/beefnorm"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
@@ -82,7 +84,11 @@ func TestBeefV1RoundtripHydration(t *testing.T) {
 // re-parsing it ("index out of range"); go-sdk v1.7 returns an ordinary error
 // ("invalid BEEF transaction hasBump value"). The blob is a fixture now because
 // v1.7's beef.Bytes() writes the V1 layout correctly, so re-serializing no
-// longer reproduces it.
+// longer reproduces it. A good ancillary alongside the bad one checks that
+// skipping it does not also skip the rest: nothing that does not parse can be
+// fixed by normalizing it, so
+// this is the one skip-but-keep-going case normalizing stored BEEFs cannot
+// make go away.
 func TestLoadAncillaryBeef_SkipsUnparseableAncillaryBlob(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "ump_v1_roundtrip.hex"))
 	if err != nil {
@@ -110,25 +116,48 @@ func TestLoadAncillaryBeef_SkipsUnparseableAncillaryBlob(t *testing.T) {
 	if err := db.Put(beefKey(badAncillaryTxid), oldStored, nil); err != nil {
 		t.Fatalf("put bad ancillary beef: %v", err)
 	}
+	honest := minedTx(0x42, 1)
+	honest.MerklePath = soleTxBUMP(honest, 7)
+	honestBeef, err := transaction.NewBeefFromTransaction(honest)
+	if err != nil {
+		t.Fatalf("honest ancillary BEEF: %v", err)
+	}
+	honestBytes, err := storableBeefBytes(honestBeef)
+	if err != nil {
+		t.Fatalf("serialise honest ancillary: %v", err)
+	}
+	if err := db.Put(beefKey(honest.TxID()), honestBytes, nil); err != nil {
+		t.Fatalf("put honest ancillary beef: %v", err)
+	}
 
 	out := &engine.Output{
 		Outpoint: transaction.Outpoint{Txid: *subjectTxid, Index: 0},
 		Beef:     beef,
 	}
-	out.AncillaryTxids = append(out.AncillaryTxids, badAncillaryTxid)
+	out.AncillaryTxids = append(out.AncillaryTxids, badAncillaryTxid, honest.TxID())
 	txs := len(beef.Transactions)
 
 	if err := New(db).LoadAncillaryBeef(ctxBg(), out); err != nil {
 		t.Fatalf("an unparseable ancillary BEEF failed the load: %v", err)
 	}
-	if out.Beef != beef || len(out.Beef.Transactions) != txs || out.Beef.FindTransaction(subjectTxid.String()) == nil {
-		t.Fatal("skipping the unparseable ancillary changed the output's BEEF")
+	// MergeBeef mutates its receiver in place, so a successful merge of the
+	// honest ancillary leaves out.Beef pointer-identical to beef; only a
+	// rebuild after a merge panic would swap in a different pointer.
+	if out.Beef != beef || len(out.Beef.Transactions) != txs+1 || out.Beef.FindTransaction(subjectTxid.String()) == nil {
+		t.Fatal("skipping the unparseable ancillary also skipped the good one, or changed the subject")
+	}
+	if out.Beef.FindTransactionByHash(honest.TxID()) == nil {
+		t.Fatal("the honest ancillary alongside the bad one did not merge")
 	}
 
 	target := beef
-	err = mergeStoredBEEF(&target, oldStored)
-	if err == nil || !strings.Contains(err.Error(), "parse") {
-		t.Fatalf("expected a parse error for the legacy layout, got: %v", err)
+	m, err := newAncillaryMerge(&target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = m.merge(oldStored)
+	if err == nil || !errors.Is(err, beefnorm.ErrRefused) {
+		t.Fatalf("expected the legacy layout refused as unparseable, got: %v", err)
 	}
 	if strings.Contains(err.Error(), "panicked") {
 		t.Fatalf("go-sdk should reject the legacy layout with an error, not a recovered panic: %v", err)

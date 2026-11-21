@@ -214,7 +214,7 @@ func (s *clientSet) takeClientRead(w http.ResponseWriter, r *http.Request) (cl *
 	}
 	if !cl.slot[slotRead].TryAcquire(1) {
 		s.unref(cl)
-		refuse(w, r)
+		Refuse(w, r)
 		return nil, false, ErrBusy
 	}
 	return cl, true, nil

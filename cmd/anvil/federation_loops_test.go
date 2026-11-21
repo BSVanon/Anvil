@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -55,6 +56,20 @@ func (r panickingResolver) SetSLAPTrackers([]string) {
 
 func (r panickingResolver) Query(context.Context, *lookup.LookupQuestion) (*lookup.LookupAnswer, error) {
 	return nil, nil
+}
+
+type deadlineResolver struct{ deadlines chan<- time.Duration }
+
+func (deadlineResolver) SLAPTrackers() []string   { return nil }
+func (deadlineResolver) SetSLAPTrackers([]string) {}
+func (r deadlineResolver) Query(ctx context.Context, _ *lookup.LookupQuestion) (*lookup.LookupAnswer, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		r.deadlines <- 0
+	} else {
+		r.deadlines <- time.Until(deadline)
+	}
+	return nil, context.Canceled
 }
 
 // syncBuffer is a log destination safe for the loop goroutine and the test.
@@ -137,6 +152,41 @@ func TestRunGASPSync_SurvivesAPanickingRun(t *testing.T) {
 	}
 	if tracker.Snapshot().InitialSyncDone {
 		t.Error("a run that panicked was recorded as a successful sync")
+	}
+}
+
+func TestRunGASPSync_GivesEachRunADeadline(t *testing.T) {
+	source, err := os.ReadFile("federation_loops.go")
+	if err != nil {
+		t.Fatalf("read sync loop source: %v", err)
+	}
+	if bytes.Contains(source, []byte("eng.StartGASPSync(ctx)")) {
+		t.Fatal("GASP sync run uses its daemon context without a whole-run deadline")
+	}
+	deadlines := make(chan time.Duration, 1)
+	eng := &engine.Engine{
+		SyncConfiguration: map[string]engine.SyncConfiguration{"tm_test": {Type: engine.SyncConfigurationSHIP}},
+		LookupResolver:    deadlineResolver{deadlines: deadlines},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runGASPSyncWithTimeout(ctx, eng, slog.Default(), 3600, 1, nil)
+	}()
+	select {
+	case deadline := <-deadlines:
+		if deadline <= 0 || deadline > 2*time.Second {
+			t.Fatalf("GASP sync deadline = %v, want a one-second whole-run bound", deadline)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("GASP sync did not begin")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("GASP sync did not stop after cancellation")
 	}
 }
 

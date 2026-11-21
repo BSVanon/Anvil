@@ -38,8 +38,11 @@ type mbHit struct {
 }
 
 // currentRecords returns live (unspent, unevicted) adverts for
-// identityKeyLower, newest first, decoding at most limit of them (0 =
-// unbounded). Newest-first order and the limit both come from the index
+// identityKeyLower and, when non-empty, exactHost, newest first, decoding at most limit of them (0 =
+// unbounded) and accepting no more than maxBEEFBytes of admitted BEEF
+// bytes (0 = unbounded). When limit is non-zero, it also bounds candidate
+// records examined, including old records that require one extra BEEF read.
+// Newest-first order and the limits come from the index
 // KEY's own lexicographic order (mbIndexKey's inverted-time segment),
 // not an in-memory sort: scanPrefix already visits keys in ascending
 // byte order, which is descending AdmittedAt order by construction, and
@@ -47,10 +50,18 @@ type mbHit struct {
 // trailing bytes — "for free", with nothing left to sort afterwards
 // (there is no comparator computing Txid.String() repeatedly,
 // because there is no comparator).
-func (s *MessageBoxLookupService) currentRecords(identityKeyLower string, limit int) ([]mbHit, error) {
+func (s *MessageBoxLookupService) currentRecords(identityKeyLower, exactHost string, limit int, maxBEEFBytes int64) ([]mbHit, error) {
 	fullPrefix := []byte(mbIDPrefix + identityKeyLower + ":")
 	var hits []mbHit
+	var beefBytes int64
+	var candidates int
 	err := scanPrefix(s.db, fullPrefix, func(k, _ []byte) error {
+		if limit > 0 {
+			candidates++
+			if candidates > limit {
+				return errMBScanLimitReached
+			}
+		}
 		op, ok := decodeMBIndexOutpoint(k, len(fullPrefix))
 		if !ok {
 			return nil
@@ -63,6 +74,16 @@ func (s *MessageBoxLookupService) currentRecords(identityKeyLower string, limit 
 		if err := json.Unmarshal(body, &rec); err != nil {
 			return nil
 		}
+		if exactHost != "" && rec.Host != exactHost {
+			return nil
+		}
+		if maxBEEFBytes > 0 {
+			recordBEEFBytes, ok := s.recordBEEFBytes(&op.Txid, rec.BEEFBytes)
+			if !ok || recordBEEFBytes > maxBEEFBytes-beefBytes {
+				return nil
+			}
+			beefBytes += recordBEEFBytes
+		}
 		hits = append(hits, mbHit{op: op, host: rec.Host})
 		if limit > 0 && len(hits) >= limit {
 			return errMBScanLimitReached
@@ -73,6 +94,34 @@ func (s *MessageBoxLookupService) currentRecords(identityKeyLower string, limit 
 		return nil, fmt.Errorf("messagebox lookup: scan %s: %w", mbIDPrefix, err)
 	}
 	return hits, nil
+}
+
+// recordBEEFBytes returns the admitted atomic BEEF size used by engine
+// hydration. New records carry it in their index record. Older records are
+// measured from their stored BEEF without modifying the database; the caller's
+// candidate limit bounds this extra read and parse work.
+func (s *MessageBoxLookupService) recordBEEFBytes(txid *chainhash.Hash, recorded int64) (size int64, ok bool) {
+	if recorded > 0 {
+		return recorded, true
+	}
+	defer func() {
+		if recover() != nil {
+			size, ok = 0, false
+		}
+	}()
+	body, err := s.db.Get([]byte(mbStoredBEEFPrefix+txid.String()), nil)
+	if err != nil {
+		return 0, false
+	}
+	beef, _, _, err := transaction.ParseBeef(body)
+	if err != nil || beef == nil {
+		return 0, false
+	}
+	atomic, err := beef.AtomicBytes(txid)
+	if err != nil {
+		return 0, false
+	}
+	return int64(len(atomic)), true
 }
 
 // CurrentHosts returns the raw (un-normalised) host string of the
@@ -93,7 +142,7 @@ func (s *MessageBoxLookupService) currentRecords(identityKeyLower string, limit 
 // every single message. Returns (nil, nil) for an unknown or
 // unadvertised identity.
 func (s *MessageBoxLookupService) CurrentHosts(identityKeyHex string) ([]string, error) {
-	hits, err := s.currentRecords(strings.ToLower(strings.TrimSpace(identityKeyHex)), maxCurrentHostsScan)
+	hits, err := s.currentRecords(strings.ToLower(strings.TrimSpace(identityKeyHex)), "", maxCurrentHostsScan, 0)
 	if err != nil {
 		return nil, err
 	}

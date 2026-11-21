@@ -26,6 +26,7 @@ func (s *Shim) guard() *routeguard.Guard { return routeguard.Or(s.Guard) }
 func (s *Shim) readGuarded(w http.ResponseWriter, r *http.Request, route routeguard.Route, jsonRoute bool) (*routeguard.Ticket, []byte, bool) {
 	t, err := s.guard().Begin(w, r, jsonRoute)
 	if err != nil {
+		routeguard.Refuse(w, r)
 		writeLegacyGuardError(w, r, err)
 		return nil, nil, false
 	}
@@ -111,6 +112,12 @@ func (s *Shim) runSubmit(ctx context.Context, g *guardedSubmit, beefBytes []byte
 	return submitOutcome{steak: steak, err: err}
 }
 
+// invalidTransactionCode is the error code of a BEEF that reached
+// PreVerify's own verification stage and was classified invalid there. See
+// the matching constant and its doc in v3engine/guarded.go, which this
+// mirrors.
+const invalidTransactionCode = "ERR_INVALID_TRANSACTION"
+
 // writeLegacyGuardError answers, in the legacy {"error": msg} envelope, a
 // request the guard refused or whose BEEF failed before the engine saw it:
 // 503 with Retry-After when the node is busy, 408 when the body was too slow,
@@ -120,20 +127,29 @@ func (s *Shim) runSubmit(ctx context.Context, g *guardedSubmit, beefBytes []byte
 // B1), 400 for a BEEF the guard does not accept (routeguard.ErrMalformed),
 // 422 with routeguard.ValidationBudgetCode for scripts over the verification
 // budget, and otherwise the status the engine's own error got before the
-// guard (statusForSubmitError), unchanged by the classification below. The
-// six named guard-imposed cases are rate-limit logged via refusallog, as the
-// canonical route's writeGuardError does; a context.DeadlineExceeded
-// (preVerify's own deadline, not r's) is carved out unlogged, matching
-// writeGuardError, since outlasting a verification deadline is an ordinary
-// outcome, not the guard refusing a flood; the true default -- any other
-// error reaching here -- is logged under ReasonInvalidTransaction for
-// engine.ErrInvalidTransaction or engine.ErrInvalidBeef (statusForSubmitError
-// already answers these 422) and ReasonOtherGuardError for everything else,
-// since both are still the guard (or preVerify ahead of the engine) refusing
-// a submit, just for reasons none of the other named Reasons cover (cold
-// review round 4's NITs: this branch was unlogged; cold review round 4 cycle
-// 6's NITs: it was logged but not split from a flood of genuinely invalid
-// transactions).
+// guard (statusForSubmitError). The six named guard-imposed cases are
+// rate-limit logged via refusallog, as the canonical route's writeGuardError
+// does; a context.DeadlineExceeded (preVerify's own deadline, not r's) is
+// carved out unlogged, matching writeGuardError, since outlasting a
+// verification deadline is an ordinary outcome, not the guard refusing a
+// flood.
+//
+// The true default -- any other error reaching here -- first asks
+// statusForSubmitError for a status, as before, which still answers 422 for
+// engine.ErrInvalidTransaction or engine.ErrInvalidBeef directly and 400 for
+// engine.ErrUnknownTopic; invalidTransactionReason logs ReasonInvalidTransaction
+// for the first two and ReasonOtherGuardError for the rest, unchanged. But
+// when statusForSubmitError's own answer is its generic 500 -- which, at
+// this call site, only ever means a verification verdict PreVerify returned
+// that is not one of its named sentinels, since this function (unlike
+// statusForSubmitError's other call site, the engine's own post-admission
+// Submit error in routes.go) never sees anything but a Begin, ReadBody or
+// PreVerify-stage error -- that 500 is overridden to 400 with
+// invalidTransactionCode and ReasonInvalidTransaction instead: go-sdk's
+// spv.Verify returns script, fee and merkle failures as plain errors
+// (cycle-6b re-review, NIT 1), which routeguard/verify.go's final switch
+// passes straight through, and the client's BEEF failing to verify is not a
+// node fault.
 func writeLegacyGuardError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, routeguard.ErrBusy):
@@ -158,16 +174,25 @@ func writeLegacyGuardError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, context.DeadlineExceeded):
 		writeLegacyError(w, statusForSubmitError(err), err.Error())
 	default:
-		refusallog.Log(r, statusForSubmitError(err), invalidTransactionReason(err))
-		writeLegacyError(w, statusForSubmitError(err), err.Error())
+		status := statusForSubmitError(err)
+		if status == http.StatusInternalServerError {
+			refusallog.Log(r, http.StatusBadRequest, refusallog.ReasonInvalidTransaction)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": invalidTransactionCode})
+			return
+		}
+		refusallog.Log(r, status, invalidTransactionReason(err))
+		writeLegacyError(w, status, err.Error())
 	}
 }
 
 // invalidTransactionReason is ReasonInvalidTransaction for
 // engine.ErrInvalidTransaction or engine.ErrInvalidBeef, and
 // ReasonOtherGuardError for every other error writeLegacyGuardError's
-// default branch logs (cold review round 4 cycle 6 NIT). It changes no
-// status code: statusForSubmitError still decides that, unchanged.
+// default branch logs when statusForSubmitError already named it (unknown
+// topic, or a deadline) -- cold review round 4 cycle 6 NIT. It changes no
+// status code there: statusForSubmitError still decides that, unchanged. The
+// branch where statusForSubmitError does not name the error (its generic
+// 500) does not call this: see writeLegacyGuardError's default case.
 func invalidTransactionReason(err error) refusallog.Reason {
 	if errors.Is(err, engine.ErrInvalidTransaction) || errors.Is(err, engine.ErrInvalidBeef) {
 		return refusallog.ReasonInvalidTransaction

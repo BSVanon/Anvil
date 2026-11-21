@@ -104,7 +104,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	logger := slog.Default()
+	logger := installEngineLog()
 
 	log.Printf("anvil node %q v%s starting", cfg.Node.Name, anvilversion.Version)
 	log.Printf("  data_dir:   %s", cfg.Node.DataDir)
@@ -479,8 +479,8 @@ func main() {
 			// cfg.Overlay.EnableGASPSync = false.
 			// W-10.3 federation wiring + B5 [overlay] named_peers
 			// closed-network override both live in wireV3Federation
-			// (federation_loops.go) so this file doesn't grow.
-			wireV3Federation(cfg, v3Eng, gaspTracker, shipStore, slapStore, anvilStore, nodeWallet, logger)
+			// (federation_loops.go); deferred to stop its background loop(s) at shutdown.
+			defer wireV3Federation(cfg, v3Eng, gaspTracker, shipStore, slapStore, anvilStore, nodeWallet, logger)()
 
 			// W-10.5: Bespoke on-chain SHIP publish retired. The
 			// canonical federation Advertiser wired above publishes
@@ -932,24 +932,13 @@ func main() {
 		handler := wireGateway(cfg, srv, logger, gossipMgr)
 		if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
 			log.Printf("REST API listening on %s (TLS)", cfg.Node.APIListen)
-			tlsSrv := &http.Server{
-				Addr:              cfg.Node.APIListen,
-				Handler:           handler,
-				ReadHeaderTimeout: 10 * time.Second,
-				TLSConfig: &tls.Config{
-					MinVersion: tls.VersionTLS12,
-				},
-			}
+			tlsSrv := newTLSAPIServer(cfg.Node.APIListen, handler)
 			if err := tlsSrv.ListenAndServeTLS(cfg.API.TLSCert, cfg.API.TLSKey); err != nil {
 				log.Fatalf("api server: %v", err)
 			}
 		} else {
 			log.Printf("REST API listening on %s (no TLS — use reverse proxy for production)", cfg.Node.APIListen)
-			apiSrv := &http.Server{
-				Addr:              cfg.Node.APIListen,
-				Handler:           handler,
-				ReadHeaderTimeout: 10 * time.Second,
-			}
+			apiSrv := newAPIServer(cfg.Node.APIListen, handler)
 			if err := apiSrv.ListenAndServe(); err != nil {
 				log.Fatalf("api server: %v", err)
 			}

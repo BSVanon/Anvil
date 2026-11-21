@@ -163,12 +163,60 @@ func TestParse_RefusesATxidHeldTwice(t *testing.T) {
 		"txid-only then raw": entries(bumps, txidOnly(p), proven(0, p), raw(s)),
 		"raw then txid-only": entries(bumps, proven(0, p), txidOnly(p), raw(s)),
 	} {
-		if _, err := Parse(b); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "distinct txids") {
-			t.Errorf("%s: %v, want the repeated-txid refusal", name, err)
+		if _, err := Parse(b); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "duplicate txid") || !strings.Contains(err.Error(), "distinct txids") {
+			t.Errorf("%s: %v, want the repeated-txid refusal with an explicit message", name, err)
 		}
 	}
 	if _, err := Parse(entries(bumps, proven(0, p), raw(s))); err != nil {
 		t.Errorf("each once: %v", err)
+	}
+}
+
+// TestParse_DropsAnUnrelatedTxidOnlyEntry: an entry outside the subject's
+// dependency graph, held as a bare txid rather than full raw bytes -- the
+// cheapest wire shape ts-sdk can choose for a bystander entry it is not
+// trimming away entirely -- drops exactly as an unrelated raw entry already
+// does (TestParse_KeepsOnlyTheSubjectsGraph's u1, u2 and u3).
+func TestParse_DropsAnUnrelatedTxidOnlyEntry(t *testing.T) {
+	p := beefnormtest.Parent(19, 1, 1000)
+	tracker := beefnormtest.Tracker{}.Add(mine(600011, 8, p))
+	s := beefnormtest.Spend(p)
+	unrelated := beefnormtest.Parent(20, 1, 1000) // not in s's graph
+	bumps := []*transaction.MerklePath{p.MerklePath}
+	n, err := Parse(entries(bumps, proven(0, p), txidOnly(unrelated), raw(s)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Beef.FindTransactionByHash(unrelated.TxID()) != nil {
+		t.Error("the unrelated txid-only entry was kept")
+	}
+	if ok, err := spv.Verify(context.Background(), n.Tx, tracker, nil); !ok || err != nil {
+		t.Errorf("spv.Verify: %v %v", ok, err)
+	}
+}
+
+// TestParse_RefusesASubjectThatSpendsABareTxid: unlike an unrelated entry, a
+// txid-only entry the subject spends directly stays in Parse's kept graph
+// (selectGraph stops there, as it stops at any txid-only entry), but
+// verification still has no data for that output, bare txid plus BUMP or
+// not: go-sdk's own BUMPs-validate-TxIDOnly rule only says such an entry is
+// mined, never what it paid. Parse does not refuse this upfront -- the
+// bytes are a well-formed BEEF -- so it is spv.Verify that refuses it, the
+// same way it refuses a BEEF that leaves the ancestor out entirely.
+func TestParse_RefusesASubjectThatSpendsABareTxid(t *testing.T) {
+	p := beefnormtest.Parent(21, 1, 1000)
+	mine(600012, 8, p)
+	s := beefnormtest.Spend(p)
+	bumps := []*transaction.MerklePath{p.MerklePath}
+	n, err := Parse(entries(bumps, txidOnly(p), raw(s)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Tx.Inputs[0].SourceTransaction != nil {
+		t.Error("an input spending a bare txid was linked to something")
+	}
+	if ok, err := spv.Verify(context.Background(), n.Tx, beefnormtest.Tracker{}, nil); ok || err == nil {
+		t.Errorf("spv.Verify: %v %v, want a refusal for the missing source transaction", ok, err)
 	}
 }
 
@@ -211,6 +259,30 @@ func TestParse_RefusesAnEntryItsBUMPDoesNotHold(t *testing.T) {
 	}
 }
 
+// TestParse_LinksAnOutOfOrderChain: go-sdk's own parse (readBeefTxFull,
+// transaction/beef.go:157-162) links an input only to a source transaction
+// already read, so a V2 BEEF listing the unproven q before the proven p it
+// spends -- legal BEEF, s still last as V2 requires -- leaves that link nil
+// coming out of transaction.NewBeefFromBytes. Parse must still verify.
+func TestParse_LinksAnOutOfOrderChain(t *testing.T) {
+	p := beefnormtest.Parent(22, 1, 1000)
+	tracker := beefnormtest.Tracker{}.Add(mine(600013, 8, p))
+	q := beefnormtest.Spend(p)
+	s := beefnormtest.Spend(q)
+	bumps := []*transaction.MerklePath{p.MerklePath}
+	n, err := Parse(entries(bumps, raw(q), proven(0, p), raw(s))) // q before the parent it spends
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := n.Tx.Inputs[0].SourceTransaction
+	if linked == nil || linked.Inputs[0].SourceTransaction == nil {
+		t.Fatalf("s -> q linked %v, q -> p linked %v", linked != nil, linked != nil && linked.Inputs[0].SourceTransaction != nil)
+	}
+	if ok, err := spv.Verify(context.Background(), n.Tx, tracker, nil); !ok || err != nil {
+		t.Errorf("spv.Verify: %v %v", ok, err)
+	}
+}
+
 // TestParse_CompletesAShortProof: a single-level compound proof, which
 // go-sdk accepts for a whole block's leaves, becomes a path with every level
 // of the tree, which go-sdk can combine with any other proof of the block.
@@ -232,6 +304,37 @@ func TestParse_CompletesAShortProof(t *testing.T) {
 		t.Errorf("%d levels, changed %v; want the tree's 3", len(got.Path), n.Changed)
 	}
 	if root, err := got.ComputeRoot(p.TxID()); err != nil || !root.IsEqual(blk.Root()) {
+		t.Errorf("root %v (%v), want %s", root, err, blk.Root())
+	}
+	if ok, err := spv.Verify(context.Background(), n.Tx, tracker, nil); !ok || err != nil {
+		t.Errorf("spv.Verify: %v %v", ok, err)
+	}
+}
+
+// TestParse_AcceptsAHonestFlatProofOfSeveralTransactions: a single-level
+// compound (Flat) BUMP already proving two real, distinct transactions at
+// once, as a wallet could send directly, rather than Parse combining two
+// separate per-leaf proofs itself (TestParse_CombinesTheProofsOfOneBlock)
+// or a Flat proof naming only one real leaf among padding
+// (TestParse_CompletesAShortProof).
+func TestParse_AcceptsAHonestFlatProofOfSeveralTransactions(t *testing.T) {
+	p1, p2 := beefnormtest.Parent(17, 1, 1000), beefnormtest.Parent(18, 1, 1000)
+	blk := beefnormtest.NewFullBlock(600010, 3, []*chainhash.Hash{p1.TxID(), p2.TxID()}, []uint64{2, 6})
+	flat := blk.Flat()
+	if len(flat.Path) != 1 {
+		t.Fatalf("the flat proof has %d levels", len(flat.Path))
+	}
+	p1.MerklePath, p2.MerklePath = flat, flat
+	tracker := beefnormtest.Tracker{}.Add(blk)
+	s := beefnormtest.Spend(p1, p2)
+	n, err := Parse(entries([]*transaction.MerklePath{flat}, proven(0, p1), proven(0, p2), raw(s)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(n.Beef.BUMPs) != 1 || !n.Changed {
+		t.Fatalf("%d BUMPs, changed %v; want one for the block", len(n.Beef.BUMPs), n.Changed)
+	}
+	if root, err := n.Beef.BUMPs[0].ComputeRoot(nil); err != nil || !root.IsEqual(blk.Root()) {
 		t.Errorf("root %v (%v), want %s", root, err, blk.Root())
 	}
 	if ok, err := spv.Verify(context.Background(), n.Tx, tracker, nil); !ok || err != nil {
