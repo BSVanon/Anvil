@@ -145,7 +145,7 @@ func Parse(b []byte) (n *BEEF, err error) {
 	if err != nil {
 		return nil, err
 	}
-	unlinkDropped(kept)
+	relink(kept)
 	beef := &transaction.Beef{Version: transaction.BEEF_V2, BUMPs: bumps, Transactions: kept, NewestTxID: subject}
 	return &BEEF{
 		Beef:    beef,
@@ -240,16 +240,27 @@ func holds(raw *transaction.Beef, i int, id chainhash.Hash, leaves map[int]map[c
 	return ok
 }
 
-// unlinkDropped clears the links from kept proven transactions to sources
-// Parse dropped, so the Beef holds what its bytes say. Verification never
-// follows a proven transaction's inputs.
-func unlinkDropped(kept map[chainhash.Hash]*transaction.BeefTx) {
+// relink sets every kept entry's input links from kept itself, in place of
+// whatever go-sdk's own parse set: a source still kept, with a transaction,
+// is linked to it; a source that is dropped, or kept only as a txid-only
+// stub, is unlinked. go-sdk's readBeefTxFull links an input only to a
+// source transaction the map it is given already holds when that input is
+// reached (transaction/beef.go:157-162) -- the entries read earlier in the
+// bytes, not the whole BEEF -- so a V2 BEEF listing an unproven transaction
+// before the parent it spends leaves that link nil even though Parse's own
+// selectGraph, reading the complete map, kept both. Verification never
+// follows a proven transaction's own inputs, so relinking them changes
+// nothing it checks; relink does not special-case them.
+func relink(kept map[chainhash.Hash]*transaction.BeefTx) {
 	for _, e := range kept {
-		if e.DataFormat != transaction.RawTxAndBumpIndex {
+		if e.Transaction == nil {
 			continue
 		}
 		for _, in := range e.Transaction.Inputs {
-			if _, ok := kept[*in.SourceTXID]; !ok {
+			src := kept[*in.SourceTXID]
+			if src != nil && src.Transaction != nil {
+				in.SourceTransaction = src.Transaction
+			} else {
 				in.SourceTransaction = nil
 			}
 		}
