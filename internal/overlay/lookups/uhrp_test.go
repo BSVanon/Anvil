@@ -119,12 +119,9 @@ func TestUHRP_AdmitAndLookupByHash(t *testing.T) {
 }
 
 // TestUHRP_LookupByUhrpUrl proves a canonical BRC-26 uhrp:// URL resolves to
-// the same outpoint as a raw content_hash query — the contract divergence an
-// external dev hit (canonical @bsv/sdk StorageDownloader clients query by URL,
-// never by raw hex hash).
-// TestUHRP_LookupByUhrpUrl covers the uhrpUrl query path's contract after
-// the fix pass (cold review B1 / spec item 1): a uhrpUrl query answers
-// with ONLY BRC-26 records. StorageDownloader.resolve() PushDrop-decodes
+// the same outpoint as a raw content_hash query. StorageDownloader clients
+// query by URL rather than by raw hexadecimal hash.
+// A uhrpUrl query answers with only BRC-26 records. StorageDownloader.resolve() PushDrop-decodes
 // every returned output with no try/catch (ts-sdk
 // storage/StorageDownloader.ts) — a legacy OP_RETURN record isn't
 // PushDrop-shaped at all and would make that decode throw. This test
@@ -158,9 +155,9 @@ func TestUHRP_LookupByUhrpUrl(t *testing.T) {
 		t.Fatalf("GetURLForHash: %v", err)
 	}
 
-	// uhrp://, web+uhrp://, and the bare base58 must all resolve identically,
+	// All accepted UHRP URL forms and the bare Base58 value resolve identically,
 	// and only to the BRC-26 record — the legacy one never appears here.
-	for _, url := range []string{"uhrp://" + b58, "web+uhrp://" + b58, b58} {
+	for _, url := range []string{"uhrp://" + b58, "uhrp:" + b58, "web+uhrp://" + b58, "web+uhrp:" + b58, "//" + b58, b58} {
 		q, _ := json.Marshal(topics.UHRPLookupQuery{UhrpUrl: url})
 		answer, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{
 			Service: topics.UHRPLookupServiceName,
@@ -195,10 +192,17 @@ func TestUHRP_LookupByUhrpUrl(t *testing.T) {
 		t.Fatalf("content_hash should take precedence over a bad uhrpUrl: %v", err)
 	}
 
-	// A malformed uhrpUrl is a clean error, not a silent empty result.
-	qBad, _ := json.Marshal(topics.UHRPLookupQuery{UhrpUrl: "uhrp://zzz"})
-	if _, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{Service: topics.UHRPLookupServiceName, Query: qBad}); err == nil {
-		t.Fatalf("expected error for malformed uhrpUrl")
+	// Bad checksums and values of the wrong length remain clean errors, not
+	// silent empty results.
+	badChecksum := b58[:len(b58)-1] + "1"
+	if b58[len(b58)-1] == '1' {
+		badChecksum = b58[:len(b58)-1] + "2"
+	}
+	for _, url := range []string{"uhrp://" + badChecksum, "uhrp://" + b58[:len(b58)-1]} {
+		qBad, _ := json.Marshal(topics.UHRPLookupQuery{UhrpUrl: url})
+		if _, err := s.Lookup(ctxBg(), &lookup.LookupQuestion{Service: topics.UHRPLookupServiceName, Query: qBad}); err == nil {
+			t.Fatalf("expected error for malformed uhrpUrl %q", url)
+		}
 	}
 }
 

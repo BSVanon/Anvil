@@ -12,7 +12,7 @@ import (
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 )
 
-// wireV3Federation itself (B5 fix pass, review BLOCKER 1).
+// wireV3Federation itself.
 //
 // federation_loops_test.go's tests exercise buildSyncConfiguration/
 // resolveFederationTrackers directly; none of them call wireV3Federation, so

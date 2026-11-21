@@ -8,7 +8,7 @@ require (
 	github.com/bsv-blockchain/go-bsv-middleware v0.13.3
 	github.com/bsv-blockchain/go-overlay-discovery-services v0.3.4
 	github.com/bsv-blockchain/go-overlay-services v1.3.1
-	github.com/bsv-blockchain/go-sdk v1.7.7
+	github.com/bsv-blockchain/go-sdk v1.7.8
 	github.com/bsv-blockchain/go-wallet-toolbox v0.183.6
 	github.com/libsv/go-p2p v0.3.3
 	github.com/syndtr/goleveldb v1.0.0

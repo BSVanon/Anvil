@@ -44,7 +44,7 @@ var budgetFloor = routeguard.MemoryBudget + routeguard.ExecAllowance
 // is set: the runtime has applied that value already, and it always wins.
 // Either way, a limit under budgetFloor is warned about once: the collector
 // would then not be made to reclaim fast enough to keep what the guard admits
-// within what the process may use (cold review round 4 RISK 11).
+// within what the process may use.
 func applyMemoryLimit(getenv func(string) string, readFile func(string) ([]byte, error), logf func(string, ...any)) {
 	if v := getenv("GOMEMLIMIT"); v != "" {
 		logf("  gomemlimit: %s, from GOMEMLIMIT", v)

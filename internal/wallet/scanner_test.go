@@ -234,7 +234,7 @@ func TestFetchedTxMatches(t *testing.T) {
 	}
 }
 
-// TestFetchedTxMatchesDetectsNonCanonicalReserialization is Risk 1's central
+// TestFetchedTxMatchesDetectsNonCanonicalReserialization checks the central
 // regression test: it proves fetchedTxMatches hashes the bytes actually
 // fetched, not a go-sdk reserialization of them, using a fixture where those
 // two differ.

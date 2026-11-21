@@ -21,7 +21,7 @@ import (
 // share topic state via gossip, and slash misbehaving identities.
 // Canonical BRC-88 federation (the federation.Advertiser path) is for
 // the wider BSV ecosystem — BRC-100 wallets and external overlay
-// nodes finding Anvil via SHIP/SLAP trackers. Per the Codex 14a2d703
+// nodes finding Anvil via SHIP/SLAP trackers. The
 // scope carve-out (reference_anvil_teranode_boundary.md), the
 // Anvil-Mesh layer stays forever.
 func Bootstrap(

@@ -26,7 +26,7 @@ import (
 // the local mempool + mesh + federation. The right success boundary is
 // LOCAL ADMISSION (BroadcastRaw → local mempool, always succeeds for a
 // valid tx), and ARC propagation is best-effort: failures are logged
-// but never surface as Broadcast errors. Codex review eea841a080448a49
+// but never surface as Broadcast errors.
 // caught the original implementation conflating ARC availability with
 // admission success.
 //

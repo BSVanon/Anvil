@@ -6,15 +6,15 @@ import (
 )
 
 const (
-	// floodGuardRate/floodGuardBurst are decision 4's last bullet: the
+	// floodGuardRate/floodGuardBurst limit uncached host lookups for each
 	// global rate limit on speculative TXT lookups for hosts with no
-	// domain entry. Not operator-configurable — B7a's field list
+	// domain entry. They are not operator-configurable.
 	// (internal/config.GatewayConfig) has no key for it.
 	floodGuardRate  = 5
 	floodGuardBurst = 20
 
-	// siteTrafficRate/siteTrafficBurst are decision 8's per-client site
-	// traffic limiter. Also not operator-configurable in B7a.
+	// siteTrafficRate/siteTrafficBurst are the per-client site traffic limiter.
+	// They are also not operator-configurable.
 	siteTrafficRate  = 50
 	siteTrafficBurst = 200
 
@@ -27,8 +27,8 @@ const (
 
 // limiter is a token-bucket rate limiter keyed by an arbitrary string.
 // Called with key "" it behaves as a single global bucket (the TXT flood
-// guard, decision 4); called with a per-client key (clientkey.Key of
-// clientkey.IP) it is a per-client limiter (site traffic, decision 8) —
+// guard); called with a per-client key (clientkey.Key of clientkey.IP) it is
+// a per-client limiter for site traffic —
 // same algorithm internal/api's RateLimiter uses, kept here instead of
 // imported so this package has no dependency on internal/api.
 //

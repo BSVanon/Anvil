@@ -12,9 +12,9 @@ func TestCredentialDependentReadsAreNotCacheable(t *testing.T) {
 	storePrivate(t, srv, `{"secret":"cache-sensitive"}`)
 
 	paths := []string{
-		"/data?topic=lacriada:household-x",
+		"/data?topic=app:private-x",
 		"/topics",
-		"/topics/lacriada:household-x",
+		"/topics/app:private-x",
 		"/identity/0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
 		"/stats",
 	}

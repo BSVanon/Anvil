@@ -206,7 +206,7 @@ Three Anvil-consuming apps need their own one-time updates when their host Anvil
 | App | Estimated work | Notes |
 |---|---|---|
 | Anvil-Swap | 1-2 days | DEX swap broker, uses the canonical `/lookup` route with the new `output-list` BEEF wire format. |
-| SendBSV-Foundry | 2-4 hours | Coin tracking, uses `/overlay/lookup` legacy shim (unchanged through v3.0.0 under Lens 2 = 2c — no app changes required). |
+| Coin-tracking client | 2-4 hours | Uses the `/overlay/lookup` legacy shim; no changes are required through v3.0.0. |
 | SendBSV-Wallet | 1 day | Paymail handle resolution; v3.0.0 supports `identityKey` queries fully. Wallet uses two-step paymail (`.well-known/bsvalias` HTTP gateway → identityKey → `ls_identity`). Overlay-native `{attributes}` query remains deferred (W-11) — not delivered in v3.1.0 (which shipped tm_kvstore instead); still unscheduled. |
 
 The apps' migration trackers live at `docs/internal/APP_MIGRATION_TODO.md` (internal — not shipped in the v3 binary).

@@ -103,7 +103,7 @@ func TestAppTokenNeverUnlocksPrivateOrOtherTopics(t *testing.T) {
 		Model:      envelope.MonetizationToken,
 		AuthPubkey: attackerPubHex,
 	})
-	storePrivate(t, srv, `{"secret":"operator-only"}`) // lacriada:household-x
+	storePrivate(t, srv, `{"secret":"operator-only"}`) // app:private-x
 
 	resolver := NewTopicMonetizationResolver(srv.envelopeStore)
 	srv.tokenGate = NewTokenGate(resolver, true)
@@ -132,7 +132,7 @@ func TestAppTokenNeverUnlocksPrivateOrOtherTopics(t *testing.T) {
 	}
 
 	// ...but presented against the PRIVATE topic it unlocks nothing.
-	req2 := httptest.NewRequest("GET", "/data?topic=lacriada:household-x&limit=10", nil)
+	req2 := httptest.NewRequest("GET", "/data?topic=app:private-x&limit=10", nil)
 	req2.Host = "localhost"
 	req2.Header.Set("X-App-Token", token)
 	w2 := httptest.NewRecorder()

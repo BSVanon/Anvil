@@ -74,7 +74,7 @@ func uhrpIdentityWallet(t *testing.T) (wallet.Interface, []byte) {
 // verifyBRC26Linkage's counterparty=identityKey check, exactly as a real
 // advertiser's wallet would.
 //
-// Fix pass (cold review RISKS / spec item 6): forSelf is true, matching
+// forSelf is true, matching
 // canonical producers (overlays/uhrp-server-basic
 // createUHRPAdvertisement.ts calls `pushdrop.lock(fields, protocol, '1',
 // 'anyone', true)`). This is load-bearing, not cosmetic: go-sdk's
@@ -94,7 +94,7 @@ func uhrpIdentityWallet(t *testing.T) (wallet.Interface, []byte) {
 // locking key this helper built was the WRONG point: it would never
 // equal what verifyBRC26Linkage's forSelf=false(default) derivation
 // computes — this helper was silently building adverts that cannot be
-// genuinely admitted. No test before this fix pass called this helper
+// genuinely admitted. No previous test called this helper
 // and then asserted a successful admit, so the mismatch went unnoticed.
 func buildUHRPBRC26Script(t *testing.T, w wallet.Interface, identityPub, hash []byte, url string, expiry, size uint64) []byte {
 	t.Helper()

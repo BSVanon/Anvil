@@ -52,9 +52,9 @@ func queryWithProof(t *testing.T, srv *Server, path string, ch *X402Challenge, p
 // paying the node's toll.
 func TestPaidRequestOmitsPrivateEnvelope(t *testing.T) {
 	srv := testServerWithPaymentGate(t, 100)
-	storePrivate(t, srv, `{"secret":"do-not-leak"}`) // lacriada:household-x
+	storePrivate(t, srv, `{"secret":"do-not-leak"}`) // app:private-x
 
-	path := "/data?topic=lacriada:household-x&limit=10"
+	path := "/data?topic=app:private-x&limit=10"
 	ch := getChallenge(t, srv, "GET", path)
 	proofB64 := buildProof(t, ch, 200, testPayeeScript(t))
 
@@ -134,7 +134,7 @@ func TestOperatorTokenUnlocksPrivateUnderChargingConfig(t *testing.T) {
 // covers the companion monetized-payload half of this property.)
 func TestSpoofedPaidMarkerIgnoredUnderChargingConfig(t *testing.T) {
 	srv := testServer(t)
-	storePrivate(t, srv, `{"secret":"do-not-leak"}`) // lacriada:household-x, unpriced
+	storePrivate(t, srv, `{"secret":"do-not-leak"}`) // app:private-x, unpriced
 	seedEnvelope(t, srv.envelopeStore, "priced:other", &envelope.Monetization{
 		Model:                 envelope.MonetizationPassthrough,
 		PayeeLockingScriptHex: appPayeeScript(),

@@ -123,7 +123,7 @@ func TestValidateBEEFEmptyInput(t *testing.T) {
 // 36 bytes panics ("slice bounds out of range [36:...]") and an oversized varint
 // count panics ("makeslice: len out of range"). Unguarded on the /broadcast
 // ingress path that crashes the request goroutine -> the TLS front returns 502
-// (the petasats "garbage body -> 502" report). ValidateBEEF must recover and
+// A malformed body must return 502. ValidateBEEF must recover and
 // return a clean Invalid. This test itself would fail (panic) without the guard.
 func TestValidateBEEFDoesNotPanicOnMalformed(t *testing.T) {
 	v := NewValidator(&gullibleTracker{})

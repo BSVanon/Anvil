@@ -167,7 +167,7 @@ func TestTxStatusBadTxid(t *testing.T) {
 }
 
 // A 64-CHARACTER but non-hex txid must be rejected locally (400) — never proxied
-// to ARC/WoC (regression for Codex fa86bf72: length check alone let garbage
+// to ARC/WoC: length check alone let garbage
 // through and could return a misleading upstream answer).
 func TestTxStatusRejectsNonHexTxid(t *testing.T) {
 	upstreamCalled := false
@@ -190,7 +190,7 @@ func TestTxStatusRejectsNonHexTxid(t *testing.T) {
 }
 
 // /tx/{txid}/status is openPublic, so it must serve free even when the operator
-// prices openRead endpoints — the portability guarantee Satsu relies on for
+// prices openRead endpoints — the portability guarantee clients rely on for
 // cross-operator confirmation polling.
 func TestTxStatusOpenPublicUnderPaymentGate(t *testing.T) {
 	srv := statusServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -243,7 +243,7 @@ func statusServerWithARC(t *testing.T, arc http.HandlerFunc) *Server {
 
 // A stale-block ARC status surfaces via txStatus but reports 0 confirmations and
 // omits blockHeight — it is not an active-chain confirmation (regression for
-// Codex 891e013b: blockHeight>0 alone must not read as "confirmed").
+// blockHeight>0 alone must not read as "confirmed".
 func TestTxStatusStaleBlockHandler(t *testing.T) {
 	srv := statusServerWithARC(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -269,7 +269,7 @@ func TestTxStatusStaleBlockHandler(t *testing.T) {
 
 // ARC MINED without a block height must not produce a bogus confirmation count
 // (currentHeight+1) — it yields 0 confirmations and omits blockHeight, with the
-// raw txStatus still surfaced (regression for Codex bb1152de).
+// raw txStatus still surfaced.
 func TestTxStatusMinedWithoutHeightHandler(t *testing.T) {
 	srv := statusServerWithARC(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

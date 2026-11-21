@@ -10,7 +10,7 @@ This is a major release because the overlay engine swap is non-trivial and opera
 
 - **[Operator migration guide](overlay-migration.md)** — step-by-step playbook
 - **Mandatory one-time step**: `anvil overlay-migrate` after upgrading the binary, before starting the daemon
-- **App migrations**: 3 Anvil-consuming apps need updates (Anvil-Swap, SendBSV-Foundry, SendBSV-Wallet)
+- **App migrations**: Three Anvil-consuming applications need updates.
 
 ## What's new
 
@@ -115,14 +115,14 @@ All families share Anvil's existing overlay LevelDB. No new database is required
 | App | Effort | Status |
 |---|---|---|
 | Anvil-Swap | 1-2 days | Pending |
-| SendBSV-Foundry | 2-4 hours (no changes required if using legacy `/overlay/*` shim) | Pending |
+| Coin-tracking client | 2-4 hours (no changes required if using legacy `/overlay/*` shim) | Pending |
 | SendBSV-Wallet | 1 day (paymail via two-step path) | Pending |
 
 The internal migration tracker for these apps is at `docs/internal/APP_MIGRATION_TODO.md` (not shipped in the binary).
 
-## Codex review trail
+## Verification history
 
-v3.0.0 closed 9 Codex review cycles clean during development:
+v3.0.0 completed nine verification rounds during development:
 
 `14a2d703` · `4e45ac06` · `c62abe3d` · `16624e3045f4f808` · `8b025722ece11767` · `93c0fe5a44610be1` · `077b962a02931dce` · `51bd511ccdb6f022` · `5741981d5028ea7c` · `86b6c0b969f87286` · `d671fa17fe5cc746` · `fe9707876f5618ca` · `2968609c62a2eb51` · `3a9624c1312037f8` · `f9addfb917695695` · `09ddf00c90061eac` · `9730ed97b8e75d6c` · `6daa58cb1a6f43e4` · `18af38d602483289` · `eea841a080448a49` · `c0de9d28e77cf578` · `af6f0eb413563048` · `cb6ce43d5e579dcf`
 
@@ -157,4 +157,4 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -o dist/anvil-linux-arm64 ./cmd/a
 
 ## Acknowledgements
 
-Federation + canonical adoption work was MCP-driven throughout: brc100-mcp's `docs_catalog` + `read_file` surfaced `go-overlay-discovery-services` (which avoided ~500 LOC of bespoke implementation), and the satoshi-mcp + tools-mcp checkpoints kept the Codex review loop honest. The four MCP servers — brc100-mcp, satoshi-mcp, tools-mcp, mempalace — are not shipped with Anvil but are the reason this release is canonical-aligned rather than canonical-flavored.
+Federation and canonical adoption work used the available protocol documentation and conformance checkpoints. The associated development tools are not shipped with Anvil; the release behavior is verified against the canonical interfaces.

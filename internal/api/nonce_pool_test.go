@@ -5,12 +5,14 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 )
 
 // mockNonceProvider returns predictable nonces for testing.
 type mockNonceProvider struct {
 	mu      sync.Mutex
 	counter int
+	block   chan struct{}
 }
 
 // noncesCostNothing exempts the mock from the process-wide mint budget
@@ -20,13 +22,24 @@ func (*mockNonceProvider) noncesCostNothing() {}
 
 func (m *mockNonceProvider) MintNonce(context.Context) (*NonceUTXO, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.counter++
+	block := m.block
+	m.mu.Unlock()
+	if block != nil {
+		<-block
+	}
 	return &NonceUTXO{
 		TxID:     "mock-txid-" + string(rune('a'+m.counter-1)),
 		Vout:     0,
 		Satoshis: 1,
 	}, nil
+}
+
+func (m *mockNonceProvider) blockNextMint() chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.block = make(chan struct{})
+	return m.block
 }
 
 func TestUTXONoncePoolMintFromPool(t *testing.T) {
@@ -84,6 +97,7 @@ func TestUTXONoncePoolReplenishTriggered(t *testing.T) {
 	// Wait for initial replenish
 	for pool.PoolSize() < 8 {
 	}
+	continueReplenish := mock.blockNextMint()
 
 	// Drain to below 25% (below 2)
 	for i := 0; i < 7; i++ {
@@ -94,9 +108,11 @@ func TestUTXONoncePoolReplenishTriggered(t *testing.T) {
 	if pool.PoolSize() > 1 {
 		t.Fatalf("expected pool size <= 1 after draining 7, got %d", pool.PoolSize())
 	}
+	close(continueReplenish)
 
 	// Wait for replenish
-	for pool.PoolSize() < 5 {
+	deadline := time.Now().Add(time.Second)
+	for pool.PoolSize() < 5 && time.Now().Before(deadline) {
 	}
 
 	if pool.PoolSize() < 5 {

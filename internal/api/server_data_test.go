@@ -128,7 +128,7 @@ func TestSSERedactsPaidPayloads(t *testing.T) {
 }
 
 // TestSSEOmitsPrivateForPublicSubscribers: a private envelope must never be
-// streamed to an unauthenticated SSE subscriber (Codex 1b290a5d gap — the
+// streamed to an unauthenticated SSE subscriber.
 // SSE-specific private regression). Unlike paid payloads (redacted), private
 // envelopes are omitted entirely.
 func TestSSEOmitsPrivateForPublicSubscribers(t *testing.T) {
@@ -138,7 +138,7 @@ func TestSSEOmitsPrivateForPublicSubscribers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest("GET", "/data/subscribe?topic=lacriada:household-x", nil)
+	req := httptest.NewRequest("GET", "/data/subscribe?topic=app:private-x", nil)
 	ctx, cancel := context.WithCancel(req.Context())
 	defer cancel()
 	req = req.WithContext(ctx)
@@ -154,7 +154,7 @@ func TestSSEOmitsPrivateForPublicSubscribers(t *testing.T) {
 
 	env := &envelope.Envelope{
 		Type:      "data",
-		Topic:     "lacriada:household-x",
+		Topic:     "app:private-x",
 		Payload:   `{"secret":"sealed-do-not-stream"}`,
 		Timestamp: time.Now().Unix(),
 		Private:   true,

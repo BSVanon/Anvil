@@ -35,7 +35,7 @@ func TestPrivateTopicAbsentFromMeshStatus(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if strings.Contains(w.Body.String(), "lacriada:household-x") {
+	if strings.Contains(w.Body.String(), "app:private-x") {
 		t.Fatalf("GET /mesh/status must not name a private topic: %s", w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "oracle:rates:bsv") {
@@ -48,7 +48,7 @@ func TestPrivateTopicAbsentFromMeshStatus(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer test-token")
 	wOp := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wOp, req)
-	if strings.Contains(wOp.Body.String(), "lacriada:household-x") {
+	if strings.Contains(wOp.Body.String(), "app:private-x") {
 		t.Fatalf("GET /mesh/status must not name a private topic even for the operator (no authenticated view on this route): %s", wOp.Body.String())
 	}
 }
@@ -63,7 +63,7 @@ func TestPrivateTopicAbsentFromStats(t *testing.T) {
 
 	wAnon := httptest.NewRecorder()
 	free.Handler().ServeHTTP(wAnon, httptest.NewRequest("GET", "/stats", nil))
-	if strings.Contains(wAnon.Body.String(), "lacriada:household-x") {
+	if strings.Contains(wAnon.Body.String(), "app:private-x") {
 		t.Fatalf("an anonymous caller must not see a private topic via GET /stats: %s", wAnon.Body.String())
 	}
 
@@ -72,7 +72,7 @@ func TestPrivateTopicAbsentFromStats(t *testing.T) {
 	storePublicTopic(t, charging, "oracle:rates:bsv")
 
 	payer := payerGet(t, charging, "/stats")
-	if strings.Contains(payer.Body.String(), "lacriada:household-x") {
+	if strings.Contains(payer.Body.String(), "app:private-x") {
 		t.Fatalf("a payer must not see a private topic via GET /stats: %s", payer.Body.String())
 	}
 	if !strings.Contains(payer.Body.String(), "oracle:rates:bsv") {
@@ -83,7 +83,7 @@ func TestPrivateTopicAbsentFromStats(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer test-token")
 	wOp := httptest.NewRecorder()
 	charging.Handler().ServeHTTP(wOp, req)
-	if !strings.Contains(wOp.Body.String(), "lacriada:household-x") {
+	if !strings.Contains(wOp.Body.String(), "app:private-x") {
 		t.Fatalf("the operator should see the private topic via GET /stats: %s", wOp.Body.String())
 	}
 }
@@ -163,7 +163,7 @@ func TestPrivateTopicAbsentFromMeshNodes(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if strings.Contains(w.Body.String(), "lacriada:household-x") {
+	if strings.Contains(w.Body.String(), "app:private-x") {
 		t.Fatalf("GET /mesh/nodes must not name a private topic: %s", w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "oracle:rates:bsv") {
@@ -184,7 +184,7 @@ func TestPrivateTopicAbsentFromAnvilManifest(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if strings.Contains(w.Body.String(), "lacriada:household-x") {
+	if strings.Contains(w.Body.String(), "app:private-x") {
 		t.Fatalf("GET /.well-known/anvil must not advertise a private topic: %s", w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "oracle:rates:bsv") {

@@ -5,7 +5,7 @@ package topics_test
 // StorageDownloader.ts's resolve()) both a canonical BRC-26 answer (must
 // decode cleanly) and a LEGACY-format advert (must throw). Split out of
 // uhrp_engine_test.go, which was growing past this package's established
-// per-file size norm once the fix pass's negative-case addition
+// per-file size norm after a negative-case addition
 // (re-review RISKS item 4) landed here; this file and uhrp_engine_test.go
 // together replace what was one file, with no behaviour change to the
 // moved code (only the extracted exec.Command/CombinedOutput plumbing was
@@ -34,7 +34,7 @@ import (
 // re-derived): PushDrop-decode, then read the expiry varint and URL
 // field the same way resolve() does. A throw means a real client would
 // drop the output — must never happen for a {uhrpUrl} answer, since
-// those are BRC-26-only (spec item 1 / B1).
+// those are BRC-26-only.
 const uhrpStorageDownloaderOracleJS = `
 const sdk = await import(process.env.SDK)
 const { PushDrop, Utils, LockingScript } = sdk
@@ -56,7 +56,7 @@ for (const hex of items) {
 // own TS vectors were generated from. Returns "" if none is found.
 func findLocalBSVSDK() string {
 	for _, p := range []string{
-		"/home/robert/Documents/SendBSV-Foundry/node_modules/@bsv/sdk/dist/esm/mod.js",
+		"/tmp/sdk/dist/esm/mod.js",
 		"/home/robert/Documents/Anvil-Swap/node_modules/@bsv/sdk/dist/esm/mod.js",
 	} {
 		if _, err := os.Stat(p); err == nil {

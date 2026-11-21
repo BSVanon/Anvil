@@ -90,7 +90,7 @@ func main() {
 	// filter; "known-topics" scenario enables it for vector .7 (unknown
 	// topic manager → 400). Happy-path vectors require per-vector fixture
 	// scenarios; the dispatcher's RegisterHappyPathScenariosFromVectors
-	// builds them from each vector's expected.body (Codex review ba3e80:
+	// builds them from each vector's expected.body.
 	// CLI owns the fixture wiring so miswiring is observable).
 	submitDefault := canonical.New(canonical.Config{})
 	submitKnown := canonical.New(canonical.Config{

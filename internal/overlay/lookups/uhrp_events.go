@@ -6,8 +6,7 @@ package lookups
 // OutputBlockHeightUpdated), the one-time migration backfill, and the
 // shared removeOutpoint helper they end up calling. Split out of
 // uhrp.go, which was growing past this package's established per-file
-// size once the fix pass's query-path additions (Outpoint /
-// HostIdentityKey / ExpiryTime) landed there; this file and uhrp.go
+// size after adding Outpoint, HostIdentityKey, and ExpiryTime; this file and uhrp.go
 // together replace what was one file, with no behaviour change. uhrp.go
 // keeps the type definitions, constructor, and query path (Lookup);
 // uhrp_filter.go keeps the read-side iteration/filtering the query path

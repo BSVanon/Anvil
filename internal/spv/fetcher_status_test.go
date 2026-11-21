@@ -161,7 +161,7 @@ func TestTxStatusARCErrorFallsBackToWoC(t *testing.T) {
 
 // A stale-block ARC status carries a blockHeight but is NOT an active-chain
 // confirmation — it must not report mined, and blockHeight must be suppressed so
-// the handler yields 0 confirmations (regression for Codex 891e013b).
+// the handler yields 0 confirmations.
 func TestTxStatusStaleBlockNotConfirmed(t *testing.T) {
 	f := fetcherWithARC(t,
 		func(w http.ResponseWriter, r *http.Request) {
@@ -189,7 +189,7 @@ func TestTxStatusStaleBlockNotConfirmed(t *testing.T) {
 
 // ARC MINED without a block height (absent JSON ⇒ blockHeight 0) cannot yield a
 // real confirmation count, so it must NOT be treated as mined — otherwise the
-// handler would emit confirmations = currentHeight+1 (regression for Codex bb1152de).
+// handler would emit confirmations = currentHeight+1.
 func TestTxStatusMinedWithoutHeightNotConfirmed(t *testing.T) {
 	f := fetcherWithARC(t,
 		func(w http.ResponseWriter, r *http.Request) {

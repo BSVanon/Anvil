@@ -91,9 +91,8 @@ var _ engine.LookupService = (*UHRPLookupService)(nil)
 // The event handlers (BackfillFromLegacyMetadata, OutputAdmittedByTopic,
 // OutputSpent, OutputNoLongerRetainedInHistory, OutputEvicted,
 // OutputBlockHeightUpdated) and the removeOutpoint helper they share live
-// in uhrp_events.go — split out to hold this file under the package's
-// per-file size norm once the fix pass's query-path additions landed
-// here, no behaviour change.
+// in uhrp_events.go. The split keeps this file within the package's
+// per-file size norm without changing behaviour.
 
 // --- query path ------------------------------------------------------------
 
@@ -119,7 +118,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		}
 	}
 
-	// Fix pass (spec item 5): Outpoint is canonical's direct single-
+	// Outpoint is canonical's direct single-
 	// record key and short-circuits before every other key is even
 	// inspected — UHRPLookupService.ts's lookup() returns on this path
 	// first, so Anvil's does too.
@@ -133,7 +132,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 	// send (same lesson as V1/atomic BEEF on submit). An explicit
 	// content_hash takes precedence when both are supplied.
 	//
-	// Fix pass (cold review B1 / spec item 1): capture viaUhrpUrl BEFORE
+	// Capture viaUhrpUrl before
 	// rewriting ContentHash below. A uhrpUrl-originated query must only
 	// ever answer with BRC-26 records — StorageDownloader.resolve()
 	// PushDrop-decodes every returned output with no try/catch
@@ -149,7 +148,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		q.ContentHash = hex.EncodeToString(hashBytes)
 	}
 
-	// Fix pass (spec item 5): HostIdentityKey / ExpiryTime AND-combine
+	// HostIdentityKey and ExpiryTime AND-combine
 	// with whatever base set ContentHash/UhrpUrl/List selects below, or —
 	// supplied alone with no hash and no list — scan every entry the way
 	// List:"all" does. Mirrors canonical UHRPLookupService.ts's
@@ -204,13 +203,12 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 
 // lookupByOutpoint answers the Outpoint query key: a direct single-record
 // lookup, independent of (and ignoring) every other field on the query —
-// matching canonical UHRPLookupService.ts's short-circuit (fix pass, spec
-// item 5).
+// matching canonical UHRPLookupService.ts's short-circuit.
 //
 // Unlike every other query path, this one does NOT filter an expired
 // BRC-26 record: canonical UHRPLookupService.ts:62-67's outpoint branch
 // is a bare findOne with no expiry check at all, so Anvil matches that
-// exactly here (fix pass, re-review RISKS item 2). The other paths'
+// exactly here. The other paths'
 // server-side expiry filtering (uhrpExpired, filterUHRPRecords rule 1,
 // uhrp_filter.go) is a separate, pre-existing, deliberate Anvil-only
 // hardening choice that canonical doesn't apply on ITS non-outpoint path
@@ -227,7 +225,7 @@ func (s *UHRPLookupService) lookupByOutpoint(raw string) (*lookup.LookupAnswer, 
 	_, ok, err := s.loadItem(op)
 	if err != nil {
 		if errors.Is(err, errUHRPCorruptRecord) {
-			// Fix pass, re-review BLOCKER: a corrupt record must be
+			// A corrupt record must be
 			// skipped here exactly as itemsByHash and allItemRecords skip
 			// one during a scan (uhrp_filter.go) — propagating it as a
 			// hard error would turn a single bit-rotted record into a

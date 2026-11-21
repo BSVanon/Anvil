@@ -71,7 +71,7 @@ func TestTxidMismatchLimiterRateLimitsPerSource(t *testing.T) {
 	}
 }
 
-// TestTxidMismatchLimiterNotSharedAcrossServers is Risk 5: the limiter used
+// TestTxidMismatchLimiterNotSharedAcrossServers verifies that the limiter used
 // to be a package-level var (the old txidMismatchLog), so one *Server's
 // warning could silently suppress another's — a hazard for two servers in
 // one process, and for any test that assumed a clean rate-limit state. It

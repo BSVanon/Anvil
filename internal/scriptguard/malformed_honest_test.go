@@ -7,7 +7,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/script"
 )
 
-// TestHonestShapes_NeverEndMalformed proves routeguard's B1 refusal (cold
+// TestHonestShapes_NeverEndMalformed proves routeguard's malformed-script refusal.
 // review round 4: scriptcost.EndsMalformed, wired at
 // internal/overlay/routeguard/scriptcheck.go) never trips on real, honest
 // traffic. Every fixture here is a realistic unlocking script this
@@ -16,7 +16,7 @@ import (
 // OrdLock purchase and cancel, PushDrop, P2PKH, multisig and BSV-21/MNEE
 // shapes. A multisig spend is not in honestSpends (it is cost-guard test
 // machinery, not a wallet template), so it is added here with two realistic
-// m-of-m shapes, one for each CHECKMULTISIG variant B1 affects; its
+// m-of-m shapes, one for each affected CHECKMULTISIG variant; its
 // signatures are not cryptographically valid (multisigLock's unlock is
 // OP_0 OP_1 OP_1..., built for pricing, not for spending), which does not
 // matter here: EndsMalformed is a purely syntactic, node-exact decode of

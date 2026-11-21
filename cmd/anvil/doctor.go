@@ -414,6 +414,7 @@ func cmdDoctor(args []string) {
 		}
 	}
 	issues += doctorBRC121(apiURL, cfg.API.AuthToken)
+	issues += doctorPaymentPathCheck(cfg, apiURL)
 	// ── 8. Self-healing checks (orphans, crash loops, version skew) ──
 	section("Self-Healing Checks")
 	issues += runSelfHealingChecks(cfg.Node.DataDir, apiURL, fix, *yes)

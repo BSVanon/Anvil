@@ -40,7 +40,7 @@ package topics
 // construction, not by relying on that an out-of-bounds access happens to
 // throw.
 //
-// Fix pass (cold review): decodeUHRPBRC26 now also rejects a URL over 4096
+// decodeUHRPBRC26 also rejects a URL over 4096
 // bytes, an expiry/size at or above 2^53 (canonical's readVarIntNum throws
 // there — see uhrpBRC26MaxSafeVarInt), an identityKey that isn't exactly
 // 33 bytes, an https URL with an empty host or an out-of-range port; and
@@ -75,7 +75,7 @@ const (
 	uhrpBRC26MinFields = 6
 	// uhrpBRC26IdentityKeyLen and uhrpBRC26HashLen are the field lengths
 	// spec item 1 names (33-byte compressed pubkey, 32-byte SHA-256).
-	// Fix pass: canonical TS 4.1.1 rejects a 65-byte uncompressed
+	// Canonical TS 4.1.1 rejects a 65-byte uncompressed
 	// identityKey ("Signature is not properly linked" — @bsv/sdk's
 	// ProtoWallet.getPublicKey only ever returns a compressed point, so an
 	// uncompressed counterparty key never derives a matching one).
@@ -185,7 +185,7 @@ func decodeUHRPBRC26(scriptBytes []byte) (*uhrpBRC26Decoded, error) {
 	if parsed.Scheme != "https" {
 		return nil, errors.New("uhrp: BRC-26 advertisement must be on HTTPS")
 	}
-	// Fix pass: require a non-empty host. parsed.Opaque is non-empty only
+	// Require a non-empty host. parsed.Opaque is non-empty only
 	// for a scheme:opaque form with no "//" at all (e.g. "https:host"),
 	// which canonical's `new URL(...)` also admits — Opaque!="" skips this
 	// check so that form stays admitted, matching canonical. When "//" IS
@@ -196,7 +196,7 @@ func decodeUHRPBRC26(scriptBytes []byte) (*uhrpBRC26Decoded, error) {
 	if parsed.Opaque == "" && parsed.Hostname() == "" {
 		return nil, errors.New("uhrp: BRC-26 advertisement URL has no host")
 	}
-	// Fix pass: require a valid port. net/url.Parse accepts any all-digit
+	// Require a valid port. net/url.Parse accepts any all-digit
 	// port string with no range check (Port() returns "99999" unchanged);
 	// canonical's URL constructor rejects a port outside 0-65535. This
 	// narrow check does not attempt to replicate the WHATWG URL spec's full
@@ -220,7 +220,7 @@ func decodeUHRPBRC26(scriptBytes []byte) (*uhrpBRC26Decoded, error) {
 	if expiry < 1 || size < 1 {
 		return nil, errors.New("uhrp: invalid BRC-26 expiry time or file size")
 	}
-	// Fix pass: canonical's readVarIntNum throws for any value at or above
+	// Canonical's readVarIntNum throws for any value at or above
 	// 2^53 (see uhrpBRC26MaxSafeVarInt's comment). This replaces the
 	// previous math.MaxInt64 bound, which let an advertisement with e.g.
 	// expiry exactly 2^53 or size 2^62 admit here while every canonical
@@ -264,7 +264,7 @@ func (u *UHRPTopicManager) verifyBRC26Linkage(ctx context.Context, d *uhrpBRC26D
 	if u.anyoneWallet == nil {
 		return false, errors.New("uhrp: anyone wallet unavailable")
 	}
-	// Fix pass: strict DER. go-sdk's ec.FromDER (encoding/asn1.Unmarshal
+	// Use strict DER. go-sdk's ec.FromDER (encoding/asn1.Unmarshal
 	// under the hood) silently accepts trailing bytes after the
 	// signature's ASN.1 SEQUENCE and simply ignores them; canonical's DER
 	// decoder does not. Parsed directly here (not via ec.FromDER) so the

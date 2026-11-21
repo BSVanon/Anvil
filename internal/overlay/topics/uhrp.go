@@ -161,7 +161,7 @@ func (u *UHRPTopicManager) Admit(txData []byte, previousUTXOs []overlay.Admitted
 		}
 	}
 
-	// Fix pass (cold review B2): canonical UHRPTopicManager.ts's
+	// Canonical UHRPTopicManager.ts's
 	// identifyAdmissibleOutputs wraps its whole per-output loop in a
 	// try/catch and, when the loop admits zero outputs, THROWS ("This
 	// transaction does not publish a valid ... descriptor!") — caught by

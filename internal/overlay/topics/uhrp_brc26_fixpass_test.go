@@ -1,6 +1,6 @@
 package topics
 
-// This file holds the cold-review fix pass's own test coverage: one test
+// This file holds focused test coverage: one test
 // per BLOCKER/RISK the review raised that uhrp_brc26_test.go (the
 // original implementer's tests) didn't already cover with a dedicated,
 // mutation-killing test. Kept in its own file so each fix's proof is

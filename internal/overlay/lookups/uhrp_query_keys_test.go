@@ -1,12 +1,10 @@
 package lookups
 
-// This file covers the fix pass's ls_uhrp query-key port (spec item 5 /
-// cold review RISKS: "Lookup query differences from canonical. Canonical
-// supports {outpoint}, {hostIdentityKey} and {expiryTime} and filters by
-// every key supplied. ... Not flagged."). UHRPLookupQuery
+// This file covers ls_uhrp query keys. Canonical supports {outpoint},
+// {hostIdentityKey}, and {expiryTime} and filters by every supplied key.
+// UHRPLookupQuery
 // (topics/uhrp_lookup.go) and uhrpQueryFilter (uhrp_filter.go) gained
-// these three keys, but had no dedicated test before this file — the
-// gap the review's wording above describes.
+// these three keys, which need dedicated coverage.
 
 import (
 	"encoding/hex"

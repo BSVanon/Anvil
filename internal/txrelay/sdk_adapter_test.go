@@ -31,7 +31,7 @@ func minimalTx(t *testing.T) *transaction.Transaction {
 }
 
 // TestSDKBroadcaster_ARCUnconfigured_StillReturnsSuccess pins the
-// "ARC absent ≠ admission failure" contract. Codex review
+// "ARC absent ≠ admission failure" contract.
 // eea841a080448a49 caught the original adapter returning
 // BroadcastFailure when the inner broadcaster had no ARC client —
 // which would cascade through engine.Submit and abort EVERY canonical

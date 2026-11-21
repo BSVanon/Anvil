@@ -2,9 +2,9 @@ package gateway
 
 import "context"
 
-// Policy is decision 3's one allow rule: whether host may be served, and
-// the origin its TXT names. B7a uses it to decide what to serve; B9 gates
-// certificate issuance on it, and B8 gates version/seq tracking scope on
+// Policy is the allow rule: whether a host may be served and the origin its
+// TXT record names. It decides what to serve, gates certificate issuance, and
+// gates version and sequence tracking scope on
 // it — there is exactly one allow rule in the whole gateway mechanism, so
 // every brick agrees on what is actually being served.
 //
@@ -24,15 +24,15 @@ func NewPolicy(sites *Allowlist, txt *Resolver) *Policy {
 }
 
 // Allowed reports whether host may be served, and the origin to serve,
-// per decision 3. A Host with no domain entry only triggers a TXT lookup
+// A Host with no domain entry only triggers a TXT lookup
 // when the sites file lists any "origin" entries at all — otherwise an
 // arbitrary Host header can never possibly match anything in the sites
 // file and a lookup would be pure resolver load with no chance of a hit.
 //
-// The resolver's flood guard (decision 4) is NOT consulted here: it must
+// The resolver's flood guard is not consulted here: it must
 // only ever gate a genuine resolver cache miss, never a cached answer, so
 // Resolver.Lookup itself checks it, after its own cache lookup and before
-// the singleflighted network call (B2) — never ahead of the cache, the
+// the singleflighted network call — never ahead of the cache, the
 // way this function used to. host's no-domain-entry status ("speculative"
 // — can only possibly match through an "origin" entry, not an explicit
 // "domain" one) still decides WHICH lookups the guard applies to; Lookup

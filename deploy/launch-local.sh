@@ -2,7 +2,7 @@
 # Launch a 2-node Anvil mesh locally for development.
 # Each node gets its own data dir, ports, and identity.
 #
-# Usage: ./foundry/launch-local.sh
+# Usage: ./launch-local.sh
 #
 # Prerequisites:
 #   - Anvil binary built: go build -o anvil ./cmd/anvil

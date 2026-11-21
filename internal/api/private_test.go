@@ -15,7 +15,7 @@ func storePrivate(t *testing.T, srv *Server, payloadSecret string) {
 	t.Helper()
 	srv.envelopeStore.StoreEphemeralDirect(&envelope.Envelope{
 		Type:      "data",
-		Topic:     "lacriada:household-x",
+		Topic:     "app:private-x",
 		Payload:   payloadSecret,
 		Pubkey:    "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
 		Signature: "3045022100abcd",
@@ -27,7 +27,7 @@ func storePrivate(t *testing.T, srv *Server, payloadSecret string) {
 
 func queryPrivateTopic(t *testing.T, srv *Server, setAuth func(*http.Request)) []map[string]interface{} {
 	t.Helper()
-	req := httptest.NewRequest("GET", "/data?topic=lacriada:household-x&limit=10", nil)
+	req := httptest.NewRequest("GET", "/data?topic=app:private-x&limit=10", nil)
 	if setAuth != nil {
 		setAuth(req)
 	}
@@ -63,7 +63,7 @@ func TestPrivateEnvelopeOmittedForPublicReads(t *testing.T) {
 }
 
 // TestPrivateEnvelopeVisibleForBearerAuth: the operator bearer token sees it in
-// full (this is how LaCriada's coordinator reads the mirror on failover).
+// full so authenticated clients can read the mirror during failover.
 func TestPrivateEnvelopeVisibleForBearerAuth(t *testing.T) {
 	srv := testServer(t)
 	storePrivate(t, srv, `{"secret":"visible-to-operator"}`)
@@ -156,10 +156,10 @@ func storePublicTopic(t *testing.T, srv *Server, topic string) {
 
 // TestPrivateTopicHiddenFromDiscoveryList: GET /topics must not surface a
 // private topic's name/count/timestamp to unauthenticated callers, but must to
-// authenticated ones. (Codex 1b290a5d HIGH — the discovery leak.)
+// authenticated ones.
 func TestPrivateTopicHiddenFromDiscoveryList(t *testing.T) {
 	srv := testServer(t)
-	storePrivate(t, srv, `{"secret":"sealed"}`) // lacriada:household-x (private)
+	storePrivate(t, srv, `{"secret":"sealed"}`) // app:private-x (private)
 	storePublicTopic(t, srv, "oracle:rates:bsv")
 
 	req := httptest.NewRequest("GET", "/topics", nil)
@@ -168,7 +168,7 @@ func TestPrivateTopicHiddenFromDiscoveryList(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d", w.Code)
 	}
-	if strings.Contains(w.Body.String(), "lacriada:household-x") {
+	if strings.Contains(w.Body.String(), "app:private-x") {
 		t.Fatal("private topic must be hidden from unauthenticated /topics")
 	}
 	if !strings.Contains(w.Body.String(), "oracle:rates:bsv") {
@@ -179,7 +179,7 @@ func TestPrivateTopicHiddenFromDiscoveryList(t *testing.T) {
 	req2.Header.Set("Authorization", "Bearer test-token")
 	w2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w2, req2)
-	if !strings.Contains(w2.Body.String(), "lacriada:household-x") {
+	if !strings.Contains(w2.Body.String(), "app:private-x") {
 		t.Fatal("authenticated /topics should list the private topic")
 	}
 }
@@ -190,7 +190,7 @@ func TestGetPrivateTopicGatedFromDiscovery(t *testing.T) {
 	srv := testServer(t)
 	storePrivate(t, srv, `{"secret":"sealed"}`)
 
-	req := httptest.NewRequest("GET", "/topics/lacriada:household-x", nil)
+	req := httptest.NewRequest("GET", "/topics/app:private-x", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
@@ -200,7 +200,7 @@ func TestGetPrivateTopicGatedFromDiscovery(t *testing.T) {
 		t.Fatal("private topic publisher pubkey must not leak")
 	}
 
-	req2 := httptest.NewRequest("GET", "/topics/lacriada:household-x", nil)
+	req2 := httptest.NewRequest("GET", "/topics/app:private-x", nil)
 	req2.Header.Set("Authorization", "Bearer test-token")
 	w2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w2, req2)
@@ -220,7 +220,7 @@ func storeEnv(t *testing.T, srv *Server, topic, payload, pubkey string, ts int64
 // TestMixedTopicHidesPrivateHistoryFromDiscovery: a topic whose LATEST envelope
 // is public but which also has older PRIVATE envelopes must, for unauthenticated
 // callers, report only the public count/timestamp/publisher (private history
-// invisible); authenticated callers see the full aggregate. (Codex 95ca1f2e
+// invisible); authenticated callers see the full aggregate.
 // round-2 HIGH — the mixed-topic discovery leak.)
 func TestMixedTopicHidesPrivateHistoryFromDiscovery(t *testing.T) {
 	srv := testServer(t)
@@ -286,7 +286,7 @@ func TestMixedTopicHidesPrivateHistoryFromDiscovery(t *testing.T) {
 
 // TestPrivateMetaNotLeakedViaDiscovery: a private meta:<topic> envelope must not
 // leak through /topics/{topic} enrichment to unauthenticated callers, but must
-// to authenticated ones. (Codex 3b214aa2 round-3 HIGH — helper-read leak.)
+// to authenticated ones.
 func TestPrivateMetaNotLeakedViaDiscovery(t *testing.T) {
 	srv := testServer(t)
 	const pub = "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"
@@ -314,7 +314,7 @@ func TestPrivateMetaNotLeakedViaDiscovery(t *testing.T) {
 
 // TestPrivateIdentityNotLeakedViaGetIdentity: GET /identity/{pubkey} must not
 // return a private identity envelope to unauthenticated callers (404), but must
-// to authenticated ones. (Codex 3b214aa2 round-3 HIGH — /identity had no gate.)
+// to authenticated ones.
 func TestPrivateIdentityNotLeakedViaGetIdentity(t *testing.T) {
 	srv := testServer(t)
 	const pub = "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"
@@ -344,7 +344,7 @@ func TestPrivateIdentityNotLeakedViaGetIdentity(t *testing.T) {
 
 // TestPrivatePublisherIdentityOmittedFromTopicGet: GET /topics/{topic} must not
 // surface a publisher's PRIVATE identity envelope via the publisher_identity
-// field to unauthenticated callers, but must to authenticated ones. (Codex
+// field to unauthenticated callers, but must to authenticated ones.
 // cc800b5c round-4 belt-and-suspenders for the publisher_identity path.)
 func TestPrivatePublisherIdentityOmittedFromTopicGet(t *testing.T) {
 	srv := testServer(t)

@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// Decision 6's scan bounds.
+// Scan bounds.
 const (
 	scopeMaxDepth     = 4
 	scopeMaxOutpoints = 2000
@@ -50,7 +50,7 @@ const (
 // is waiting on — open indefinitely.
 const scopeScanTimeout = 2 * time.Minute
 
-// scopeIncompleteCacheTTL and scopeFailedFetchTTL are fix cycle 2's
+// scopeIncompleteCacheTTL and scopeFailedFetchTTL bound retry behavior for
 // amplification bound (item 2). Before this, an incomplete result was
 // never cached at all, so a site that references one persistently
 // failing outpoint paid for a full breadth-first rescan — up to
@@ -86,7 +86,7 @@ type contentFetcher interface {
 var errOutpointRecentlyFailed = errors.New("outpoint fetch failed recently; still within its negative-cache window")
 
 // negativeCachingFetcher wraps a contentFetcher with the per-outpoint
-// half of fix cycle 2's amplification bound: a fetch that failed within
+// half of the amplification bound: a fetch that failed within
 // the last scopeFailedFetchTTL is not retried at all — it's reported as
 // still failing without ever reaching inner — because a persistently
 // failing reference's fetch failures otherwise compound across every
@@ -126,7 +126,7 @@ func (f *negativeCachingFetcher) Inscription(ctx context.Context, txid string, v
 }
 
 // scopeRefRe matches a literal "/content/<64 hex>_<digits>" reference
-// inside a text inscription — decision 6's reachability rule. This is
+// inside a text inscription — the reachability rule. This is
 // intentionally just a substring scan of raw bytes, the same way a
 // browser or static site finds its own asset URLs; it does not parse
 // HTML/CSS/JS/SVG/JSON, so it also catches a reference sitting inside a
@@ -141,7 +141,7 @@ var scopeRefRe = regexp.MustCompile(`/content/([0-9a-fA-F]{64})_([0-9]+)`)
 // answers by design — false for one cut short by its context (a timeout)
 // or by a fetch error (R4's detached context means no caller's own
 // cancellation can reach it any more, so those are the only two ways left
-// to end up incomplete). expires is fix cycle 2's addition: zero for a
+// to end up incomplete). expires is zero for a
 // complete result (cached with no TTL, exactly as before); set to
 // scopeIncompleteCacheTTL past when it was cached for an incomplete one,
 // so a persistently failing reference is bounded to one rescan per
@@ -158,7 +158,7 @@ func (r *scopeResult) has(outpoint string) bool {
 	return ok
 }
 
-// scopeCache is decision 6's "cache the result per (origin, latest
+// scopeCache caches the result per (origin, latest
 // outpoint)" plus "one scan per site at a time", combined: singleflight
 // already gives both — concurrent callers for the same key share one
 // scan, and its result is memoized under that key. content wraps
@@ -190,7 +190,7 @@ func newScopeCache(content contentFetcher) *scopeCache {
 
 // InScope reports whether target (a txid_vout outpoint) is in origin's
 // content scope, scanning and caching by (origin, latestOutpoint) if
-// needed (decision 6). origin and latestOutpoint are always themselves in
+// needed. origin and latestOutpoint are always themselves in
 // scope: they are the scan's roots, not something reachability needs to
 // prove.
 //
@@ -201,7 +201,7 @@ func newScopeCache(content contentFetcher) *scopeCache {
 // the scan nor, by extension, ever poison the cache with a truncated
 // result for every other caller sharing the same (origin, latestOutpoint)
 // key. Every scopeResult (complete or not) is stored in byKey; cacheGet
-// is what makes an incomplete one's residency temporary (fix cycle 2).
+// is what makes an incomplete one's residency temporary.
 func (c *scopeCache) InScope(ctx context.Context, origin, latestOutpoint, target string) bool {
 	if target == origin || target == latestOutpoint {
 		return true
@@ -244,7 +244,7 @@ func (c *scopeCache) InScope(ctx context.Context, origin, latestOutpoint, target
 
 // cacheGet returns key's cached result if present and not expired. A
 // complete result's expires is the zero Time, which is never "after" c's
-// current time, so it never expires (unchanged from before fix cycle 2);
+// current time, so it never expires;
 // an incomplete result's non-zero expires does, once c.now() passes it —
 // cacheGet then returns nil, same as a plain cache miss, letting InScope
 // rescan.
@@ -266,7 +266,7 @@ type frontierNode struct {
 	depth    int
 }
 
-// scanScope performs decision 6's breadth-first reachability scan from
+// scanScope performs a breadth-first reachability scan from
 // origin and latestOutpoint, bounded by depth, outpoint count and bytes
 // fetched. Hitting any of those deterministic bounds simply stops
 // expansion — everything found up to that point is a complete, correct
@@ -351,7 +351,7 @@ func splitOutpoint(outpoint string) (txid string, vout int, ok bool) {
 	return txid, n, true
 }
 
-// isScannableText reports whether contentType is one of decision 6's
+// isScannableText reports whether contentType is one of the
 // scannable text kinds: HTML, CSS, JS, SVG or JSON.
 func isScannableText(contentType string) bool {
 	ct := strings.ToLower(contentType)

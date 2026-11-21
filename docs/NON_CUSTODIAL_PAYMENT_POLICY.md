@@ -10,7 +10,7 @@ Anvil nodes will host data from third-party apps (oracles, attestation services,
 
 If not handled carefully, the node becomes a payment intermediary — receiving funds on behalf of apps and forwarding them. That's money transmission. It carries regulatory burden that no node operator wants, and it undermines the non-custodial design of the entire system.
 
-**This policy must be solved generically.** Every non-free app or service on every node in the Foundry mesh will face this question. The answer must be baked into the protocol, not left to per-app negotiation.
+**This policy must be solved generically.** Every non-free app or service on every node will face this question. The answer must be baked into the protocol, not left to per-app negotiation.
 
 ---
 
@@ -244,7 +244,7 @@ The existing x402 middleware (`payment.go`) needs these extensions:
 
 ## Why This Matters Beyond Rates
 
-This isn't just about one oracle. Every app on the Foundry mesh will face this:
+This isn't just about one oracle. Every app will face this:
 - Session providers charging for encrypted storage
 - Attestation services charging for identity verification
 - Data feeds charging for real-time signals

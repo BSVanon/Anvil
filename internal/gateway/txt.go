@@ -20,10 +20,10 @@ type txtLookuper interface {
 	LookupTXT(ctx context.Context, host string) ([]string, error)
 }
 
-// parseOrdfsTXT applies decision 4's parsing rules to the TXT records
+// parseOrdfsTXT applies the parsing rules to the TXT records
 // already fetched for _ordfs.<host>. Go's resolver already concatenates
 // each record's character-strings into one entry of records, so that part
-// of decision 4 needs no code here. The rest: the key is case-insensitive
+// needs no code here. The rest: the key is case-insensitive
 // and space-trimmed, the value must be "ordfs=<64 hex>_<decimal vout>",
 // duplicate records with the same value are fine, and zero or
 // more-than-one DISTINCT valid value means no mapping.
@@ -54,7 +54,7 @@ func parseOrdfsTXT(records []string) (origin string, ok bool) {
 
 // isNoSuchRecord reports whether err is DNS's definitive "no such record"
 // answer (NXDOMAIN/NODATA), as opposed to a genuine resolver failure
-// (timeout, SERVFAIL, network error) — the distinction decision 4's
+// (timeout, SERVFAIL, network error) — the distinction the caller
 // stale-grace fallback depends on: a legitimate "no mapping" answer is
 // authoritative and must not be masked by a stale, previously-good one.
 func isNoSuchRecord(err error) bool {
@@ -74,7 +74,7 @@ type lastGoodEntry struct {
 	at     time.Time
 }
 
-// ResolverConfig configures NewResolver. Zero values take decision 4's
+// ResolverConfig configures NewResolver. Zero values use the default
 // defaults.
 type ResolverConfig struct {
 	PositiveTTL time.Duration // default 5m
@@ -83,7 +83,7 @@ type ResolverConfig struct {
 	Stats       *Counters     // default a fresh, unshared Counters
 }
 
-// Resolver is decision 4's TXT lookup: a cached, singleflighted,
+// Resolver performs cached, singleflighted TXT lookup:
 // flood-guarded _ordfs.<host> resolver. Construct with NewResolver.
 type Resolver struct {
 	lookup      txtLookuper
@@ -131,9 +131,9 @@ func NewResolver(cfg ResolverConfig) *Resolver {
 }
 
 // Lookup resolves host's _ordfs TXT to an origin, through the cache
-// (decision 4): a fresh cache entry answers immediately — regardless of
+// a fresh cache entry answers immediately — regardless of
 // speculative, since a cache hit makes no new resolver call at all and so
-// can never be what the flood guard exists to limit (B2) — a miss or
+// can never be what the flood guard exists to limit — a miss or
 // expiry triggers one singleflighted DNS lookup per host, bounded by a 3s
 // timeout independent of ctx (singleflight shares this call across every
 // concurrent caller for host, so it must not depend on any one of their
@@ -145,11 +145,11 @@ func NewResolver(cfg ResolverConfig) *Resolver {
 // speculative marks a lookup for a Host with no explicit "domain" entry
 // (it can only possibly match through an "origin" entry) — Policy passes
 // !hasDomain. Only a speculative lookup that MISSES the cache consults
-// the global flood guard (decision 4's last bullet), so a flood of random
+// the global flood guard, so a flood of random
 // Host headers can't run the resolver ragged just because some "origin"
 // entries exist to speculatively match against, while a cached, legitimate
 // answer is never throttled no matter how busy the guard's global bucket
-// is (B2 — the guard used to run in Policy.Allowed, ahead of this cache).
+// is; the guard runs after the cache lookup.
 func (r *Resolver) Lookup(ctx context.Context, host string, speculative bool) (origin string, ok bool) {
 	if ctx.Err() != nil {
 		return "", false
@@ -220,7 +220,7 @@ func (r *Resolver) cacheSet(host, origin string, ok bool, ttl time.Duration, now
 	}
 }
 
-// txtCacheBound is decision 4's "LRU bound of 10,000 hosts".
+// txtCacheBound is the LRU bound of 10,000 hosts.
 const txtCacheBound = 10000
 
 // evictOldest removes the least-recently-accessed cache entry. Called

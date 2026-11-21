@@ -8,7 +8,7 @@ package topics_test
 // v3engine (which itself imports topics) with no cycle. The two-tx
 // construction (funded advert; real signed spend of it) mirrors the cold
 // review's own reproduction (reviewer scratch v3engine/zz_revoke_test.go,
-// rerun against this fix pass's code to confirm before writing this
+// rerun against this code to confirm before writing this
 // permanent test) — reused, not re-derived. overlaytest.SpendingTx exists
 // because go-sdk v1.7's spv.Verify now requires every unmined tx to have a
 // real, spendable input (see that package's doc).
@@ -189,9 +189,9 @@ func TestUHRPEngine_FreshlyBuiltAdvertAdmittedAndResolvable(t *testing.T) {
 }
 
 // TestUHRPEngine_PureRevocationDeletesStorageRow is the direct proof of
-// the B2 fix (spec item 6): pre-fix, Admit always retained every
+// the retention behavior: previously, Admit always retained every
 // previous coin, leaving the advert's row "STILL STORED spent=true"
-// forever (cold review B2). Post-fix, CoinsToRetain is empty and the
+// forever. CoinsToRetain is empty and the
 // row is gone.
 func TestUHRPEngine_PureRevocationDeletesStorageRow(t *testing.T) {
 	ctx := context.Background()
@@ -266,7 +266,7 @@ func TestUHRPEngine_PureRevocationDeletesStorageRow(t *testing.T) {
 
 // The TS-oracle cross-check for {uhrpUrl} answers (the positive BRC-26
 // case plus the LEGACY-format negative case) lives in
-// uhrp_engine_oracle_test.go — split out once the fix pass's negative-case
+// uhrp_engine_oracle_test.go — split out after the negative-case
 // addition (re-review RISKS item 4) would have pushed this file past the
 // package's established per-file size norm; no behaviour change to
 // either half.

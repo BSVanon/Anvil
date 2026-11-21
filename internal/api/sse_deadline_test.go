@@ -13,7 +13,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/messaging"
 )
 
-// --- RISK 1 real-stalled-socket tests ---
+// --- Real stalled-socket tests ---
 //
 // A fake ResponseWriter (streamTestResponse, sse_caps_test.go) cannot
 // reproduce the hazard this guards against: Write/Flush only actually

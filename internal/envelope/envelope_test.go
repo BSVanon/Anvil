@@ -54,7 +54,7 @@ func TestValidateGoodEnvelope(t *testing.T) {
 func TestPrivateFlagSignedAndTamperProof(t *testing.T) {
 	env := &Envelope{
 		Type:      "data",
-		Topic:     "lacriada:household-x",
+		Topic:     "app:private-x",
 		Payload:   "sealed-ciphertext",
 		TTL:       0,
 		Durable:   true,
@@ -77,7 +77,7 @@ func TestPrivateFlagSignedAndTamperProof(t *testing.T) {
 func TestPrivateFlagRoundTrips(t *testing.T) {
 	env := &Envelope{
 		Type:      "data",
-		Topic:     "lacriada:household-x",
+		Topic:     "app:private-x",
 		Payload:   "sealed-ciphertext",
 		TTL:       0,
 		Durable:   true,

@@ -58,13 +58,13 @@ func TestHeartbeatTopicsFnUsesPublicAccessor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mustIngest(t, store, key, "lacriada:household-x", true)
+	mustIngest(t, store, key, "app:private-x", true)
 	mustIngest(t, store, key, "oracle:rates:bsv", false)
 
 	topicsFn := heartbeatTopicsFn(store)
 	topics := topicsFn()
 
-	if _, ok := topics["lacriada:household-x"]; ok {
+	if _, ok := topics["app:private-x"]; ok {
 		t.Fatalf("heartbeatTopicsFn must not name a private-only topic, got %v", topics)
 	}
 	if _, ok := topics["oracle:rates:bsv"]; !ok {
@@ -83,13 +83,13 @@ func TestHeartbeatPrivateOnlyTopicsFnUsesRealAccessor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mustIngest(t, store, key, "lacriada:household-x", true)
+	mustIngest(t, store, key, "app:private-x", true)
 	mustIngest(t, store, key, "oracle:rates:bsv", false)
 
 	privateOnlyFn := heartbeatPrivateOnlyTopicsFn(store)
 	privateOnly := privateOnlyFn()
 
-	if _, ok := privateOnly["lacriada:household-x"]; !ok {
+	if _, ok := privateOnly["app:private-x"]; !ok {
 		t.Fatalf("heartbeatPrivateOnlyTopicsFn should report the private-only topic, got %v", privateOnly)
 	}
 	if _, ok := privateOnly["oracle:rates:bsv"]; ok {

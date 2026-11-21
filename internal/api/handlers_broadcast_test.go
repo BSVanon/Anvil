@@ -155,7 +155,7 @@ func TestBroadcastDoesNotDowngradeCachedSubjectProof(t *testing.T) {
 }
 
 // TestBroadcastRejectsBypassWhenPaymentGateZeroPriced is the regression test
-// for the high-severity auth bypass Codex caught in the Path C audit.
+// for the high-severity auth bypass in the binary request path.
 //
 // Production setup that triggered the bug: node has identity.WIF + wallet
 // (nonce provider configured for app passthrough/split payments) but
@@ -195,7 +195,7 @@ func TestBroadcastRejectsBypassWhenPaymentGateZeroPriced(t *testing.T) {
 }
 
 // TestBroadcastARCTransportFailureReportsValidatedOnly is the regression test
-// for the bug Codex caught: when ARC returns a non-2xx (transport failure),
+// for the bug where ARC returns a non-2xx transport failure,
 // BroadcastToARC swallows the error into a result with Status="error" and nil
 // error. The handler must recognize this and set arcStatus.Submitted=false
 // (we don't know if ARC received the tx), so deriveBroadcastStatus lands on

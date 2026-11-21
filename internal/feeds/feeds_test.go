@@ -170,13 +170,13 @@ func TestHeartbeatDemandDropsOnlyPrivateOnlyTopics(t *testing.T) {
 		TopicsFn: func() map[string]int { return map[string]int{"oracle:rates:bsv": 5} },
 		DemandFn: func() map[string]int {
 			return map[string]int{
-				"oracle:rates:bsv":     3, // public, present in TopicsFn
-				"lacriada:household-x": 7, // private-only — must not survive the filter
-				"remote:topic":         2, // absent from TopicsFn but NOT private-only (e.g. merged from a peer) — must survive
+				"oracle:rates:bsv": 3, // public, present in TopicsFn
+				"app:private-x":    7, // private-only — must not survive the filter
+				"remote:topic":     2, // absent from TopicsFn but NOT private-only (e.g. merged from a peer) — must survive
 			}
 		},
 		PrivateOnlyTopicsFn: func() map[string]struct{} {
-			return map[string]struct{}{"lacriada:household-x": {}}
+			return map[string]struct{}{"app:private-x": {}}
 		},
 	})
 
@@ -188,7 +188,7 @@ func TestHeartbeatDemandDropsOnlyPrivateOnlyTopics(t *testing.T) {
 		t.Fatal("no heartbeat envelopes published")
 	}
 
-	if strings.Contains(envs[0].Payload, "lacriada:household-x") {
+	if strings.Contains(envs[0].Payload, "app:private-x") {
 		t.Fatalf("a private-only topic must not appear in the heartbeat's demand map: %s", envs[0].Payload)
 	}
 
@@ -199,7 +199,7 @@ func TestHeartbeatDemandDropsOnlyPrivateOnlyTopics(t *testing.T) {
 	if hb.Demand["oracle:rates:bsv"] != 3 {
 		t.Fatalf("expected the public topic's demand to survive the filter, got %v", hb.Demand)
 	}
-	if _, present := hb.Demand["lacriada:household-x"]; present {
+	if _, present := hb.Demand["app:private-x"]; present {
 		t.Fatalf("private-only topic's demand must be filtered out, got %v", hb.Demand)
 	}
 	if hb.Demand["remote:topic"] != 2 {

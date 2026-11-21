@@ -12,7 +12,7 @@ import (
 
 // SigOpcode identifies which signature-checking opcode
 // MalformedReparseBEEF's unlocking script ends each of its k copies with.
-// All four are go-sdk v1.7.7's affected opcodes (cold review round 4, B1):
+// All four are go-sdk v1.7.7's affected opcodes:
 // each can call subScriptForChecksig (script/interpreter/thread.go:1110-1162).
 type SigOpcode int
 
@@ -45,7 +45,7 @@ func (op SigOpcode) String() string {
 // single push of n arbitrary bytes, unlocked by k copies of a signature
 // check using op and ending in a truncated OP_PUSHDATA1.
 //
-// This is the B1 shape (cold review round 4): under Chronicle, op executing
+// This malformed shape has an undecodable trailing opcode: under Chronicle, op executing
 // inside the unlocking script builds its scriptCode from the unlocking
 // script joined with the locking script (subScriptForChecksig). Because the
 // unlocking script's last parsed instruction is malformed (a push whose

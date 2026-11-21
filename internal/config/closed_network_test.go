@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Tests for the B5 closed-network settings ([mesh] allowed_peers,
+// Tests for the closed-network settings ([mesh] allowed_peers,
 // [overlay] named_peers) and the header-fallback suppression they imply.
 // Split out of config_test.go to keep that file under the project's
 // line-count cap; TestEnsureHeaderFallbackPeers and

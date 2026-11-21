@@ -32,7 +32,7 @@ func TestPublicTopicsExcludesPrivateOnlyTopic(t *testing.T) {
 	}
 
 	privateOnly := &Envelope{
-		Type: "data", Topic: "lacriada:household-x", Payload: `{"secret":"sealed"}`,
+		Type: "data", Topic: "app:private-x", Payload: `{"secret":"sealed"}`,
 		TTL: 60, Timestamp: time.Now().Unix(), Private: true,
 	}
 	privateOnly.Sign(key)
@@ -50,7 +50,7 @@ func TestPublicTopicsExcludesPrivateOnlyTopic(t *testing.T) {
 	}
 
 	topics := store.PublicTopics()
-	if _, ok := topics["lacriada:household-x"]; ok {
+	if _, ok := topics["app:private-x"]; ok {
 		t.Fatalf("PublicTopics must not list a private-only topic, got %v", topics)
 	}
 	if count, ok := topics["oracle:rates:bsv"]; !ok || count != 1 {
@@ -61,7 +61,7 @@ func TestPublicTopicsExcludesPrivateOnlyTopic(t *testing.T) {
 	// directly) still shows both — proving the two are genuinely different
 	// and the fix is PublicTopics, not a change to Topics' semantics.
 	all := store.Topics()
-	if _, ok := all["lacriada:household-x"]; !ok {
+	if _, ok := all["app:private-x"]; !ok {
 		t.Fatalf("Topics (unfiltered) should still include the private topic, got %v", all)
 	}
 }

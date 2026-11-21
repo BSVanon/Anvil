@@ -10,7 +10,7 @@ import (
 )
 
 // TestCors_AllowsCanonicalOverlayHeaders is the integration test
-// Codex review 2968609c62a2eb51 asked for: exercise the real cors()
+// Exercise the real cors()
 // helper that backs Server.CorsWrap and assert the canonical custom
 // headers (x-includes-off-chain-values, x-aggregation) appear in
 // Access-Control-Allow-Headers. Without these, browser preflight
@@ -91,7 +91,7 @@ func TestCors_AllowsCanonicalOverlayHeaders(t *testing.T) {
 // X-BSV-Topic header per the upstream OpenAPI spec; without it in
 // Access-Control-Allow-Headers, a browser-side LookupResolver running
 // against an Anvil host would fail preflight before the request even
-// reached the canonical handler. Codex review 6daa58cb1a6f43e4 caught
+// reached the canonical handler.
 // the original cors() omitting X-BSV-Topic.
 func TestCors_AllowsGASPPreflight(t *testing.T) {
 	wrapped := cors(func(w http.ResponseWriter, r *http.Request) {

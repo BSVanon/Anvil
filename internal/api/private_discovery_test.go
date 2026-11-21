@@ -44,17 +44,17 @@ func payerGet(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder
 // name/count/timestamp or a private identity payload.
 func TestPayerSeesPublicOnlyDiscovery(t *testing.T) {
 	srv := testServerWithPaymentGate(t, 100)
-	storePrivate(t, srv, `{"secret":"sealed"}`) // lacriada:household-x
+	storePrivate(t, srv, `{"secret":"sealed"}`) // app:private-x
 	const pub = "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"
 	storeEnv(t, srv, "identity:"+pub, `{"secret":"private-identity"}`, pub, 100, true)
 
-	if w := payerGet(t, srv, "/topics"); strings.Contains(w.Body.String(), "lacriada:household-x") {
+	if w := payerGet(t, srv, "/topics"); strings.Contains(w.Body.String(), "app:private-x") {
 		t.Fatal("a payer must not see a private topic via GET /topics")
 	}
 
-	ch2 := getChallenge(t, srv, "GET", "/topics/lacriada:household-x")
+	ch2 := getChallenge(t, srv, "GET", "/topics/app:private-x")
 	proof2 := buildProof(t, ch2, 200, testPayeeScript(t))
-	req2 := httptest.NewRequest("GET", "/topics/lacriada:household-x", nil)
+	req2 := httptest.NewRequest("GET", "/topics/app:private-x", nil)
 	req2.Host = "localhost"
 	req2.Header.Set(HeaderX402Proof, proof2)
 	w2 := httptest.NewRecorder()
@@ -82,7 +82,7 @@ func TestPayerSeesPublicOnlyDiscovery(t *testing.T) {
 // hidden regardless of what ?topic= names.
 func TestTokenGatingDisabledShowsNothingPrivateViaDiscovery(t *testing.T) {
 	srv := testServer(t)
-	storePrivate(t, srv, `{"secret":"sealed"}`) // lacriada:household-x
+	storePrivate(t, srv, `{"secret":"sealed"}`) // app:private-x
 	const pub = "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"
 	storeEnv(t, srv, "identity:"+pub, `{"secret":"private-identity"}`, pub, 100, true)
 
@@ -104,11 +104,11 @@ func TestTokenGatingDisabledShowsNothingPrivateViaDiscovery(t *testing.T) {
 	req1 := httptest.NewRequest("GET", "/topics?topic=some:token-topic", nil)
 	w1 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w1, req1)
-	if strings.Contains(w1.Body.String(), "lacriada:household-x") {
+	if strings.Contains(w1.Body.String(), "app:private-x") {
 		t.Fatal("GET /topics must not show the private topic")
 	}
 
-	req2 := httptest.NewRequest("GET", "/topics/lacriada:household-x?topic=some:token-topic", nil)
+	req2 := httptest.NewRequest("GET", "/topics/app:private-x?topic=some:token-topic", nil)
 	w2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w2, req2)
 	if w2.Code != http.StatusNotFound {

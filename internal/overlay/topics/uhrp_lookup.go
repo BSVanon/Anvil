@@ -10,7 +10,7 @@ const UHRPLookupServiceName = "ls_uhrp"
 // the legacy shim's /overlay/query handler so callers see identical
 // behaviour regardless of which route they hit.
 //
-// Fix pass (spec item 5 / cold review RISKS): Outpoint, HostIdentityKey
+// Outpoint, HostIdentityKey
 // and ExpiryTime port canonical UHRPLookupService.ts's query keys
 // (overlays/topics uhrp/UHRPLookupService.ts, method lookup()). Outpoint
 // is a direct single-record lookup, independent of every other key —

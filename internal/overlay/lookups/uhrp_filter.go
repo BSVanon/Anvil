@@ -21,7 +21,7 @@ import (
 // already written to the index that is no longer valid uhrpItem JSON.
 // itemsByHash and allItemRecords both treat this identically: skip the
 // single record and log a warning, never fail the whole scan over one bad
-// entry (fix pass, cold review B3 — mirrors storage.go's
+// entry. This mirrors storage.go's
 // safeNewBeefFromBytes skip-and-log treatment of an unparseable BEEF
 // blob). A genuine LevelDB read error is a different, infrastructural
 // failure and still propagates as-is.
@@ -55,7 +55,7 @@ func uhrpExpired(it uhrpItem, now int64) bool {
 // list-all) a query selects: HostIdentityKey and ExpiryTime each narrow
 // the result when supplied, the same way Mongo's implicit multi-field
 // exact match (`records.find(query)`) would. The zero value matches
-// everything (fix pass, cold review RISKS / spec item 5).
+// everything.
 //
 // expiryTime == 0 means "not supplied," matching UHRPLookupQuery's wire
 // contract (topics/uhrp_lookup.go): a stored advertisement's expiry is
@@ -81,7 +81,7 @@ func (f uhrpQueryFilter) active() bool {
 // matching canonical UHRPLookupService.ts:71's `records.find(query)`
 // exactly: Mongo's find() with a plain field:value pair is itself an
 // equality match, and canonical never substitutes a range operator here —
-// no divergence (fix pass, re-review RISKS item 3).
+// no divergence.
 //
 // hostIdentityKey deliberately diverges from canonical. Canonical's find
 // compares the query value byte-for-byte against the stored field, and
@@ -89,7 +89,7 @@ func (f uhrpQueryFilter) active() bool {
 // (UHRPLookupService.ts:32, written at admission; :71, the find(query)
 // comparison) — so canonical is, in effect, a case-sensitive match
 // against lowercase hex. Anvil instead uses strings.EqualFold below: a
-// deliberate, more permissive choice (fix pass, re-review RISKS item 3) —
+// deliberate, more permissive choice —
 // a canonical client sending lowercase hex still gets the canonical
 // answer, and an Anvil-only or hand-typed caller that sends uppercase hex
 // isn't punished for it. Strictly more lenient than canonical, never less
@@ -114,7 +114,7 @@ func (f uhrpQueryFilter) matches(it uhrpItem) bool {
 //     (content hash, URL) pair, so a superseded legacy advertisement
 //     stops shadowing its canonical replacement. (Not reached when
 //     canonicalOnly already dropped every legacy entry — rule 3.)
-//  3. (Fix pass, cold review B1 / spec item 1) When canonicalOnly is
+//  3. When canonicalOnly is
 //     set — the uhrpUrl query path only, never content_hash or list —
 //     drop every legacy (non-BRC26) record outright, not just ones a
 //     BRC-26 advert happens to supersede. A canonical @bsv/sdk
@@ -123,7 +123,7 @@ func (f uhrpQueryFilter) matches(it uhrpItem) bool {
 //     (storage/StorageDownloader.ts, resolve()); a legacy OP_RETURN
 //     record isn't PushDrop-shaped at all and would make that decode
 //     throw.
-//  4. (Fix pass, cold review RISKS / spec item 5) Apply extra as an
+//  4. Apply extra as an
 //     AND-filter (hostIdentityKey / expiryTime), matching canonical
 //     UHRPLookupService.ts's `records.find(query)` Mongo-style
 //     multi-field exact match.
@@ -183,8 +183,8 @@ func formulasFromRecords(recs []uhrpItemRecord) []lookup.LookupFormula {
 }
 
 // scanByHash returns formulas for every outpoint indexed under the given
-// content hash, after applying filterUHRPRecords. canonicalOnly (fix
-// pass, cold review B1) is set by the one caller — the uhrpUrl query
+// content hash, after applying filterUHRPRecords. canonicalOnly is set
+// by the one caller — the uhrpUrl query
 // path — that needs BRC-26-only answers; a direct content_hash query
 // passes false and keeps seeing both formats.
 func (s *UHRPLookupService) scanByHash(ctx context.Context, hashHex string, canonicalOnly bool, extra uhrpQueryFilter) ([]lookup.LookupFormula, error) {
@@ -216,7 +216,7 @@ func (s *UHRPLookupService) itemsByHashContext(ctx context.Context, hashHex stri
 		item, ok, err := s.loadItem(op)
 		if err != nil {
 			if errors.Is(err, errUHRPCorruptRecord) {
-				// Fix pass, cold review B3: one corrupt record must not
+				// One corrupt record must not
 				// fail the whole hash scan.
 				slog.Warn("uhrp lookup: skipping corrupt record in hash scan",
 					"txid", op.Txid.String(), "vout", op.Index, "error", err)
@@ -273,7 +273,7 @@ func (s *UHRPLookupService) allItemRecords(ctx context.Context) ([]uhrpItemRecor
 		}
 		var item uhrpItem
 		if err := json.Unmarshal(iter.Value(), &item); err != nil {
-			// Fix pass, cold review B3: same skip-and-log treatment as
+			// Use the same skip-and-log treatment as
 			// itemsByHash's errUHRPCorruptRecord path above — never fail
 			// the whole list scan over one bad entry.
 			slog.Warn("uhrp lookup: skipping corrupt record in list scan",
@@ -296,7 +296,7 @@ func (s *UHRPLookupService) allItemRecords(ctx context.Context) ([]uhrpItemRecor
 }
 
 // scanAllItems returns one formula per surviving item in the local index,
-// after applying filterUHRPRecords. extra (fix pass, spec item 5)
+// after applying filterUHRPRecords. extra
 // AND-combines hostIdentityKey/expiryTime into this base set, matching
 // canonical UHRPLookupService.ts's query semantics; the zero value
 // matches everything.

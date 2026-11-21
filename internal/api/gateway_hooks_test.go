@@ -21,7 +21,7 @@ func TestContentServer_ReturnsSharedInstance(t *testing.T) {
 	}
 }
 
-// TestSetGatewayStats_MergedIntoStats confirms the /stats hook decision 8's
+// TestSetGatewayStats_MergedIntoStats confirms the /stats hook's
 // aggregate gateway counters surface through.
 func TestSetGatewayStats_MergedIntoStats(t *testing.T) {
 	s := testServer(t)

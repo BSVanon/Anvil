@@ -10,7 +10,7 @@ import "github.com/BSVanon/Anvil/internal/content"
 func (s *Server) ContentServer() *content.Server { return s.contentServer }
 
 // SetGatewayStats registers a callback whose returned counters are merged
-// into GET /stats under "gateway" when non-nil — the hook decision 8's
+// into GET /stats under "gateway" when non-nil.
 // aggregate gateway counters (internal/gateway) surface through, without
 // this package depending on internal/gateway. Call at most once; the last
 // call wins. A nil or empty-map result omits the "gateway" field entirely
