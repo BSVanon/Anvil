@@ -40,7 +40,7 @@ func payerGet(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder
 // widen what GET /topics, GET /topics/{topic}, or GET /identity/{pubkey}
 // show — a payer sees exactly the same public-only view an anonymous caller
 // does. These routes gate on isAuthed (operator only), never on a payment;
-// letting isPaid widen them would let a payer see a private topic's
+// letting a payment widen them would let a payer see a private topic's
 // name/count/timestamp or a private identity payload.
 func TestPayerSeesPublicOnlyDiscovery(t *testing.T) {
 	srv := testServerWithPaymentGate(t, 100)

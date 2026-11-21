@@ -17,6 +17,15 @@ const (
 	// codeDirectPaymentUnavailable: the node has no ARC client, so it takes
 	// no X-Bsv-Payment (errDirectPaymentUnavailable).
 	codeDirectPaymentUnavailable = "ERR_DIRECT_PAYMENT_UNAVAILABLE"
+	// codePaymentMalformed: the X-Bsv-Payment header holds no transaction
+	// the node parses (errPaymentMalformed).
+	codePaymentMalformed = "ERR_PAYMENT_MALFORMED"
+	// codeDirectPaymentUnverifiable: the direct payment's inputs cannot be
+	// verified as sent: no inputs, more than maxDirectPaymentInputs, or an
+	// input without the output it spends, its locking script or its
+	// unlocking script (errDirectPaymentUnverifiable,
+	// payment_direct_verify.go).
+	codeDirectPaymentUnverifiable = "ERR_DIRECT_PAYMENT_UNVERIFIABLE"
 	// codePaymentNotAccepted: ARC did not report the payment transaction as
 	// accepted by the network (checkARCAcceptance, payment_arc.go).
 	codePaymentNotAccepted = "ERR_PAYMENT_NOT_ACCEPTED"
@@ -65,8 +74,14 @@ func (e *paymentRefusal) Error() string { return e.msg }
 // network accepted it learns that the inputs exist and are unspent.
 var errDirectPaymentUnavailable = &paymentRefusal{
 	code: codeDirectPaymentUnavailable,
-	msg: "this node takes no X-Bsv-Payment because it has no ARC client to confirm that a payment's inputs exist and are unspent; " +
-		"send the request without a payment header to get an X402-Challenge, then pay it with an X402-Proof",
+	msg:  "this node takes no X-Bsv-Payment because it has no ARC client to confirm that a payment's inputs exist and are unspent",
+}
+
+// errPaymentMalformed refuses a payment header that does not hold a
+// transaction: not hex or base64, or bytes that do not parse as one, such as
+// Atomic BEEF, which is not parsed.
+func errPaymentMalformed(msg string) error {
+	return &paymentRefusal{code: codePaymentMalformed, msg: msg}
 }
 
 // errMempoolCheckUnavailable refuses an X402-Proof whose challenge requires

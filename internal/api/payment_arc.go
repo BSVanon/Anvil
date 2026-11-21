@@ -48,7 +48,8 @@ func checkARCAcceptance(resp *txrelay.ARCResponse) error {
 	if !arcAccepted(resp.Status) {
 		return &paymentRefusal{
 			code: codePaymentNotAccepted,
-			msg:  fmt.Sprintf("ARC did not report the payment as accepted by the network: status %q, want SEEN_ON_NETWORK or MINED", resp.Status),
+			msg: fmt.Sprintf("ARC did not report the payment as accepted by the network: status %q, want SEEN_ON_NETWORK or MINED; "+
+				"retry the same transaction shortly, as the network may still accept it, rather than paying with a new one", resp.Status),
 		}
 	}
 	return nil

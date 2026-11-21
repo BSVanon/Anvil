@@ -266,7 +266,7 @@ func (pg *PaymentGate) verifyDirectPayment(ctx context.Context, paymentHeader st
 	}
 	paymentHeader = strings.TrimSpace(paymentHeader)
 	if paymentHeader == "" {
-		return nil, fmt.Errorf("empty payment header")
+		return nil, errPaymentMalformed("empty payment header")
 	}
 
 	// Try to decode: hex first (most common), then base64
@@ -276,14 +276,14 @@ func (pg *PaymentGate) verifyDirectPayment(ctx context.Context, paymentHeader st
 		if err != nil {
 			txBytes, err = base64.RawStdEncoding.DecodeString(paymentHeader)
 			if err != nil {
-				return nil, fmt.Errorf("cannot decode payment: not valid hex or base64")
+				return nil, errPaymentMalformed("cannot decode payment: not valid hex or base64")
 			}
 		}
 	}
 
 	tx, err := transaction.NewTransactionFromBytes(txBytes)
 	if err != nil {
-		return nil, fmt.Errorf("invalid transaction in payment header: %w", err)
+		return nil, errPaymentMalformed("invalid transaction in payment header: " + err.Error())
 	}
 
 	// Verify all payees are paid (same logic as challenge-proof path)

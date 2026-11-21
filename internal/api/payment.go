@@ -263,7 +263,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// X-Bsv-Payment: a raw or Extended Format tx that pays the payees
+		// X-Bsv-Payment: an Extended Format tx that pays the payees
 		// directly, with no challenge (verifyDirectPayment).
 		if bsvPayment != "" && proofHeader == "" {
 			receipt, err := pg.verifyDirectPayment(r.Context(), bsvPayment, payees)

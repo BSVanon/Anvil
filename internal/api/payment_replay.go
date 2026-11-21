@@ -18,13 +18,18 @@ import (
 // The memory is bounded: a txid is kept for directPaymentReplayWindow, and at
 // most directPaymentReplayCapacity txids are kept, the oldest evicted first.
 // Measured full (TestDirectPaymentReplaySetMemory): 9.2 MB (8.8 MiB) of heap.
-// The set lives in memory only, so a restart empties it. A payment that ARC
-// reports as mined deeper than maxDirectPaymentDepth blocks is refused
-// whether or not the set remembers it (checkPaymentDepth, payment_arc.go), so
-// neither eviction nor a restart reopens an old mined payment. The known
-// limit: after a restart, a payment accepted in the last 24 hours that is
-// still unmined, or mined at most maxDirectPaymentDepth blocks deep, pays once
-// more.
+// The set lives in memory only, so a restart empties it. A direct payment
+// that ARC reports as mined deeper than maxDirectPaymentDepth blocks is
+// refused whether or not the set remembers it (checkPaymentDepth,
+// payment_arc.go), so neither eviction nor a restart reopens an old mined
+// payment. The known limit: each time the set forgets a txid, when the
+// window passes, by evicting it or on a restart, that transaction can pay
+// once more as a direct payment while it is still unmined or at most
+// maxDirectPaymentDepth blocks deep. A client that cycles more than
+// directPaymentReplayCapacity paid transactions through the set can
+// therefore reuse each of them repeatedly, but none later than
+// maxDirectPaymentDepth blocks after it is mined; one that stays unmined has
+// no such bound.
 const (
 	directPaymentReplayWindow   = 24 * time.Hour
 	directPaymentReplayCapacity = 100_000
@@ -61,12 +66,15 @@ type paymentReplaySet struct {
 	size     int
 }
 
+// newPaymentReplaySet returns a set that remembers txids for window, and at
+// most capacity of them, which is at least 1: a set that could hold none
+// would have nothing to evict when it is full.
 func newPaymentReplaySet(window time.Duration, capacity int, now func() time.Time) *paymentReplaySet {
 	return &paymentReplaySet{
 		now:      now,
 		base:     now(),
 		window:   window,
-		capacity: capacity,
+		capacity: max(capacity, 1),
 		accepted: make(map[chainhash.Hash]struct{}),
 		inFlight: make(map[chainhash.Hash]struct{}),
 	}

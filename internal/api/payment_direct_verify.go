@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -20,8 +19,13 @@ const maxDirectPaymentInputs = 10
 
 // errDirectPaymentUnverifiable marks a direct-payment transaction (or one of
 // its inputs) that verifyDirectPaymentInputs refuses to accept without
-// running the interpreter against it.
-var errDirectPaymentUnverifiable = errors.New("direct payment cannot be verified")
+// running the interpreter against it. It carries a stable code
+// (codeDirectPaymentUnverifiable, payment_refusal.go), which every refusal
+// wrapping it is answered with.
+var errDirectPaymentUnverifiable = &paymentRefusal{
+	code: codeDirectPaymentUnverifiable,
+	msg:  "direct payment cannot be verified",
+}
 
 // verifyDirectPaymentInputs checks that every input of tx is a genuine,
 // signature-verified P2PKH spend of the source output the client supplied,

@@ -171,10 +171,14 @@ func TestAppTokenNeverUnlocksPrivateOrOtherTopics(t *testing.T) {
 
 // TestAppTokenDoesNotUnredactPrefixSubtopic: a validated app token for
 // topic A does not unredact a DIFFERENT, merely-prefix-related topic B's
-// monetized content. A GET /data query on A returns A's own envelopes only,
-// never B's, even when B's name extends A's with ":"; and a direct query on
-// B, carrying A's token, leaves B's payload redacted, because an app token
-// unlocks only its own exact topic, so B's own price stays enforced.
+// monetized content, even when B is token-gated by the same key, so only the
+// topic tells the two apart. A GET /data query on A returns A's own envelopes
+// only, never B's, though B's name extends A's with ":". A query on B
+// carrying A's token is refused by the token gate, which binds the token's
+// signature to the topic it was signed for. And a request for B whose context
+// carries the token validated for A, which the gate itself cannot produce,
+// still leaves B's payload redacted, because a token unlocks only its own
+// exact topic (appTokenTopicMatches).
 func TestAppTokenDoesNotUnredactPrefixSubtopic(t *testing.T) {
 	srv := testServer(t)
 
@@ -184,12 +188,11 @@ func TestAppTokenDoesNotUnredactPrefixSubtopic(t *testing.T) {
 	const parent = "handlerprefix:parent"
 	const child = "handlerprefix:parent:extra"
 
-	seedEnvelope(t, srv.envelopeStore, parent, &envelope.Monetization{
-		Model: envelope.MonetizationToken, AuthPubkey: appPubHex,
-	})
-	seedEnvelope(t, srv.envelopeStore, child, &envelope.Monetization{
-		Model: envelope.MonetizationPassthrough, PayeeLockingScriptHex: appPayeeScript(), PriceSats: 50,
-	})
+	for _, topic := range []string{parent, child} {
+		seedEnvelope(t, srv.envelopeStore, topic, &envelope.Monetization{
+			Model: envelope.MonetizationToken, AuthPubkey: appPubHex,
+		})
+	}
 
 	resolver := NewTopicMonetizationResolver(srv.envelopeStore)
 	srv.tokenGate = NewTokenGate(resolver, true)
@@ -201,13 +204,16 @@ func TestAppTokenDoesNotUnredactPrefixSubtopic(t *testing.T) {
 	sig, _ := appKey.Sign(digest[:])
 	token := hex.EncodeToString(sig.Serialize()) + ":" + ts
 
-	query := func(topic string) []map[string]interface{} {
-		t.Helper()
+	get := func(topic string, withParentToken func(*http.Request) *http.Request) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/data?topic="+topic+"&limit=10", nil)
 		req.Host = "localhost"
 		req.Header.Set("X-App-Token", token)
 		w := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(w, req)
+		srv.Handler().ServeHTTP(w, withParentToken(req))
+		return w
+	}
+	payloadOf := func(topic string, w *httptest.ResponseRecorder) string {
+		t.Helper()
 		if w.Code != http.StatusOK {
 			t.Fatalf("GET /data?topic=%s: expected 200, got %d: %s", topic, w.Code, w.Body.String())
 		}
@@ -221,13 +227,27 @@ func TestAppTokenDoesNotUnredactPrefixSubtopic(t *testing.T) {
 		if resp.Count != 1 || len(resp.Envelopes) != 1 || resp.Envelopes[0]["topic"] != topic {
 			t.Fatalf("GET /data?topic=%s must return that topic's one envelope only, got count=%d envelopes=%v", topic, resp.Count, resp.Envelopes)
 		}
-		return resp.Envelopes
+		payload, _ := resp.Envelopes[0]["payload"].(string)
+		return payload
 	}
+	asSent := func(r *http.Request) *http.Request { return r }
 
-	if payload, _ := query(parent)[0]["payload"].(string); strings.Contains(payload, "paid content") {
+	const redacted = "token-gated content" // the placeholder of a redacted token-model payload
+	if payload := payloadOf(parent, get(parent, asSent)); strings.Contains(payload, redacted) || !strings.Contains(payload, `"test"`) {
 		t.Fatalf("the parent envelope, on the token's own validated topic, should not be redacted: %s", payload)
 	}
-	if payload, _ := query(child)[0]["payload"].(string); !strings.Contains(payload, "paid content") {
-		t.Fatalf("a token validated for %q must not unredact the differently-named topic %q: %s", parent, child, payload)
+	if w := get(child, asSent); w.Code != http.StatusForbidden {
+		t.Fatalf("the parent's token on %q: got %d %s, want 403 from the token gate", child, w.Code, w.Body.String())
+	}
+
+	// Past the gate, with the context it set for the parent's token.
+	srv.tokenGate = nil
+	srv.mux = http.NewServeMux()
+	srv.routes()
+	validatedForParent := func(r *http.Request) *http.Request {
+		return r.WithContext(withAppTokenIssuer(withAppTokenTopic(r.Context(), parent), appPubHex))
+	}
+	if payload := payloadOf(child, get(child, validatedForParent)); !strings.Contains(payload, redacted) {
+		t.Fatalf("a token validated for %q, by the key that also gates %q, must not unredact it: %s", parent, child, payload)
 	}
 }

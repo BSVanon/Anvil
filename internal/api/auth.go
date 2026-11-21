@@ -108,10 +108,10 @@ func (s *Server) requireAuthSSE(next http.HandlerFunc) http.HandlerFunc {
 // isAuthed reports whether the request is authenticated: this node's
 // operator token, checked in constant time (isOperatorToken, above) — the
 // ONLY signal that gates `private` envelope data and metadata. A verified
-// x402 payment (isPaid, paid_context.go) and a validated app token
-// (appTokenTopic, app_token_context.go) are never sufficient on their own.
-// What either one unlocks of a monetized payload is decided per envelope, by
-// envelopeCovered (envelope_redaction.go).
+// x402 payment (withPayment, paid_outputs_context.go) and a validated app
+// token (appTokenTopic, app_token_context.go) are never sufficient on their
+// own. What either one unlocks of a monetized payload is decided per
+// envelope, by envelopeCovered (envelope_redaction.go).
 func (s *Server) isAuthed(r *http.Request) bool {
 	return s.isOperatorToken(r)
 }

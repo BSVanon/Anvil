@@ -79,6 +79,26 @@ func TestPaymentReplaySetEvictsOldestAtCapacity(t *testing.T) {
 	}
 }
 
+// A capacity below 1 is taken as 1, so the set still remembers its newest
+// txid instead of failing to evict from an empty ring.
+func TestPaymentReplaySetCapacityIsAtLeastOne(t *testing.T) {
+	for _, capacity := range []int{0, -1} {
+		s := newPaymentReplaySet(time.Hour, capacity, time.Now)
+		for i := 0; i < 2; i++ {
+			if !s.begin(replayTxID(i)) {
+				t.Fatalf("capacity %d: new txid %d refused", capacity, i)
+			}
+			s.end(replayTxID(i), true)
+		}
+		if s.begin(replayTxID(1)) {
+			t.Fatalf("capacity %d: the newest txid must still be remembered", capacity)
+		}
+		if !s.begin(replayTxID(0)) {
+			t.Fatalf("capacity %d: the older txid must have been evicted for the newest", capacity)
+		}
+	}
+}
+
 // TestDirectPaymentReplaySetMemory measures the set at its production window
 // and capacity, the figure quoted in payment_replay.go.
 func TestDirectPaymentReplaySetMemory(t *testing.T) {

@@ -17,11 +17,11 @@ import (
 // These tests run against a charging configuration (payment_satoshis > 0, or
 // a priced topic) and prove the authenticated/paid split in handlers.go,
 // sse.go and payment.go: a verified x402 payment marks a request *paid*
-// (isPaid, paid_context.go), never *authenticated* (isAuthed). Only
-// isAuthed — this node's own operator bearer token, and nothing else —
-// gates `private` envelope data and metadata. A validated app token is a
-// separate, narrower credential that unlocks monetized PUBLIC content on
-// its own topic only; it never gates `private` data. See
+// (withPayment, paid_outputs_context.go), never *authenticated*
+// (isAuthed). Only isAuthed — this node's own operator bearer token, and
+// nothing else — gates `private` envelope data and metadata. A validated
+// app token is a separate, narrower credential that unlocks monetized PUBLIC
+// content on its own topic only; it never gates `private` data. See
 // docs/ANVIL_PRIVATE_FLAG_CONTRACT.md.
 
 // queryWithProof submits a GET to path with a valid x402 proof attached and
@@ -129,7 +129,7 @@ func TestOperatorTokenUnlocksPrivateUnderChargingConfig(t *testing.T) {
 // configuration (a priced topic elsewhere, payment gate active), a
 // client-supplied header guessing at a "paid" marker name does not unlock a
 // private envelope on an unpriced topic — there is no header for this
-// signal at all (see paid_context.go, isPaid), so nothing a client sends can
+// signal at all (see paid_context.go), so nothing a client sends can
 // set it. (TestPaidPayloadSpoofedAnvilAuthedIgnored, in redaction_test.go,
 // covers the companion monetized-payload half of this property.)
 func TestSpoofedPaidMarkerIgnoredUnderChargingConfig(t *testing.T) {

@@ -34,9 +34,6 @@ func TestPaymentCoversOneOutputAtItsPayeeAndCappedPrice(t *testing.T) {
 		return req.WithContext(pg.withPayment(req.Context(), &X402Receipt{outputs: paidOutputs(tx)}))
 	}
 	noCap, capped := paidWithCap(0), paidWithCap(50)
-	if !isPaid(noCap) {
-		t.Fatal("withPayment must mark the request paid")
-	}
 	cases := []struct {
 		name  string
 		req   *http.Request

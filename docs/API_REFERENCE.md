@@ -481,40 +481,64 @@ header. There are two ways to pay:
 - **`X402-Proof`** (bound to the challenge): build a transaction that spends
   the challenge's nonce output and pays every payee the challenge names,
   then repeat the request with the proof in `X402-Proof`. One challenge pays
-  for one request.
+  for one request. Known limit: an external client cannot complete an
+  `X402-Proof` on a production node, because the challenge's nonce output is
+  locked to a key the node derives for itself, and the proof must spend it.
 - **`X-Bsv-Payment`** (direct, no challenge): send an Extended Format
   (BRC-30) transaction, as hex or base64, that pays the payees. Each input
   must carry the output it spends, so a plain raw transaction is refused, and
-  Atomic BEEF is not parsed.
+  Atomic BEEF is not parsed. The node checks every input's signature against
+  the output it carries before it broadcasts the payment, and verifies at
+  most 10 inputs: a transaction with none, with more than 10, or with an
+  input that carries no output or no unlocking script is refused with 402
+  and code `ERR_DIRECT_PAYMENT_UNVERIFIABLE`. A header that holds no transaction the
+  node parses, Atomic BEEF included, is refused with 402 and code
+  `ERR_PAYMENT_MALFORMED`.
 
 **Direct payments need ARC.** The node broadcasts a direct payment and
 accepts it only when ARC reports that the network accepted it:
 `SEEN_ON_NETWORK` or `MINED`. Any other status, including
 `SEEN_IN_ORPHAN_MEMPOOL`, is refused with 402 and code
-`ERR_PAYMENT_NOT_ACCEPTED`. A node with no ARC client refuses every
-`X-Bsv-Payment` with 402 and code `ERR_DIRECT_PAYMENT_UNAVAILABLE`; pay such
-a node with `X402-Proof`. An `X402-Proof` whose challenge sets
-`require_mempool_accept` (the operator's `require_mempool` setting, off by
-default) is held to the same two statuses. A node with that setting and no
-ARC client cannot check them, so it refuses every such proof with 402 and
-code `ERR_MEMPOOL_CHECK_UNAVAILABLE`.
+`ERR_PAYMENT_NOT_ACCEPTED`; the network may still accept the transaction, so
+retry the same transaction shortly rather than pay with a new one. A node
+with no ARC client refuses every `X-Bsv-Payment` with 402 and code
+`ERR_DIRECT_PAYMENT_UNAVAILABLE`. Such a node cannot take a payment from a
+client. An `X402-Proof` whose challenge sets `require_mempool_accept` (the
+operator's `require_mempool` setting, off by default) is held to the same
+two statuses. A node with that setting and no ARC client cannot check them,
+so it refuses every such proof with 402 and code
+`ERR_MEMPOOL_CHECK_UNAVAILABLE`.
 
 **One transaction pays for one request, on either path.** The node
 remembers the txid of every payment it accepts, by `X402-Proof` or by
 `X-Bsv-Payment`, in one set, for 24 hours and up to 100,000 txids. It
 refuses a transaction already used on either path with 402 and code
 `ERR_PAYMENT_REPLAYED`, so a transaction that answered a challenge cannot
-pay again as a direct payment, or the other way round. It also refuses, with code `ERR_PAYMENT_TOO_OLD`, a direct payment that ARC
-reports as mined more than 144 blocks below the node's header tip, or mined
-with no block height, or when the node has no header tip. A direct payment
-ARC reports as mined more than 2 blocks above the node's header tip is
-refused with code `ERR_PAYMENT_HEADERS_BEHIND`: the node's headers are
-behind, so it cannot confirm how deep the payment is. A lag of 1 or 2 blocks
-passes, and the same transaction can be retried once the headers catch up.
-Known limit: the txid memory is not
-kept across a restart, so after a restart a direct payment accepted in the
-last 24 hours that is still unmined, or mined at most 144 blocks deep, can
-pay once more.
+pay again as a direct payment, or the other way round. It also refuses,
+with code `ERR_PAYMENT_TOO_OLD`, a direct payment that ARC reports as mined
+more than 144 blocks below the node's header tip, or mined with no block
+height, or when the node has no header tip. A direct payment ARC reports as
+mined more than 2 blocks above the node's header tip is refused with code
+`ERR_PAYMENT_HEADERS_BEHIND`: the node's headers are behind, so it cannot
+confirm how deep the payment is. A lag of 1 or 2 blocks passes, and the same
+transaction can be retried once the headers catch up.
+
+Known limits of the txid memory: it forgets a txid after 24 hours, when it
+is full (the oldest first, to make room for the newest), and on a restart.
+Each time it forgets a transaction, that transaction can pay once more as a
+direct payment while it is still unmined, or mined at most 144 blocks deep.
+A client that keeps the memory full, by cycling more than 100,000 paid
+transactions through it, can therefore reuse each of them again and again;
+but none pays as a direct payment once it is mined more than 144 blocks
+deep. A transaction that stays unmined has no such bound.
+
+Known limit: a direct payment is not bound to the request it pays for, so
+it pays for whoever presents it first. Someone who sees a payer's
+transaction, for example while the payer waits to retry it after
+`ERR_PAYMENT_NOT_ACCEPTED`, can present it first, and the payer's retry then
+gets `ERR_PAYMENT_REPLAYED`. In the same way, any unused transaction that
+pays the node's payee script at least the price, unmined or mined at most
+144 blocks deep, buys one request for whoever presents it.
 
 **Direct-payment broadcasts are bounded.** The node waits at most 10
 seconds for ARC to answer a direct payment's broadcast, and no longer than
@@ -559,6 +583,13 @@ app's:
 - A token-model envelope is unlocked only by an `X-App-Token` validated on
   its exact topic and signed by the `auth_pubkey` that envelope names. A
   payment never unlocks one.
+
+A price is paid per request, not per envelope: one output of at least a
+price, to a payee, covers every envelope in the response that asks that
+payee that price or less. One output of 100 sats to the node's script
+unlocks every node-priced envelope in the response when the node's price is
+100. The node never adds outputs together: two outputs of 60 to one payee do
+not cover a price of 100.
 
 Known limit: the newest public envelope on a topic prices the request, so its
 rule sets the 402 challenge and the token requirement for the whole topic. A

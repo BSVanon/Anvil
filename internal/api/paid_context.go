@@ -1,9 +1,6 @@
 package api
 
-import (
-	"context"
-	"net/http"
-)
+import "context"
 
 // paidContextKey is the request-context key for a verified x402 payment.
 //
@@ -26,12 +23,4 @@ type paidContextKey struct{}
 // withPaid returns ctx carrying the verified-payment marker for this request.
 func withPaid(ctx context.Context) context.Context {
 	return context.WithValue(ctx, paidContextKey{}, true)
-}
-
-// isPaid reports whether r's context carries a verified payment for this
-// request. There is no client-settable header for this signal — a caller
-// cannot forge it by sending any header or value.
-func isPaid(r *http.Request) bool {
-	paid, _ := r.Context().Value(paidContextKey{}).(bool)
-	return paid
 }
