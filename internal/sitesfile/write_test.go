@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -213,7 +214,7 @@ func TestAddRemove_ConcurrentMixLeavesAConsistentFile(t *testing.T) {
 func TestAtomicWriteFile_SetsThePermAndTheContent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "target.conf")
-	if err := AtomicWriteFile(path, []byte("hello\n"), 0640); err != nil {
+	if err := AtomicWriteFile(path, []byte("hello\n"), 0640, -1, -1); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -233,7 +234,7 @@ func TestAtomicWriteFile_SetsThePermAndTheContent(t *testing.T) {
 
 	// A second write overwrites in place and leaves no staging file
 	// behind.
-	if err := AtomicWriteFile(path, []byte("world\n"), 0640); err != nil {
+	if err := AtomicWriteFile(path, []byte("world\n"), 0640, -1, -1); err != nil {
 		t.Fatal(err)
 	}
 	got, err = os.ReadFile(path)
@@ -249,5 +250,118 @@ func TestAtomicWriteFile_SetsThePermAndTheContent(t *testing.T) {
 	}
 	if len(leftovers) != 0 {
 		t.Errorf("staging files left behind: %v", leftovers)
+	}
+}
+
+// testSecondGID returns a gid, other than the test process's own
+// primary gid, that the process already belongs to — so a chown to it
+// needs no root — or "", false if the user running the test belongs to
+// no second group at all.
+func testSecondGID(t *testing.T) (int, bool) {
+	t.Helper()
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatalf("Getgroups: %v", err)
+	}
+	self := os.Getgid()
+	for _, g := range groups {
+		if g != self {
+			return g, true
+		}
+	}
+	return 0, false
+}
+
+// TestAtomicWriteFile_KeepsAnExistingFilesOwnerAndGroup proves the
+// regression item 1 fixes: replacing an existing file through
+// AtomicWriteFile must not silently hand it back owned by whoever is
+// running this process (what a plain os.CreateTemp-plus-rename does by
+// default) — it must come back owned exactly as it was.
+//
+// A real chown to an arbitrary uid needs root, which this suite doesn't
+// assume, so the proof uses a group change instead: a second group the
+// test's own user already belongs to (common on a workstation; absent
+// in a minimal container, in which case the test skips rather than
+// failing for an environment reason unrelated to the code under test).
+// Giving the target that group and confirming it survives a rewrite is
+// the same proof for gid that a uid change would be for uid —
+// AtomicWriteFile copies both through the one statOwner call.
+func TestAtomicWriteFile_KeepsAnExistingFilesOwnerAndGroup(t *testing.T) {
+	otherGID, ok := testSecondGID(t)
+	if !ok {
+		t.Skip("this user belongs to no second group — nothing to prove a gid survives with")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target.conf")
+	if err := os.WriteFile(path, []byte("before\n"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(path, -1, otherGID); err != nil {
+		t.Fatalf("chown the fixture to the test's own second group: %v", err)
+	}
+
+	// newGID (the test process's own primary gid) is deliberately
+	// different from otherGID, so a copy failure that fell through to
+	// "new file" behaviour would show up as the wrong gid rather than
+	// accidentally matching.
+	if err := AtomicWriteFile(path, []byte("after\n"), 0640, -1, os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, gid, ok := statOwner(info)
+	if !ok {
+		t.Skip("no owner information available on this platform")
+	}
+	if gid != otherGID {
+		t.Errorf("gid after rewrite = %d, want the pre-existing %d (an existing file's owner must survive a replace, not fall back to the new-file owner)", gid, otherGID)
+	}
+}
+
+// TestAtomicWriteFile_NewFileGetsTheRequestedOwner is item 2's other
+// half of the same rule: a file that does NOT already exist gets
+// newUID/newGID, rather than whatever os.CreateTemp defaulted to.
+func TestAtomicWriteFile_NewFileGetsTheRequestedOwner(t *testing.T) {
+	otherGID, ok := testSecondGID(t)
+	if !ok {
+		t.Skip("this user belongs to no second group — nothing to prove a new file's gid can be set to")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fresh.conf")
+
+	if err := AtomicWriteFile(path, []byte("fresh\n"), 0640, -1, otherGID); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, gid, ok := statOwner(info)
+	if !ok {
+		t.Skip("no owner information available on this platform")
+	}
+	if gid != otherGID {
+		t.Errorf("gid of a freshly created file = %d, want the requested %d", gid, otherGID)
+	}
+}
+
+// TestNewSiteFileOwner_NoAnvilGroupLeavesBothUnset documents
+// newSiteFileOwner's behaviour on a machine with no "anvil" group (this
+// test environment, and any developer's workstation): both ids come
+// back -1, meaning "don't change this one" to AtomicWriteFile — the
+// same as if ownership were never tracked at all.
+func TestNewSiteFileOwner_NoAnvilGroupLeavesBothUnset(t *testing.T) {
+	if _, err := user.LookupGroup("anvil"); err == nil {
+		t.Skip(`this machine actually has an "anvil" group — this test's premise doesn't hold here`)
+	}
+	uid, gid := newSiteFileOwner()
+	if uid != -1 || gid != -1 {
+		t.Errorf("newSiteFileOwner() = (%d, %d), want (-1, -1) when no \"anvil\" group exists", uid, gid)
 	}
 }
