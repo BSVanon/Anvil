@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -159,7 +161,9 @@ func TestApplyGatewayPeers_PreservesUnrelatedContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := applyGatewayPeers(path, []gatewayPeer{goldenPeerA, goldenPeerB}); err != nil {
+	if err := applyGatewayPeers(path, func([]gatewayPeer) []gatewayPeer {
+		return []gatewayPeer{goldenPeerA, goldenPeerB}
+	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -219,7 +223,9 @@ func TestApplyGatewayPeers_RemovingAPeerClearsItEverywhere(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := applyGatewayPeers(path, []gatewayPeer{goldenPeerA}); err != nil {
+	if err := applyGatewayPeers(path, func([]gatewayPeer) []gatewayPeer {
+		return []gatewayPeer{goldenPeerA}
+	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -265,7 +271,9 @@ func TestGatewayPeerAdd_ReplacesByPubKey(t *testing.T) {
 	if !replaced {
 		peers = append(peers, updated)
 	}
-	if err := applyGatewayPeers(path, peers); err != nil {
+	if err := applyGatewayPeers(path, func([]gatewayPeer) []gatewayPeer {
+		return peers
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -278,11 +286,11 @@ func TestGatewayPeerAdd_ReplacesByPubKey(t *testing.T) {
 	}
 }
 
-// TestApplyGatewayPeers_KeepsTheExistingFileMode is risk 4's required
-// coverage: applyGatewayPeers must not hardcode a mode on the file it
-// rewrites — whatever mode the config already had (here a
-// non-default 0640, standing in for an operator who tightened it) comes
-// back unchanged after the rewrite.
+// TestApplyGatewayPeers_KeepsTheExistingFileMode proves
+// applyGatewayPeers must not hardcode a mode on the file it rewrites —
+// whatever mode the config already had (here a non-default 0640,
+// standing in for an operator who tightened it) comes back unchanged
+// after the rewrite.
 func TestApplyGatewayPeers_KeepsTheExistingFileMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "node-a.toml")
@@ -291,7 +299,9 @@ func TestApplyGatewayPeers_KeepsTheExistingFileMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := applyGatewayPeers(path, []gatewayPeer{goldenPeerA, goldenPeerB}); err != nil {
+	if err := applyGatewayPeers(path, func([]gatewayPeer) []gatewayPeer {
+		return []gatewayPeer{goldenPeerA, goldenPeerB}
+	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -315,7 +325,9 @@ func TestApplyGatewayPeers_LeavesNoStagingFileBehind(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := applyGatewayPeers(path, []gatewayPeer{goldenPeerB}); err != nil {
+	if err := applyGatewayPeers(path, func([]gatewayPeer) []gatewayPeer {
+		return []gatewayPeer{goldenPeerB}
+	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -325,5 +337,54 @@ func TestApplyGatewayPeers_LeavesNoStagingFileBehind(t *testing.T) {
 	}
 	if len(leftovers) != 0 {
 		t.Errorf("staging files left behind: %v", leftovers)
+	}
+}
+
+// TestApplyGatewayPeers_ConcurrentAddsAllSurvive is item 4's required
+// coverage: the read of the current peer list, the caller's change, and
+// the write must all run under one lock, so N concurrent additions of N
+// distinct peers all survive — none of them can read a list that's
+// already stale by the time it writes. Without the lock, the same race
+// write_test.go's concurrent-adds test proves for the sites file would
+// apply here too: two calls reading the same starting list and each
+// appending their own peer to it would leave only one peer behind.
+func TestApplyGatewayPeers_ConcurrentAddsAllSurvive(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "node-a.toml")
+	original := fakeGatewayConfig(nil)
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			newPeer := gatewayPeer{
+				PubKey:     fmt.Sprintf("02%064x", i+1),
+				MeshURL:    fmt.Sprintf("ws://peer%02d.example:8333", i),
+				OverlayURL: fmt.Sprintf("https://peer%02d.example", i),
+			}
+			errs[i] = applyGatewayPeers(path, func(peers []gatewayPeer) []gatewayPeer {
+				return append(peers, newPeer)
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("concurrent applyGatewayPeers #%d: %v", i, err)
+		}
+	}
+	peers, err := readGatewayPeersBlock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peers) != n {
+		t.Fatalf("got %d peers after %d concurrent adds, want %d: %+v", len(peers), n, n, peers)
 	}
 }
