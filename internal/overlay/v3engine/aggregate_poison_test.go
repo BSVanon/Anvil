@@ -6,14 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/BSVanon/Anvil/internal/headers"
-	"github.com/BSVanon/Anvil/internal/overlay/lookups"
 	"github.com/BSVanon/Anvil/internal/overlay/overlaytest"
 	anvilstorage "github.com/BSVanon/Anvil/internal/overlay/storage"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
@@ -27,8 +25,8 @@ import (
 
 const poisonContentHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-// proofMismatchAds builds cold-review round 3's B3 shape: three UHRP
-// advertisements for poisonContentHash. Two spend A:0 and A:1 of a parent A
+// proofMismatchAds builds three UHRP advertisements for poisonContentHash.
+// Two spend A:0 and A:1 of a parent A
 // mined in block 2, a block of four transactions; the one spending A:shortVout
 // proves A with a one-level path listing all four leaves, the other with the
 // block's normal two-level path. Each of their BEEFs is valid on its own, but
@@ -101,132 +99,91 @@ func atomicBEEF(t *testing.T, tx *transaction.Transaction) []byte {
 	return b
 }
 
-// answerRecorder is an http.RoundTripper that keeps the Content-Type and body
-// of the last response it carried.
-type answerRecorder struct {
-	base        *http.Transport
-	contentType string
-	body        []byte
+// fixedAnswerLookup is a lookup-service seam that hands raw answer BEEFs to
+// the aggregate writer without putting them through local storage.
+type fixedAnswerLookup struct {
+	engine.LookupService
+	answer *lookup.LookupAnswer
 }
 
-func (r *answerRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := r.base.RoundTrip(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	r.contentType, r.body = resp.Header.Get("Content-Type"), body
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	return resp, nil
+func (l fixedAnswerLookup) Lookup(context.Context, *lookup.LookupQuestion) (*lookup.LookupAnswer, error) {
+	return l.answer, nil
 }
 
-// TestAggregatedLookup_StoredProofMismatchKeepsEveryOutput writes the B3
-// shape straight into storage and the UHRP index, as admission stored it
-// before cycle 5 refused it, and asks /lookup through go-sdk's facilitator,
-// which always sends X-Aggregation: yes. In both orders every stored output
-// comes back. In the order whose aggregated merge panics, the answer is the
-// engine's own per-output answer, as JSON with each BEEF an array of bytes.
+// TestAggregatedLookup_StoredProofMismatchKeepsEveryOutput sends conflicting
+// raw BEEFs through a registered lookup service. One merge fails, and the
+// aggregate guard must answer with every original output as JSON.
 func TestAggregatedLookup_StoredProofMismatchKeepsEveryOutput(t *testing.T) {
-	fellBack := 0
-	for _, shortVout := range []uint32{0, 1} {
-		t.Run(fmt.Sprintf("short proof on A:%d", shortVout), func(t *testing.T) {
-			root := t.TempDir()
-			sdb, err := leveldb.OpenFile(filepath.Join(root, "storage"), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = sdb.Close() })
-			ldb, err := leveldb.OpenFile(filepath.Join(root, "lookup"), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = ldb.Close() })
-			hs, err := headers.NewTestStore(filepath.Join(root, "headers"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = hs.Close() })
-			overlaytest.SeedFundingBlock(t, hs)
-			st := anvilstorage.New(sdb)
-			eng, err := New(&Config{Storage: st, HeadersStore: hs, LookupDB: ldb, HostingURL: "https://anvil.test"})
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			ctx := context.Background()
-			uhrp := lookups.NewUHRPLookupService(ldb)
-			short, tall, honest := proofMismatchAds(t, shortVout)
-			stored := map[chainhash.Hash]bool{}
-			for _, tx := range []*transaction.Transaction{short, tall, honest} {
-				beef, err := transaction.NewBeefFromTransaction(tx)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := st.InsertOutputs(ctx, topics.UHRPTopicName, tx.TxID(), []uint32{0}, nil, beef, nil); err != nil {
-					t.Fatal(err)
-				}
-				admitted := &engine.OutputAdmittedByTopic{Topic: topics.UHRPTopicName, AtomicBEEF: atomicBEEF(t, tx)}
-				if err := uhrp.OutputAdmittedByTopic(ctx, admitted); err != nil {
-					t.Fatal(err)
-				}
-				stored[*tx.TxID()] = true
-			}
-
-			mux := http.NewServeMux()
-			NewHandlers(eng).Register(mux, nil)
-			srv := httptest.NewServer(mux)
-			t.Cleanup(srv.Close)
-			question := &lookup.LookupQuestion{
-				Service: topics.UHRPLookupServiceName,
-				Query:   json.RawMessage(`{"content_hash":"` + poisonContentHash + `"}`),
-			}
-			rec := &answerRecorder{base: &http.Transport{}}
-			t.Cleanup(rec.base.CloseIdleConnections)
-			got, err := (&lookup.HTTPSOverlayLookupFacilitator{Client: &http.Client{Transport: rec}}).Lookup(ctx, srv.URL, question)
-			if err != nil {
-				t.Fatalf("lookup failed (%s): %v", rec.body, err)
-			}
-
-			if len(got.Outputs) != len(stored) {
-				t.Fatalf("want all %d stored outputs, got %d (%s)", len(stored), len(got.Outputs), rec.contentType)
-			}
-			for i, out := range got.Outputs {
-				tx, err := transaction.NewTransactionFromBEEF(out.Beef)
-				if err != nil || out.OutputIndex != 0 || !stored[*tx.TxID()] {
-					t.Fatalf("output %d is not one that was stored: %v", i, err)
-				}
-				delete(stored, *tx.TxID())
-			}
-
-			if rec.contentType == "application/octet-stream" {
-				return
-			}
-			fellBack++
-			want, err := eng.Lookup(ctx, question)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for i := range want.Outputs {
-				if !bytes.Equal(got.Outputs[i].Beef, want.Outputs[i].Beef) {
-					t.Fatalf("output %d: the fallback's BEEF differs from the engine's per-output answer", i)
-				}
-			}
-			var canonical struct {
-				Outputs []struct {
-					Beef []uint16 `json:"beef"`
-				} `json:"outputs"`
-			}
-			if rec.contentType != "application/json" || json.Unmarshal(rec.body, &canonical) != nil || len(canonical.Outputs) != len(want.Outputs) {
-				t.Fatalf("the fallback must be JSON with each BEEF an array of bytes, got %q", rec.contentType)
-			}
-		})
+	short, tall, honest := proofMismatchAds(t, 0)
+	answer := &lookup.LookupAnswer{Type: lookup.AnswerTypeOutputList, Outputs: []*lookup.OutputListItem{
+		{Beef: atomicBEEF(t, short)}, {Beef: atomicBEEF(t, tall)}, {Beef: atomicBEEF(t, honest)},
+	}}
+	if _, err := aggregateOutputs(usableOutputs(answer.Outputs)); err == nil {
+		t.Fatal("fixture must make the raw BEEF merge fail")
 	}
-	if fellBack != 1 {
-		t.Fatalf("want the aggregated merge to fail in exactly one order, it failed in %d; the fixture no longer reproduces cold-review B3", fellBack)
+
+	eng, _ := newTestEngine(t)
+	eng.RegisterLookupService("ls_raw_proofs", fixedAnswerLookup{answer: answer})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/lookup", strings.NewReader(`{"service":"ls_raw_proofs","query":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-aggregation", "yes")
+	NewHandlers(eng).Lookup(rec, req)
+
+	var got lookup.LookupAnswer
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" || json.Unmarshal(rec.Body.Bytes(), &got) != nil {
+		t.Fatalf("want the per-output JSON fallback, got %d %q", rec.Code, ct)
+	}
+	if rec.Code != http.StatusOK || len(got.Outputs) != len(answer.Outputs) {
+		t.Fatalf("want all %d outputs, got %d (status %d)", len(answer.Outputs), len(got.Outputs), rec.Code)
+	}
+	for i := range answer.Outputs {
+		if !bytes.Equal(got.Outputs[i].Beef, answer.Outputs[i].Beef) || got.Outputs[i].OutputIndex != answer.Outputs[i].OutputIndex {
+			t.Fatalf("output %d differs from the lookup answer", i)
+		}
+	}
+}
+
+// TestStoredProofMismatchNormalizesForAggregation confirms that the same
+// conflicting proofs hydrate from storage in canonical form and merge in
+// either order.
+func TestStoredProofMismatchNormalizesForAggregation(t *testing.T) {
+	db, err := leveldb.OpenFile(filepath.Join(t.TempDir(), "storage"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	st := anvilstorage.New(db)
+	short, tall, _ := proofMismatchAds(t, 0)
+
+	load := func(tx *transaction.Transaction) *lookup.OutputListItem {
+		t.Helper()
+		beef, err := transaction.NewBeefFromTransaction(tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.InsertOutputs(context.Background(), topics.UHRPTopicName, tx.TxID(), []uint32{0}, nil, beef, nil); err != nil {
+			t.Fatal(err)
+		}
+		out, err := st.FindOutput(context.Background(), &transaction.Outpoint{Txid: *tx.TxID()}, nil, nil, true)
+		if err != nil || out.Beef == nil {
+			t.Fatalf("hydrate stored BEEF: %v", err)
+		}
+		atomic, err := out.Beef.AtomicBytes(tx.TxID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &lookup.OutputListItem{Beef: atomic}
+	}
+	storedShort, storedTall := load(short), load(tall)
+	for _, outputs := range [][]*lookup.OutputListItem{{storedShort, storedTall}, {storedTall, storedShort}} {
+		rec := httptest.NewRecorder()
+		if err := writeAggregatedAnswer(rec, &lookup.LookupAnswer{Type: lookup.AnswerTypeOutputList, Outputs: outputs}); err != nil {
+			t.Fatal(err)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
+			t.Fatalf("stored proofs must aggregate in either order, got %q", ct)
+		}
 	}
 }
 
