@@ -11,6 +11,7 @@ package enginelog
 import (
 	"context"
 	"errors"
+	"log"
 	"log/slog"
 )
 
@@ -44,8 +45,17 @@ func Wrap(inner slog.Handler) slog.Handler {
 // this point on, including go-overlay-services' own package-level calls,
 // sees the wrapped behavior. Called once, early in main, before the
 // overlay engine or anything that might log through it is built.
+//
+// slog.SetDefault also points the log package's output at the new handler,
+// but the default handler it wraps writes through the log package, so every
+// log call would come back into itself and wait forever on the log
+// package's lock at the first log line. Install puts the log package's own
+// writer and flags back afterwards, so both write where they did before.
 func Install() *slog.Logger {
+	out, flags := log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(Wrap(slog.Default().Handler())))
+	log.SetOutput(out)
+	log.SetFlags(flags)
 	return slog.Default()
 }
 

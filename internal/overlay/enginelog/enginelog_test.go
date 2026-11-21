@@ -1,11 +1,15 @@
 package enginelog
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
+	"strings"
 	"testing"
+	"time"
 )
 
 // recorder is a minimal slog.Handler that records every record it is
@@ -111,25 +115,50 @@ func TestWrap_WithAttrsAndWithGroupStillWrap(t *testing.T) {
 	}
 }
 
-// TestInstall_SetsAndRestoresTheDefault confirms Install both wraps and
-// installs the current default, and that the installed logger behaves the
-// same way Wrap's own handler does, end to end through slog.Default().
-func TestInstall_SetsAndRestoresTheDefault(t *testing.T) {
-	rec := &recorder{minLevel: slog.LevelInfo}
-	previous := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	slog.SetDefault(slog.New(rec))
+// TestInstallKeepsLogCallsWorking confirms installing the wrapped default
+// does not make the log package recurse through its own output lock, while
+// the installed slog logger still filters cancellation errors.
+func TestInstallKeepsLogCallsWorking(t *testing.T) {
+	var output bytes.Buffer
+	previousDefault := slog.Default()
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		slog.SetDefault(previousDefault)
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+	log.SetOutput(&output)
+	log.SetFlags(0)
 
-	got := Install()
-	if got != slog.Default() {
-		t.Fatalf("Install's return value is not what slog.Default() now returns")
+	if got := Install(); got != slog.Default() {
+		t.Fatal("Install did not return the installed default logger")
 	}
-	slog.Default().Error("failed to find output in Lookup", "outpoint", "abc:0", "error", context.Canceled)
-	if len(rec.records) != 0 {
-		t.Fatalf("got %d records on the installed default, want 0 (cancellation downgraded and dropped)", len(rec.records))
+	callWithin(t, func() { log.Printf("log line") })
+	callWithin(t, func() { slog.Info("slog line") })
+	slog.Error("cancelled error", "error", fmt.Errorf("lookup: %w", context.Canceled))
+	slog.Error("genuine error", "error", errors.New("disk failure"))
+
+	got := output.String()
+	for _, line := range []string{"log line\n", "INFO slog line\n", "ERROR genuine error error=\"disk failure\"\n"} {
+		if !strings.Contains(got, line) {
+			t.Fatalf("log output %q does not contain %q", got, line)
+		}
 	}
-	slog.Default().Error("a genuine storage failure", "error", errors.New("disk failure"))
-	if len(rec.records) != 1 || rec.records[0].Level != slog.LevelError {
-		t.Fatalf("got %d records for a genuine error on the installed default, want 1 at Error", len(rec.records))
+	if strings.Contains(got, "cancelled error") {
+		t.Fatalf("cancelled error reached the installed handler: %q", got)
+	}
+}
+
+func callWithin(t *testing.T, call func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		call()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("log call did not return within two seconds")
 	}
 }
