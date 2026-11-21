@@ -38,7 +38,7 @@ func TestWireGateway_DisabledIsIdenticalToTodaysHandler(t *testing.T) {
 	srv := newTestAPIServer(t)
 	logger := slog.Default()
 
-	wired := wireGateway(cfg, srv, logger)
+	wired := wireGateway(cfg, srv, logger, trackingDeps{})
 	today := srv.Handler()
 
 	for _, path := range []string{"/stats", "/no-such-route-at-all"} {
@@ -83,7 +83,7 @@ func TestWireGateway_EnabledBuildsRouterAndWiresStats(t *testing.T) {
 	srv := newTestAPIServer(t)
 	logger := slog.Default()
 
-	h := wireGateway(cfg, srv, logger)
+	h := wireGateway(cfg, srv, logger, trackingDeps{})
 	rt, ok := h.(*gateway.Router)
 	if !ok {
 		t.Fatalf("expected wireGateway to return a *gateway.Router when enabled, got %T", h)

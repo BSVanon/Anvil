@@ -169,8 +169,9 @@ warn_at_percent = 80
 # gateway also follows the origins its sites file allows. On a node that
 # tracks origins, a POST /broadcast that verifiably moves a tracked origin's
 # current tip to a new 1-sat output is accepted without a token or payment;
-# every other broadcast is gated as before. With no track_origins and
-# [gateway] off, nothing is tracked and nothing changes.
+# every other broadcast is gated as before. Versions are kept in
+# <data_dir>/ordtrack. With no track_origins and [gateway] off, nothing is
+# tracked and nothing changes.
 # [content]
 # track_origins = ["<txid>_0"]     # origins to follow ("txid_vout" or "txid.vout")
 # max_tracked_origins = 1000       # cap on the tracked set
