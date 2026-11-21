@@ -64,6 +64,27 @@ func gatewaySiteList(path string) {
 	}
 }
 
+// gatewaySiteAddEntry is gatewaySiteAdd's error-returning core: parses
+// posArgs[0] and adds it to path's sites file, applying apiHost's
+// reservation exactly as sitesfile.Add implements it. Split out from
+// gatewaySiteAdd's fatal() call so the wiring from a loaded config's
+// cfg.Gateway.APIHost through to that refusal is a real, test-asserted
+// path (cmd/anvil/gateway_cli_sites_test.go) rather than something only
+// a manual CLI run would catch.
+func gatewaySiteAddEntry(path, apiHost string, posArgs []string) (sitesfile.Entry, error) {
+	if len(posArgs) != 1 {
+		return sitesfile.Entry{}, fmt.Errorf("usage: anvil gateway site add <domain|origin>")
+	}
+	entry, err := sitesfile.ParseEntry(posArgs[0])
+	if err != nil {
+		return sitesfile.Entry{}, err
+	}
+	if err := sitesfile.Add(path, entry, apiHost); err != nil {
+		return sitesfile.Entry{}, err
+	}
+	return entry, nil
+}
+
 // gatewaySiteAdd adds posArgs[0] to path's sites file. apiHost is this
 // node's already-resolved [gateway] api_host (config.Load's own
 // resolution rule: the explicit value, otherwise the host of [node]
@@ -71,14 +92,8 @@ func gatewaySiteList(path string) {
 // since the API handler always wins that Host match and such an entry
 // could never actually be served.
 func gatewaySiteAdd(path, apiHost string, posArgs []string) {
-	if len(posArgs) != 1 {
-		fatal("usage: anvil gateway site add <domain|origin>")
-	}
-	entry, err := sitesfile.ParseEntry(posArgs[0])
+	entry, err := gatewaySiteAddEntry(path, apiHost, posArgs)
 	if err != nil {
-		fatal(err.Error())
-	}
-	if err := sitesfile.Add(path, entry, apiHost); err != nil {
 		fatal(err.Error())
 	}
 	fmt.Printf("added %s %s\n", entry.Kind, entry.Value)
