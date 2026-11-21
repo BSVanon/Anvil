@@ -112,12 +112,10 @@ func Parse(b []byte) (n *BEEF, err error) {
 	// Parsing keeps one entry per txid, the last; inputs read before it are
 	// linked to the earlier one. Which copy is verified and which is stored
 	// would then differ. Refusing outright, rather than tolerating it the
-	// way Parse tolerates an Atomic BEEF's unrelated older entries, costs no
-	// canonical client anything: ts-sdk's Beef class and go-sdk's own
-	// transaction.Beef (raw.Transactions, checked here) both key their
-	// transactions by txid, so neither can build or hold a second entry
-	// under one it already has -- a BEEF with a true duplicate can only be
-	// hand-crafted, as TestParse_RefusesATxidHeldTwice does.
+	// way Parse tolerates an Atomic BEEF's unrelated older entries, is an
+	// Anvil restriction: parsers can retain duplicate wire entries and
+	// re-emit the original bytes even when their construction helpers key
+	// transactions by txid.
 	if len(raw.Transactions) != shape.Txs {
 		return nil, fmt.Errorf("%w: duplicate txid: %d entries hold only %d distinct txids", ErrRefused, shape.Txs, len(raw.Transactions))
 	}

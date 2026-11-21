@@ -3,6 +3,7 @@ package gossip
 import (
 	"fmt"
 	"net/http"
+	"sync"
 
 	"golang.org/x/net/websocket"
 )
@@ -45,16 +46,21 @@ const maxUnauthenticatedConns = 64
 
 // reserveUnauthConn claims one of maxUnauthenticatedConns slots, reporting
 // whether it succeeded. A caller that gets false must not proceed with
-// the connection it was about to accept. A caller that gets true must
-// eventually release the slot — see MeshHandler, which does so the moment
-// the connection either authenticates (transport.Authorized()) or closes
-// without ever doing so (transport.Done()), whichever comes first.
+// the connection it was about to accept.
 func (m *Manager) reserveUnauthConn() bool {
 	if m.unauthConns.Add(1) > maxUnauthenticatedConns {
 		m.unauthConns.Add(-1)
 		return false
 	}
 	return true
+}
+
+// unauthConnRelease returns the idempotent release paired with one successful
+// reservation. It is shared by the outer HTTP handler and WebSocket callback,
+// because either path can finish first.
+func (m *Manager) unauthConnRelease() func() {
+	var once sync.Once
+	return func() { once.Do(func() { m.unauthConns.Add(-1) }) }
 }
 
 // MeshHandler returns an http.Handler that accepts inbound WebSocket
@@ -66,32 +72,6 @@ func (m *Manager) reserveUnauthConn() bool {
 // no upgrade, no auth.Peer, no transport — instead of paying the upgrade
 // cost first and only then dropping it.
 func (m *Manager) MeshHandler() http.Handler {
-	inner := websocket.Handler(func(conn *websocket.Conn) {
-		transport := NewServerWSTransport(conn)
-		peerKey, err := m.AcceptPeer(transport)
-		if err != nil {
-			m.unauthConns.Add(-1)
-			m.logger.Warn("inbound peer accept failed", "error", err)
-			return
-		}
-
-		// Release this connection's unauthenticated-slot reservation the
-		// moment it either authenticates or closes without ever doing so,
-		// whichever happens first — not only at the end, which would hold
-		// the slot for a long-lived authenticated peer's entire connected
-		// lifetime and eventually starve new connections of all 64 of
-		// them. Then keep blocking until the connection actually closes,
-		// as before, to run the existing cleanup.
-		select {
-		case <-transport.Authorized():
-			m.unauthConns.Add(-1)
-			<-transport.Done()
-		case <-transport.Done():
-			m.unauthConns.Add(-1)
-		}
-		m.removePeerWithReason(peerKey, "transport_closed")
-		m.logger.Info("inbound peer disconnected, cleaned up", "key", truncate(peerKey))
-	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !m.reserveUnauthConn() {
 			m.logger.Warn("inbound mesh connection refused: too many unauthenticated connections",
@@ -99,6 +79,28 @@ func (m *Manager) MeshHandler() http.Handler {
 			http.Error(w, "too many unauthenticated connections", http.StatusServiceUnavailable)
 			return
 		}
-		inner.ServeHTTP(w, r)
+		release := m.unauthConnRelease()
+		// websocket.Handler rejects malformed upgrades without invoking its
+		// callback. Keep this defer outside the callback so every reservation
+		// is released, while the callback releases it earlier on authorization.
+		defer release()
+		websocket.Handler(func(conn *websocket.Conn) {
+			transport := NewServerWSTransport(conn)
+			peerKey, err := m.AcceptPeer(transport)
+			if err != nil {
+				release()
+				m.logger.Warn("inbound peer accept failed", "error", err)
+				return
+			}
+			select {
+			case <-transport.Authorized():
+				release()
+				<-transport.Done()
+			case <-transport.Done():
+				release()
+			}
+			m.removePeerWithReason(peerKey, "transport_closed")
+			m.logger.Info("inbound peer disconnected, cleaned up", "key", truncate(peerKey))
+		}).ServeHTTP(w, r)
 	})
 }

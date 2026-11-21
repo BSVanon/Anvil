@@ -201,7 +201,7 @@ func wireV3Federation(
 	if gaspTracker != nil {
 		gaspTracker.MarkEnabled()
 	}
-	go runGASPSync(ctx, v3Eng, logger, cfg.Overlay.GASPSyncIntervalSecs, gaspTracker)
+	go runGASPSyncWithTimeout(ctx, v3Eng, logger, cfg.Overlay.GASPSyncIntervalSecs, cfg.Overlay.GASPSyncRunTimeoutSecs, gaspTracker)
 	return cancel
 }
 
@@ -250,15 +250,33 @@ func runSyncAdvertisements(ctx context.Context, eng *engine.Engine, logger *slog
 // default to 1800s (30 min) — cuts bandwidth ~6x without meaningfully
 // degrading freshness, since topic admissions aren't high-rate. 0 or
 // unset → default 1800. Operators wanting tighter discovery can dial
-// down; aim for 60s as a practical floor. Each run is contained, as in
+// down; aim for 60s as a practical floor. Each run is contained and bounded
+// to ten minutes by default, as in
 // runSyncAdvertisements: its SHIP lookups and peer fetches run go-sdk
 // code that trusts what peers send.
+const defaultGASPSyncRunTimeoutSecs = 600
+
 func runGASPSync(ctx context.Context, eng *engine.Engine, logger *slog.Logger, intervalSecs int, tracker *gaspstatus.Tracker) {
+	runGASPSyncWithTimeout(ctx, eng, logger, intervalSecs, defaultGASPSyncRunTimeoutSecs, tracker)
+}
+
+// runGASPSyncWithTimeout bounds each complete sync run, including every
+// serial topic, peer and page. A run that reaches this deadline ends so the
+// next scheduled run can resume from durable peer state. Upstream records
+// LastInteraction after each successful page (engine.go:1138-1154), and
+// Anvil stores it under peer3:<host>:<topic>; a deadline during a page leaves
+// the prior page cursor intact for retry.
+func runGASPSyncWithTimeout(ctx context.Context, eng *engine.Engine, logger *slog.Logger, intervalSecs, runTimeoutSecs int, tracker *gaspstatus.Tracker) {
 	if intervalSecs <= 0 {
 		intervalSecs = 1800
 	}
+	if runTimeoutSecs <= 0 {
+		runTimeoutSecs = defaultGASPSyncRunTimeoutSecs
+	}
 	run := func() error {
-		return netguard.Contain(logger, "StartGASPSync", func() error { return eng.StartGASPSync(ctx) })
+		runCtx, cancel := context.WithTimeout(ctx, time.Duration(runTimeoutSecs)*time.Second)
+		defer cancel()
+		return netguard.Contain(logger, "StartGASPSync", func() error { return eng.StartGASPSync(runCtx) })
 	}
 	if err := run(); err != nil {
 		logger.Error("initial StartGASPSync failed", "error", err)

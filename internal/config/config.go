@@ -340,6 +340,12 @@ type OverlayConfig struct {
 	// 0 or unset → default 1800.
 	GASPSyncIntervalSecs int `toml:"gasp_sync_interval_secs"`
 
+	// GASPSyncRunTimeoutSecs caps one complete GASP sync run, including all
+	// topics, peers and pages. 0 or unset → default 600 seconds. This keeps a
+	// peer that continues to make bounded per-page progress from monopolizing
+	// the serial sync loop indefinitely.
+	GASPSyncRunTimeoutSecs int `toml:"gasp_sync_run_timeout_secs"`
+
 	// AdvertiseIntervalSecs is how often the canonical Advertiser
 	// reconciles our own SHIP/SLAP outputs against the hosted topic
 	// set. Historically hardcoded at 1800s; the field exists for
@@ -450,11 +456,12 @@ func Load(path string) (*Config, error) {
 			URL:     "junglebus.gorillapool.io",
 		},
 		Overlay: OverlayConfig{
-			Enabled:               true,
-			Topics:                []string{"anvil:mainnet"},
-			EnableGASPSync:        true,
-			GASPSyncIntervalSecs:  1800, // v3.0.7 default — was hardcoded 300s pre-v3.0.7
-			AdvertiseIntervalSecs: 1800, // matches SyncAdvertisements historic cadence
+			Enabled:                true,
+			Topics:                 []string{"anvil:mainnet"},
+			EnableGASPSync:         true,
+			GASPSyncIntervalSecs:   1800, // v3.0.7 default — was hardcoded 300s pre-v3.0.7
+			GASPSyncRunTimeoutSecs: 600,
+			AdvertiseIntervalSecs:  1800, // matches SyncAdvertisements historic cadence
 			// SHIPTrackers + SLAPTrackers left blank by default; W-10.3
 			// wiring in cmd/anvil/main.go falls back to go-sdk's
 			// overlay/lookup.DEFAULT_SLAP_TRACKERS (Project Babbage's

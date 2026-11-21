@@ -10,6 +10,7 @@ import (
 
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
+	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
@@ -112,6 +113,49 @@ func mbLookup(t *testing.T, s *MessageBoxLookupService, q topics.MessageBoxLooku
 	return ans
 }
 
+// mbStoreLegacyRecord writes the MessageBox record shape used before
+// messageboxRecord gained BEEFBytes, along with the BEEF that canonical
+// storage keeps under beef3 for lookup hydration.
+func mbStoreLegacyRecord(t *testing.T, s *MessageBoxLookupService, identityKey, host string, admittedAt int64, payload *engine.OutputAdmittedByTopic) int64 {
+	t.Helper()
+	_, txid, err := loadFocusTx(payload.AtomicBEEF)
+	if err != nil {
+		t.Fatalf("read legacy payload: %v", err)
+	}
+	beef, _, _, err := transaction.ParseBeef(payload.AtomicBEEF)
+	if err != nil {
+		t.Fatalf("parse legacy BEEF: %v", err)
+	}
+	atomic, err := beef.AtomicBytes(txid)
+	if err != nil {
+		t.Fatalf("measure legacy BEEF: %v", err)
+	}
+	beef.Version = transaction.BEEF_V2
+	stored, err := beef.Bytes()
+	if err != nil {
+		t.Fatalf("serialise stored BEEF: %v", err)
+	}
+	legacy := struct {
+		IdentityKey string `json:"identityKey"`
+		Host        string `json:"host"`
+		AdmittedAt  int64  `json:"admittedAt"`
+	}{IdentityKey: identityKey, Host: host, AdmittedAt: admittedAt}
+	body, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy record: %v", err)
+	}
+	if err := s.db.Put(itemKey(mbItemPrefix, txid, payload.OutputIndex), body, nil); err != nil {
+		t.Fatalf("store legacy record: %v", err)
+	}
+	if err := s.db.Put(mbIndexKey(identityKey, admittedAt, txid, payload.OutputIndex), nil, nil); err != nil {
+		t.Fatalf("store legacy index: %v", err)
+	}
+	if err := s.db.Put([]byte(mbStoredBEEFPrefix+txid.String()), stored, nil); err != nil {
+		t.Fatalf("store legacy BEEF: %v", err)
+	}
+	return int64(len(atomic))
+}
+
 // TestMessageBox_AdmitAndFound pins the canonical port's full round
 // trip from the spec's test list: "an advert built exactly the way
 // anointHost builds it is admitted and found." Admission is covered in
@@ -134,6 +178,79 @@ func TestMessageBox_AdmitAndFound(t *testing.T) {
 	wantTxid := tx.TxID()
 	if ans.Formulas[0].Outpoint == nil || ans.Formulas[0].Outpoint.Txid != *wantTxid || ans.Formulas[0].Outpoint.Index != 0 {
 		t.Fatalf("unexpected outpoint: %+v", ans.Formulas[0].Outpoint)
+	}
+}
+
+func TestMessageBox_LegacyRecordUsesStoredBEEF(t *testing.T) {
+	s := newMessageBoxLookup(t)
+	identityPub := mbIdentity(t)
+	identityHex := hex.EncodeToString(identityPub)
+	tx := mbBuildTx(t, identityPub, "https://legacy.example")
+	payload := mbPayload(t, tx, 0)
+	mbStoreLegacyRecord(t, s, identityHex, "https://legacy.example", 1, payload)
+
+	answer := mbLookup(t, s, topics.MessageBoxLookupQuery{IdentityKey: identityHex})
+	if got := len(answer.Formulas); got != 1 {
+		t.Fatalf("legacy lookup returned %d formulas, want 1", got)
+	}
+	if got := answer.Formulas[0].Outpoint.Txid; got != *tx.TxID() {
+		t.Fatalf("legacy lookup txid = %s, want %s", got, tx.TxID())
+	}
+}
+
+func TestMessageBox_LegacyAndNewRecordsRespectLimits(t *testing.T) {
+	s := newMessageBoxLookup(t)
+	identityPub := mbIdentity(t)
+	identityHex := hex.EncodeToString(identityPub)
+
+	legacyTx := mbBuildTx(t, identityPub, "https://legacy.example")
+	legacySize := mbStoreLegacyRecord(t, s, identityHex, "https://legacy.example", 20, mbPayload(t, legacyTx, 0))
+	newTx := mbBuildTx(t, identityPub, "https://new.example")
+	newRecord, err := json.Marshal(messageboxRecord{
+		IdentityKey: identityHex,
+		Host:        "https://new.example",
+		AdmittedAt:  30,
+		BEEFBytes:   legacySize,
+	})
+	if err != nil {
+		t.Fatalf("marshal new record: %v", err)
+	}
+	if err := s.db.Put(itemKey(mbItemPrefix, newTx.TxID(), 0), newRecord, nil); err != nil {
+		t.Fatalf("store new record: %v", err)
+	}
+	if err := s.db.Put(mbIndexKey(identityHex, 30, newTx.TxID(), 0), nil, nil); err != nil {
+		t.Fatalf("store new index: %v", err)
+	}
+	olderTx := mbBuildTx(t, identityPub, "https://older.example")
+	olderRecord, err := json.Marshal(messageboxRecord{
+		IdentityKey: identityHex,
+		Host:        "https://older.example",
+		AdmittedAt:  10,
+		BEEFBytes:   1,
+	})
+	if err != nil {
+		t.Fatalf("marshal older record: %v", err)
+	}
+	if err := s.db.Put(itemKey(mbItemPrefix, olderTx.TxID(), 0), olderRecord, nil); err != nil {
+		t.Fatalf("store older record: %v", err)
+	}
+	if err := s.db.Put(mbIndexKey(identityHex, 10, olderTx.TxID(), 0), nil, nil); err != nil {
+		t.Fatalf("store older index: %v", err)
+	}
+
+	byBytes, err := s.currentRecords(identityHex, "", 10, legacySize)
+	if err != nil {
+		t.Fatalf("byte-limited records: %v", err)
+	}
+	if len(byBytes) != 1 || byBytes[0].op.Txid != *newTx.TxID() {
+		t.Fatalf("byte-limited records = %+v, want only the newer record", byBytes)
+	}
+	byCount, err := s.currentRecords(identityHex, "", 2, legacySize*2)
+	if err != nil {
+		t.Fatalf("count-limited records: %v", err)
+	}
+	if len(byCount) != 2 || byCount[0].op.Txid != *newTx.TxID() || byCount[1].op.Txid != *legacyTx.TxID() {
+		t.Fatalf("count-limited records = %+v, want the two newest records", byCount)
 	}
 }
 
@@ -248,6 +365,61 @@ func TestMessageBox_CurrentHostsBoundedAt1000Adverts(t *testing.T) {
 	all := mbLookup(t, s, topics.MessageBoxLookupQuery{IdentityKey: identityHex})
 	if len(all.Formulas) != totalAdverts {
 		t.Fatalf("Lookup returned %d of %d adverts, want all %d (unbounded, unlike CurrentHosts)", len(all.Formulas), totalAdverts, totalAdverts)
+	}
+}
+
+func TestMessageBox_LookupCapsHydratedFormulaCount(t *testing.T) {
+	s := newMessageBoxLookup(t)
+	identityHex := hex.EncodeToString(mbIdentity(t))
+	const total = 10_001
+	for i := 0; i < total; i++ {
+		var txid [32]byte
+		txid[0] = byte(i)
+		txid[1] = byte(i >> 8)
+		txid[2] = byte(i >> 16)
+		hash := chainhash.Hash(txid)
+		record, err := json.Marshal(messageboxRecord{IdentityKey: identityHex, Host: fmt.Sprintf("https://host-%d.example", i), AdmittedAt: int64(i), BEEFBytes: 1})
+		if err != nil {
+			t.Fatalf("marshal record %d: %v", i, err)
+		}
+		if err := s.db.Put(itemKey(mbItemPrefix, &hash, uint32(i)), record, nil); err != nil {
+			t.Fatalf("store record %d: %v", i, err)
+		}
+		if err := s.db.Put(mbIndexKey(identityHex, int64(i), &hash, uint32(i)), nil, nil); err != nil {
+			t.Fatalf("store index %d: %v", i, err)
+		}
+	}
+	answer := mbLookup(t, s, topics.MessageBoxLookupQuery{IdentityKey: identityHex})
+	if got := len(answer.Formulas); got != 10_000 {
+		t.Fatalf("Lookup returned %d formulas, want the 10000 hydration cap", got)
+	}
+}
+
+func TestMessageBox_LookupCapsHydratedBEEFBytes(t *testing.T) {
+	s := newMessageBoxLookup(t)
+	identityHex := hex.EncodeToString(mbIdentity(t))
+	for i := 0; i < 3; i++ {
+		var txid chainhash.Hash
+		txid[0] = byte(i + 1)
+		record, err := json.Marshal(messageboxRecord{
+			IdentityKey: identityHex,
+			Host:        fmt.Sprintf("https://host-%d.example", i),
+			AdmittedAt:  int64(i),
+			BEEFBytes:   maxMessageBoxLookupBEEFBytes/2 + 1,
+		})
+		if err != nil {
+			t.Fatalf("marshal record %d: %v", i, err)
+		}
+		if err := s.db.Put(itemKey(mbItemPrefix, &txid, uint32(i)), record, nil); err != nil {
+			t.Fatalf("store record %d: %v", i, err)
+		}
+		if err := s.db.Put(mbIndexKey(identityHex, int64(i), &txid, uint32(i)), nil, nil); err != nil {
+			t.Fatalf("store index %d: %v", i, err)
+		}
+	}
+	answer := mbLookup(t, s, topics.MessageBoxLookupQuery{IdentityKey: identityHex})
+	if got := len(answer.Formulas); got != 1 {
+		t.Fatalf("Lookup returned %d formulas, want 1 within the BEEF-byte cap", got)
 	}
 }
 

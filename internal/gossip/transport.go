@@ -3,6 +3,7 @@ package gossip
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -81,6 +82,18 @@ func (s *ServerWSTransport) MarkAuthorized() {
 // been called for this connection.
 func (s *ServerWSTransport) Authorized() <-chan struct{} { return s.authorized }
 
+// raiseFrameLimitIfAuthorized raises the receive cap only from StartReceive's
+// goroutine. It reports whether authorization was already observed.
+func (s *ServerWSTransport) raiseFrameLimitIfAuthorized() bool {
+	select {
+	case <-s.authorized:
+		s.conn.MaxPayloadBytes = 0
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *ServerWSTransport) RemoteAddr() string {
 	if s.conn == nil {
 		return ""
@@ -127,15 +140,19 @@ func (s *ServerWSTransport) StartReceive() {
 	raised := false
 	for {
 		if !raised {
-			select {
-			case <-s.authorized:
-				s.conn.MaxPayloadBytes = 0 // library default (32 MiB) — the authenticated frame size, unchanged from before preAuthMaxFrameBytes existed
-				raised = true
-			default:
-			}
+			raised = s.raiseFrameLimitIfAuthorized()
 		}
 		var raw []byte
 		if err := websocket.Message.Receive(s.conn, &raw); err != nil {
+			// Receive reads the frame header before it checks MaxPayloadBytes.
+			// Authorization can therefore close between the check at the top of
+			// this loop and that size check. Retry this frame with the raised
+			// limit when that happened; the codec retains the frame for the next
+			// Receive call, so no bytes are lost or accepted pre-authorization.
+			if !raised && errors.Is(err, websocket.ErrFrameTooLarge) && s.raiseFrameLimitIfAuthorized() {
+				raised = true
+				continue
+			}
 			return // connection closed
 		}
 		var msg auth.AuthMessage

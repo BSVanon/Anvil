@@ -3,6 +3,8 @@ package gossip
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -137,6 +139,45 @@ func TestPreAuthFrameCap_SameSizeFrameAcceptedOnceAuthorized(t *testing.T) {
 	}
 }
 
+func TestPreAuthFrameCap_RaisesLimitWhenAuthorizationRacesRead(t *testing.T) {
+	serverTransport, client, onData := serverTransportPair(t, false)
+
+	// Let StartReceive enter its first blocking receive with the pre-auth
+	// limit, then authorize before the next frame arrives. This is the
+	// outbound ordering: the handshake goroutine authorizes while the receive
+	// goroutine is already waiting for the first post-auth frame.
+	time.Sleep(50 * time.Millisecond)
+	serverTransport.MarkAuthorized()
+	oversized := make([]byte, preAuthMaxFrameBytes+1)
+	if err := websocket.Message.Send(client, oversized); err != nil {
+		t.Fatalf("client send: %v", err)
+	}
+	if err := websocket.Message.Send(client, validMarkerFrame(t)); err != nil {
+		t.Fatalf("client send marker: %v", err)
+	}
+
+	select {
+	case <-onData:
+		// The marker proves the authorized oversized frame was accepted.
+	case <-serverTransport.Done():
+		t.Fatal("connection ended after authorization; the stale pre-auth limit rejected the frame")
+	case <-time.After(5 * time.Second):
+		t.Fatal("authorized marker was not processed within 5s")
+	}
+}
+
+func TestPreAuthFrameCap_RaisesLimitAfterAuthorization(t *testing.T) {
+	conn := &websocket.Conn{MaxPayloadBytes: preAuthMaxFrameBytes}
+	transport := NewServerWSTransport(conn)
+	transport.MarkAuthorized()
+	if !transport.raiseFrameLimitIfAuthorized() {
+		t.Fatal("authorized transport did not raise its frame limit")
+	}
+	if got := conn.MaxPayloadBytes; got != 0 {
+		t.Fatalf("authorized frame limit = %d, want the library default", got)
+	}
+}
+
 // TestReserveUnauthConn_BoundsConcurrentUnauthenticatedConnections unit
 // tests the counting/limit logic MeshHandler relies on: exactly
 // maxUnauthenticatedConns reservations succeed, the next one is refused,
@@ -161,6 +202,20 @@ func TestReserveUnauthConn_BoundsConcurrentUnauthenticatedConnections(t *testing
 	}
 	if m.reserveUnauthConn() {
 		t.Fatal("reserveUnauthConn() succeeded past the limit again after only one slot was released")
+	}
+}
+
+func TestUnauthConnRelease_IsIdempotent(t *testing.T) {
+	wallet, _ := newIdentity(t)
+	m := newAllowlistTestManager(t, "unauth-release", wallet, nil)
+	if !m.reserveUnauthConn() {
+		t.Fatal("reserveUnauthConn() refused its first reservation")
+	}
+	release := m.unauthConnRelease()
+	release()
+	release()
+	if got := m.unauthConns.Load(); got != 0 {
+		t.Fatalf("release called twice left %d unauthenticated slots, want 0", got)
 	}
 }
 
@@ -194,6 +249,35 @@ func TestMeshHandler_RefusesOverTheUnauthenticatedConnectionLimit(t *testing.T) 
 	conn, err := websocket.Dial(wsURL, "", "http://localhost")
 	if err != nil {
 		t.Fatalf("websocket.Dial failed after a slot was released, want it to succeed: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestMeshHandler_InvalidHandshakesReleaseUnauthenticatedSlots(t *testing.T) {
+	wallet, _ := newIdentity(t)
+	m := newAllowlistTestManager(t, "invalid-handshake", wallet, nil)
+	ts := httptest.NewServer(m.MeshHandler())
+	defer ts.Close()
+
+	for i := 0; i < maxUnauthenticatedConns; i++ {
+		response, err := http.Get(ts.URL)
+		if err != nil {
+			t.Fatalf("invalid handshake %d: %v", i, err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		if response.StatusCode == http.StatusServiceUnavailable {
+			t.Fatalf("invalid handshake %d unexpectedly exhausted admission slots", i)
+		}
+	}
+	if got := m.unauthConns.Load(); got != 0 {
+		t.Fatalf("invalid handshakes retained %d unauthenticated slots, want 0", got)
+	}
+
+	wsURL := "ws" + ts.URL[len("http"):]
+	conn, err := websocket.Dial(wsURL, "", "http://localhost")
+	if err != nil {
+		t.Fatalf("valid upgrade after invalid handshakes: %v", err)
 	}
 	_ = conn.Close()
 }
