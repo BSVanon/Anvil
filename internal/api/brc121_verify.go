@@ -67,6 +67,9 @@ func (pg *PaymentGate) acceptBRC121(ctx context.Context, h http.Header, price in
 			return nil, errBRC121Unrecorded(p.txid.String(), err.Error())
 		}
 		return nil, errBRC121Kept(p.txid.String(), "another request is still checking it")
+	case replayFull:
+		return nil, &brc121Refusal{status: http.StatusServiceUnavailable, code: codeBRC121Busy,
+			msg: errPaymentReplayFull.Error(), retryAfter: errPaymentReplayFull.retryAfter}
 	}
 	recorded := false
 	defer func() { pg.replays.end(p.txid, recorded) }()
