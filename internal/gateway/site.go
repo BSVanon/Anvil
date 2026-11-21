@@ -174,8 +174,10 @@ func (sh *SiteHandler) serveRoot(w http.ResponseWriter, r *http.Request, origin 
 }
 
 // serveContentPath implements decision 5's "/content/<txid>_<vout>",
-// subject to decision 6's content scope. With ?seq, the outpoint is an
-// origin, and the version of it that seq names is served instead.
+// subject to decision 6's content scope.
+//
+// With ?seq, the outpoint is an origin, and the version of it that seq
+// names is served instead.
 func (sh *SiteHandler) serveContentPath(w http.ResponseWriter, r *http.Request, origin string) {
 	target := strings.TrimPrefix(r.URL.Path, "/content/")
 	outpoint, ok := parseOutpoint(target)
