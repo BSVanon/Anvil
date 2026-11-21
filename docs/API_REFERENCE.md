@@ -37,23 +37,28 @@ Certificate admission is optional. `[messaging] require_sender_certificate`
 gates message sends, while `[gateway] allow_registration` mounts the gateway
 registration routes described below. Enabling either switch makes the node ask
 every BRC-31 client for a certificate during the one shared handshake for this
-host. A client without a certificate cannot authenticate to any BRC-31 route on
-the node, including message reads. An authenticated sender without a current
-admission receives `403 ERR_SENDER_CERTIFICATE_REQUIRED` from `/sendMessage`.
+host. The request applies to `/sendMessage`, `/listMessages`,
+`/acknowledgeMessage`, `/messages/session`, and the two registration endpoints.
+A client that does not present an accepted certificate is not BRC-31
+authenticated on that node, so it cannot use any of those routes as an identity
+or mint a ticket for `/messages/subscribe`. The operator-token fallbacks remain
+available where the endpoint table says so. An authenticated sender without a
+current admission receives `403 ERR_SENDER_CERTIFICATE_REQUIRED` from
+`/sendMessage`.
 
-Every gated handler checks the admission cache. This remains necessary because
-go-sdk v1.7.7 marks a session authenticated before its received-certificate
-listener completes (`auth/peer.go:905-1017`). A certificate can therefore be
-accepted by the dependency for authentication but refused by node policy
-because it is revoked, is unrevocable when the type disallows that, or omits a
-required revealed field.
+TypeScript `@bsv/sdk` clients can present certificates during this handshake.
+Clients built on Go SDK v1.7.8 can't complete it over HTTP: the node answers the
+client's certificate response with an empty body, and that client's HTTP
+transport treats an empty handshake reply as an error. That client also sends no
+matching certificate when the requested field list is empty. Use `@bsv/sdk`
+clients with a node that has either switch on.
 
-With the default empty `reveal_fields`, TypeScript SDK clients present a
-matching certificate
-(`packages/sdk/src/auth/utils/getVerifiableCertificates.ts:21-44`). go-sdk
-v1.7.7 clients skip a matching certificate when no fields were requested
-(`auth/utils/get_verifiable_certificates.go:66-71`), so those clients need at
-least one requested field.
+`[certgate]` supplies the accepted compressed certifier keys and Base64
+certificate type IDs, per-type revealed fields, whether an unrevocable type is
+allowed, and the revocation policy. The default policy is `strict` with a
+one-hour recheck. Revocable certificates are watched by their revocation
+outpoint; spending it removes the admission and any gateway registrations owned
+by that identity.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
@@ -227,25 +232,40 @@ the node. IPv6 clients share a client key by `/64`.
 For a sequence location without an inscription, the response body is the most
 recent inscription at or before that location. `X-Outpoint` still names the
 sequence location. The `:N` path form and its relative numbering follow
-`go-ordfs-server docs/v2.swagger.yaml:290-293`; the query form remains
-supported. For an origin outpoint, `:N` and `?seq=N` resolve identically.
+ORDFS; the query form remains supported. For an origin outpoint, `:N` and
+`?seq=N` resolve identically.
 
 `seq=-1` sends `Cache-Control: no-store`. An explicit sequence sends
 `public, max-age=31536000, immutable` only when its location is mined and has
 at least six confirmations on this node's best chain. Pending, shallow, or
 not-provably-deep locations use the configured short max-age. This is a safety
-divergence from the all-explicit-sequences policy in `go-ordfs-server
-docs/v2.swagger.yaml:350-354`: a shallow mapping can still be rolled back by a
-reorganization.
+divergence from ORDFS's all-explicit-sequences policy: a shallow mapping can
+still be rolled back by a reorganization.
 
 Every sequence response sends `X-Ord-Seq`, counted from the tracked origin,
-including when the path starts at a later outpoint. **UNCERTAIN:** the upstream
-description does not state clearly whether this header is origin-relative
-(`go-ordfs-server docs/v2.swagger.yaml:336`).
+including when the path starts at a later outpoint.
+
+The ordinary `/content` route keeps its content cache policy when no read-token
+gate applies. When a read-token gate is configured for the request, the answer
+is credential-dependent and uses `Cache-Control: private, no-store`.
+
+Every raw transaction fetched to serve `/content` is decoded and its bytes are
+hashed before use. A transaction whose computed txid does not match the
+requested txid is rejected.
 
 For back-compatibility, a miss from `/findHeaderHexForHeight` retains its
 existing response shape, unlike the canonical-shaped miss from
 `/findHeaderHexForBlockHash`.
+
+### Chaintracks v2
+
+The public `/chaintracks/v2` route set provides `/network`, `/height`, `/tip`,
+`/header/height/{height}`, `/header/hash/{hash}`, `/headers`, `/tip/stream`, and
+`/reorg/stream`. Header and tip routes also have raw 80-byte `.bin` forms; the
+range form is `/headers.bin?height=N&count=M`. Range requests are silently
+truncated to the local tip and to 2,000 headers, returning HTTP 200 even when
+the result is empty. The `.bin` range response reports the actual range in
+`X-Start-Height` and `X-Header-Count`.
 
 ## Node-Signed Publishing
 
@@ -280,6 +300,20 @@ output.
 `X-Overlay-Omitted` is the number of outputs skipped because one output could
 not fit in the 8 MiB response allowance. It may be present with either a final
 or a truncated page.
+
+`POST /submit` also accepts a SHIP advertisement in the TypeScript off-chain
+framing: with `x-includes-off-chain-values: true`, the body is a Bitcoin varint
+containing the BEEF byte length, followed by that BEEF and the off-chain values.
+The earlier Anvil ordering remains accepted for compatibility.
+
+### UHRP advertisements
+
+The `tm_uhrp` topic admits canonical BRC-26 PushDrop advertisements only after
+checking the five content fields, signature and identity-key linkage, HTTPS
+location, content hash, expiry, and size. `ls_uhrp` accepts `uhrpUrl` in the
+forms `uhrp:<base58>`, `uhrp://<base58>`, `web+uhrp:<base58>`,
+`web+uhrp://<base58>`, `//<base58>`, or bare Base58Check; scheme matching is
+case-insensitive.
 
 ## Wallet Endpoints (operator only)
 
@@ -474,6 +508,13 @@ flags from v2.2.x scripts are still accepted.
   when a shared-binary upgrade restarts only some services. Fix:
   `systemctl restart` mismatched services; verify each reaches
   `active/running`.
+- **Payment readiness** — priced routes must appear in live x402 discovery;
+  ARC must be enabled for BRC-121 and `X-Bsv-Payment`. The doctor reports the
+  deprecated proof-only configuration separately and checks the BRC-121
+  journal's size and oldest entry.
+- **Gateway readiness** — mode and sites-file parsing, `_ordfs` TXT answers,
+  listeners on ports 80 and 443, ACME terms, certificate cache state and
+  permissions, closed-network peer settings, and replication connectivity.
 
 `doctor --locks-only` is the safe subset wired into systemd's
 `ExecStartPre` — runs on every service start so a node can recover from
@@ -560,6 +601,26 @@ max_inbox_bytes = 0
 ## Authentication and payment
 
 See [Authentication and payment](PAYMENTS.md) for bearer authentication, x402, BRC-121, direct payments, limits, and refusal handling.
+
+## Private envelopes
+
+Only this node's operator token, sent as `X-Anvil-Auth` or
+`Authorization: Bearer`, can read a `private` envelope. A payment—including BRC-121,
+`X-Bsv-Payment`, or the deprecated proof path—and an `X-App-Token` never unlock
+one. Credential-dependent reads are uncacheable: they use `Cache-Control:
+private, no-store` and vary on both operator-token headers.
+
+Without the operator token, exact `/data` reads use the public-only index and
+peer catch-up uses the public prefix index. Private envelopes are also omitted
+from `/topics`, topic details and identity lookups, `/stats`, `/mesh/status`,
+and `/mesh/nodes`; a topic containing only private envelopes is omitted from
+public topic lists. Private-only topics are not announced as heartbeat topics
+and do not contribute heartbeat demand.
+
+On SSE routes the operator token is read from a header only, never from a URL
+query parameter. `/data/subscribe` consequently omits private envelopes unless
+its streaming client sends the operator header; `/messages/subscribe` uses its
+identity-scoped session ticket or an operator header as described above.
 
 ## Real-time Subscription (SSE)
 

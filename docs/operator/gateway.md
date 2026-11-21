@@ -3,7 +3,7 @@
 This covers how `[gateway]` routes a request between this node's own API and a publisher's
 own domain, how `api_host` is resolved and validated, and the fixed rate limits gateway mode
 applies. It does not cover the sites file's format or the CLI that manages it — see the
-gateway packaging brick's own documentation for that.
+`anvil gateway sites --help` command for those operations.
 
 ## Routing order
 
@@ -76,6 +76,37 @@ This switch shares one BRC-31 handshake with the messagebox routes. Enabling it,
 or `[messaging] require_sender_certificate`, requests a certificate from every
 BRC-31 client. A client without one cannot authenticate to message reads or any
 other BRC-31 route on the host.
+
+## Versioned content
+
+Gateway content uses the same ORDFS-compatible version tracker as the node API.
+A site may request `/content/<origin>?seq=N` or the `:N` path form. Sequence 0
+is the tracked origin and every spend advances the sequence, including a plain
+transfer without a new inscription. Responses carry `X-Ord-Seq`. An explicit
+sequence becomes `immutable` only after the resolved location has at least six
+confirmations; this confirmation rule is Anvil's documented divergence from
+ORDFS. See [Proof and Content Endpoints](../API_REFERENCE.md#proof-and-content-endpoints)
+for the complete cache and numbering contract.
+
+## TLS and ACME
+
+Gateway mode starts HTTPS on `[gateway] https_listen` (default `:443`) and an
+HTTP listener on `http_listen` (default `:80`). Port 80 serves ACME HTTP-01 and
+redirects other allowed hosts to HTTPS. Certificates and the ACME account are
+cached in `<data_dir>/acme`; only the API host and currently allowed site hosts
+are eligible for certificates. The default ACME directory is the production
+Let's Encrypt directory, and `acme_accept_tos` defaults to `false`, so an
+operator must explicitly accept the CA terms before issuance can succeed.
+
+Optional `acme_email` supplies the ACME account contact. Allowed mesh peers can
+replicate short-lived challenge entries so more than one gateway can answer a
+validation. A listener bind failure is logged without stopping the node's mesh
+or API listener, so use `anvil doctor` to catch an unavailable gateway port.
+
+`anvil doctor` checks the gateway mode and sites file, each domain's `_ordfs`
+TXT answer, ports 80 and 443, the terms switch, cached certificate state and
+cache-directory ownership/mode, the closed-network settings, and whether an
+allowed peer is connected for challenge replication.
 
 ## Fixed rates
 

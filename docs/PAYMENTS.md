@@ -54,6 +54,28 @@ on, the node mints challenge coins and accepts proofs as before. The scheme is
 unsuitable for outside payers because the challenge output is locked to a key
 derived by the node, while the payer is expected to spend it.
 
+The proof-free 402 body has this shape:
+
+```json
+{
+  "amount_sats": 100,
+  "payee_locking_script_hex": "76a9...88ac",
+  "payees": [
+    {"role":"infrastructure","locking_script_hex":"76a9...88ac","amount_sats":60},
+    {"role":"content","locking_script_hex":"76a9...88ac","amount_sats":40}
+  ],
+  "accepts": ["X-Bsv-Payment"],
+  "code": "ERR_PAYMENT_REQUIRED",
+  "description": "..."
+}
+```
+
+`amount_sats` is the total. A one-payee offer omits `payees` and makes
+`payee_locking_script_hex` that payee's script; a multi-payee offer includes
+the itemized list. `description` is omitted for the ordinary unpaid response.
+An attempted `X402-Proof` while the scheme is off returns the same fields with
+code `ERR_PROOF_PAYMENT_UNAVAILABLE` and a description.
+
 When a 402 offers BRC-121 it carries no `X402-Challenge`: the node does not
 mint a nonce coin that the advertised payment path does not need.
 
@@ -70,6 +92,15 @@ client. When the deprecated proof scheme is enabled, a proof whose challenge
 sets `require_mempool_accept` is held to the same two statuses. A node with
 that setting and no ARC client refuses the proof with 402 and code
 `ERR_MEMPOOL_CHECK_UNAVAILABLE`.
+
+Discovery does not filter its method list by ARC availability. With
+`[arc] enabled = false`, `/.well-known/x402` still lists BRC-121 and
+`X-Bsv-Payment`, plus the deprecated proof method when its switch is on. A
+proof-off 402 also advertises `X-Bsv-Payment` even though submitting it gets
+`ERR_DIRECT_PAYMENT_UNAVAILABLE`; BRC-121 offer headers are absent because that
+path could not be started. If the proof method is enabled without its mempool
+requirement it remains usable; with the requirement it is refused as described
+above. `anvil doctor` warns for both ARC-disabled configurations.
 
 The ARC answer must name the submitted txid. A mismatched answer is ambiguous.
 A `MINED` answer is final only
@@ -92,10 +123,14 @@ it evicts nothing: a new payment is refused with 503
 refuses with code `ERR_PAYMENT_TOO_OLD` a payment mined more than 144 blocks
 below the node's header tip.
 
-Known limits of the txid memory: it forgets a txid after 24 hours and on a
-restart. A forgotten transaction can pay once more while it remains within
-the mined-depth rule. The capacity rule does not make an accepted transaction
-replayable to admit a new one.
+Known limits of the txid memory: the direct-payment replay set lives only in
+memory. It forgets a txid after 24 hours and on a restart. An unconfirmed
+direct payment, or one mined no more than 144 blocks below the current tip, can
+therefore pay for one more request after restart. The capacity rule does not
+make an accepted transaction replayable to admit a new one. BRC-121 has
+restart protection: the node checks the wallet's durable record, and writes an
+ambiguous accepted payment to the journal under `data_dir` before contacting
+ARC.
 
 Known limit: a direct payment is not bound to the request it pays for, so
 it pays for whoever presents it first. Someone who sees a payer's
@@ -205,7 +240,8 @@ shows that the payment is valid and pays this node.
 7. ARC accepts it, under the same rules as a direct payment: unconfirmed
    ancestors are submitted in dependency order before the payment, under
    one 10-second bound and one of the 16 shared slots. The payment must reach
-   `SEEN_ON_NETWORK` or `MINED` and pass the same depth bounds.
+   `SEEN_ON_NETWORK` or `MINED` and pass the same depth bounds. A conclusive
+   refusal gets `ERR_BRC121_NOT_ACCEPTED`.
 8. The node wallet records it as a wallet payment, with fixed text that
    carries nothing from the request. A failure leaves the journal entry for
    the sweep.
@@ -219,9 +255,10 @@ and tell the caller not to pay again but to retry the same request.
 
 One client, counted as the rate limiter counts it, may have 4 BRC-121
 payments in validation and up to 32 waiting for a place. A fifth waits for
-up to 15 seconds and proceeds when a place frees. A thirty-seventh is the
-only deliberate stranding case: it gets 503 `ERR_BRC121_BUSY`, no offer, and
-is not journaled.
+up to 15 seconds and proceeds when a place frees. A thirty-seventh gets 503
+`ERR_BRC121_BUSY`, no offer, and is not journaled. The same 503, with no new
+offer, is returned when the shared payment replay set is full. An ambiguous
+network or wallet outcome remains 503 `PAYMENT_KEPT`, also with no new offer.
 
 Only a conclusive refusal or an already-used payment answers 402 with the
 offer headers. An ambiguous failure answers 503 without inviting another

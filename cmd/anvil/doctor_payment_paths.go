@@ -2,10 +2,9 @@ package main
 
 import "github.com/BSVanon/Anvil/internal/config"
 
-// doctorPaymentPathCheck warns when configured route prices are not published
-// by the live x402 discovery document. Discovery obtains each price from the
-// same payment gate that issues challenges, so a positive advertised price is
-// evidence that clients have a payment path they can use.
+// doctorPaymentPathCheck reports whether configured route prices are published
+// by the live x402 discovery document and whether ARC is enabled for the
+// production payment paths.
 func doctorPaymentPathCheck(cfg *config.Config, apiURL string) int {
 	return doctorPaymentPathCheckWithDiscovery(cfg, httpGet(apiURL+"/.well-known/x402"))
 }
@@ -14,8 +13,16 @@ func doctorPaymentPathCheckWithDiscovery(cfg *config.Config, discovery map[strin
 	if !hasConfiguredRoutePrice(cfg) {
 		return 0
 	}
+	if !cfg.ARC.Enabled {
+		if cfg.API.X402ProofScheme && !cfg.API.RequireMempool {
+			warn("only the deprecated X402-Proof scheme can take payments because ARC is disabled — enable [arc] for BRC-121 and X-Bsv-Payment")
+			return 1
+		}
+		warn("clients can't pay priced routes because the node refuses BRC-121 and X-Bsv-Payment without ARC — enable [arc]")
+		return 1
+	}
 	if discoveryHasPricedRoute(discovery) {
-		pass("priced routes have an available x402 payment path")
+		pass("priced routes are published in x402 discovery, and ARC is enabled for BRC-121 and X-Bsv-Payment")
 		return 0
 	}
 	warn("priced routes have no available payment path — check identity, wallet, and payment configuration")

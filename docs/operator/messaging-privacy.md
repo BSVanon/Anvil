@@ -38,10 +38,11 @@ the same as no advert at all.
 | A mesh peer forwarded it to this node | Home | yes | `ttl_seconds` | only if the recipient's adverts ALSO name a host other than this node |
 | A mesh peer forwarded it to this node | Unadvertised or Elsewhere | only if `forward_copy_ttl > 0` | `forward_copy_ttl` | yes |
 
-The practical read: a message only sits in long-term storage (`ttl_seconds`, 7 days by
-default) on a node the recipient actually calls home. Every other node that merely sees the
-message in transit keeps, at most, a short-lived forwarding copy and then relays it onward —
-or, with `forward_copy_ttl = 0`, never stores a copy of it at all, just relays.
+The practical read: a message sits in long-term storage (`ttl_seconds`, 7 days by
+default) on a node the recipient calls home, or on the originating API node when
+the recipient is still Unadvertised. Every other node that merely sees the
+message in transit keeps, at most, a short-lived forwarding copy and then relays
+it onward—or, with `forward_copy_ttl = 0`, never stores a copy at all.
 
 **Behavior change from earlier releases:** before this feature, a node relaying mail for a
 recipient who wasn't its own identity kept a full `ttl_seconds` copy, same as a Home message.
@@ -123,7 +124,7 @@ recipient who needs their mail to land somewhere they can reliably poll.
 
 Every relay this mode performs is unstored — there is no local copy to fall back on if the
 relay itself fails — so it draws from the same manager-wide budget every other unstored
-relay shares: 10 messages/second with a burst of 50 (`internal/gossip/relay_budget.go`).
+relay shares: 10 messages/second with a burst of 50.
 That is one allowance for the whole node, not per-sender or per-recipient; see "Known
 limits" below.
 

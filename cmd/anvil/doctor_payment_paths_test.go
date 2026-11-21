@@ -41,26 +41,76 @@ func TestDiscoveryHasPricedRoute(t *testing.T) {
 	}
 }
 
-func TestDoctorPaymentPathCheck(t *testing.T) {
-	cases := []struct {
-		name      string
-		cfg       config.Config
-		discovery map[string]interface{}
-		issues    int
-		warning   bool
-	}{
-		{"priced with no scheme", config.Config{API: config.APIConfig{PaymentSatoshis: 1}}, map[string]interface{}{"endpoints": []interface{}{map[string]interface{}{"price": float64(0)}}}, 1, true},
-		{"priced with a scheme", config.Config{API: config.APIConfig{PaymentSatoshis: 1}}, map[string]interface{}{"endpoints": []interface{}{map[string]interface{}{"price": float64(1)}}}, 0, false},
-		{"nothing priced", config.Config{}, map[string]interface{}{"endpoints": []interface{}{map[string]interface{}{"price": float64(0)}}}, 0, false},
-	}
-	for _, tc := range cases {
+func TestDoctorPaymentPathCheckNoARCNoUsableProof(t *testing.T) {
+	for _, apiCfg := range []config.APIConfig{
+		{PaymentSatoshis: 1},
+		{PaymentSatoshis: 1, X402ProofScheme: true, RequireMempool: true},
+	} {
+		cfg := config.Config{API: apiCfg}
 		out := captureStdout(t, func() {
-			if got := doctorPaymentPathCheckWithDiscovery(&tc.cfg, tc.discovery); got != tc.issues {
-				t.Errorf("%s: got %d issues, want %d", tc.name, got, tc.issues)
+			if got := doctorPaymentPathCheckWithDiscovery(&cfg, pricedDiscovery()); got != 1 {
+				t.Fatalf("got %d issues, want 1", got)
 			}
 		})
-		if got := strings.Contains(out, "no available payment path"); got != tc.warning {
-			t.Errorf("%s: warning=%v, want %v; output=%q", tc.name, got, tc.warning, out)
+		if !strings.Contains(out, "clients can't pay") || !strings.Contains(out, "BRC-121") ||
+			!strings.Contains(out, "X-Bsv-Payment") || !strings.Contains(out, "enable [arc]") {
+			t.Fatalf("unexpected output: %q", out)
 		}
 	}
+}
+
+func TestDoctorPaymentPathCheckNoARCDeprecatedProofOnly(t *testing.T) {
+	cfg := config.Config{API: config.APIConfig{PaymentSatoshis: 1, X402ProofScheme: true}}
+	out := captureStdout(t, func() {
+		if got := doctorPaymentPathCheckWithDiscovery(&cfg, pricedDiscovery()); got != 1 {
+			t.Fatalf("got %d issues, want 1", got)
+		}
+	})
+	if !strings.Contains(out, "only the deprecated X402-Proof scheme") || !strings.Contains(out, "BRC-121") ||
+		!strings.Contains(out, "X-Bsv-Payment") || !strings.Contains(out, "enable [arc]") {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+func TestDoctorPaymentPathCheckARCEnabledPriceMissingFromDiscovery(t *testing.T) {
+	cfg := config.Config{ARC: config.ARCConfig{Enabled: true}, API: config.APIConfig{PaymentSatoshis: 1}}
+	out := captureStdout(t, func() {
+		if got := doctorPaymentPathCheckWithDiscovery(&cfg, unpricedDiscovery()); got != 1 {
+			t.Fatalf("got %d issues, want 1", got)
+		}
+	})
+	if !strings.Contains(out, "no available payment path") {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+func TestDoctorPaymentPathCheckARCEnabledPricePublished(t *testing.T) {
+	cfg := config.Config{ARC: config.ARCConfig{Enabled: true}, API: config.APIConfig{PaymentSatoshis: 1}}
+	out := captureStdout(t, func() {
+		if got := doctorPaymentPathCheckWithDiscovery(&cfg, pricedDiscovery()); got != 0 {
+			t.Fatalf("got %d issues, want 0", got)
+		}
+	})
+	if !strings.Contains(out, "published in x402 discovery") || !strings.Contains(out, "ARC is enabled") {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+func TestDoctorPaymentPathCheckNothingPricedNoOutput(t *testing.T) {
+	out := captureStdout(t, func() {
+		if got := doctorPaymentPathCheckWithDiscovery(&config.Config{}, unpricedDiscovery()); got != 0 {
+			t.Fatalf("got %d issues, want 0", got)
+		}
+	})
+	if out != "" {
+		t.Fatalf("got output %q, want none", out)
+	}
+}
+
+func pricedDiscovery() map[string]interface{} {
+	return map[string]interface{}{"endpoints": []interface{}{map[string]interface{}{"price": float64(1)}}}
+}
+
+func unpricedDiscovery() map[string]interface{} {
+	return map[string]interface{}{"endpoints": []interface{}{map[string]interface{}{"price": float64(0)}}}
 }

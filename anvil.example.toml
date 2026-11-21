@@ -7,6 +7,7 @@ name = "my-anvil"
 data_dir = "/var/lib/anvil"
 listen = "0.0.0.0:8333"          # mesh peers — wss:// when TLS configured
 api_listen = "0.0.0.0:9333"      # REST API — HTTPS when TLS configured
+# mode = "standard"               # label/default; [gateway] enabled controls runtime gateway mode
 
 [identity]
 # wif = ""                       # Set via ANVIL_IDENTITY_WIF env var, not here
@@ -27,23 +28,35 @@ seeds = [
 # authenticated identity public key is not listed here is refused right
 # after the handshake, before any of its messages are processed. Leave
 # unset (the default) to accept any peer, as today.
-# Certificate admission is disabled when this section is absent. Certifier
-# keys are compressed identity keys; type IDs are 32-byte Base64 values.
+# Certificate admission is disabled when this section is absent. Lists and maps
+# default empty. Certifier keys are compressed identity keys; type IDs are
+# 32-byte Base64 values.
 # [certgate]
 # certifiers = ["0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"]
 # types = ["AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="]
-# revocation_check = "strict"       # "strict" refuses lookup errors; "lazy" retries within 60s
-# revocation_recheck = "1h"
+# revocation_check = "strict"       # default; "strict" refuses lookup errors, "lazy" retries within 60s
+# revocation_recheck = "1h"         # default
 # [certgate.reveal_fields]
 # "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=" = []
+# While either certificate switch is on, clients must use @bsv/sdk (TypeScript):
+# Go SDK v1.7.8 clients can't complete a certificate-requesting handshake here.
 # [certgate.allow_unrevocable]
 # "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=" = false
 
 [gateway]
-enabled = false
-# api_host = "gateway.example.com"
-# sites_file = "/etc/anvil/gateway-sites.conf"
-# allow_registration = false
+enabled = false                    # default
+# api_host = ""                    # defaults to [node] public_url host; required when enabled
+# sites_file = ""                  # defaults to gateway-sites.conf beside anvil.toml
+# txt_cache_ttl = 300               # positive _ordfs answer cache, seconds
+# txt_stale_grace = 86400           # serve the last good TXT answer after resolver errors
+# root_max_age = 60                 # Cache-Control max-age for a site's /
+# content_scope = "site"            # "site" (default) or unrestricted "any"
+# https_listen = ":443"
+# http_listen = ":80"               # ACME HTTP-01 and HTTPS redirects
+# acme_directory = "https://acme-v02.api.letsencrypt.org/directory"
+# acme_email = ""                   # no contact by default
+# acme_accept_tos = false           # explicit opt-in required before certificate issuance
+# allow_registration = false       # certificate-gated domain registration API
 # With allow_registration or messaging.require_sender_certificate on, this
 # node asks every BRC-31 client for a certificate during the shared handshake.
 # A client without one cannot authenticate to any BRC-31 route on this node,
@@ -108,6 +121,7 @@ url = "junglebus.gorillapool.io"
 enabled = true
 topics = ["anvil:mainnet"]
 enable_gasp_sync = true
+# gasp_sync_run_timeout_secs = 600  # maximum duration of one complete GASP sync run
 # ship_trackers = ["https://overlay-us-1.bsvb.tech"]
 # slap_trackers = ["https://overlay-us-1.bsvb.tech"]
 # named_peers = ["https://overlay-a.example.com", "https://overlay-b.example.com"]

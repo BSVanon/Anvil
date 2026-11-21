@@ -71,6 +71,36 @@ public_url = "https://my-node.example.com"
 
 Without this, the overlay registers the bind address (e.g., `0.0.0.0:8333`) which isn't reachable from outside. `public_url` is optional — the node works without it, but won't be reachable for direct API calls from other Explorers.
 
+## Closed-network mode
+
+Mesh gossip and overlay federation are separate layers, so a fully closed node
+configures both allowlists:
+
+```toml
+[mesh]
+allowed_peers = ["02...peer-identity-key..."]
+
+[overlay]
+named_peers = ["https://overlay-a.internal", "https://overlay-b.internal"]
+```
+
+`[mesh] allowed_peers` contains compressed identity public keys. When it is
+non-empty, an inbound or outbound peer not on the list is dropped immediately
+after the BRC-31 handshake and before either side exchanges gossip state. An
+empty list keeps open peering; bond rules still apply.
+
+`[overlay] named_peers` contains overlay base URLs. When it is non-empty, GASP
+sync for every hosted topic, federated lookup, submit propagation, and SHIP/SLAP
+resolution use only those URLs. The configured public trackers and built-in
+tracker defaults are not consulted, `public_url` is not required, and the node
+does not publish its own SHIP/SLAP advertisements. The built-in header-fallback
+peer is also suppressed; explicitly configured `[bsv] header_fallback_peers`
+still apply.
+
+These settings do not restrict BRC-33 message forwarding by themselves. Use
+`[messaging] forward_peers` for that layer; see
+[Messaging privacy](operator/messaging-privacy.md).
+
 ## Overlay discovery
 
 Nodes self-register on the `anvil:mainnet` overlay topic at startup. When two nodes connect via gossip, they exchange SHIP registrations — so every node learns about every other node in the mesh.
