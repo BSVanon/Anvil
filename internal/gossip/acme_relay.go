@@ -13,7 +13,12 @@ package gossip
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/bsv-blockchain/go-sdk/auth"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
 // SetACMEChallengeHook registers the callback invoked for each decoded
@@ -47,17 +52,44 @@ func (m *Manager) onACMEChallenge(senderPKHex string, raw json.RawMessage) error
 	return nil
 }
 
+// acmeChallengeEligiblePeer is BroadcastACMEChallenge's own snapshot of
+// one peer eligible to receive a replicated entry: the two fields of
+// *MeshPeer it needs, copied out while m.mu is held, so the send loop
+// below never touches m.peers or needs the lock again.
+type acmeChallengeEligiblePeer struct {
+	conn *auth.Peer
+	id   *ec.PublicKey
+}
+
 // BroadcastACMEChallenge sends one ACME challenge cache entry to every
-// currently connected mesh peer, point-to-point — never relayed further
-// by a receiver (acmecache.go never forwards what it applies).
+// currently connected, identified, allowed mesh peer, point-to-point —
+// never relayed further by a receiver (acmecache.go never forwards what
+// it applies).
 //
-// No allowed_peers filter runs here: peer admission already enforces
-// [mesh] allowed_peers at connection time for both directions
-// (checkAllowedPeer, establishAndAuthorizePeer in allowlist.go), so every
-// entry in m.peers has already passed it whenever the allowlist is
-// active. The caller owns the one case that check can't cover — an
-// allowlist that is configured empty, meaning no restriction at all — by
-// not calling this method then; see acmecache.go's Put.
+// A peer is eligible only if both hold, checked here directly rather
+// than assumed from connection-time admission having already run:
+//
+//   - its identity is known (IdentityPK != nil). An inbound peer that
+//     has completed the transport-level connection but never sent its
+//     first application message is already in m.peers — AcceptPeer adds
+//     it under a temporary key before any message arrives — but stays
+//     unidentified until that reactive re-keying happens (manager.go's
+//     AcceptPeer, allowlist.go's establishAndAuthorizePeer). Such a peer
+//     must never receive a challenge entry just for having connected.
+//   - that identity is in [mesh] allowed_peers (m.allowlist.allows,
+//     nil-receiver-safe and vacuously true for everyone when no
+//     allowlist is configured at all — the one case left for the
+//     caller to gate, by not calling this method in the first place;
+//     see acmecache.go's NewCache/Put, which only wires a non-nil send
+//     func when its own allowedPeers is non-empty).
+//
+// The eligible set is copied out of m.peers while m.mu is held, then the
+// lock is released before any send: no network I/O ever happens while
+// m.mu is held, so a slow or unresponsive peer can never stall an
+// unrelated operation that needs the lock. Sends then run concurrently,
+// one goroutine per eligible peer, each bounded by the same 5000ms
+// per-send timeout as before — so the total time this call can block is
+// bounded by that one timeout, not by timeout times peer count.
 //
 // Returns how many peers it actually sent to (ToPeer returning no
 // error), mirroring ForwardMessage's own return convention.
@@ -73,16 +105,29 @@ func (m *Manager) BroadcastACMEChallenge(key string, value []byte, expires time.
 	}
 
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	sent := 0
-	for _, peer := range m.peers {
-		if peer.Peer == nil {
+	eligible := make([]acmeChallengeEligiblePeer, 0, len(m.peers))
+	for pkHex, peer := range m.peers {
+		if peer.Peer == nil || peer.IdentityPK == nil {
 			continue
 		}
-		if err := peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000); err == nil {
-			sent++
+		if !m.allowlist.allows(pkHex) {
+			continue
 		}
+		eligible = append(eligible, acmeChallengeEligiblePeer{conn: peer.Peer, id: peer.IdentityPK})
 	}
-	return sent
+	m.mu.RUnlock()
+
+	var sent atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(len(eligible))
+	for _, p := range eligible {
+		go func(p acmeChallengeEligiblePeer) {
+			defer wg.Done()
+			if err := p.conn.ToPeer(context.Background(), payload, p.id, 5000); err == nil {
+				sent.Add(1)
+			}
+		}(p)
+	}
+	wg.Wait()
+	return int(sent.Load())
 }
