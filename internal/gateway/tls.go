@@ -179,8 +179,9 @@ type errorRecorder interface {
 // a cert error — a missing account TOS agreement, an ACME network
 // failure, or (briefly, harmlessly) a token cert requested before the
 // challenge that provisions it has run. The same non-refusal errors are
-// handed to recorder, if non-nil, keyed by the ClientHello's requested
-// name.
+// handed to recorder, if non-nil and manager's own HostPolicy currently
+// allows the request's host (see recordableHost) — keyed by the
+// normalised host, never the raw ClientHello ServerName.
 func wrapGetCertificate(manager *autocert.Manager, counters *Counters, recorder errorRecorder) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		counters.TLSHandshakes.Add(1)
@@ -189,13 +190,48 @@ func wrapGetCertificate(manager *autocert.Manager, counters *Counters, recorder 
 			if !errors.Is(err, errHostNotAllowed) {
 				counters.CertErrors.Add(1)
 				if recorder != nil {
-					recorder.RecordIssuanceError(hello.ServerName, err.Error())
+					if host, ok := recordableHost(manager, hello.ServerName); ok {
+						recorder.RecordIssuanceError(host, err.Error())
+					}
 				}
 			}
 			return nil, err
 		}
 		return cert, nil
 	}
+}
+
+// recordableHost reports the normalised host to record an issuance error
+// against, and whether recording is allowed at all: only when manager's
+// own HostPolicy — the same gate a normal GetCertificate call consults —
+// currently allows rawHost. autocert's tls-alpn-01 "+token" challenge
+// path (wantsTokenCert, golang.org/x/crypto@v0.59.0/acme/autocert/autocert.go)
+// skips HostPolicy entirely before reaching the cache lookup that can
+// fail, so an error from that path has never been policy-checked by the
+// time it reaches wrapGetCertificate — rawHost there is the TLS
+// ClientHello's raw, unauthenticated, pre-certificate ServerName. This
+// re-check is what makes "RecordIssuanceError records only for a host
+// the issuance policy allows" (acmecache.go's own doc comment on that
+// method) actually true, regardless of which autocert code path produced
+// the error being handled. A caller must never pass rawHost itself, or
+// any string this function didn't return, to RecordIssuanceError.
+//
+// Calling manager.HostPolicy here a second time never double-counts a
+// refusal: the only way execution reaches this function at all is when
+// GetCertificate's error did NOT already wrap errHostNotAllowed, which
+// means either HostPolicy was never consulted for this request (the
+// bypass path above) or it already returned nil (allowed) and something
+// else about issuance failed afterward — calling it again is deterministic
+// and returns nil again in that second case, counting nothing new.
+func recordableHost(manager *autocert.Manager, rawHost string) (string, bool) {
+	if manager.HostPolicy == nil {
+		return "", false
+	}
+	normHost := normalizeHost(rawHost)
+	if err := manager.HostPolicy(context.Background(), normHost); err != nil {
+		return "", false
+	}
+	return normHost, true
 }
 
 // NewHTTPServer builds the gateway's 80 listener. manager.HTTPHandler

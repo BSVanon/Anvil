@@ -27,9 +27,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -44,23 +42,6 @@ const (
 	// deadline to use — this is a flat, safe default, not a measured
 	// remaining lifetime.
 	acmeChallengeExpiryCap = 600 * time.Second
-
-	// acmeHTTPTokenCap and acmeHTTPTokenLifetime bound what this node
-	// accepts for a received "+http-01" key, which carries no domain to
-	// check against Policy: accepted only from allowed peers, capped at
-	// 256 entries with a 10-minute lifetime.
-	acmeHTTPTokenCap      = 256
-	acmeHTTPTokenLifetime = 10 * time.Minute
-)
-
-// errSenderNotAllowed and errKeyNotReplicable are ApplyReceived's two
-// refusal sentinels (via errors.Is), so a caller or test can tell the
-// reason apart from a genuine write failure without string-matching.
-var (
-	errSenderNotAllowed = errors.New("gateway: sender is not in [mesh] allowed_peers")
-	errKeyNotReplicable = errors.New("gateway: key is not a replicable ACME challenge entry")
-	errDomainNotAllowed = errors.New("gateway: domain is not allowed by policy")
-	errHTTPTokenAtCap   = errors.New("gateway: http-01 token cap reached")
 )
 
 // ACMEPeerSender sends one ACME challenge cache entry to every
@@ -81,8 +62,14 @@ type Cache struct {
 
 	allowedPeers map[string]struct{} // lowercase hex identity keys; nil/empty = replication disabled
 
-	mu         sync.Mutex
-	httpTokens map[string]time.Time // received "+http-01" key -> this node's own capped expiry
+	// now stands in for time.Now in every "is this expired" decision
+	// ApplyReceived and its sweep make, so a test can hold or advance
+	// time deterministically without a real sleep. Always time.Now in
+	// production (see NewCache).
+	now func() time.Time
+
+	mu                sync.Mutex
+	replicatedEntries map[string]time.Time // received "+token"/"+http-01" key -> this node's own capped expiry
 }
 
 // NewCache builds a Cache rooted at dir (typically <data_dir>/acme),
@@ -104,10 +91,11 @@ type Cache struct {
 func NewCache(dir string, send ACMEPeerSender, policy *Policy, allowedPeers []string, counters *Counters) *Cache {
 	_ = os.MkdirAll(dir, 0700)
 	c := &Cache{
-		dir:        autocert.DirCache(dir),
-		policy:     policy,
-		counters:   ensureCounters(counters),
-		httpTokens: make(map[string]time.Time),
+		dir:               autocert.DirCache(dir),
+		policy:            policy,
+		counters:          ensureCounters(counters),
+		now:               time.Now,
+		replicatedEntries: make(map[string]time.Time),
 	}
 	for _, k := range allowedPeers {
 		k = strings.ToLower(strings.TrimSpace(k))
@@ -167,28 +155,43 @@ func (c *Cache) Put(ctx context.Context, key string, data []byte) error {
 // separate process started later, with no access to this daemon's
 // memory — can report it. Called from tls.go's wrapGetCertificate, the
 // only place a genuine issuance error (as opposed to a HostPolicy
-// refusal, which is never persisted) is observed. Overwrites any
-// previous note for the same domain: this is a diagnostic breadcrumb for
-// the most recent attempt, not an audit log.
+// refusal, which is never persisted) is observed, and only for a domain
+// the issuance policy itself allows — wrapGetCertificate re-checks that
+// before ever calling here, and errorNotePath enforces the same rule
+// again, independently, so this method's own safety never depends on a
+// caller having done that correctly. Overwrites any previous note for
+// the same domain: this is a diagnostic breadcrumb for the most recent
+// attempt, not an audit log.
 //
 // Written directly to the Cache's own directory rather than through
 // autocert.Cache.Put/dir.Put: autocert.DirCache derives its on-disk
 // filename from the cache key via url.QueryEscape, and a plain domain
-// name never needs escaping, so a literal join is equivalent here and
-// avoids giving this note a key shape (certKey.String) that might someday
-// collide with a real cache entry.
+// name never needs escaping, so a literal join (via errorNotePath) is
+// equivalent here and avoids giving this note a key shape (certKey.String)
+// that might someday collide with a real cache entry.
+//
+// domain that isn't a syntactically valid hostname (errorNotePath's own
+// check) is silently refused: never written anywhere, not even outside
+// dir. There is no way for this method to report that refusal back to
+// wrapGetCertificate's fire-and-forget call, and there doesn't need to
+// be — the point of the check is exactly to guarantee no file is ever
+// touched for such a name.
 func (c *Cache) RecordIssuanceError(domain, errText string) {
-	path := filepath.Join(string(c.dir), domain+"+lasterror")
+	path, err := errorNotePath(string(c.dir), domain)
+	if err != nil {
+		return
+	}
 	note := time.Now().UTC().Format(time.RFC3339) + " " + errText + "\n"
 	_ = os.WriteFile(path, []byte(note), 0600)
 }
 
 // Delete implements autocert.Cache: removes the entry locally only. A
-// replicated entry a peer applied expires by its own TTL instead — this
-// node sends no corresponding delete message, since an older peer
-// would only ever ignore it (see internal/gossip/handlers.go's dispatch
-// default case) and a receiving peer's own cleanup already bounds how
-// long a stale entry can live.
+// replicated entry a peer applied — "+token" or "+http-01" alike — expires
+// by its own TTL instead (evictExpiredReplicatedEntriesLocked): this node
+// sends no corresponding delete message, since an older peer would only
+// ever ignore it (see internal/gossip/handlers.go's dispatch default
+// case) and a receiving peer's own cleanup already bounds how long a
+// stale entry of either kind can live.
 func (c *Cache) Delete(ctx context.Context, key string) error {
 	return c.dir.Delete(ctx, key)
 }
@@ -208,81 +211,6 @@ func isChallengeKey(key string) bool {
 // replicated, and — unlike a certificate — never counted as an issuance.
 func isAccountKey(key string) bool {
 	return key == "acme_account+key" || key == "acme_account.key"
-}
-
-// ApplyReceived validates and, if accepted, writes one entry received
-// from a peer via a MsgACMEChallenge mesh message — called from
-// cmd/anvil's wiring of gossip.Manager.SetACMEChallengeHook.
-//
-// Accepted only if both hold:
-//
-//   - senderPKHex is in [mesh] allowed_peers (the same list NewCache was
-//     built with — checked here, independently of whatever connection-time
-//     peer admission already applied, so this package's own guarantee
-//     doesn't depend on a detail of how the mesh layer is wired);
-//   - for a "+token" key, the domain it names (the key with "+token"
-//     trimmed) passes c.policy.Allowed. A "+http-01" key carries only
-//     the ACME token, not a domain, so there is nothing to check it
-//     against — those are accepted from any allowed peer, capped at
-//     acmeHTTPTokenCap entries with a acmeHTTPTokenLifetime lifetime,
-//     refusing a new key once the cap is reached (an existing key being
-//     refreshed is never refused by the cap).
-//
-// Every other key shape (a certificate, +rsa, or the account key) is
-// refused outright. A key already expired by the sender's own claim is
-// refused before it is ever written.
-func (c *Cache) ApplyReceived(senderPKHex, key string, value []byte, expires time.Time) error {
-	if _, ok := c.allowedPeers[strings.ToLower(strings.TrimSpace(senderPKHex))]; !ok {
-		return fmt.Errorf("%w: %q", errSenderNotAllowed, senderPKHex)
-	}
-	if !isChallengeKey(key) {
-		return fmt.Errorf("%w: %q", errKeyNotReplicable, key)
-	}
-	if !expires.After(time.Now()) {
-		return fmt.Errorf("gateway: refusing an already-expired replicated entry for %q", key)
-	}
-
-	if strings.HasSuffix(key, "+token") {
-		domain := strings.TrimSuffix(key, "+token")
-		if c.policy == nil {
-			return fmt.Errorf("%w: %q (no policy configured)", errDomainNotAllowed, domain)
-		}
-		if _, ok := c.policy.Allowed(context.Background(), domain); !ok {
-			return fmt.Errorf("%w: %q", errDomainNotAllowed, domain)
-		}
-		return c.dir.Put(context.Background(), key, value)
-	}
-
-	// "+http-01": no domain to check — cap and lifetime instead.
-	cappedExpiry := expires
-	if maxExpiry := time.Now().Add(acmeHTTPTokenLifetime); cappedExpiry.After(maxExpiry) {
-		cappedExpiry = maxExpiry
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.evictExpiredHTTPTokensLocked()
-	if _, exists := c.httpTokens[key]; !exists && len(c.httpTokens) >= acmeHTTPTokenCap {
-		return fmt.Errorf("%w: %q (%d entries)", errHTTPTokenAtCap, key, acmeHTTPTokenCap)
-	}
-	c.httpTokens[key] = cappedExpiry
-	return c.dir.Put(context.Background(), key, value)
-}
-
-// evictExpiredHTTPTokensLocked removes every tracked "+http-01" entry
-// past its capped expiry, both from the in-memory accounting map and
-// from the underlying DirCache — a replicated entry expiring by TTL, for
-// the one entry shape this package tracks a lifetime for at all (a
-// "+token" entry's own embedded certificate NotAfter already bounds it —
-// see autocert.go's validCert — so no separate tracking is needed
-// there). The caller must hold c.mu.
-func (c *Cache) evictExpiredHTTPTokensLocked() {
-	now := time.Now()
-	for key, exp := range c.httpTokens {
-		if !exp.After(now) {
-			delete(c.httpTokens, key)
-			_ = c.dir.Delete(context.Background(), key)
-		}
-	}
 }
 
 // CertState describes one site's on-disk certificate entry, for doctor's
@@ -309,10 +237,38 @@ func (c *Cache) SiteCertState(ctx context.Context, domain string) CertState {
 			state.NotAfter = leaf.NotAfter
 		}
 	}
-	if note, err := os.ReadFile(filepath.Join(string(c.dir), domain+"+lasterror")); err == nil {
-		state.LastError = strings.TrimSpace(string(note))
+	if path, err := errorNotePath(string(c.dir), domain); err == nil {
+		if note, err := os.ReadFile(path); err == nil {
+			state.LastError = strings.TrimSpace(string(note))
+		}
 	}
 	return state
+}
+
+// OpenCacheIfExists opens dir — typically <data_dir>/acme — as a Cache
+// for read-only inspection (SiteCertState) without ever creating it:
+// unlike NewCache, this never calls os.MkdirAll. doctor uses this (see
+// cmd/anvil/doctor_gateway.go) specifically because doctor must never be
+// the thing that first creates the acme directory — that directory's
+// ownership and permissions follow from whichever user first starts the
+// daemon with the gateway enabled, and doctor can run as a different
+// user (e.g. during a root-invoked `anvil doctor`). Reports ok=false,
+// touching nothing on disk, if dir does not exist or is not a
+// directory.
+//
+// The returned Cache has no policy, no peer sender and no allowed-peer
+// set — ApplyReceived and Put's replication branch are never called on
+// it; doctor only ever reads via SiteCertState.
+func OpenCacheIfExists(dir string) (*Cache, bool) {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return nil, false
+	}
+	return &Cache{
+		dir:               autocert.DirCache(dir),
+		now:               time.Now,
+		replicatedEntries: make(map[string]time.Time),
+	}, true
 }
 
 // parseLeafCertificate extracts the leaf certificate from a cache entry
