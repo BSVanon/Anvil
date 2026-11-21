@@ -82,6 +82,60 @@ func TestRecordIssuanceError_SurfacesThroughSiteCertState(t *testing.T) {
 	}
 }
 
+// TestRecordIssuanceError_HostileDomainsNeverTouchFilesystem calls
+// Cache.RecordIssuanceError directly with the same hostile domain shapes
+// TestWrapGetCertificate_HostileNamesNeverTouchFilesystem sends through
+// the full request path — but bypassing wrapGetCertificate entirely.
+// That other test only proves HostPolicy refuses these names before
+// RecordIssuanceError is ever reached (no Policy/APIHost is configured
+// there, so every hostile ServerName is refused before recordableHost
+// would even consider recording it); it never actually calls
+// RecordIssuanceError with a hostile domain, so it can't prove this
+// method is safe on its own, independent of every caller always having
+// policy-checked first. This test closes that gap directly: nothing is
+// written outside the acme directory, and no "+lasterror" file is
+// created inside it, for any of these domains.
+func TestRecordIssuanceError_HostileDomainsNeverTouchFilesystem(t *testing.T) {
+	outerDir := t.TempDir()
+	acmeDir := filepath.Join(outerDir, "acme")
+	cache := NewCache(acmeDir, nil, nil, nil, nil)
+
+	hostile := []string{
+		"../../x",
+		"a/b.example",
+		"..",
+		"nul\x00byte.example",
+		strings.Repeat("a", 300) + ".example.org",
+	}
+	for _, name := range hostile {
+		cache.RecordIssuanceError(name, "direct call, bypassing wrapGetCertificate")
+	}
+
+	entries, err := os.ReadDir(outerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "acme" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("outside the acme directory, found %v, want exactly [acme] and nothing else", names)
+	}
+
+	acmeEntries, err := os.ReadDir(acmeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acmeEntries) != 0 {
+		names := make([]string, 0, len(acmeEntries))
+		for _, e := range acmeEntries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("acme directory contains %v after only hostile, direct RecordIssuanceError calls, want none", names)
+	}
+}
+
 // TestWrapGetCertificate_RecordsNonRefusalErrorsOnly confirms
 // wrapGetCertificate's errorRecorder wiring (tls.go): a HostPolicy
 // refusal is never recorded as a site error (it's an access-control
