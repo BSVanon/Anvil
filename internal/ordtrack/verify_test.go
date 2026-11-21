@@ -80,6 +80,43 @@ func TestVerifyRefusesAForgedInputValue(t *testing.T) {
 	}
 }
 
+// A spend that says it is mined has its scripts and input values taken as
+// consensus checked them, so it needs a merkle path the node's headers
+// confirm: from the fetch path, from its BEEF, and on the credential path,
+// which fetches nothing.
+func TestVerifyRefusesAnUnprovenMinedClaim(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	x := h.moveBy(ordtracktest.NewWallet(t), o, 0, h.inscribed("stolen"))
+	ordtracktest.NewChain().Mine(x) // a block these headers do not hold
+	for _, c := range []struct{ withBEEF, fetch bool }{{false, true}, {true, true}, {true, false}} {
+		if s, err := h.verifyTx(op(o, 0), x, c.withBEEF, nil, c.fetch); !errors.Is(err, errInvalid) {
+			t.Fatalf("BEEF %v, fetch %v: spend %+v, err %v; want errInvalid", c.withBEEF, c.fetch, s, err)
+		}
+	}
+}
+
+// A mined spend's input values are read as fetched, not proven by a script
+// run, so a fetch path answering with another transaction's bytes is
+// refused outright rather than moving the sat's position.
+func TestVerifyRefusesAMinedSpendReadThroughALyingSource(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	small := h.fund(1_000)
+	inflated := h.w.Spend(t, []ordtracktest.In{{Tx: h.fund(60_000)}}, ordtracktest.Out{Sats: 50_000})
+	h.store.Add(inflated)
+	x := h.w.Spend(t, []ordtracktest.In{{Tx: small}, {Tx: o}}, ordtracktest.Out{Sats: 1_000}, h.inscribed("v1"))
+	h.chain.Mine(x)
+	h.store.Add(x)
+	if s, err := h.verifyTx(op(o, 0), x, false, nil, true); err != nil || s.kind != Transfer || s.vout != 1 {
+		t.Fatalf("honest: spend %+v, err %v", s, err)
+	}
+	h.tr.v.source = &swapSource{source: h.src, swap: map[string]*transaction.Transaction{small.TxID().String(): inflated}}
+	if s, err := h.verifyTx(op(o, 0), x, false, nil, true); !errors.Is(err, errInvalid) {
+		t.Fatalf("lying source: spend %+v, err %v; want errInvalid", s, err)
+	}
+}
+
 // swapSource answers some txids with another transaction's bytes.
 type swapSource struct {
 	*source

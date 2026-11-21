@@ -140,8 +140,13 @@ func TestOnlyOriginsAreTracked(t *testing.T) {
 	unmined.MerklePath = nil
 
 	// A later link of a chain, a change output and an unmined output are
-	// not taken as origins.
+	// not taken as origins. Only the later link, a mined 1-sat output, costs
+	// an SPV check before its walk back refuses it.
+	spvBefore := h.spvCalls.Load()
 	h.track(op(v1, 0), op(o, 1), op(unmined, 0))
+	if n := h.spvCalls.Load() - spvBefore; n != 1 {
+		t.Fatalf("%d SPV checks, want 1", n)
+	}
 	for _, p := range []string{op(v1, 0), op(o, 1), op(unmined, 0)} {
 		if _, _, err := h.tr.ResolveVersion(p, -1); !errors.Is(err, content.ErrNotTracked) {
 			t.Fatalf("%s: err %v, want ErrNotTracked", p, err)

@@ -79,6 +79,7 @@ func TestParseOrdEnvelope(t *testing.T) {
 		{"malformed then well-formed", envScript(t, hdr, "00", body, "51", "68", hdr, "51", ct, "00", body, "68"), true, "text/html", "<p>hi</p>"},
 		{"OP_IF without OP_FALSE", envScript(t, "63036f7264", "00", body, "68"), false, "", ""},
 		{"ord pushed with pushdata1", envScript(t, "00634c036f7264", "00", body, "68"), false, "", ""},
+		{"another three-byte tag", envScript(t, "0063", push([]byte("xyz")), "51", ct, "00", body, "68"), false, "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

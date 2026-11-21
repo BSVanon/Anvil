@@ -104,11 +104,14 @@ func TestCraftedTipSpendsFallThroughToTheGate(t *testing.T) {
 	unmined := f.w.Spend(t, []ordtracktest.In{{Tx: small}}, ordtracktest.Out{Sats: 900})
 	deep := f.w.Spend(t, []ordtracktest.In{{Tx: unmined}}, ordtracktest.Out{Sats: 800})
 	deeper := f.w.Spend(t, []ordtracktest.In{{Tx: deep}, {Tx: f.origin}}, ordtracktest.Out{Sats: 800}, f.inscribed("deep"))
+	claimed := f.move(thief, f.origin, 0, f.inscribed("claimed"))
+	ordtracktest.NewChain().Mine(claimed) // a merkle path to a block the node does not hold
 	for name, tx := range map[string]*transaction.Transaction{
 		"wrong key on the token input": f.move(thief, f.origin, 0, f.inscribed("stolen")),
 		"sat lands in a larger output": f.move(f.w, f.origin, 0, ordtracktest.Out{Sats: 5_000}),
 		"forged input value":           forged,
 		"unmined ancestry too deep":    deeper,
+		"mined, without a proof":       claimed,
 	} {
 		before := f.cred.verifies.Load()
 		beef := ordtracktest.AtomicBEEF(t, tx)

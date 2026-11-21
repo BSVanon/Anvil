@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +137,36 @@ func TestRequestsWithCredentialsAreLeftToTheGate(t *testing.T) {
 	for deadline := time.Now().Add(5 * time.Second); f.tip() != op(v1, 0); time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the observed broadcast was not followed: tip %s", f.tip())
+		}
+	}
+}
+
+// A tip update is recorded only for a 200 reply about the transaction
+// verified whose status is not rejected.
+func TestRecorderTakesOnlyAnAcceptedBroadcastOfTheVerifiedTx(t *testing.T) {
+	txid, other := strings.Repeat("ab", 32), strings.Repeat("cd", 32)
+	reply := func(id, status string) string {
+		b, _ := json.Marshal(BroadcastResponse{TxID: id, Status: status})
+		return string(b)
+	}
+	for _, c := range []struct {
+		code int
+		body string
+		want bool
+	}{
+		{http.StatusOK, reply(txid, BroadcastStatusPropagated), true},
+		{http.StatusOK, reply(txid, BroadcastStatusQueued), true},
+		{http.StatusOK, reply(txid, BroadcastStatusValidatedOnly), true},
+		{http.StatusOK, reply(txid, BroadcastStatusRejected), false},
+		{http.StatusOK, reply(other, BroadcastStatusPropagated), false},
+		{http.StatusAccepted, reply(txid, BroadcastStatusPropagated), false},
+		{http.StatusOK, "not json", false},
+	} {
+		rec := &broadcastRecorder{ResponseWriter: httptest.NewRecorder()}
+		rec.WriteHeader(c.code)
+		_, _ = rec.Write([]byte(c.body))
+		if got := rec.succeeded(txid); got != c.want {
+			t.Fatalf("%d %s: succeeded %v, want %v", c.code, c.body, got, c.want)
 		}
 	}
 }
