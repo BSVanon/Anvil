@@ -23,13 +23,12 @@ func mockARCWithStatus(t *testing.T, status string, height uint32) *txrelay.ARCC
 	return txrelay.NewARCClient(srv.URL, "")
 }
 
-// refusedARCStatuses are the ARC statuses that do not show the network
-// accepted a transaction (arcAccepted, payment_arc.go): every status before a
-// node accepts it, the orphan status, and the failures.
-var refusedARCStatuses = []string{
+// ambiguousARCStatuses are statuses that may still transition to network
+// acceptance. They require a same-transaction retry, not another payment.
+var ambiguousARCStatuses = []string{
 	"", "UNKNOWN", "QUEUED", "RECEIVED", "STORED",
 	"ANNOUNCED_TO_NETWORK", "REQUESTED_BY_NETWORK", "SENT_TO_NETWORK", "ACCEPTED_BY_NETWORK",
-	"SEEN_IN_ORPHAN_MEMPOOL", "DOUBLE_SPEND_ATTEMPTED", "REJECTED", "MINED_IN_STALE_BLOCK",
+	"SEEN_IN_ORPHAN_MEMPOOL", "DOUBLE_SPEND_ATTEMPTED", "MINED_IN_STALE_BLOCK",
 }
 
 // A direct payment is accepted only when ARC reports SEEN_ON_NETWORK or MINED.
@@ -48,11 +47,19 @@ func TestDirectPaymentNeedsNetworkAcceptance(t *testing.T) {
 		_, err = pg.verifyDirectPayment(context.Background(), ef, payees)
 		return err
 	}
-	for _, status := range refusedARCStatuses {
+	for _, status := range ambiguousARCStatuses {
 		err := pay(status)
 		var refusal *paymentRefusal
+		if !errors.As(err, &refusal) || refusal.code != codePaymentSubmitUncertain || refusal.retryAfter == 0 {
+			t.Fatalf("ARC status %q: want a retryable %s refusal, got %v", status, codePaymentSubmitUncertain, err)
+		}
+	}
+	if err := pay("REJECTED"); err == nil {
+		t.Fatal("ARC status REJECTED was accepted")
+	} else {
+		var refusal *paymentRefusal
 		if !errors.As(err, &refusal) || refusal.code != codePaymentNotAccepted {
-			t.Fatalf("ARC status %q: want a %s refusal, got %v", status, codePaymentNotAccepted, err)
+			t.Fatalf("ARC status REJECTED: want an outright refusal, got %v", err)
 		}
 	}
 	if err := pay("SEEN_ON_NETWORK"); err != nil {
@@ -82,13 +89,20 @@ func TestProofPaymentNeedsNetworkAcceptance(t *testing.T) {
 		srv.Handler().ServeHTTP(w, req)
 		return w
 	}
-	for _, status := range refusedARCStatuses {
-		requirePaymentCode(t, pay(status), codePaymentNotAccepted)
+	for _, status := range ambiguousARCStatuses {
+		w := pay(status)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("ARC status %q: got %d %s, want 503", status, w.Code, w.Body.String())
+		}
+		if codeOf(t, w) != codePaymentSubmitUncertain {
+			t.Fatalf("ARC status %q: got %s, want %s", status, codeOf(t, w), codePaymentSubmitUncertain)
+		}
 	}
+	requirePaymentCode(t, pay("REJECTED"), codePaymentNotAccepted)
 	if w := pay("SEEN_ON_NETWORK"); w.Code != http.StatusOK {
 		t.Fatalf("ARC status SEEN_ON_NETWORK: got %d %s, want 200", w.Code, w.Body.String())
 	}
-	if w := pay("MINED"); w.Code != http.StatusPaymentRequired {
-		t.Fatalf("unproved ARC status MINED: got %d %s, want 402", w.Code, w.Body.String())
+	if w := pay("MINED"); w.Code != http.StatusServiceUnavailable || codeOf(t, w) != codePaymentHeadersBehind {
+		t.Fatalf("unproved ARC status MINED: got %d %s, want retryable 503", w.Code, w.Body.String())
 	}
 }

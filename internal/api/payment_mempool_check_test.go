@@ -46,11 +46,17 @@ func TestRequiredMempoolCheckWithoutARCRefusesProof(t *testing.T) {
 }
 
 // TestRequiredMempoolCheckWithARCIsEnforced: with an ARC client the check is
-// made, so a status that does not show network acceptance is refused and
-// SEEN_ON_NETWORK is served (every status: TestProofPaymentNeedsNetworkAcceptance).
+// made, so a non-final status is answered as ambiguous and SEEN_ON_NETWORK
+// is served (every status: TestProofPaymentNeedsNetworkAcceptance).
 func TestRequiredMempoolCheckWithARCIsEnforced(t *testing.T) {
 	refused := mempoolCheckServer(t, true, mockARCWithStatus(t, "SEEN_IN_ORPHAN_MEMPOOL", 0))
-	requirePaymentCode(t, payStatsByProof(t, refused, true), codePaymentNotAccepted)
+	w := payStatsByProof(t, refused, true)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("orphan status: got %d %s, want 503", w.Code, w.Body.String())
+	}
+	if codeOf(t, w) != codePaymentSubmitUncertain {
+		t.Fatalf("orphan status: got code %s, want %s", codeOf(t, w), codePaymentSubmitUncertain)
+	}
 
 	accepted := mempoolCheckServer(t, true, mockARCWithStatus(t, "SEEN_ON_NETWORK", 0))
 	if w := payStatsByProof(t, accepted, true); w.Code != http.StatusOK {

@@ -26,8 +26,8 @@ const (
 	// unlocking script (errDirectPaymentUnverifiable,
 	// payment_direct_verify.go).
 	codeDirectPaymentUnverifiable = "ERR_DIRECT_PAYMENT_UNVERIFIABLE"
-	// codePaymentNotAccepted: ARC did not report the payment transaction as
-	// accepted by the network (checkARCAcceptance, payment_arc.go).
+	// codePaymentNotAccepted: ARC conclusively rejected the payment transaction
+	// (checkARCAcceptance, payment_arc.go).
 	codePaymentNotAccepted = "ERR_PAYMENT_NOT_ACCEPTED"
 	// codePaymentReplayed: the payment's transaction already paid for a
 	// request, on either payment path (paymentReplaySet, payment_replay.go).
@@ -62,8 +62,8 @@ const (
 )
 
 // paymentRefusal is a payment refused with one of the codes above. One with a
-// retryAfter refuses it because the node is busy, not because the payment is
-// wrong: it is answered 503 with that Retry-After.
+// retryAfter is temporary or ambiguous, not proof that the payment is wrong:
+// it is answered 503 with that Retry-After.
 type paymentRefusal struct {
 	code       string
 	msg        string

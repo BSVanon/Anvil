@@ -63,7 +63,7 @@ func TestDirectPaymentRefusalsCarryStableCodes(t *testing.T) {
 	}
 
 	notAccepted := testServerWithPaymentGate(t, 100)
-	notAccepted.paymentGate.arcClient = mockARCWithStatus(t, "ANNOUNCED_TO_NETWORK", 0)
+	notAccepted.paymentGate.arcClient = mockARCWithStatus(t, "REJECTED", 0)
 	w = serveDirectPayment(notAccepted, "/stats", ef)
 	requirePaymentCode(t, w, codePaymentNotAccepted)
 	if !strings.Contains(w.Body.String(), "retry the same transaction shortly") || !strings.Contains(w.Body.String(), "rather than paying with a new one") {

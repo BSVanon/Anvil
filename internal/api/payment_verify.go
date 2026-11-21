@@ -180,9 +180,11 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 			return nil, err
 		}
 		if err := checkARCAcceptance(arcResp, txHash); err != nil {
+			ambiguousSubmit = isPaymentOutcomeUncertain(err)
 			return nil, err
 		}
 		if err := pg.checkPaymentFinality(arcResp, txHash); err != nil {
+			ambiguousSubmit = isPaymentOutcomeUncertain(err)
 			return nil, err
 		}
 	}

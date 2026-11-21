@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,12 +30,30 @@ func checkARCAcceptance(resp *txrelay.ARCResponse, expected *chainhash.Hash) err
 		if expected != nil {
 			want = expected.String()
 		}
-		return paymentNotAccepted(fmt.Sprintf("ARC answered for transaction %q, want %q", got, want))
+		return paymentOutcomeUncertain(fmt.Sprintf("ARC answered for transaction %q, want %q", got, want))
 	}
 	if !arcAccepted(resp.Status) {
-		return paymentNotAccepted(fmt.Sprintf("ARC did not report the payment as accepted by the network: status %q, want SEEN_ON_NETWORK or MINED", resp.Status))
+		reason := fmt.Sprintf("ARC did not report the payment as accepted by the network: status %q, want SEEN_ON_NETWORK or MINED", resp.Status)
+		if arcRefusedOutright(resp, nil) {
+			return paymentNotAccepted(reason)
+		}
+		return paymentOutcomeUncertain(reason)
 	}
 	return nil
+}
+
+func paymentOutcomeUncertain(reason string) error {
+	return &paymentRefusal{
+		code:       codePaymentSubmitUncertain,
+		msg:        reason + "; ARC may still accept this transaction, so retry the same transaction rather than paying again",
+		retryAfter: directPaymentBusyRetry,
+	}
+}
+
+func isPaymentOutcomeUncertain(err error) bool {
+	var refusal *paymentRefusal
+	return errors.As(err, &refusal) &&
+		(refusal.code == codePaymentSubmitUncertain || refusal.code == codePaymentHeadersBehind)
 }
 
 func paymentNotAccepted(reason string) error {
@@ -106,8 +125,9 @@ func (pg *PaymentGate) checkPaymentFinality(resp *txrelay.ARCResponse, txid *cha
 
 func paymentNotFinal(reason string) error {
 	return &paymentRefusal{
-		code: codePaymentHeadersBehind,
-		msg:  reason + "; retry the same transaction once this node can verify it",
+		code:       codePaymentHeadersBehind,
+		msg:        reason + "; retry the same transaction once this node can verify it",
+		retryAfter: directPaymentBusyRetry,
 	}
 }
 

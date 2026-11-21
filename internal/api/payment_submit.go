@@ -77,9 +77,9 @@ func submitPayment(ctx context.Context, arc *txrelay.ARCClient, raw []byte) (*tx
 }
 
 // ambiguousPaymentSubmit turns a submit error that does not prove ARC
-// rejected the transaction into a retryable 503. ARC's transaction-policy
-// status range is a definite rejection; transport, parse and other HTTP
-// failures may have happened after acceptance.
+// rejected the transaction into a retryable 503. ARC's documented
+// transaction-policy errors in arcRefusedHTTP are definite rejections;
+// transport, form and server failures may have happened after acceptance.
 func ambiguousPaymentSubmit(err error) error {
 	if !paymentSubmitIsAmbiguous(err) {
 		return err
@@ -94,8 +94,8 @@ func ambiguousPaymentSubmit(err error) error {
 
 func paymentSubmitIsAmbiguous(err error) bool {
 	var httpErr *txrelay.ARCHTTPError
-	if errors.As(err, &httpErr) && httpErr.StatusCode >= 460 && httpErr.StatusCode <= 475 {
-		return false
+	if errors.As(err, &httpErr) {
+		return !arcRefusedHTTP[httpErr.StatusCode]
 	}
 	return true
 }

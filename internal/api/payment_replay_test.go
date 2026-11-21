@@ -146,9 +146,9 @@ func TestDirectPaymentReplayRefused(t *testing.T) {
 	}
 }
 
-// TestDirectPaymentRetryAfterRefusedStatus: a payment ARC did not yet report
-// as accepted is not remembered, so the same transaction can pay once ARC
-// does.
+// TestDirectPaymentRetryAfterAmbiguousStatus: a payment with a transitional
+// ARC status is not remembered, so the same transaction can pay once ARC
+// reports network acceptance.
 func TestDirectPaymentRetryAfterRefusedStatus(t *testing.T) {
 	var status atomic.Value
 	status.Store("SENT_TO_NETWORK")
@@ -162,7 +162,13 @@ func TestDirectPaymentRetryAfterRefusedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serialize extended format: %v", err)
 	}
-	requirePaymentCode(t, serveDirectPayment(srv, "/stats", ef), codePaymentNotAccepted)
+	w := serveDirectPayment(srv, "/stats", ef)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("transitional ARC status: got %d %s, want 503", w.Code, w.Body.String())
+	}
+	if codeOf(t, w) != codePaymentSubmitUncertain {
+		t.Fatalf("transitional ARC status: got code %s, want %s", codeOf(t, w), codePaymentSubmitUncertain)
+	}
 	status.Store("SEEN_ON_NETWORK")
 	if w := serveDirectPayment(srv, "/stats", ef); w.Code != http.StatusOK {
 		t.Fatalf("the retry once ARC reports SEEN_ON_NETWORK: got %d %s, want 200", w.Code, w.Body.String())

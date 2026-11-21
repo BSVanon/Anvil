@@ -59,10 +59,11 @@ mint a nonce coin that the advertised payment path does not need.
 
 **Direct payments need ARC.** The node broadcasts a direct payment and
 accepts it only when ARC reports that the network accepted it:
-`SEEN_ON_NETWORK` or `MINED`. Any other status, including
-`SEEN_IN_ORPHAN_MEMPOOL`, is refused with 402 and code
-`ERR_PAYMENT_NOT_ACCEPTED`; the network may still accept the transaction, so
-retry the same transaction shortly rather than pay with a new one. A node
+`SEEN_ON_NETWORK` or `MINED`. `REJECTED` is an outright refusal with 402 and
+code `ERR_PAYMENT_NOT_ACCEPTED`. Every other ARC transaction status, including
+`SEEN_IN_ORPHAN_MEMPOOL`, may still transition to acceptance and is answered
+503 with `ERR_PAYMENT_SUBMIT_UNCERTAIN`, no new offer, and instructions to
+retry the same transaction. A node
 with no ARC client refuses every `X-Bsv-Payment` with 402 and code
 `ERR_DIRECT_PAYMENT_UNAVAILABLE`. Such a node cannot take a payment from a
 client. An `X402-Proof` whose challenge sets `require_mempool_accept` (the
@@ -71,10 +72,12 @@ two statuses. A node with that setting and no ARC client cannot check them,
 so it refuses every such proof with 402 and code
 `ERR_MEMPOOL_CHECK_UNAVAILABLE`.
 
-The ARC answer must name the submitted txid. A `MINED` answer is final only
+The ARC answer must name the submitted txid. A mismatched answer is ambiguous.
+A `MINED` answer is final only
 when its BRC-74 merkle path proves that txid against the node's own header at
 the reported height, and its block hash names that header. A missing or
-unverifiable proof is refused until the node can verify it. A transport,
+unverifiable proof is answered 503 without a new offer until the node can
+verify it. A transport,
 server or response failure after submission is ambiguous: ARC may already
 have accepted the transaction. It answers 503 with
 `ERR_PAYMENT_SUBMIT_UNCERTAIN`, no new payment offer, and tells the client to
