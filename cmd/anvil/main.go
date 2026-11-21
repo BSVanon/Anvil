@@ -104,7 +104,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	logger := slog.Default()
+	logger := installEngineLog()
 
 	log.Printf("anvil node %q v%s starting", cfg.Node.Name, anvilversion.Version)
 	log.Printf("  data_dir:   %s", cfg.Node.DataDir)
