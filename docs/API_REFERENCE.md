@@ -494,7 +494,10 @@ accepts it only when ARC reports that the network accepted it:
 `ERR_PAYMENT_NOT_ACCEPTED`. A node with no ARC client refuses every
 `X-Bsv-Payment` with 402 and code `ERR_DIRECT_PAYMENT_UNAVAILABLE`; pay such
 a node with `X402-Proof`. An `X402-Proof` whose challenge sets
-`require_mempool_accept` is held to the same two statuses.
+`require_mempool_accept` (the operator's `require_mempool` setting, off by
+default) is held to the same two statuses. A node with that setting and no
+ARC client cannot check them, so it refuses every such proof with 402 and
+code `ERR_MEMPOOL_CHECK_UNAVAILABLE`.
 
 **One transaction pays for one request, on either path.** The node
 remembers the txid of every payment it accepts, by `X402-Proof` or by

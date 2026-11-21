@@ -29,6 +29,10 @@ const (
 	// (checkPaymentDepth, payment_arc.go). The same transaction can be
 	// retried once they catch up.
 	codePaymentHeadersBehind = "ERR_PAYMENT_HEADERS_BEHIND"
+	// codeMempoolCheckUnavailable: the challenge requires that the network
+	// accept the payment, and the node has no ARC client to ask
+	// (errMempoolCheckUnavailable).
+	codeMempoolCheckUnavailable = "ERR_MEMPOOL_CHECK_UNAVAILABLE"
 )
 
 // paymentRefusal is a payment refused with one of the codes above.
@@ -49,6 +53,15 @@ var errDirectPaymentUnavailable = &paymentRefusal{
 	code: codeDirectPaymentUnavailable,
 	msg: "this node takes no X-Bsv-Payment because it has no ARC client to confirm that a payment's inputs exist and are unspent; " +
 		"send the request without a payment header to get an X402-Challenge, then pay it with an X402-Proof",
+}
+
+// errMempoolCheckUnavailable refuses an X402-Proof whose challenge requires
+// mempool acceptance (the operator's require_mempool setting) on a node with
+// no ARC client. Such a node cannot learn whether the network accepted the
+// payment, so it fails closed rather than skip the check.
+var errMempoolCheckUnavailable = &paymentRefusal{
+	code: codeMempoolCheckUnavailable,
+	msg:  "this node requires that the network accept a payment before it serves the request, and it has no ARC client to confirm that",
 }
 
 // writePaymentRejection answers a refused payment: the body-read status for

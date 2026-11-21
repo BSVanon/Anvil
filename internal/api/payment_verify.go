@@ -172,11 +172,15 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 	defer func() { pg.replays.end(*txHash, err == nil) }()
 
 	// Step 9: Mempool acceptance via ARC.
-	// When requireMempool is true AND an ARC client is available, broadcast
-	// the proof tx and require a status that shows the network accepted it
-	// (arcAccepted, payment_arc.go). This prevents attackers from submitting
-	// structurally valid but never-broadcast transactions.
-	if challenge.RequireMempoolAccept && pg.arcClient != nil {
+	// When the challenge requires it, broadcast the proof tx and require a
+	// status that shows the network accepted it (arcAccepted, payment_arc.go).
+	// This prevents attackers from submitting structurally valid but
+	// never-broadcast transactions. A node with no ARC client cannot ask, so
+	// it refuses the proof rather than skip the check.
+	if challenge.RequireMempoolAccept {
+		if pg.arcClient == nil {
+			return nil, errMempoolCheckUnavailable
+		}
 		arcResp, err := pg.arcClient.Submit(txBytes)
 		if err != nil {
 			return nil, fmt.Errorf("ARC broadcast failed: %w", err)
