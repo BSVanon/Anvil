@@ -3,6 +3,7 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -52,18 +54,16 @@ func (s *Snapshot) HasAnyOrigin() bool {
 // Allowlist is the sites file's live, hot-reloaded state (decision 7). The
 // zero value is not usable; construct with NewAllowlist.
 type Allowlist struct {
-	path    string
-	apiHost string // normalised; a "domain" entry equal to this is ignored on reload (D2)
-	logger  *slog.Logger
+	path              string
+	registrationsPath string
+	apiHost           string // normalised; a "domain" entry equal to this is ignored on reload (D2)
+	logger            *slog.Logger
 
 	current atomic.Pointer[Snapshot]
 
-	// mtime/loggedBadAt/loggedOverlapAt are only touched from Reload.
-	// cmd/anvil's wiring calls Reload from a single ticker goroutine, so
-	// no lock is needed; tests call it directly and synchronously for the
-	// same reason.
-	mtime           time.Time
-	loggedBadAt     time.Time
+	reloadMu        sync.Mutex
+	seenPath        bool
+	loggedBadAt     map[string]time.Time
 	loggedOverlapAt time.Time
 }
 
@@ -85,10 +85,16 @@ type Allowlist struct {
 // this is the hot-reload-time half of D2's overlap rule, for an entry
 // added after the node is already running.
 func NewAllowlist(path, apiHost string, logger *slog.Logger) *Allowlist {
+	return NewAllowlistWithRegistrations(path, "", apiHost, logger)
+}
+
+// NewAllowlistWithRegistrations merges the operator file with the daemon's
+// registration file. A missing registration file is an empty registration set.
+func NewAllowlistWithRegistrations(path, registrationsPath, apiHost string, logger *slog.Logger) *Allowlist {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	a := &Allowlist{path: path, apiHost: normalizeHost(apiHost), logger: logger}
+	a := &Allowlist{path: path, registrationsPath: registrationsPath, apiHost: normalizeHost(apiHost), logger: logger, loggedBadAt: make(map[string]time.Time)}
 	a.current.Store(&Snapshot{})
 	a.Reload()
 	return a
@@ -105,52 +111,77 @@ func (a *Allowlist) Snapshot() *Snapshot {
 	return &Snapshot{}
 }
 
-// Reload re-reads the sites file if its mtime changed since the last
-// successful check, parses it, and atomically swaps in the new snapshot.
+// Reload re-reads both files and atomically swaps in their merged snapshot.
 // A parse error — or the file vanishing after one existed — keeps the
 // last good snapshot and logs once per distinct mtime, so a broken edit
-// doesn't spam the log every 5s until it's fixed (decision 7). Not safe
-// for concurrent callers; cmd/anvil's wiring runs it from one goroutine.
+// doesn't spam the log every 5s until it's fixed (decision 7).
 func (a *Allowlist) Reload() {
-	info, err := os.Stat(a.path)
+	a.reloadMu.Lock()
+	defer a.reloadMu.Unlock()
+	operator, operatorTime, operatorExists, err := readSitesSnapshot(a.path, !a.seenPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// No sites file yet is not a parse error — nothing to serve
-			// until one is added or the configured path is fixed.
-			return
-		}
-		a.logBad(a.mtime, fmt.Errorf("stat sites file: %w", err))
+		a.logBad(a.path, operatorTime, err)
 		return
 	}
-	if !a.mtime.IsZero() && !info.ModTime().After(a.mtime) {
-		return
-	}
-	data, err := os.ReadFile(a.path)
+	a.seenPath = a.seenPath || operatorExists
+	registered, registeredTime, _, err := readSitesSnapshot(a.registrationsPath, true)
 	if err != nil {
-		a.logBad(info.ModTime(), fmt.Errorf("read sites file: %w", err))
+		a.logBad(a.registrationsPath, registeredTime, err)
 		return
 	}
-	snap, err := parseSitesFile(data)
-	if err != nil {
-		a.logBad(info.ModTime(), err)
-		return
-	}
+	snap := mergeSnapshots(operator, registered)
 	if a.apiHost != "" {
 		if _, ok := snap.domains[a.apiHost]; ok {
 			delete(snap.domains, a.apiHost)
-			a.logOverlap(info.ModTime())
+			mtime := operatorTime
+			if registeredTime.After(mtime) {
+				mtime = registeredTime
+			}
+			a.logOverlap(mtime)
 		}
 	}
-	a.mtime = info.ModTime()
 	a.current.Store(snap)
 }
 
-func (a *Allowlist) logBad(mtime time.Time, err error) {
-	if mtime.Equal(a.loggedBadAt) {
+func readSitesSnapshot(path string, missingEmpty bool) (*Snapshot, time.Time, bool, error) {
+	empty := &Snapshot{domains: map[string]struct{}{}, origins: map[string]struct{}{}}
+	if path == "" {
+		return empty, time.Time{}, false, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) && missingEmpty {
+			return empty, time.Time{}, false, nil
+		}
+		return nil, time.Time{}, false, fmt.Errorf("stat sites file: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, info.ModTime(), true, fmt.Errorf("read sites file: %w", err)
+	}
+	snap, err := parseSitesFile(data)
+	return snap, info.ModTime(), true, err
+}
+
+func mergeSnapshots(left, right *Snapshot) *Snapshot {
+	merged := &Snapshot{domains: map[string]struct{}{}, origins: map[string]struct{}{}}
+	for _, snap := range []*Snapshot{left, right} {
+		for domain := range snap.domains {
+			merged.domains[domain] = struct{}{}
+		}
+		for origin := range snap.origins {
+			merged.origins[origin] = struct{}{}
+		}
+	}
+	return merged
+}
+
+func (a *Allowlist) logBad(path string, mtime time.Time, err error) {
+	if previous, ok := a.loggedBadAt[path]; ok && mtime.Equal(previous) {
 		return
 	}
-	a.loggedBadAt = mtime
-	a.logger.Warn("gateway sites file invalid, keeping last good snapshot", "path", a.path, "error", err)
+	a.loggedBadAt[path] = mtime
+	a.logger.Warn("gateway sites file invalid, keeping last good snapshot", "path", path, "error", err)
 }
 
 // logOverlap warns, once per distinct mtime, that the sites file lists
@@ -182,8 +213,14 @@ func parseSitesFile(data []byte) (*Snapshot, error) {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) != 2 {
+		if len(fields) != 2 && !(len(fields) == 5 && fields[2] == "#" && fields[3] == "registered-by") {
 			return nil, fmt.Errorf(`line %d: expected "domain <name>" or "origin <txid>_<vout>", got %q`, lineNo, line)
+		}
+		if len(fields) == 5 {
+			owner, err := hex.DecodeString(fields[4])
+			if err != nil || len(owner) != 33 {
+				return nil, fmt.Errorf("line %d: invalid registration owner", lineNo)
+			}
 		}
 		switch strings.ToLower(fields[0]) {
 		case "domain":

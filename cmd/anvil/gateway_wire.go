@@ -54,7 +54,13 @@ func gatewayHandler(ctx context.Context, cfg *config.Config, srv *api.Server, lo
 	// so both must increment the same instance.
 	counters := &gateway.Counters{}
 
-	allow := gateway.NewAllowlist(cfg.Gateway.SitesFile, cfg.Gateway.APIHost, logger)
+	allow := gateway.NewAllowlistWithRegistrations(
+		cfg.Gateway.SitesFile,
+		gateway.RegistrationFile(cfg.Node.DataDir),
+		cfg.Gateway.APIHost,
+		logger,
+	)
+	srv.SetGatewayRegistrationReload(allow.Reload)
 	resolver := gateway.NewResolver(gateway.ResolverConfig{
 		PositiveTTL: time.Duration(cfg.Gateway.TXTCacheTTL) * time.Second,
 		StaleGrace:  time.Duration(cfg.Gateway.TXTStaleGrace) * time.Second,

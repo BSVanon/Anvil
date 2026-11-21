@@ -491,8 +491,12 @@ func main() {
 			// canonical primitive instead of the bespoke path.
 		}
 	}
-
-	// Anvil mesh — go-sdk auth.Peer over WebSocket. Requires wallet for identity.
+	var verifierWallet sdkwallet.Interface
+	if nodeWallet != nil {
+		verifierWallet = nodeWallet.Wallet()
+	}
+	certGate, stopCertGate := wireCertificateGate(cfg, verifierWallet, logger)
+	defer stopCertGate()
 	var gossipMgr *anvilgossip.Manager
 	meshWanted := len(cfg.Mesh.Seeds) > 0 || cfg.Node.Listen != ""
 	if meshWanted && nodeWallet == nil {
@@ -500,12 +504,10 @@ func main() {
 			len(cfg.Mesh.Seeds), cfg.Node.Listen)
 	}
 	if meshWanted && nodeWallet != nil {
-		// Bond checker — if configured, peers must prove a bond UTXO to join the mesh
 		if cfg.Mesh.MinBondSats > 0 {
 			bondCheck = bond.NewChecker(cfg.Mesh.MinBondSats, cfg.Mesh.BondCheckURL)
 			log.Printf("bond required: %d sats minimum for mesh peering", cfg.Mesh.MinBondSats)
 		}
-
 		localPKSet := make(map[string]struct{}) // local pubkeys exempt from double-publish
 		var localPKs []string
 		if identityPubHex != "" {
@@ -757,9 +759,9 @@ func main() {
 		p2pBlockFetcher = p2p.NewBlockTxFetcher(cfg.BSV.Nodes, logger)
 		defer p2pTxFetcher.Close()
 	}
-
-	// REST API
 	validator := spv.NewValidator(headerStore)
+	proofFetcher := spv.NewProofFetcher(arcClient, logger)
+	certificateAPI := wireAPICertificateGate(cfg, certGate, logger)
 	srv := api.NewServer(api.ServerConfig{
 		HeaderStore:          headerStore,
 		ProofStore:           proofStore,
@@ -834,18 +836,14 @@ func main() {
 			}
 			return nil
 		}(),
-		ProofFetcher:    spv.NewProofFetcher(arcClient, logger),
+		ProofFetcher:    proofFetcher,
 		P2PTxSource:     p2pTxFetcher,
 		P2PBlockSource:  p2pBlockFetcher,
 		MsgStore:        msgStore,
 		MessagingPolicy: messagingPolicy, // see its doc comment
+		CertificateGate: certificateAPI,
 		SigningKey:      identityPrivKey,
-		Wallet: func() sdkwallet.Interface {
-			if nodeWallet != nil {
-				return nodeWallet.Wallet()
-			}
-			return nil
-		}(),
+		Wallet:          verifierWallet,
 		HeaderLookup: func(height int) string {
 			if height < 0 {
 				return ""
@@ -859,6 +857,7 @@ func main() {
 		CustomCapabilities: cfg.Capabilities.Custom,
 		DataDir:            cfg.Node.DataDir,
 	})
+	wireCertificateSpendVerifier(certGate, &trackSource{proofs: proofStore, fetcher: proofFetcher, rawTx: srv.ContentServer().RawTx, headers: headerStore})
 	if nodeWallet != nil {
 		nodeWallet.RegisterRoutes(srv.Mux(), srv.RequireAuth)
 	}

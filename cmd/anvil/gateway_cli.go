@@ -22,7 +22,7 @@ func cmdGateway(args []string) {
 		os.Exit(1)
 	}
 	switch args[0] {
-	case "site":
+	case "site", "sites":
 		cmdGatewaySite(args[1:])
 	case "peer":
 		cmdGatewayPeer(args[1:])
@@ -38,9 +38,9 @@ func printGatewayUsage() {
 	fmt.Fprintln(os.Stderr, `usage: anvil gateway <command> [args]
 
 commands:
-  site add <domain|origin>                     allow a site to be served
-  site remove <domain|origin>                  stop serving a site
-  site list                                    list allowed sites and their TXT status
+  site add <domain|origin>                     allow an operator site to be served
+  site remove <domain|origin>                  stop serving an operator or registered site
+  site list                                    list operator and registered sites
   peer add <pubkey> <mesh-url> <overlay-url>   add or update a federated gateway peer
   peer remove <pubkey>                         remove a federated gateway peer
   peer list                                    list federated gateway peers

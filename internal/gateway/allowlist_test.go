@@ -136,6 +136,46 @@ func TestAllowlist_HotReloadAddAndRemove(t *testing.T) {
 	}
 }
 
+func TestAllowlistReloadMergesOperatorAndRegisteredDomains(t *testing.T) {
+	dir := t.TempDir()
+	operatorPath := filepath.Join(dir, "operator.conf")
+	registrationPath := filepath.Join(dir, "gateway-registrations.conf")
+	identity := registrationIdentity('1')
+	writeAt(t, operatorPath, "domain operator.example\n", time.Now())
+	writeAt(t, registrationPath, "domain registered.example  # registered-by "+identity+"\n", time.Now())
+
+	allow := NewAllowlistWithRegistrations(operatorPath, registrationPath, "", slog.Default())
+	if !allow.Snapshot().HasDomain("operator.example") || !allow.Snapshot().HasDomain("registered.example") {
+		t.Fatal("merged snapshot did not include both files")
+	}
+	writeAt(t, registrationPath, "domain replacement.example  # registered-by "+identity+"\n", time.Now().Add(time.Second))
+	allow.Reload()
+	if allow.Snapshot().HasDomain("registered.example") || !allow.Snapshot().HasDomain("replacement.example") {
+		t.Fatal("registration reload did not replace the registered domain")
+	}
+	if err := os.Remove(registrationPath); err != nil {
+		t.Fatal(err)
+	}
+	allow.Reload()
+	if allow.Snapshot().HasDomain("replacement.example") || !allow.Snapshot().HasDomain("operator.example") {
+		t.Fatal("missing registration file was not treated as empty")
+	}
+}
+
+func TestAllowlistBadRegistrationFileKeepsLastSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	operatorPath := filepath.Join(dir, "operator.conf")
+	registrationPath := filepath.Join(dir, "gateway-registrations.conf")
+	writeAt(t, operatorPath, "domain operator.example\n", time.Now())
+	writeAt(t, registrationPath, "domain registered.example  # registered-by "+registrationIdentity('1')+"\n", time.Now())
+	allow := NewAllowlistWithRegistrations(operatorPath, registrationPath, "", slog.Default())
+	writeAt(t, registrationPath, "invalid registration\n", time.Now().Add(time.Second))
+	allow.Reload()
+	if !allow.Snapshot().HasDomain("registered.example") || !allow.Snapshot().HasDomain("operator.example") {
+		t.Fatal("bad registration file replaced the last good merged snapshot")
+	}
+}
+
 func TestAllowlist_BadFileKeepsLastGoodSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gateway-sites.conf")

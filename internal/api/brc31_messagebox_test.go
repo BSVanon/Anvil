@@ -45,6 +45,14 @@ func newKeyWallet(t *testing.T) (*ec.PrivateKey, string, sdkwallet.Interface) {
 // (server) wallet identity.
 func testServerBRC31(t *testing.T) (*Server, *httptest.Server, string) {
 	t.Helper()
+	srv, nodeHex := buildTestServerBRC31(t, nil)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return srv, ts, nodeHex
+}
+
+func buildTestServerBRC31(t *testing.T, certificateAdmission func(sdkwallet.Interface) CertificateAdmission) (*Server, string) {
+	t.Helper()
 	hdir := t.TempDir()
 	hs, err := headers.NewTestStore(hdir)
 	if err != nil {
@@ -72,23 +80,26 @@ func testServerBRC31(t *testing.T) (*Server, *httptest.Server, string) {
 	broadcaster := txrelay.NewBroadcaster(mp, nil, logger)
 
 	_, nodeHex, nodeWallet := newKeyWallet(t)
+	var admission CertificateAdmission
+	if certificateAdmission != nil {
+		admission = certificateAdmission(nodeWallet)
+	}
 
 	srv := NewServer(ServerConfig{
 		HeaderStore: hs, ProofStore: ps, EnvelopeStore: es,
-		Validator:   spv.NewValidator(hs),
-		Broadcaster: broadcaster,
-		AuthToken:   "test-operator-token",
-		IdentityPub: nodeHex,
-		MsgStore:    ms,
-		Wallet:      nodeWallet,
-		Logger:      logger,
+		Validator:       spv.NewValidator(hs),
+		Broadcaster:     broadcaster,
+		AuthToken:       "test-operator-token",
+		IdentityPub:     nodeHex,
+		MsgStore:        ms,
+		Wallet:          nodeWallet,
+		Logger:          logger,
+		CertificateGate: admission,
 	})
 	if !srv.messageboxBRC31 {
 		t.Fatal("expected messageboxBRC31 to be enabled when Wallet is set")
 	}
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
-	return srv, ts, nodeHex
+	return srv, nodeHex
 }
 
 // authPost performs a BRC-31-authenticated POST via the go-sdk AuthFetch client

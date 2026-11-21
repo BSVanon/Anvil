@@ -95,11 +95,11 @@ type Server struct {
 	messageboxBRC31   bool                    // true when messagebox routes are served behind canonical BRC-31 mutual auth
 	gatewayStatsFn    func() map[string]int64 // optional: merged into GET /stats under "gateway" — see SetGatewayStats
 	messagingPolicy   MessagingPolicy         // see MessagingPolicy's doc comment
-	tracking          trackingSlot            // POST /broadcast's tip credential; see SetTipCredential
+	certificateGate   CertificateAdmission
+	tracking          trackingSlot // POST /broadcast's tip credential; see SetTipCredential
 }
 
-// HealthCheck is a named subsystem health probe. Returns a warning string
-// if the subsystem is degraded, or "" if healthy.
+// HealthCheck is a named subsystem health probe; an empty result is healthy.
 type HealthCheck struct {
 	Name  string
 	Check func() string
@@ -152,9 +152,7 @@ type ServerConfig struct {
 	ProofFetcher    beefFetcher
 	MsgStore        *messaging.Store
 	SigningKey      *ec.PrivateKey // node identity key for signing envelopes
-	// Wallet is the node-identity go-sdk wallet. When non-nil, the BRC-33
-	// messagebox routes (/sendMessage, /listMessages, /acknowledgeMessage,
-	// /messages/subscribe) are served behind canonical BRC-31 mutual auth so
+	// Wallet enables canonical BRC-31 mutual auth for messagebox routes, so
 	// each request is authenticated by the sender's own identity key — no
 	// shared operator secret in public clients. Nil (mesh/wallet disabled)
 	// keeps the legacy operator-token gate.
@@ -164,6 +162,7 @@ type ServerConfig struct {
 	// They allow custom capability declarations without code changes.
 	CustomCapabilities []map[string]interface{}
 	MessagingPolicy    MessagingPolicy // see its doc comment
+	CertificateGate    CertificateAdmission
 }
 
 // NewServer creates a new REST API server.
@@ -230,6 +229,7 @@ func NewServer(cfg ServerConfig) *Server {
 		customCaps:        cfg.CustomCapabilities,
 		nodeWallet:        cfg.Wallet,
 		messagingPolicy:   cfg.MessagingPolicy,
+		certificateGate:   cfg.CertificateGate,
 	}
 	if s.nodeName == "" {
 		s.nodeName = "anvil"

@@ -29,16 +29,11 @@ type Config struct {
 	Capabilities CapabilitiesConfig `toml:"capabilities"`
 	Gateway      GatewayConfig      `toml:"gateway"`
 	Content      ContentConfig      `toml:"content"`
+	CertGate     CertGateConfig     `toml:"certgate"`
 }
 
-// CapabilitiesConfig lets operators declare capabilities beyond the built-in
-// ones (data feeds, SPV, headers). Custom entries are surfaced in
-// /.well-known/anvil so machine consumers (agents, DEX discovery) can find
-// services a node provides — e.g. an AVOS oracle relay, an oracle feed, etc.
-//
-// See ANVIL_NODE_HANDOFF.md for the AVOS case: an operator running an AVOS
-// oracle declares a capability entry so the Anvil manifest advertises it,
-// avoiding a separate .well-known/avos endpoint.
+// CapabilitiesConfig holds custom entries surfaced in /.well-known/anvil.
+// The entries let machine consumers discover operator-provided services.
 type CapabilitiesConfig struct {
 	// Custom is a freeform list of capability entries. Each entry is a
 	// map[string]interface{} so operators can include any fields relevant
@@ -506,6 +501,9 @@ func Load(path string) (*Config, error) {
 
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if err := finalizeCertGate(data, cfg); err != nil {
+		return nil, err
 	}
 	if cfg.API.TrustProxyHops < 1 {
 		cfg.API.TrustProxyHops = 1

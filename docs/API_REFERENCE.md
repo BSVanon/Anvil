@@ -33,6 +33,28 @@ Point-to-point messaging between compressed secp256k1 identities. BRC-31
 mutual authentication is preferred and scopes callers to their own identity;
 the operator token remains a broad, node-scoped fallback.
 
+Certificate admission is optional. `[messaging] require_sender_certificate`
+gates message sends, while `[gateway] allow_registration` mounts the gateway
+registration routes described below. Enabling either switch makes the node ask
+every BRC-31 client for a certificate during the one shared handshake for this
+host. A client without a certificate cannot authenticate to any BRC-31 route on
+the node, including message reads. An authenticated sender without a current
+admission receives `403 ERR_SENDER_CERTIFICATE_REQUIRED` from `/sendMessage`.
+
+Every gated handler checks the admission cache. This remains necessary because
+go-sdk v1.7.7 marks a session authenticated before its received-certificate
+listener completes (`auth/peer.go:905-1017`). A certificate can therefore be
+accepted by the dependency for authentication but refused by node policy
+because it is revoked, is unrevocable when the type disallows that, or omits a
+required revealed field.
+
+With the default empty `reveal_fields`, TypeScript SDK clients present a
+matching certificate
+(`packages/sdk/src/auth/utils/getVerifiableCertificates.ts:21-44`). go-sdk
+v1.7.7 clients skip a matching certificate when no fields were requested
+(`auth/utils/get_verifiable_certificates.go:66-71`), so those clients need at
+least one requested field.
+
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/sendMessage` | POST | BRC-31 or operator token | Send a message to a recipient by pubkey |
@@ -40,6 +62,24 @@ the operator token remains a broad, node-scoped fallback.
 | `/acknowledgeMessage` | POST | BRC-31 or operator token | Delete messages after receipt |
 | `/messages/session` | POST | BRC-31 | Mint a five-minute, identity-scoped SSE token |
 | `/messages/subscribe` | GET | Session ticket or operator header | Stream newly arrived messages for one message box |
+
+### Gateway registration endpoints
+
+When `[gateway] enabled = true` and `allow_registration = true`, the shared
+BRC-31 surface also mounts `POST /gateway/sites` with `{"domain":"name"}` and
+`DELETE /gateway/sites/{domain}`. Both require a current certificate admission.
+Registrations are stored in `<data_dir>/gateway-registrations.conf`; the daemon
+never edits the operator `sites_file`. The live gateway allowlist merges both
+files, but the domain's `_ordfs` TXT record still determines the origin that is
+served.
+
+An identity may own 10 registrations, with 1,000 total. A caller can delete
+only its own registrations. Domains in the operator file cannot be registered
+or deleted through these endpoints and return HTTP 409 with
+`ERR_OPERATOR_DOMAIN`. Certificate revocation removes only that identity's
+registrations. `anvil gateway sites list` marks registered entries, and
+`anvil gateway sites remove <domain>` can remove either kind. The singular
+`site` command remains accepted for compatibility.
 
 ### POST /sendMessage
 

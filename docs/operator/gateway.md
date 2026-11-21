@@ -57,6 +57,26 @@ unconditionally, not just when configuration happens to be correct.
   logged — the node keeps running on its last-good routing rather than failing a restart it
   never had to do.
 
+## Certificate registrations
+
+`[gateway] allow_registration = true` mounts the certificate-gated
+`POST /gateway/sites` and `DELETE /gateway/sites/{domain}` routes. It requires
+`[gateway] enabled = true` and a valid `[certgate]` section. The daemon writes
+these entries to `<data_dir>/gateway-registrations.conf`, using the same lock
+and atomic replacement as the operator sites file. It never writes the
+operator file. The live allowlist merges both files; a missing registrations
+file is empty, and a parse error keeps the last good merged snapshot.
+
+Operator-file domains cannot be changed through the API. Registrations are
+owned by the authenticated identity, capped at 10 per identity and 1,000 in
+total, and removed for that identity on certificate revocation. Registration
+does not choose content: the domain's `_ordfs` TXT record remains authoritative.
+
+This switch shares one BRC-31 handshake with the messagebox routes. Enabling it,
+or `[messaging] require_sender_certificate`, requests a certificate from every
+BRC-31 client. A client without one cannot authenticate to message reads or any
+other BRC-31 route on the host.
+
 ## Fixed rates
 
 Two rate limits are part of gateway mode's own traffic shaping, both fixed, built-in constants

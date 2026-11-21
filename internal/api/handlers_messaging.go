@@ -24,6 +24,10 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.senderCertificateAllowed(r.Context(), caller.identityHex) {
+		writeCodedError(w, http.StatusForbidden, "ERR_SENDER_CERTIFICATE_REQUIRED", "A valid sender certificate is required.")
+		return
+	}
 
 	// JSON escaping can make a valid 1 MiB decoded body substantially larger on
 	// the wire. Bound the request at the worst-case escape expansion, then apply

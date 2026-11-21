@@ -27,6 +27,28 @@ seeds = [
 # authenticated identity public key is not listed here is refused right
 # after the handshake, before any of its messages are processed. Leave
 # unset (the default) to accept any peer, as today.
+# Certificate admission is disabled when this section is absent. Certifier
+# keys are compressed identity keys; type IDs are 32-byte Base64 values.
+# [certgate]
+# certifiers = ["0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66"]
+# types = ["AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="]
+# revocation_check = "strict"       # "strict" refuses lookup errors; "lazy" retries within 60s
+# revocation_recheck = "1h"
+# [certgate.reveal_fields]
+# "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=" = []
+# [certgate.allow_unrevocable]
+# "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=" = false
+
+[gateway]
+enabled = false
+# api_host = "gateway.example.com"
+# sites_file = "/etc/anvil/gateway-sites.conf"
+# allow_registration = false
+# With allow_registration or messaging.require_sender_certificate on, this
+# node asks every BRC-31 client for a certificate during the shared handshake.
+# A client without one cannot authenticate to any BRC-31 route on this node,
+# including message reads. A send from an identity without a current admission
+# reaches the handler but gets HTTP 403.
 
 [bsv]
 nodes = ["seed.bitcoinsv.io:8333"]
@@ -110,6 +132,11 @@ warn_at_percent = 80
 # BRC-31 MessageBox store — the per-recipient inbox used by /sendMessage,
 # /listMessages, /acknowledgeMessage and the mesh forward-relay path.
 [messaging]
+# require_sender_certificate = false
+# With this switch or gateway.allow_registration on, this node asks every
+# BRC-31 client for a certificate during the shared handshake. A client without
+# one cannot authenticate to any BRC-31 route on this node, including message
+# reads. A send from an identity without a current admission gets HTTP 403.
 # ttl_seconds = 604800              # how long a stored message lives before expiry (default 7 days)
 # max_pair_messages = 1000          # cap on messages between one sender/recipient pair
 # max_pair_bytes = 67108864         # cap on bytes between one sender/recipient pair (default 64 MiB)
@@ -162,6 +189,9 @@ warn_at_percent = 80
 # false to restrict the operator token to its own box — naming another
 # recipient then gets a 403.
 # operator_reads_all_boxes = true
+# Forwarded messages are accepted from admitted mesh peers. The origin
+# attestation is the peer's vouch for the sender; receivers do not repeat the
+# sender's certificate check.
 
 # Version tracking for /content: the BRC-159 token chains that start at a set
 # of origins, followed so /content/<origin>?seq=N serves an origin's spend

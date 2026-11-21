@@ -114,3 +114,40 @@ enabled = true
 		t.Errorf("entry = %+v, want domain served.example.com", entry)
 	}
 }
+
+func TestGatewaySiteListAndRemoveIncludeRegistrations(t *testing.T) {
+	dir := t.TempDir()
+	operatorPath := filepath.Join(dir, "operator.conf")
+	registrationPath := filepath.Join(dir, "gateway-registrations.conf")
+	identity := "02" + repeatByte('1', 64)
+	if err := os.WriteFile(operatorPath, []byte("domain operator.example\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registrationPath, []byte("domain registered.example  # registered-by "+identity+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := gatewaySiteEntries(operatorPath, registrationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].registered || !entries[1].registered || entries[1].Value != "registered.example" {
+		t.Fatalf("entries = %#v", entries)
+	}
+	entry, removed, err := gatewaySiteRemoveEntry(operatorPath, registrationPath, []string{"registered.example"})
+	if err != nil || !removed || entry.Value != "registered.example" {
+		t.Fatalf("remove = %#v, %v, %v", entry, removed, err)
+	}
+	operator, _ := sitesfile.Read(operatorPath)
+	registered, _ := sitesfile.Read(registrationPath)
+	if len(operator) != 1 || len(registered) != 0 {
+		t.Fatalf("operator = %#v, registered = %#v", operator, registered)
+	}
+}
+
+func repeatByte(value byte, count int) string {
+	b := make([]byte, count)
+	for i := range b {
+		b[i] = value
+	}
+	return string(b)
+}

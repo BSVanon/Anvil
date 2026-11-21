@@ -114,7 +114,7 @@ func Read(path string) ([]Entry, error) {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) != 2 {
+		if len(fields) != 2 && !(len(fields) == 5 && fields[2] == "#" && fields[3] == "registered-by") {
 			continue
 		}
 		switch strings.ToLower(fields[0]) {
@@ -139,7 +139,9 @@ func matchesEntry(trimmed string, entry Entry) bool {
 		return false
 	}
 	fields := strings.Fields(trimmed)
-	if len(fields) != 2 || !strings.EqualFold(fields[0], entry.Kind) {
+	plain := len(fields) == 2
+	registered := len(fields) == 5 && fields[2] == "#" && fields[3] == "registered-by"
+	if (!plain && !registered) || !strings.EqualFold(fields[0], entry.Kind) {
 		return false
 	}
 	var v string

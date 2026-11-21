@@ -96,7 +96,7 @@ func (s *Server) registerMessageboxBRC31() {
 	s.msgSessions = newSessionTokenStore(messageSessionTTL)
 	s.messageboxBRC31 = true
 
-	authMW := middleware.NewAuth(s.nodeWallet, middleware.WithAuthAllowUnauthenticated())
+	authMW := middleware.NewAuth(s.nodeWallet, s.certificateAuthOptions()...)
 
 	sub := http.NewServeMux()
 	sub.HandleFunc("POST /sendMessage", s.handleSendMessage)
@@ -115,6 +115,7 @@ func (s *Server) registerMessageboxBRC31() {
 	s.mux.Handle("/listMessages", wrapped)
 	s.mux.Handle("/acknowledgeMessage", wrapped)
 	s.mux.Handle("/messages/session", wrapped)
+	s.registerCertificateRoutes(sub, wrapped)
 
 	// SSE stays a direct route (EventSource can't do the handshake); it is
 	// gated by the per-identity session token minted at /messages/session.

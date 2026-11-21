@@ -144,6 +144,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			stats["gateway"] = g
 		}
 	}
+	for key, value := range s.certificateStats() {
+		stats[key] = value
+	}
 	if t := s.trackingStats(); t != nil {
 		stats["tracking"] = t
 	}

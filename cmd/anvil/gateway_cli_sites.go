@@ -31,21 +31,45 @@ func cmdGatewaySite(args []string) {
 
 	switch sub {
 	case "list":
-		gatewaySiteList(cfg.Gateway.SitesFile)
+		gatewaySiteList(cfg.Gateway.SitesFile, gateway.RegistrationFile(cfg.Node.DataDir))
 	case "add":
 		assertRoot()
 		gatewaySiteAdd(cfg.Gateway.SitesFile, cfg.Gateway.APIHost, posArgs)
 	case "remove":
 		assertRoot()
-		gatewaySiteRemove(cfg.Gateway.SitesFile, posArgs)
+		gatewaySiteRemove(cfg.Gateway.SitesFile, gateway.RegistrationFile(cfg.Node.DataDir), posArgs)
 	default:
 		printGatewayUsage()
 		os.Exit(1)
 	}
 }
 
-func gatewaySiteList(path string) {
-	entries, err := sitesfile.Read(path)
+type gatewaySiteEntry struct {
+	sitesfile.Entry
+	registered bool
+}
+
+func gatewaySiteEntries(path, registrationPath string) ([]gatewaySiteEntry, error) {
+	operator, err := sitesfile.Read(path)
+	if err != nil {
+		return nil, err
+	}
+	registered, err := sitesfile.Read(registrationPath)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]gatewaySiteEntry, 0, len(operator)+len(registered))
+	for _, entry := range operator {
+		entries = append(entries, gatewaySiteEntry{Entry: entry})
+	}
+	for _, entry := range registered {
+		entries = append(entries, gatewaySiteEntry{Entry: entry, registered: true})
+	}
+	return entries, nil
+}
+
+func gatewaySiteList(path, registrationPath string) {
+	entries, err := gatewaySiteEntries(path, registrationPath)
 	if err != nil {
 		fatal("sites file: " + err.Error())
 	}
@@ -57,7 +81,11 @@ func gatewaySiteList(path string) {
 	defer cancel()
 	for _, e := range entries {
 		if e.Kind == "domain" {
-			fmt.Printf("domain %s  (%s)\n", e.Value, liveTXTStatus(ctx, e.Value))
+			if e.registered {
+				fmt.Printf("domain %s  (registered; %s)\n", e.Value, liveTXTStatus(ctx, e.Value))
+			} else {
+				fmt.Printf("domain %s  (%s)\n", e.Value, liveTXTStatus(ctx, e.Value))
+			}
 		} else {
 			fmt.Printf("origin %s\n", e.Value)
 		}
@@ -105,15 +133,27 @@ func gatewaySiteAdd(path, apiHost string, posArgs []string) {
 	fmt.Println("no restart needed — the gateway hot-reloads the sites file")
 }
 
-func gatewaySiteRemove(path string, posArgs []string) {
+func gatewaySiteRemoveEntry(path, registrationPath string, posArgs []string) (sitesfile.Entry, bool, error) {
 	if len(posArgs) != 1 {
-		fatal("usage: anvil gateway site remove <domain|origin>")
+		return sitesfile.Entry{}, false, fmt.Errorf("usage: anvil gateway site remove <domain|origin>")
 	}
 	entry, err := sitesfile.ParseEntry(posArgs[0])
 	if err != nil {
-		fatal(err.Error())
+		return sitesfile.Entry{}, false, err
 	}
-	removed, err := sitesfile.Remove(path, entry)
+	operatorRemoved, err := sitesfile.Remove(path, entry)
+	if err != nil {
+		return sitesfile.Entry{}, false, err
+	}
+	registeredRemoved, err := sitesfile.Remove(registrationPath, entry)
+	if err != nil {
+		return sitesfile.Entry{}, false, err
+	}
+	return entry, operatorRemoved || registeredRemoved, nil
+}
+
+func gatewaySiteRemove(path, registrationPath string, posArgs []string) {
+	entry, removed, err := gatewaySiteRemoveEntry(path, registrationPath, posArgs)
 	if err != nil {
 		fatal(err.Error())
 	}
