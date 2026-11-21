@@ -179,7 +179,9 @@ func TestStalledBodiesFromOneClientLeavePermitsForOthers(t *testing.T) {
 		}()
 	}
 	defer func() { close(stop); wg.Wait() }()
-	eventually(t, 5*time.Second, func() bool { return paymentBodyShares.holding(attacker) == 2 })
+	// The stalled bodies hold permits now; with its share, the attacker holds
+	// at most 2 of the 4.
+	eventually(t, 5*time.Second, func() bool { return paymentBodyReads.InUse() >= 2 })
 
 	for i := 0; i < 10; i++ {
 		resp, err := http.Post(ts.URL+"/data", "application/json", strings.NewReader(`{"x":1}`))
