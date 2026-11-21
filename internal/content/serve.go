@@ -159,7 +159,7 @@ func serveInscription(w http.ResponseWriter, insc *inscription) {
 // parseInscription extracts inscription data from a specific transaction output.
 // Parses the raw tx to find the exact output at voutStr, then checks for inscription data.
 // Supports two formats:
-//   - 1Sat Ordinal: OP_FALSE OP_IF "ord" OP_1 <content-type> OP_0 <data> OP_ENDIF
+//   - 1Sat Ordinal: a BRC-160 envelope, OP_FALSE OP_IF "ord" OP_1 <content-type> OP_0 <data> OP_ENDIF
 //   - B:// Protocol: OP_RETURN <B-prefix> <data> <content-type> <encoding>
 func parseInscription(rawTxHex string, voutStr string) (*inscription, error) {
 	txBytes, err := hex.DecodeString(rawTxHex)
@@ -178,9 +178,9 @@ func parseInscription(rawTxHex string, voutStr string) (*inscription, error) {
 		return nil, fmt.Errorf("extract output %d: %w", vout, err)
 	}
 
-	// Try 1Sat Ordinal format first
-	if insc := tryParseOrdinal(script); insc != nil {
-		return insc, nil
+	// Try a 1Sat Ordinal envelope first (BRC-160; see ord_envelope.go)
+	if env, ok := ParseOrdEnvelope(script); ok {
+		return &inscription{ContentType: env.ContentType, Data: env.Body, FetchedAt: time.Now()}, nil
 	}
 
 	// Try B:// protocol (OP_RETURN based)
@@ -280,49 +280,6 @@ func readVarInt(data []byte) (uint64, int) {
 		}
 		return binary.LittleEndian.Uint64(data[1:9]), 9
 	}
-}
-
-// tryParseOrdinal looks for OP_FALSE OP_IF "ord" pattern.
-func tryParseOrdinal(txBytes []byte) *inscription {
-	marker := []byte{0x00, 0x63, 0x03, 0x6f, 0x72, 0x64}
-	idx := bytes.Index(txBytes, marker)
-	if idx < 0 {
-		return nil
-	}
-
-	pos := idx + len(marker)
-	insc := &inscription{FetchedAt: time.Now()}
-
-	for pos < len(txBytes) {
-		op := txBytes[pos]
-		pos++
-
-		switch {
-		case op == 0x51: // OP_1 — content-type
-			data, newPos, err := readPush(txBytes, pos)
-			if err != nil {
-				return nil
-			}
-			insc.ContentType = string(data)
-			pos = newPos
-		case op == 0x00: // OP_0 — file data
-			data, newPos, err := readPush(txBytes, pos)
-			if err != nil {
-				return nil
-			}
-			insc.Data = data
-			pos = newPos
-		case op == 0x68: // OP_ENDIF
-			if insc.Data != nil {
-				return insc
-			}
-			return nil
-		}
-	}
-	if insc.Data != nil {
-		return insc
-	}
-	return nil
 }
 
 // tryParseBProtocol looks for OP_RETURN followed by B:// protocol data.
