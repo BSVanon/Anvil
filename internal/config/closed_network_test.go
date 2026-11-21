@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -60,14 +61,16 @@ func TestMeshAllowedPeersConfig(t *testing.T) {
 	}
 
 	f2, _ := os.CreateTemp("", "anvil-cfg-allowedpeers2-*.toml")
-	f2.WriteString("[mesh]\nallowed_peers = [\"02aabbcc\", \"03ddeeff\"]\n")
+	one := "02" + strings.Repeat("a", 64)
+	two := "03" + strings.Repeat("b", 64)
+	f2.WriteString("[mesh]\nallowed_peers = [\"" + one + "\", \"" + two + "\"]\n")
 	f2.Close()
 	defer os.Remove(f2.Name())
 	cfg2, err := Load(f2.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"02aabbcc", "03ddeeff"}
+	want := []string{one, two}
 	if !bsvNodesEqual(cfg2.Mesh.AllowedPeers, want) {
 		t.Fatalf("allowed_peers = %v, want %v", cfg2.Mesh.AllowedPeers, want)
 	}

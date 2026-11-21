@@ -7,6 +7,7 @@ name = "my-anvil"
 data_dir = "/var/lib/anvil"
 listen = "0.0.0.0:8333"          # mesh peers — wss:// when TLS configured
 api_listen = "0.0.0.0:9333"      # REST API — HTTPS when TLS configured
+# public_url = "https://anvil.example.org" # public API URL used in overlay advertisements
 # mode = "standard"               # label/default; [gateway] enabled controls runtime gateway mode
 
 [identity]
@@ -21,6 +22,10 @@ seeds = [
 # ]
 # Use local_pubkeys for fast local publishers that should not trigger
 # double-publish slashing on this node (for example, a local oracle feed).
+# min_bond_sats = 0                # minimum confirmed bond required from a mesh peer
+# bond_check_url = ""              # optional UTXO lookup endpoint for bond checks
+# rate_per_sec = 30                # per-peer envelope rate
+# rate_burst = 100                 # per-peer burst allowance
 # allowed_peers = [
 #   "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
 # ]
@@ -86,9 +91,11 @@ nodes = ["seed.bitcoinsv.io:8333"]
 [arc]
 enabled = true
 url = "https://arc.gorillapool.io"
+# api_key = ""                    # primary ARC credential, when required
 # TAAL failover (recommended but not required — set ANVIL_TAAL_API_KEY env var)
 # taal_enabled = false
 # taal_url = "https://arc.taal.com"
+# taal_api_key = ""               # or set ANVIL_TAAL_API_KEY
 
 # JungleBus — backwards-compatibility section only.
 #
@@ -121,7 +128,9 @@ url = "junglebus.gorillapool.io"
 enabled = true
 topics = ["anvil:mainnet"]
 enable_gasp_sync = true
+# gasp_sync_interval_secs = 1800   # interval between federation sync passes
 # gasp_sync_run_timeout_secs = 600  # maximum duration of one complete GASP sync run
+# advertise_interval_secs = 1800   # interval between SHIP/SLAP advertisement reconciliations
 # ship_trackers = ["https://overlay-us-1.bsvb.tech"]
 # slap_trackers = ["https://overlay-us-1.bsvb.tech"]
 # named_peers = ["https://overlay-a.example.com", "https://overlay-b.example.com"]
@@ -136,6 +145,12 @@ enable_gasp_sync = true
 # broadcasts through ARC to the public network, which would permanently
 # link this node's identity on-chain. Leave unset (the default) for the
 # normal federated-overlay behavior.
+
+[mempool]
+enabled = false                    # opt in to P2P mempool monitoring
+# prefixes = []                    # coverage bytes (0-255); empty selects automatically
+# max_tx_size = 1048576            # maximum transaction size to index
+# ttl_seconds = 3600               # age before an unconfirmed entry is evicted
 
 [envelopes]
 max_ephemeral_ttl = 3600
@@ -233,12 +248,18 @@ tls_cert = ""                     # path to TLS cert (or use reverse proxy)
 tls_key = ""                      # path to TLS key
 rate_limit = 100                  # requests/second per IP for open reads
 trust_proxy = false               # set true behind nginx/caddy
+# messagebox_rate_limit = 20       # BRC-31 messagebox requests/second per client
+# messagebox_rate_burst = 40       # BRC-31 messagebox burst allowance
 # trust_proxy reads only X-Forwarded-For (not X-Real-IP or Forwarded); the
 # proxy must send that header. trust_proxy_hops counts entries from the
 # right: 1 for one proxy (the default). Behind a CDN plus a local proxy, set
 # trust_proxy = true and trust_proxy_hops = 2.
 # trust_proxy_hops = 1
 payment_satoshis = 0              # x402 price per request (0 = free, experimental)
+# require_mempool = false          # require ARC acceptance before direct proof payment succeeds
+# endpoint_prices = { "/broadcast" = 0 } # per-route overrides, in satoshis
+# explorer_origin = ""             # fallback origin used when the explorer catalog is empty
+# nonce_pool_size = 100            # proof-scheme nonce target; used only when that scheme is on
 # false is the default: no challenge coin is minted. An unpaid request gets
 # ERR_PAYMENT_REQUIRED; X402-Proof gets ERR_PROOF_PAYMENT_UNAVAILABLE instead
 # of verification. Set x402_proof_scheme = true only for deprecated development use.
@@ -253,9 +274,9 @@ x402_proof_scheme = false
 # every successful mint locks 1 sat, but wallet input fragmentation can make
 # its transaction fee larger than the examples in payment_budget.go. At most
 # 4 wallet mints run concurrently, and each ends with its request or after 10s.
-# Each key is bounded: a negative value takes its default, and a value above
-# its ceiling (1000 burst, 60/minute) takes the ceiling; both are logged as a
-# warning, and the budget in effect is logged at startup. At the ceilings one
+# Each key is bounded: a negative value is a configuration error, and a value
+# above its ceiling (1000 burst, 60/minute) takes the ceiling with a warning;
+# the budget in effect is logged at startup. At the ceilings one
 # uninterrupted process starts at most 4,600 mint attempts in an hour. A
 # restart or another process has its own budget.
 x402_mint_burst = 10               # mints allowed at once before the per-minute rate applies
@@ -270,6 +291,11 @@ allow_passthrough = true          # Model 2: app sets its own payee script
 allow_split = true                # Model 3: atomic dual-pay (node + app)
 allow_token_gating = true         # Model 4: credential-based access (no payment)
 max_app_price_sats = 10000        # cap on app-declared prices (0 = no cap)
+
+# Operator-defined entries added to /.well-known/anvil. Each table is freeform.
+# [[capabilities.custom]]
+# type = "example-service"
+# description = "Operator-provided capability"
 
 # HARDCODED PROHIBITIONS (not configurable — no code path exists):
 # - receive_and_forward = PROHIBITED (money transmission)

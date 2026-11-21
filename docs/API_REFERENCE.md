@@ -711,3 +711,37 @@ curl -s localhost:9333/status   # node status
 sudo journalctl -u anvil-a -f  # live logs
 sudo systemctl restart anvil-a  # restart
 ```
+
+## Release response headers
+
+These response headers are part of the public API contract:
+
+| Header | Meaning |
+|---|---|
+| `X-Origin`, `X-Outpoint`, `X-Ord-Seq` | Origin, served location, and sequence position for versioned content. |
+| `X-Overlay-Cursor`, `X-Overlay-Truncated`, `X-Overlay-Omitted` | Overlay lookup pagination and bounded-result metadata. |
+| `X-Overlay-Gasp-Enabled`, `X-Overlay-Gasp-Initial-Sync-Done`, `X-Overlay-Gasp-Interval-Secs`, `X-Overlay-Gasp-Last-Sync-Unix` | Overlay federation readiness and last-sync state. |
+| `X-BEEF-Source`, `X-BEEF-Subject-Proven` | Source and proof state of a returned BEEF. |
+| `X-Block-Height`, `X-Start-Height`, `X-Header-Count` | Height and range metadata on binary header responses. |
+| `x-bsv-sats`, `x-bsv-server`, `X402-Receipt` | Payment offer and receipt metadata. |
+| `X-Accel-Buffering` | Set to `no` on SSE responses so reverse proxies stream immediately. |
+| `X-Content-Type-Options` | Set to `nosniff` on gateway site responses. |
+
+## Error code index
+
+In addition to the payment and messagebox codes described at their endpoints,
+clients may receive the following stable codes:
+
+- Request parsing and validation: `ERR_BAD_CONTENT_TYPE`, `ERR_BAD_REQUEST`,
+  `ERR_EMPTY_BODY`, `ERR_INVALID_PARAMS`, `ERR_INVALID_SENDER`,
+  `ERR_INVALID_TRANSACTION`, `ERR_MALFORMED_SCRIPT`, `ERR_MISSING_TXID`,
+  `ERR_READ_BODY`, `ERR_VALIDATION_BUDGET`, `ERR_BEEF_TOO_COMPLEX`.
+- Topic and submission handling: `ERR_BAD_TOPICS`, `ERR_EMPTY_TOPICS`,
+  `ERR_MISSING_TOPICS`, `ERR_UNKNOWN_TOPIC`, `ERR_SUBMIT_FAILED`,
+  `ERR_ARC_INGEST_FAILED`.
+- Authentication and certificates: `ERR_AUTH_FAILED`, `ERR_BRC31_REQUIRED`,
+  `ERR_CERTIFICATE_REQUIRED`, `ERR_RESPONSE_SIGNING_FAILED`.
+- Gateway registration: `ERR_INVALID_DOMAIN`, `ERR_DOMAIN_LIMIT`,
+  `ERR_DOMAIN_REGISTERED`, `ERR_NOT_REGISTRATION_OWNER`,
+  `ERR_REGISTRATION_NOT_FOUND`, `ERR_REGISTRATION_WRITE`, `ERR_SITE_LIMIT`.
+- Payment state: `ERR_PAYMENT_HEADERS_BEHIND`, `ERR_REPLAYED_NONCE`.

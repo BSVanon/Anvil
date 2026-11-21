@@ -49,12 +49,13 @@ func TestLoadContentRefusesABadOrigin(t *testing.T) {
 	}
 }
 
-func TestLoadContentNegativeValuesTakeTheDefaults(t *testing.T) {
-	cfg, err := Load(writeTestConfig(t, t.TempDir(), "[content]\nmax_tracked_origins = -1\nspend_poll_interval = -5\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Content.MaxTrackedOrigins != 1000 || cfg.Content.SpendPollInterval != 600 {
-		t.Fatalf("values = %+v", cfg.Content)
+func TestLoadContentNegativeValuesFailClosed(t *testing.T) {
+	for key, body := range map[string]string{
+		"max_tracked_origins": "[content]\nmax_tracked_origins = -1\n",
+		"spend_poll_interval": "[content]\nspend_poll_interval = -5\n",
+	} {
+		if _, err := Load(writeTestConfig(t, t.TempDir(), body)); err == nil || !strings.Contains(err.Error(), key) {
+			t.Fatalf("%s: error = %v", key, err)
+		}
 	}
 }

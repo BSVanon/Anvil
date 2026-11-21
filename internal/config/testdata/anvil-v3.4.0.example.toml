@@ -1,0 +1,114 @@
+# Anvil configuration
+# Most settings have sensible defaults. The only required setting is identity.wif,
+# which should be set via ANVIL_IDENTITY_WIF env var (not in this file).
+
+[node]
+name = "my-anvil"
+data_dir = "/var/lib/anvil"
+listen = "0.0.0.0:8333"          # mesh peers — wss:// when TLS configured
+api_listen = "0.0.0.0:9333"      # REST API — HTTPS when TLS configured
+
+[identity]
+# wif = ""                       # Set via ANVIL_IDENTITY_WIF env var, not here
+
+[mesh]
+seeds = [
+  # "wss://peer1.example.com:8333",
+]
+# local_pubkeys = [
+#   "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
+# ]
+# Use local_pubkeys for fast local publishers that should not trigger
+# double-publish slashing on this node (for example, a local oracle feed).
+
+[bsv]
+nodes = ["seed.bitcoinsv.io:8333"]
+# header_sync_interval_secs = 30   # how often to poll BSV peers for new headers (default 30)
+# header_stale_after_secs = 1800
+# Default 1800s; a node behind by more than this consults the trusted fallback even if a P2P peer is still connected.
+#
+# Mesh header self-heal (ON by default). If ALL BSV P2P peers fail a sync round,
+# or the stored tip is stale, it catches up over HTTPS from a TRUSTED Anvil peer. A
+# canonical default (https://anvil.sendbsv.com) is baked into the binary, so this
+# works after `anvil upgrade` with NO config edit — the same way the default BSV
+# seeds above do. To ADD your own trusted peers (tried before the default), list
+# them here; to turn the fallback off entirely, set header_fallback_disabled.
+# TRUST NOTE: fetched headers are PoW + most-work validated but NOT difficulty-
+# adjustment (DAA) validated — a listed peer is trusted to the same degree as a
+# [bsv] node above, so any URL you add must be https:// (http:// allowed only for
+# localhost). A healthy, advancing P2P tip never calls the fallback.
+# header_fallback_peers = ["https://my-other-node.example"]
+# header_fallback_disabled = false   # set true to disable the self-heal on this node
+
+# ARC — GorillaPool is the default (free, no API key required)
+[arc]
+enabled = true
+url = "https://arc.gorillapool.io"
+# TAAL failover (recommended but not required — set ANVIL_TAAL_API_KEY env var)
+# taal_enabled = false
+# taal_url = "https://arc.taal.com"
+
+# JungleBus — backwards-compatibility section only.
+#
+# Prior Anvil versions (<= v2.3.x) used JungleBus to subscribe to
+# on-chain SHIP/SLAP admin tokens for federation discovery. v3.0.0
+# retired that path in favor of canonical BRC-88 SHIP/SLAP via go-sdk's
+# LookupResolver and the [overlay] ship_trackers / slap_trackers list
+# below. The [junglebus] section is still accepted by the TOML parser
+# so existing operator configs don't break, but every field below is a
+# runtime no-op. Safe to delete this whole block when you next edit the
+# config.
+[junglebus]
+enabled = false
+url = "junglebus.gorillapool.io"
+
+# Overlay federation — canonical BRC-88 SHIP/SLAP.
+#
+# enable_gasp_sync = true (default) means this node will:
+#   * publish SHIP+SLAP advertisements on-chain for every hosted topic
+#     via the canonical Advertiser + admin-token PushDrop
+#   * discover federation peers via the configured SLAP trackers
+#   * run periodic GASP sync to pull peer state
+#
+# ship_trackers / slap_trackers default to go-sdk's DEFAULT_SLAP_TRACKERS
+# (Project Babbage's overlay-us-1.bsvb.tech, overlay-eu-1.bsvb.tech,
+# overlay-ap-1.bsvb.tech, users.bapp.dev) when left blank. Override here
+# to point at your own federation, a staging cluster, or a regional
+# subset.
+[overlay]
+enabled = true
+topics = ["anvil:mainnet"]
+enable_gasp_sync = true
+# ship_trackers = ["https://overlay-us-1.bsvb.tech"]
+# slap_trackers = ["https://overlay-us-1.bsvb.tech"]
+
+[envelopes]
+max_ephemeral_ttl = 3600
+max_durable_size = 65536
+max_durable_store_mb = 10240
+warn_at_percent = 80
+
+[api]
+# auth_token is auto-derived from identity.wif — you don't need to set it.
+# If you want a custom token, set it here (overrides the derived one).
+# auth_token = ""
+tls_cert = ""                     # path to TLS cert (or use reverse proxy)
+tls_key = ""                      # path to TLS key
+rate_limit = 100                  # requests/second per IP for open reads
+trust_proxy = false               # set true behind nginx/caddy
+payment_satoshis = 0              # x402 price per request (0 = free, experimental)
+
+# Non-custodial app payment models.
+# These control which payment flows third-party apps can use.
+# All are safe by default — the node never holds or forwards funds.
+# See docs/NON_CUSTODIAL_PAYMENT_POLICY.md for the full policy.
+[api.app_payments]
+allow_passthrough = true          # Model 2: app sets its own payee script
+allow_split = true                # Model 3: atomic dual-pay (node + app)
+allow_token_gating = true         # Model 4: credential-based access (no payment)
+max_app_price_sats = 10000        # cap on app-declared prices (0 = no cap)
+
+# HARDCODED PROHIBITIONS (not configurable — no code path exists):
+# - receive_and_forward = PROHIBITED (money transmission)
+# - hold_on_behalf = PROHIBITED (custodial)
+# - revenue_share_via_wallet = PROHIBITED (money transmission)

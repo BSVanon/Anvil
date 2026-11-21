@@ -36,6 +36,9 @@ func (c CertGateConfig) RevocationRecheckDuration() time.Duration {
 func (c CertGateConfig) Enabled() bool { return len(c.Certifiers) > 0 && len(c.Types) > 0 }
 
 func finalizeCertGate(data []byte, cfg *Config) error {
+	if err := validateChangedSectionValues(cfg); err != nil {
+		return err
+	}
 	var uses struct {
 		Messaging struct {
 			RequireSenderCertificate bool `toml:"require_sender_certificate"`
@@ -65,14 +68,14 @@ func finalizeCertGate(data []byte, cfg *Config) error {
 		c.RevocationCheck = "strict"
 	}
 	if c.RevocationCheck != "strict" && c.RevocationCheck != "lazy" {
-		return fmt.Errorf(`invalid [certgate] revocation_check %q: must be "strict" or "lazy"`, c.RevocationCheck)
+		return fmt.Errorf(`invalid certgate.revocation_check %q: must be "strict" or "lazy"`, c.RevocationCheck)
 	}
 	if c.RevocationRecheck == "" {
 		c.RevocationRecheck = defaultRevocationRecheck.String()
 	}
 	d, err := time.ParseDuration(c.RevocationRecheck)
 	if err != nil || d <= 0 {
-		return fmt.Errorf("invalid [certgate] revocation_recheck %q: must be a positive duration", c.RevocationRecheck)
+		return fmt.Errorf("invalid certgate.revocation_recheck %q: must be a positive duration", c.RevocationRecheck)
 	}
 	c.revocationDuration = d
 	if !configured {
