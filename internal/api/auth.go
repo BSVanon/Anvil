@@ -73,10 +73,8 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// requireAuthSSE is like requireAuth but also accepts a ?token= query
-// parameter, checked by the same constant-time comparison the headers use.
-// SSE endpoints need this because EventSource cannot set custom HTTP
-// headers. Scoped only to SSE routes — write endpoints must NOT use this.
+// requireAuthSSE is the header-only operator gate for legacy SSE routes.
+// The broad node credential is never accepted from a URL query parameter.
 func (s *Server) requireAuthSSE(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
@@ -92,11 +90,7 @@ func (s *Server) requireAuthSSE(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Headers first (same check as requireAuth), then ?token= as an
-		// SSE-only fallback. Each candidate is checked independently and in
-		// constant time, so a wrong one never shadows a correct one.
-		authed := s.isOperatorToken(r) || s.matchesOperatorToken(r.URL.Query().Get("token"))
-		if !authed {
+		if !s.isOperatorToken(r) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -126,11 +120,16 @@ func (s *Server) latestVisibleEnvelope(topic string, isAuthed bool) *envelope.En
 	if s.envelopeStore == nil {
 		return nil
 	}
-	envs, _ := s.envelopeStore.QueryExactTopic(topic, 0) // newest-first
-	for _, e := range envs {
-		if isAuthed || !e.Private {
-			return e
+	if isAuthed {
+		envs, _ := s.envelopeStore.QueryExactTopicAll(topic, 1)
+		if len(envs) > 0 {
+			return envs[0]
 		}
+		return nil
+	}
+	envs, _ := s.envelopeStore.QueryPublicExactTopic(topic, 1, 0)
+	if len(envs) > 0 {
+		return envs[0]
 	}
 	return nil
 }

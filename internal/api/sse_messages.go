@@ -141,8 +141,9 @@ func (h *messageHub) nextID() int64 {
 // The stream is scoped to the caller's identity. Under BRC-31 (2a) the caller
 // first mints a per-identity session token via POST /messages/session and passes
 // it as ?token= (EventSource cannot perform the mutual-auth handshake itself);
-// the operator token is accepted as a broad, node-scoped fallback. Pushes new
-// messages as they arrive in real time.
+// an operator header is accepted as a broad, node-scoped fallback. The broad
+// operator credential is never accepted in the URL. Pushes new messages as
+// they arrive in real time.
 func (s *Server) handleMessageSubscribe(w http.ResponseWriter, r *http.Request) {
 	if s.msgStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "messaging not enabled")

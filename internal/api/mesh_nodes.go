@@ -115,6 +115,9 @@ func (s *Server) handleMeshNodes(w http.ResponseWriter, r *http.Request) {
 			// Dedup: keep newest heartbeat per pubkey
 			seen := make(map[string]bool)
 			for _, env := range envs {
+				if env.Private {
+					continue
+				}
 				if seen[env.Pubkey] {
 					continue
 				}

@@ -11,7 +11,7 @@
 | `/data` | POST | Bearer or x402 | Publish a signed envelope |
 | `/data` | DELETE | Bearer | Delete a stored envelope by `topic` + `key` |
 | `/broadcast` | POST | Bearer or x402 | Submit BEEF for validation; forwards to ARC if `?arc=true`. Returns derived `status` field. x402 accepted only when node sets a positive broadcast price. |
-| `/messages/subscribe` | GET | Session or operator token (via `?token=`) | SSE stream of new BRC-33 messages in real time |
+| `/messages/subscribe` | GET | Session ticket, or operator token in a header | SSE stream of new BRC-33 messages in real time |
 | `/mesh/status` | GET | No | Rich live health snapshot; carries `upstream_status` for wallet failover decisions |
 | `/mesh/nodes` | GET | No | Authoritative federation directory (merged from SHIP + heartbeat + gossip adjacency) |
 
@@ -39,7 +39,7 @@ the operator token remains a broad, node-scoped fallback.
 | `/listMessages` | POST | BRC-31 or operator token | Retrieve messages for a recipient's message box |
 | `/acknowledgeMessage` | POST | BRC-31 or operator token | Delete messages after receipt |
 | `/messages/session` | POST | BRC-31 | Mint a five-minute, identity-scoped SSE token |
-| `/messages/subscribe` | GET | Session or operator token | Stream newly arrived messages for one message box |
+| `/messages/subscribe` | GET | Session ticket or operator header | Stream newly arrived messages for one message box |
 
 ### POST /sendMessage
 
@@ -403,8 +403,9 @@ proprietary data feeds, etc.) without Anvil code changes.
 
 SSE push for new BRC-33 messages. EventSource cannot perform BRC-31 or set
 custom headers, so first mint an identity-scoped token with authenticated
-`POST /messages/session`, then pass it via `?token=`. The operator token is
-also accepted as a broad fallback:
+`POST /messages/session`, then pass that scoped ticket via `?token=`. The
+node-wide operator token is never accepted in a URL. Operator tooling must use
+a streaming client that sends `X-Anvil-Auth` or `Authorization: Bearer`:
 
 ```js
 const url = `http://localhost:9333/messages/subscribe?messageBox=avos.offer&token=${token}`;

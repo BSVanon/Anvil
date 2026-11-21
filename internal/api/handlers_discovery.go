@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
 // TopicInfo is the response for GET /topics/{topic} — everything a developer
@@ -80,27 +82,20 @@ func (s *Server) handleGetTopic(w http.ResponseWriter, r *http.Request) {
 
 	isAuthed := s.isAuthed(r)
 
-	// Gather the topic's envelopes once (newest-first). For unauthenticated
-	// callers, count/last_updated/publisher come from PUBLIC envelopes ONLY, so
-	// private history never leaks via count/timestamp/publisher — and a topic
-	// with no public envelopes is indistinguishable from a nonexistent one
-	// (404). Authenticated callers see the full aggregate.
-	envs, _ := s.envelopeStore.QueryExactTopic(topic, 0)
-
+	var envs []*envelope.Envelope
 	count := 0
 	var lastUpdated int64
-	latestIdx := -1
-	for i, e := range envs {
-		if !isAuthed && e.Private {
-			continue
+	if isAuthed {
+		envs, _ = s.envelopeStore.QueryExactTopicAll(topic, 0)
+		count = len(envs)
+		if count > 0 {
+			lastUpdated = envs[0].Timestamp
 		}
-		count++
-		if e.Timestamp > lastUpdated {
-			lastUpdated = e.Timestamp
-		}
-		if latestIdx == -1 {
-			latestIdx = i // newest-first: first visible envelope is the latest
-		}
+	} else {
+		counts, latest := s.envelopeStore.PublicTopicSummary()
+		count = counts[topic]
+		lastUpdated = latest[topic]
+		envs, _ = s.envelopeStore.QueryPublicExactTopic(topic, 1, 0)
 	}
 	if count == 0 {
 		writeError(w, http.StatusNotFound, "topic not found")
@@ -113,12 +108,12 @@ func (s *Server) handleGetTopic(w http.ResponseWriter, r *http.Request) {
 		LastUpdated: lastUpdated,
 	}
 
-	if latestIdx >= 0 {
-		info.Publisher = envs[latestIdx].Pubkey
+	if len(envs) > 0 {
+		info.Publisher = envs[0].Pubkey
 
 		// Include price from monetization if present.
-		if envs[latestIdx].Monetization != nil {
-			info.Price = envs[latestIdx].Monetization.PriceSats
+		if envs[0].Monetization != nil {
+			info.Price = envs[0].Monetization.PriceSats
 		}
 	}
 

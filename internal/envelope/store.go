@@ -20,9 +20,17 @@ var (
 // Durable envelopes are persisted to LevelDB. Ephemeral envelopes
 // are held in memory with TTL-based expiration.
 type Store struct {
-	db        *leveldb.DB
-	ephemeral map[string]*Envelope // key → envelope
-	mu        sync.RWMutex
+	db                      *leveldb.DB
+	ephemeral               map[string]*Envelope // key → envelope
+	ephemeralByTopic        map[string][]*Envelope
+	ephemeralPublicByTopic  map[string][]*Envelope
+	ephemeralPublicByPrefix map[string][]*Envelope
+	mu                      sync.RWMutex
+
+	publicMu            sync.RWMutex
+	publicDurableCounts map[string]int
+	publicDurableLatest map[string]int64
+	durableTopicCounts  map[string]int
 
 	maxEphemeralTTL  int         // max TTL seconds for ephemeral envelopes
 	maxDurableSize   int         // max payload size in bytes for durable envelopes
@@ -36,12 +44,23 @@ func NewStore(path string, maxEphemeralTTL, maxDurableSize int) (*Store, error) 
 	if err != nil {
 		return nil, fmt.Errorf("open envelope store: %w", err)
 	}
-	return &Store{
-		db:              db,
-		ephemeral:       make(map[string]*Envelope),
-		maxEphemeralTTL: maxEphemeralTTL,
-		maxDurableSize:  maxDurableSize,
-	}, nil
+	s := &Store{
+		db:                      db,
+		ephemeral:               make(map[string]*Envelope),
+		ephemeralByTopic:        make(map[string][]*Envelope),
+		ephemeralPublicByTopic:  make(map[string][]*Envelope),
+		ephemeralPublicByPrefix: make(map[string][]*Envelope),
+		publicDurableCounts:     make(map[string]int),
+		publicDurableLatest:     make(map[string]int64),
+		durableTopicCounts:      make(map[string]int),
+		maxEphemeralTTL:         maxEphemeralTTL,
+		maxDurableSize:          maxDurableSize,
+	}
+	if err := s.initializeDurableIndexes(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize envelope indexes: %w", err)
+	}
+	return s, nil
 }
 
 // SetMaxDurableStoreMB sets the maximum durable store size in megabytes.
@@ -110,8 +129,7 @@ func (s *Store) storeDurable(env *Envelope) error {
 		return fmt.Errorf("marshal envelope: %w", err)
 	}
 
-	key := append(append([]byte{}, prefixDurable...), []byte(env.Topic+":"+env.Key())...)
-	return s.db.Put(key, data, nil)
+	return s.writeDurable(env, data)
 }
 
 func (s *Store) storeEphemeral(env *Envelope) error {
@@ -121,7 +139,7 @@ func (s *Store) storeEphemeral(env *Envelope) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ephemeral[env.Key()] = env
+	s.putEphemeralLocked(env)
 	return nil
 }
 
@@ -133,19 +151,24 @@ func (s *Store) Delete(topic, key string) (bool, error) {
 	}
 
 	deleted := false
-	durableKey := append(append([]byte{}, prefixDurable...), []byte(topic+":"+key)...)
+	durableKey := durablePrimaryKey(topic, key)
 	if ok, err := s.db.Has(durableKey, nil); err != nil {
 		return false, fmt.Errorf("check durable envelope: %w", err)
 	} else if ok {
-		if err := s.db.Delete(durableKey, nil); err != nil {
+		data, getErr := s.db.Get(durableKey, nil)
+		if getErr != nil {
+			return false, fmt.Errorf("read durable envelope: %w", getErr)
+		}
+		env, _ := UnmarshalEnvelope(data)
+		if err := s.deleteDurable(durableKey, env); err != nil {
 			return false, fmt.Errorf("delete durable envelope: %w", err)
 		}
 		deleted = true
 	}
 
 	s.mu.Lock()
-	if _, ok := s.ephemeral[key]; ok {
-		delete(s.ephemeral, key)
+	if env, ok := s.ephemeral[key]; ok {
+		s.removeEphemeralLocked(key, env)
 		deleted = true
 	}
 	s.mu.Unlock()
@@ -189,12 +212,18 @@ func (s *Store) DeduplicateDurable(env *Envelope) int {
 
 	if newerExists {
 		// Stale envelope arrived late. Remove it instead of the newer one.
-		_ = s.db.Delete(currentKey, nil)
+		if data, err := s.db.Get(currentKey, nil); err == nil {
+			current, _ := UnmarshalEnvelope(data)
+			_ = s.deleteDurable(currentKey, current)
+		}
 		return 0
 	}
 
 	for _, k := range toDelete {
-		_ = s.db.Delete(k, nil)
+		if data, err := s.db.Get(k, nil); err == nil {
+			old, _ := UnmarshalEnvelope(data)
+			_ = s.deleteDurable(k, old)
+		}
 	}
 	return len(toDelete)
 }
@@ -203,7 +232,7 @@ func (s *Store) DeduplicateDurable(env *Envelope) int {
 func (s *Store) StoreEphemeralDirect(env *Envelope) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ephemeral[env.Key()] = env
+	s.putEphemeralLocked(env)
 }
 
 // QueryByTopic returns envelopes matching the given topic.
@@ -260,7 +289,7 @@ func (s *Store) ExpireEphemeral() int {
 	expired := 0
 	for key, env := range s.ephemeral {
 		if env.IsExpired() {
-			delete(s.ephemeral, key)
+			s.removeEphemeralLocked(key, env)
 			expired++
 		}
 	}

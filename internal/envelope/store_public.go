@@ -1,9 +1,5 @@
 package envelope
 
-import (
-	"github.com/syndtr/goleveldb/leveldb/util"
-)
-
 // PublicCountEphemeral returns the number of non-private, non-expired
 // ephemeral envelopes — the same filter PublicTopicSummary applies. Safe to
 // show to any caller: paired with PublicCountDurable, the two always sum to
@@ -14,11 +10,12 @@ func (s *Store) PublicCountEphemeral() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	n := 0
-	for _, env := range s.ephemeral {
-		if env.IsExpired() || env.Private {
-			continue
+	for _, envs := range s.ephemeralPublicByTopic {
+		for _, env := range envs {
+			if !env.IsExpired() {
+				n++
+			}
 		}
-		n++
 	}
 	return n
 }
@@ -26,17 +23,13 @@ func (s *Store) PublicCountEphemeral() int {
 // PublicCountDurable returns the number of non-private durable envelopes.
 // See PublicCountEphemeral.
 func (s *Store) PublicCountDurable() int {
-	count := 0
-	iter := s.db.NewIterator(util.BytesPrefix(prefixDurable), nil)
-	defer iter.Release()
-	for iter.Next() {
-		env, err := UnmarshalEnvelope(iter.Value())
-		if err != nil || env.Private {
-			continue
-		}
-		count++
+	s.publicMu.RLock()
+	defer s.publicMu.RUnlock()
+	total := 0
+	for _, count := range s.publicDurableCounts {
+		total += count
 	}
-	return count
+	return total
 }
 
 // PublicTopics returns a map of topic → envelope count, counting only
@@ -62,27 +55,29 @@ func (s *Store) PrivateOnlyTopics() map[string]struct{} {
 	hasPublic := make(map[string]bool)
 	hasAny := make(map[string]bool)
 
-	iter := s.db.NewIterator(util.BytesPrefix(prefixDurable), nil)
-	for iter.Next() {
-		env, err := UnmarshalEnvelope(iter.Value())
-		if err != nil {
-			continue
-		}
-		hasAny[env.Topic] = true
-		if !env.Private {
-			hasPublic[env.Topic] = true
+	s.publicMu.RLock()
+	for topic, count := range s.durableTopicCounts {
+		if count > 0 {
+			hasAny[topic] = true
 		}
 	}
-	iter.Release()
+	for topic, count := range s.publicDurableCounts {
+		if count > 0 {
+			hasPublic[topic] = true
+		}
+	}
+	s.publicMu.RUnlock()
 
 	s.mu.RLock()
-	for _, env := range s.ephemeral {
-		if env.IsExpired() {
-			continue
-		}
-		hasAny[env.Topic] = true
-		if !env.Private {
-			hasPublic[env.Topic] = true
+	for topic, envs := range s.ephemeralByTopic {
+		for _, env := range envs {
+			if env.IsExpired() {
+				continue
+			}
+			hasAny[topic] = true
+			if !env.Private {
+				hasPublic[topic] = true
+			}
 		}
 	}
 	s.mu.RUnlock()
@@ -103,30 +98,27 @@ func (s *Store) PrivateOnlyTopics() map[string]struct{} {
 // envelope is public (a mixed topic). Topics with zero public envelopes do not
 // appear in the maps at all.
 func (s *Store) PublicTopicSummary() (counts map[string]int, latest map[string]int64) {
-	counts = make(map[string]int)
-	latest = make(map[string]int64)
-
-	iter := s.db.NewIterator(util.BytesPrefix(prefixDurable), nil)
-	for iter.Next() {
-		env, err := UnmarshalEnvelope(iter.Value())
-		if err != nil || env.Private {
-			continue
-		}
-		counts[env.Topic]++
-		if env.Timestamp > latest[env.Topic] {
-			latest[env.Topic] = env.Timestamp
-		}
+	s.publicMu.RLock()
+	counts = make(map[string]int, len(s.publicDurableCounts))
+	latest = make(map[string]int64, len(s.publicDurableLatest))
+	for topic, count := range s.publicDurableCounts {
+		counts[topic] = count
 	}
-	iter.Release()
+	for topic, timestamp := range s.publicDurableLatest {
+		latest[topic] = timestamp
+	}
+	s.publicMu.RUnlock()
 
 	s.mu.RLock()
-	for _, env := range s.ephemeral {
-		if env.IsExpired() || env.Private {
-			continue
-		}
-		counts[env.Topic]++
-		if env.Timestamp > latest[env.Topic] {
-			latest[env.Topic] = env.Timestamp
+	for topic, envs := range s.ephemeralPublicByTopic {
+		for _, env := range envs {
+			if env.IsExpired() {
+				continue
+			}
+			counts[topic]++
+			if env.Timestamp > latest[topic] {
+				latest[topic] = env.Timestamp
+			}
 		}
 	}
 	s.mu.RUnlock()

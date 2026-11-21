@@ -77,7 +77,8 @@ type runningTestStream struct {
 func startTestStream(t *testing.T, srv *Server, remoteAddr string) *runningTestStream {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/messages/subscribe?messageBox=box&token="+srv.authToken, nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/messages/subscribe?messageBox=box", nil).WithContext(ctx)
+	req.Header.Set("X-Anvil-Auth", srv.authToken)
 	req.RemoteAddr = remoteAddr
 	w := newStreamTestResponse()
 	done := make(chan struct{})
@@ -110,7 +111,8 @@ func stopTestStream(t *testing.T, stream *runningTestStream) {
 
 func rejectedTestStream(t *testing.T, srv *Server, remoteAddr string) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/messages/subscribe?messageBox=box&token="+srv.authToken, nil)
+	req := httptest.NewRequest(http.MethodGet, "/messages/subscribe?messageBox=box", nil)
+	req.Header.Set("X-Anvil-Auth", srv.authToken)
 	req.RemoteAddr = remoteAddr
 	w := newStreamTestResponse()
 	srv.handleMessageSubscribe(w, req)

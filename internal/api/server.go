@@ -247,7 +247,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /status", s.openRead(s.handleStatus))
 	s.mux.HandleFunc("GET /stats", s.openRead(s.handleStats))
 	s.mux.HandleFunc("GET /mesh/status", cors(s.handleMeshStatus))
-	s.mux.HandleFunc("GET /mesh/nodes", cors(s.handleMeshNodes))
+	s.mux.HandleFunc("GET /mesh/nodes", s.openPublic(s.handleMeshNodes))
 	s.mux.HandleFunc("GET /headers/tip", s.openRead(s.handleHeadersTip))
 	s.mux.HandleFunc("GET /headers/range", s.openRead(s.handleHeadersRange))
 	// Chaintracks-compatible SPV header source for the SendBSV wallet's
@@ -302,7 +302,7 @@ func (s *Server) routes() {
 	// Apps and Explorer use this to discover payment capabilities.
 	s.mux.HandleFunc("GET /.well-known/x402", cors(s.handleX402Discovery))
 	s.mux.HandleFunc("GET /.well-known/x402-info", cors(s.handleX402Info))
-	s.mux.HandleFunc("GET /.well-known/anvil", cors(s.handleAnvilManifest))
+	s.mux.HandleFunc("GET /.well-known/anvil", s.openPublic(s.handleAnvilManifest))
 	s.mux.HandleFunc("GET /.well-known/identity", cors(s.handleIdentity))
 	s.mux.HandleFunc("GET /app/{name}", cors(s.handleAppRedirect))
 	s.mux.HandleFunc("GET /explorer", cors(func(w http.ResponseWriter, r *http.Request) {
@@ -386,7 +386,7 @@ func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
 	if s.rateLimiter != nil {
 		h = s.rateLimiter.Middleware(h)
 	}
-	return cors(h)
+	return cors(credentialDependentRead(h))
 }
 
 // openPublic mounts a handler as public infrastructure: CORS + rate limiting,

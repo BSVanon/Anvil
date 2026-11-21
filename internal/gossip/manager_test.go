@@ -2,6 +2,7 @@ package gossip
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -244,7 +245,7 @@ func TestVisiblePageFiltersBeforePaginating(t *testing.T) {
 		{Topic: "t", Payload: "pub2", Timestamp: 20},
 		{Topic: "t", Payload: "pub3", Timestamp: 10},
 	}
-	page, hasMore := visiblePage(all, 2, 0)
+	page, hasMore := visiblePage(all, 2, envelope.PageCursor{})
 	if len(page) != 2 {
 		t.Fatalf("expected 2 public envelopes, got %d", len(page))
 	}
@@ -258,6 +259,21 @@ func TestVisiblePageFiltersBeforePaginating(t *testing.T) {
 	}
 	if page[0].Payload != "pub1" || page[1].Payload != "pub2" {
 		t.Fatalf("expected newest public first (pub1,pub2), got %s,%s", page[0].Payload, page[1].Payload)
+	}
+}
+
+func TestVisiblePageDoesNotSkipEqualTimestampBoundary(t *testing.T) {
+	all := make([]*envelope.Envelope, 101)
+	for i := range all {
+		all[i] = &envelope.Envelope{Topic: "t", Payload: fmt.Sprintf("public-%03d", i), Timestamp: 100}
+	}
+	first, hasMore := visiblePage(all, 100, envelope.PageCursor{})
+	if len(first) != 100 || !hasMore {
+		t.Fatalf("first page = %d, hasMore %v; want 100, true", len(first), hasMore)
+	}
+	second, _ := visiblePage(all, 100, envelope.CursorFor(first[len(first)-1]))
+	if len(second) != 1 {
+		t.Fatalf("equal-timestamp boundary skipped final envelope: second page has %d, want 1", len(second))
 	}
 }
 
@@ -409,7 +425,7 @@ func TestReannounceOnlyIncludesLocalEntries(t *testing.T) {
 
 // trackingOverlayDir wraps a mockOverlayDir to verify production calls.
 type trackingOverlayDir struct {
-	inner       *mockOverlayDir
+	inner        *mockOverlayDir
 	forEachCalls int
 }
 

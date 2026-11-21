@@ -28,7 +28,7 @@ Anvil-Mesh is a communication mesh for BSV apps. Each node exposes a REST API fo
 | Subscribe to real-time data | `GET /data/subscribe?topic=...` | Free or x402-gated |
 | Send a message to an identity | `POST /sendMessage` | Bearer token |
 | Retrieve messages | `POST /listMessages` | Bearer token |
-| Real-time new-message push | `GET /messages/subscribe` (SSE) | Bearer token (via `?token=`) |
+| Real-time new-message push | `GET /messages/subscribe` (SSE) | BRC-31 session ticket, or operator header |
 | Submit a BEEF tx for broadcast | `POST /broadcast` | Bearer token or x402 |
 | Discover available topics | `GET /topics` | Free |
 | Get topic detail + metadata | `GET /topics/{topic}` | Free |

@@ -211,7 +211,7 @@ func runSubscribeForReconnectLine(t *testing.T, srv *Server, lastID string) stri
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	url := ts.URL + "/messages/subscribe?messageBox=testbox&token=" + srv.authToken
+	url := ts.URL + "/messages/subscribe?messageBox=testbox"
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -219,6 +219,7 @@ func runSubscribeForReconnectLine(t *testing.T, srv *Server, lastID string) stri
 	if lastID != "" {
 		req.Header.Set("Last-Event-ID", lastID)
 	}
+	req.Header.Set("X-Anvil-Auth", srv.authToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -1,6 +1,7 @@
 package envelope
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -66,5 +67,43 @@ func TestQueryExactTopic(t *testing.T) {
 	}
 	if prefix, _ := store.QueryByTopic("t", 0); len(prefix) != 5 {
 		t.Fatalf("QueryByTopic keeps its prefix match: want 5, got %d", len(prefix))
+	}
+}
+
+func TestPublicPrefixCursorCrossesEqualTimestamps(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 3600, 65536)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	key, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 101; i++ {
+		env := &Envelope{
+			Type: "data", Topic: "catchup:topic", Payload: fmt.Sprintf(`{"n":%d}`, i),
+			Durable: true, Timestamp: 100,
+		}
+		env.Sign(key)
+		if err := store.Ingest(env); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := store.QueryPublicTopicPrefix("catchup:topic", 100, PageCursor{})
+	if err != nil || len(first) != 100 {
+		t.Fatalf("first page = %d, %v; want 100", len(first), err)
+	}
+	second, err := store.QueryPublicTopicPrefix("catchup:topic", 100, CursorFor(first[99]))
+	if err != nil || len(second) != 1 {
+		t.Fatalf("second page = %d, %v; want 1", len(second), err)
+	}
+	seen := make(map[string]bool, 101)
+	for _, env := range append(first, second...) {
+		seen[env.Payload] = true
+	}
+	if len(seen) != 101 {
+		t.Fatalf("compound cursor returned %d unique envelopes, want 101", len(seen))
 	}
 }

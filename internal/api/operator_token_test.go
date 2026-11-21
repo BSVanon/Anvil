@@ -110,26 +110,32 @@ func TestRequireAuthAndRequireAuthSSEShareTheSameCheck(t *testing.T) {
 	}
 }
 
-// TestRequireAuthSSEQueryTokenFallbackIsIndependent: requireAuthSSE's
-// ?token= fallback is checked independently too — a stale header must not
-// hide a correct query token, and vice versa.
-func TestRequireAuthSSEQueryTokenFallbackIsIndependent(t *testing.T) {
+func TestOperatorCredentialRejectedFromSSEQuery(t *testing.T) {
 	s := &Server{authToken: "right-token"}
 	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
-	wrapped := s.requireAuthSSE(ok)
+	t.Run("legacy gate", func(t *testing.T) {
+		wrapped := s.requireAuthSSE(ok)
+		req := httptest.NewRequest(http.MethodGet, "/data/subscribe?topic=x&token=right-token", nil)
+		rec := httptest.NewRecorder()
+		wrapped(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("operator credential in query authenticated SSE request: got %d, want 401", rec.Code)
+		}
 
-	req := httptest.NewRequest(http.MethodGet, "/data/subscribe?topic=x&token=right-token", nil)
-	req.Header.Set("X-Anvil-Auth", "stale-wrong-token")
-	rec := httptest.NewRecorder()
-	wrapped(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("a correct ?token= must authenticate even with a stale X-Anvil-Auth header, got %d", rec.Code)
-	}
+		req.Header.Set("Authorization", "Bearer right-token")
+		rec = httptest.NewRecorder()
+		wrapped(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("operator credential in header was rejected: got %d, want 200", rec.Code)
+		}
+	})
 
-	req2 := httptest.NewRequest(http.MethodGet, "/data/subscribe?topic=x&token=wrong", nil)
-	rec2 := httptest.NewRecorder()
-	wrapped(rec2, req2)
-	if rec2.Code != http.StatusUnauthorized {
-		t.Fatalf("a wrong ?token= with no header must be rejected, got %d", rec2.Code)
-	}
+	t.Run("messagebox gate", func(t *testing.T) {
+		s.msgSessions = newSessionTokenStore(messageSessionTTL)
+		req := httptest.NewRequest(http.MethodGet, "/messages/subscribe?token=right-token", nil)
+		w := httptest.NewRecorder()
+		if _, _, accepted := s.resolveSSECaller(w, req); accepted {
+			t.Fatal("messagebox SSE accepted operator credential from query")
+		}
+	})
 }

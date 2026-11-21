@@ -158,26 +158,23 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Sscanf(s, "%d", &since) // bad input keeps zero
 	}
 
-	// Fetch unlimited and filter private envelopes out first, before since
-	// or limit ever run — the same order internal/gossip/handlers.go uses
-	// for a peer pull (dropPrivate then visiblePage). Filtering after a
-	// limit, or after a since cutoff, truncates the candidate set on
-	// unfiltered data first: a caller can then binary-search a private
-	// envelope's write time by varying limit/since and watching the
-	// returned count shift. Fetching unlimited and dropping private
-	// envelopes immediately removes that signal; limit and since then
-	// apply only to what the caller may actually see.
-	envs, err := s.envelopeStore.QueryExactTopic(topic, 0)
+	var envs []*envelope.Envelope
+	var err error
+	if authed {
+		envs, err = s.envelopeStore.QueryExactTopicAll(topic, 0)
+	} else {
+		// The public exact-topic index contains neither private envelopes nor
+		// subtopics. The caller's limit therefore bounds storage work without
+		// making private writes observable through count or latency.
+		envs, err = s.envelopeStore.QueryPublicExactTopic(topic, limit, since)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query error: %v", err))
 		return
 	}
-	if !authed {
-		envs = dropPrivateEnvelopes(envs)
-	}
 
-	// Filter by timestamp if since is set (results are newest-first)
-	if since > 0 {
+	// Operator reads use the complete index and apply response filters here.
+	if authed && since > 0 {
 		filtered := envs[:0]
 		for _, env := range envs {
 			if env.Timestamp > since {
@@ -187,7 +184,7 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		envs = filtered
 	}
 
-	if limit > 0 && len(envs) > limit {
+	if authed && limit > 0 && len(envs) > limit {
 		envs = envs[:limit]
 	}
 
@@ -207,22 +204,6 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		"count":     len(responseEnvs),
 		"envelopes": responseEnvs,
 	})
-}
-
-// dropPrivateEnvelopes returns envs with every Private envelope removed,
-// reusing the backing array (same in-place-filter shape as
-// internal/gossip/handlers.go's dropPrivate). Callers that need operator
-// visibility must not call this at all, not call it and then add private
-// envelopes back — this function has no "except operator" mode on purpose,
-// so every call site is unambiguous about which caller it is filtering for.
-func dropPrivateEnvelopes(envs []*envelope.Envelope) []*envelope.Envelope {
-	kept := envs[:0]
-	for _, env := range envs {
-		if !env.Private {
-			kept = append(kept, env)
-		}
-	}
-	return kept
 }
 
 func (s *Server) handleDeleteData(w http.ResponseWriter, r *http.Request) {

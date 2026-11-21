@@ -67,16 +67,18 @@ type TopicsPayload struct {
 
 // DataRequestPayload requests cached envelopes for a topic.
 type DataRequestPayload struct {
-	Topic string `json:"topic"`
-	Since int64  `json:"since,omitempty"`
-	Limit int    `json:"limit,omitempty"`
+	Topic  string               `json:"topic"`
+	Since  int64                `json:"since,omitempty"`
+	Limit  int                  `json:"limit,omitempty"`
+	Cursor *envelope.PageCursor `json:"cursor,omitempty"`
 }
 
 // DataResponsePayload replies with cached envelopes.
 type DataResponsePayload struct {
-	Topic     string               `json:"topic"`
-	Envelopes []*envelope.Envelope `json:"envelopes"`
-	HasMore   bool                 `json:"hasMore"`
+	Topic      string               `json:"topic"`
+	Envelopes  []*envelope.Envelope `json:"envelopes"`
+	HasMore    bool                 `json:"hasMore"`
+	NextCursor *envelope.PageCursor `json:"nextCursor,omitempty"`
 }
 
 // SHIPSyncPayload carries SHIP peer registrations between mesh peers.
@@ -106,7 +108,7 @@ type TxRequestPayload struct {
 
 // TxResponsePayload carries the raw transaction hex.
 type TxResponsePayload struct {
-	TxID  string `json:"txid"`
+	TxID   string `json:"txid"`
 	RawHex string `json:"raw_hex"`
 }
 
@@ -128,9 +130,9 @@ type SlashWarningPayload struct {
 	// Target is the identity pubkey hex of the offending peer.
 	Target    string      `json:"target"`
 	Reason    SlashReason `json:"reason"`
-	Evidence  string      `json:"evidence,omitempty"`  // human-readable or hash of proof
-	Timestamp int64       `json:"timestamp"`           // unix seconds
-	Reporter  string      `json:"reporter"`            // identity pubkey hex of reporting peer
+	Evidence  string      `json:"evidence,omitempty"` // human-readable or hash of proof
+	Timestamp int64       `json:"timestamp"`          // unix seconds
+	Reporter  string      `json:"reporter"`           // identity pubkey hex of reporting peer
 }
 
 // SlashSeverity returns the slash percentage for a given reason.
