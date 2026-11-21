@@ -23,6 +23,7 @@ func (h *Handlers) guard() *routeguard.Guard { return routeguard.Or(h.Guard) }
 func (h *Handlers) readJSON(w http.ResponseWriter, r *http.Request, route routeguard.Route) (*routeguard.Ticket, []byte, bool) {
 	t, err := h.guard().Begin(w, r, true)
 	if err != nil {
+		routeguard.Refuse(w, r)
 		writeGuardError(w, r, err, "")
 		return nil, nil, false
 	}
@@ -45,6 +46,7 @@ func (h *Handlers) readJSON(w http.ResponseWriter, r *http.Request, route routeg
 func (h *Handlers) submitBEEF(w http.ResponseWriter, r *http.Request, topics []string) {
 	t, err := h.guard().Begin(w, r, false)
 	if err != nil {
+		routeguard.Refuse(w, r)
 		writeGuardError(w, r, err, "")
 		return
 	}

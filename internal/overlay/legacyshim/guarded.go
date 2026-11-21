@@ -26,6 +26,7 @@ func (s *Shim) guard() *routeguard.Guard { return routeguard.Or(s.Guard) }
 func (s *Shim) readGuarded(w http.ResponseWriter, r *http.Request, route routeguard.Route, jsonRoute bool) (*routeguard.Ticket, []byte, bool) {
 	t, err := s.guard().Begin(w, r, jsonRoute)
 	if err != nil {
+		routeguard.Refuse(w, r)
 		writeLegacyGuardError(w, r, err)
 		return nil, nil, false
 	}

@@ -82,7 +82,7 @@ var ErrReadTimeout = errors.New("request body not received in time")
 func (t *Ticket) ReadBody(w http.ResponseWriter, r *http.Request, route Route) ([]byte, error) {
 	defer t.leave(slotRead)
 	if r.ContentLength > route.MaxBody {
-		refuse(w, r)
+		Refuse(w, r)
 		return nil, &http.MaxBytesError{Limit: route.MaxBody}
 	}
 	buf, err := t.read(w, r, route)
@@ -189,12 +189,18 @@ func abandon(w http.ResponseWriter, p *pacer) {
 	closeAfter(w)
 }
 
-// refuse gives up, unread, the body of r, which ReadBody refused before
+// Refuse gives up, unread, the body of r, which the caller refused before
 // reading any of it, as abandon gives up one it has begun. Until a body has
 // been read the server does not read the connection past it, so the deadline
 // ends no read of the server's own; a request with no body has nothing to
 // give up.
-func refuse(w http.ResponseWriter, r *http.Request) {
+//
+// Exported so a caller that refuses a request before ReadBody ever runs — a
+// Begin error, or a general handler wrapper abandoning whatever a specific
+// handler left unread — can end the body the same way ReadBody's own
+// refusals do, instead of leaving the connection to linger while net/http
+// waits on a declared body that is never going to arrive.
+func Refuse(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength == 0 {
 		return
 	}
