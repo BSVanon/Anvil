@@ -13,6 +13,7 @@ package gossip
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -68,9 +69,8 @@ func (m *Manager) SetACMEChallengeHook(fn func(senderPKHex, key string, value []
 
 // onACMEChallenge decodes an incoming MsgACMEChallenge and hands it to
 // the registered hook. With no hook set — gateway mode off, or this
-// node's own gateway wiring not reached yet — the message is decoded (so a
-// malformed payload is still just logged-and-dropped, never a decode
-// panic) and then silently discarded, the same "ignore what nothing is
+// node's own gateway wiring not reached yet — the message is dropped
+// before any decode even runs, the same "ignore what nothing is
 // listening for" outcome an older peer gets from handlers.go's dispatch
 // default case for a message type it doesn't know at all.
 //
@@ -128,12 +128,19 @@ type acmeChallengeEligiblePeer struct {
 //     unidentified until that reactive re-keying happens (manager.go's
 //     AcceptPeer, allowlist.go's establishAndAuthorizePeer). Such a peer
 //     must never receive a challenge entry just for having connected.
-//   - that identity is in [mesh] allowed_peers (m.allowlist.allows,
-//     nil-receiver-safe and vacuously true for everyone when no
-//     allowlist is configured at all — the one case left for the
-//     caller to gate, by not calling this method in the first place;
-//     see acmecache.go's NewCache/Put, which only wires a non-nil send
-//     func when its own allowedPeers is non-empty).
+//   - that identity's own hex — fmt.Sprintf("%x", peer.IdentityPK.Compressed()),
+//     computed here directly rather than reused from the m.peers map
+//     key the range loop below iterates over — is in [mesh]
+//     allowed_peers (m.allowlist.allows, nil-receiver-safe and
+//     vacuously true for everyone when no allowlist is configured at
+//     all — the one case left for the caller to gate, by not calling
+//     this method in the first place; see acmecache.go's NewCache/Put,
+//     which only wires a non-nil send func when its own allowedPeers is
+//     non-empty). The map key equals this same hex by construction
+//     (AcceptPeer's reactive re-key, establishAndAuthorizePeer's
+//     proactive one — manager.go, allowlist.go — both set it that way),
+//     but checking the identity itself, independently, means this
+//     method's own safety never depends on that construction holding.
 //
 // The eligible set is copied out of m.peers while m.mu is held, then the
 // lock is released before any send: no network I/O ever happens while
@@ -158,11 +165,12 @@ func (m *Manager) BroadcastACMEChallenge(key string, value []byte, expires time.
 
 	m.mu.RLock()
 	eligible := make([]acmeChallengeEligiblePeer, 0, len(m.peers))
-	for pkHex, peer := range m.peers {
+	for _, peer := range m.peers {
 		if peer.Peer == nil || peer.IdentityPK == nil {
 			continue
 		}
-		if !m.allowlist.allows(pkHex) {
+		identityHex := fmt.Sprintf("%x", peer.IdentityPK.Compressed())
+		if !m.allowlist.allows(identityHex) {
 			continue
 		}
 		eligible = append(eligible, acmeChallengeEligiblePeer{conn: peer.Peer, id: peer.IdentityPK})
