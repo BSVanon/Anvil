@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/overlay/lookupguard"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
@@ -205,6 +206,7 @@ func (s *DEXSwapLookupService) Lookup(ctx context.Context, question *lookup.Look
 	}
 
 	var matches []*transaction.Outpoint
+	pager := lookupguard.NewPager(ctx)
 	err := scanPrefix(s.db, []byte(dexSwapItemPrefix), func(key, value []byte) error {
 		var item dexSwapItem
 		if err := json.Unmarshal(value, &item); err != nil {
@@ -218,10 +220,17 @@ func (s *DEXSwapLookupService) Lookup(ctx context.Context, question *lookup.Look
 		if !ok {
 			return nil
 		}
+		take, stop := pager.Take()
+		if stop {
+			return errLookupPageFull
+		}
+		if !take {
+			return nil
+		}
 		matches = append(matches, op)
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errLookupPageFull) {
 		return nil, fmt.Errorf("dex-swap lookup: scan: %w", err)
 	}
 	return formulaList(matches), nil

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/overlay/peerhygiene"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -21,6 +22,10 @@ import (
 // resolution for "most-recent first" semantics — typically high-rate
 // admission topics where two records can land in the same second.
 var nowUnixNano = func() int64 { return time.Now().UnixNano() }
+
+// errLookupPageFull stops a LevelDB scan after the shared public-result page
+// has been filled. It is a successful truncation, not a storage failure.
+var errLookupPageFull = errors.New("lookup result page full")
 
 // itemKey assembles a per-output local-index key under a sub-prefix.
 // Layout: <prefix><txid-hex>:<vout-decimal>. All lookups under this
@@ -111,6 +116,9 @@ func formulaList(outpoints []*transaction.Outpoint) *lookup.LookupAnswer {
 	for _, op := range outpoints {
 		if op == nil {
 			continue
+		}
+		if len(formulas) == peerhygiene.MaxLookupOutputs {
+			break
 		}
 		formulas = append(formulas, lookup.LookupFormula{Outpoint: op})
 	}

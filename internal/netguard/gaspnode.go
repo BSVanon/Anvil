@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -84,25 +83,32 @@ func isGASPSync(req *http.Request) bool {
 		strings.HasSuffix(req.URL.String(), "/requestSyncResponse")
 }
 
-// readGASPReply reads a GASP reply (a /requestForeignGASPNode or
-// /requestSyncResponse 200) in full, up to maxBytes, under gaspReadTimeout's
-// size-scaled deadline and the guard's minimum rate.
-func (g *guard) readGASPReply(resp *http.Response) ([]byte, error) {
+// readGASPReply reads a GASP reply on any status in full, up to maxBytes,
+// under gaspReadTimeout's size-scaled deadline and the guard's minimum rate.
+func (g *guard) readGASPReply(resp *http.Response) ([]byte, func(), error) {
+	release, err := acquireGASPReply(resp, g.maxBytes)
+	if err != nil {
+		return nil, nil, err
+	}
 	timeout := gaspReadTimeout(resp.ContentLength)
 	body, err := bodyread.Read(resp.Body, resp.ContentLength, bodyread.Limits{
 		Max: g.maxBytes, Timeout: timeout, MinRate: g.minRate, Grace: g.grace,
 	})
 	switch {
 	case err == nil:
-		return body, nil
+		return body, release, nil
 	case errors.Is(err, bodyread.ErrTooLarge):
-		return nil, fmt.Errorf("%w: GASP reply is over %d bytes", ErrResponseTooLarge, g.maxBytes)
+		release()
+		return nil, nil, fmt.Errorf("%w: GASP reply is over %d bytes", ErrResponseTooLarge, g.maxBytes)
 	case errors.Is(err, bodyread.ErrTimeout):
-		return nil, fmt.Errorf("netguard: GASP reply not read within %v", timeout)
+		release()
+		return nil, nil, fmt.Errorf("netguard: GASP reply not read within %v", timeout)
 	case errors.Is(err, bodyread.ErrTooSlow):
-		return nil, fmt.Errorf("netguard: GASP reply arrived below %d bytes/s after %v", g.minRate, g.grace)
+		release()
+		return nil, nil, fmt.Errorf("netguard: GASP reply arrived below %d bytes/s after %v", g.minRate, g.grace)
 	default:
-		return nil, fmt.Errorf("netguard: reading GASP reply: %w", err)
+		release()
+		return nil, nil, fmt.Errorf("netguard: reading GASP reply: %w", err)
 	}
 }
 
@@ -137,25 +143,20 @@ func (g *guard) readGASPReply(resp *http.Response) ([]byte, error) {
 // costs nothing extra: doNodeRequest's own identical Decode call, run again
 // on that same slice downstream, reads the same node either way.
 func (g *guard) checkGASPNode(resp *http.Response) (*http.Response, error) {
-	body, err := g.readGASPReply(resp)
+	body, release, err := g.readGASPReply(resp)
 	if err != nil {
 		return nil, err
 	}
 	node, consumed, err := decodeGASPNode(body)
 	if err != nil {
+		release()
 		return nil, fmt.Errorf("netguard: GASP node reply did not decode: %w", err)
 	}
 	if reason := gaspNodeMalformed(node); reason != "" {
+		release()
 		return nil, fmt.Errorf("netguard: refused a GASP node reply: %s", reason)
 	}
-	resp.Body = io.NopCloser(bytes.NewReader(consumed))
-	resp.ContentLength = int64(len(consumed))
-	if resp.Header == nil {
-		resp.Header = make(http.Header)
-	}
-	resp.Header.Set("Content-Length", strconv.Itoa(len(consumed)))
-	resp.TransferEncoding = nil
-	return resp, nil
+	return bufferGASPResponse(resp, consumed, release), nil
 }
 
 // checkGASPSync reads a GASP /requestSyncResponse reply in full, the same
@@ -164,18 +165,33 @@ func (g *guard) checkGASPNode(resp *http.Response) (*http.Response, error) {
 // there is nothing here for gaspNodeMalformed to check, only a size,
 // deadline and rate to read it under (cold review round 4 cycle 6b, RISK 1).
 func (g *guard) checkGASPSync(resp *http.Response) (*http.Response, error) {
-	body, err := g.readGASPReply(resp)
+	body, release, err := g.readGASPReply(resp)
 	if err != nil {
 		return nil, err
 	}
-	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return bufferGASPResponse(resp, body, release), nil
+}
+
+// checkGASPError gives a non-200 GASP response the same bounded whole-body
+// read as a successful response. The SDK reads error bodies to EOF, so handing
+// the peer's live stream through would otherwise leave that read unbounded.
+func (g *guard) checkGASPError(resp *http.Response) (*http.Response, error) {
+	body, release, err := g.readGASPReply(resp)
+	if err != nil {
+		return nil, err
+	}
+	return bufferGASPResponse(resp, body, release), nil
+}
+
+func bufferGASPResponse(resp *http.Response, body []byte, release func()) *http.Response {
+	resp.Body = newHeldGASPBody(body, release)
 	resp.ContentLength = int64(len(body))
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	resp.TransferEncoding = nil
-	return resp, nil
+	return resp
 }
 
 // decodeGASPNode decodes body into a gasp.Node exactly as

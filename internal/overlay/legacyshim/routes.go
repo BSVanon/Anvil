@@ -10,7 +10,6 @@ import (
 
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
-	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 
 	"github.com/BSVanon/Anvil/internal/overlay/overlayctx"
 	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
@@ -436,68 +435,6 @@ func (s *Shim) writeSyncHeaders(w http.ResponseWriter) {
 	if st.GASPLastSyncUnix > 0 {
 		h.Set("X-Overlay-Gasp-Last-Sync-Unix", strconv.FormatInt(st.GASPLastSyncUnix, 10))
 	}
-}
-
-// Query translates a legacy lookup body into the canonical
-// lookup.LookupQuestion, calls engine.Lookup, then rebuilds the legacy
-// LookupAnswer shape — including the Metadata field on each output,
-// reconstructed from the BEEF the canonical engine hydrated, via the
-// per-service ScriptParser table.
-//
-// Freeform answers (LookupAnswer.Result) pass through verbatim.
-func (s *Shim) Query(w http.ResponseWriter, r *http.Request) {
-	// Emit readiness headers before anything writes the status line, so the
-	// caller's answer and the node's sync-state are bound atomically.
-	s.writeSyncHeaders(w)
-
-	t, body, ok := s.readGuarded(w, r, routeguard.LookupRoute, true)
-	if !ok {
-		return
-	}
-	defer t.Close()
-	var q legacyLookupQuestion
-	if err := json.Unmarshal(body, &q); err != nil {
-		writeLegacyError(w, http.StatusBadRequest, "invalid query: "+err.Error())
-		return
-	}
-	if q.Service == "" {
-		writeLegacyError(w, http.StatusBadRequest, "service required")
-		return
-	}
-
-	answer, err := s.Engine.Lookup(overlayctx.ReadOnly(r.Context()), &lookup.LookupQuestion{
-		Service: q.Service,
-		Query:   q.Query,
-	})
-	if err != nil {
-		writeLegacyError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if r.Context().Err() != nil { // the client left: don't hydrate an answer for nobody
-		return
-	}
-	legacy, err := s.canonicalToLegacyAnswer(r.Context(), q.Service, answer)
-	if err != nil {
-		writeLegacyError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	encoded, err := json.Marshal(legacy)
-	if err != nil {
-		writeLegacyError(w, http.StatusInternalServerError, "encode answer: "+err.Error())
-		return
-	}
-	// The answer is fully serialized now: only the network write is left,
-	// which this also bounds (boundAnswerWrite) as a backstop. Release t's
-	// JSON slot before that write rather than at the deferred Close above,
-	// so a client that opens the connection and never reads its answer no
-	// longer holds that slot for as long as it keeps the connection open —
-	// only for as long as everything up to this point took. Close is
-	// idempotent, so the deferred call above still safely covers every
-	// return before this one.
-	t.Close()
-	boundAnswerWrite(w, len(encoded))
-	writeJSONBytes(w, http.StatusOK, encoded)
 }
 
 // --- GET /overlay/topics + /overlay/services -----------------------------

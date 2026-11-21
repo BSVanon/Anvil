@@ -1,14 +1,21 @@
 package v3engine
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/gasp"
 	"github.com/bsv-blockchain/go-sdk/transaction"
+)
+
+const (
+	maxGASPSyncOutputs       uint32 = 1000
+	maxGASPSyncResponseBytes        = 1 << 20
 )
 
 // GASP federation HTTP routes.
@@ -62,7 +69,13 @@ func (h *Handlers) RequestSyncResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	resp, err := h.Engine.ProvideForeignSyncResponse(readOnly(r), &req, topic)
+	if req.Limit == 0 || req.Limit > maxGASPSyncOutputs {
+		req.Limit = maxGASPSyncOutputs
+	}
+	deadline := time.Now().Add(routeguard.JSONReadTimeout)
+	ctx, cancel := context.WithDeadline(readOnly(r), deadline)
+	defer cancel()
+	resp, err := h.Engine.ProvideForeignSyncResponse(ctx, &req, topic)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -78,8 +91,18 @@ func (h *Handlers) RequestSyncResponse(w http.ResponseWriter, r *http.Request) {
 	if resp.UTXOList == nil {
 		resp.UTXOList = []*gasp.Output{}
 	}
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encode sync response: "+err.Error())
+		return
+	}
+	if len(encoded) > maxGASPSyncResponseBytes {
+		writeError(w, http.StatusInternalServerError, "sync response exceeds server limit")
+		return
+	}
+	_ = http.NewResponseController(w).SetWriteDeadline(deadline)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	_, _ = w.Write(encoded)
 }
 
 // RequestForeignGASPNode handles POST /requestForeignGASPNode. A

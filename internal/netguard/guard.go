@@ -224,6 +224,9 @@ func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {
 	if resp.StatusCode == http.StatusOK && isGASPSync(req) {
 		return g.checkGASPSync(resp)
 	}
+	if isGASPNode(req) || isGASPSync(req) {
+		return g.checkGASPError(resp)
+	}
 	if resp.ContentLength > g.maxBytes {
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("%w: Content-Length %d is over %d bytes", ErrResponseTooLarge, resp.ContentLength, g.maxBytes)

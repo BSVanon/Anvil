@@ -70,7 +70,8 @@ func TestSubmitHandler_BadRequestPaths(t *testing.T) {
 	}{
 		{"wrong method", http.MethodGet, "/submit", nil, "", http.StatusMethodNotAllowed, "POST"},
 		{"missing x-topics", http.MethodPost, "/submit", []byte{0x01}, "", http.StatusBadRequest, "x-topics required"},
-		{"bad x-topics json", http.MethodPost, "/submit", []byte{0x01}, "not-json", http.StatusBadRequest, "invalid x-topics"},
+		{"bad x-topics json", http.MethodPost, "/submit", []byte{0x01}, "[not-json", http.StatusBadRequest, "invalid x-topics"},
+		{"empty x-topics element", http.MethodPost, "/submit", []byte{0x01}, "tm_a,,tm_b", http.StatusBadRequest, "invalid x-topics"},
 		{"empty body", http.MethodPost, "/submit", nil, `["tm_uhrp"]`, http.StatusBadRequest, "empty body"},
 		{"bad beef", http.MethodPost, "/submit", []byte{0x00, 0x01, 0x02}, `["tm_uhrp"]`, http.StatusBadRequest, "submit failed"},
 	}
@@ -94,20 +95,17 @@ func TestSubmitHandler_BadRequestPaths(t *testing.T) {
 	}
 }
 
-// TestSubmitHandler_OffChainValuesPrefix verifies the canonical
+// TestSubmitHandler_OffChainValuesPrefix verifies the current
 // `x-includes-off-chain-values: true` body shape from vector
-// overlay.submit.8: `varint(len) + offChainValues + BEEF`.
+// overlay.submit.8: `varint(BEEF length) + BEEF + offChainValues`.
 func TestSubmitHandler_OffChainValuesPrefix(t *testing.T) {
 	url := newTestServer(t)
 
 	const hashHex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
 	tagged := buildUHRPTaggedBEEF(t, hashHex, "https://example.test/off", "image/png", true)
 
-	// Prepend a 4-byte off-chain prefix (the vector's "deadbeef") behind
-	// a varint(4) length.
 	offChain := []byte{0xde, 0xad, 0xbe, 0xef}
-	body := append([]byte{byte(len(offChain))}, offChain...)
-	body = append(body, tagged.Beef...)
+	body := typeScriptSHIPBody(tagged.Beef, offChain)
 
 	topicsJSON, _ := json.Marshal(tagged.Topics)
 	req, _ := http.NewRequest(http.MethodPost, url+"/submit", bytes.NewReader(body))

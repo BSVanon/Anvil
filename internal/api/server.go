@@ -1,9 +1,7 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -436,10 +434,10 @@ func cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics, x-includes-off-chain-values, x-aggregation, X-BSV-Topic")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics, x-includes-off-chain-values, x-aggregation, X-BSV-Topic, X-Overlay-Cursor")
 		// Expose the /overlay/query readiness headers so browser callers can read
 		// them (custom response headers are hidden from JS unless exposed).
-		w.Header().Set("Access-Control-Expose-Headers", "X-Overlay-Gasp-Enabled, X-Overlay-Gasp-Initial-Sync-Done, X-Overlay-Gasp-Last-Sync-Unix, X-Overlay-Gasp-Interval-Secs, X-BEEF-Source, X-BEEF-Subject-Proven")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Overlay-Gasp-Enabled, X-Overlay-Gasp-Initial-Sync-Done, X-Overlay-Gasp-Last-Sync-Unix, X-Overlay-Gasp-Interval-Secs, X-Overlay-Truncated, X-Overlay-Cursor, X-Overlay-Omitted, X-BEEF-Source, X-BEEF-Subject-Proven")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -807,24 +805,27 @@ func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Final fallback: if the body contains a signed envelope, let it
-		// through. The signature proves key ownership and the inscription
+		// Final fallback: a signed envelope proves key ownership, while the inscription
 		// cost (real sats) is the natural spam filter. Ingest() will still
 		// fully validate the envelope before accepting it.
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if err == nil && len(body) > 0 {
+		ticket, body, ok := readSignedEnvelopeBody(w, r)
+		if !ok {
+			return
+		}
+		defer ticket.Close()
+		if len(body) > 0 {
 			env, parseErr := envelope.UnmarshalEnvelope(body)
 			if parseErr == nil && env.Signature != "" && env.Pubkey != "" {
 				if valErr := env.Validate(); valErr == nil {
 					// Valid signed envelope — replay body for handler
-					r.Body = io.NopCloser(bytes.NewReader(body))
+					replayRequestBody(r, body)
 					w.Header().Set("Access-Control-Allow-Origin", "*")
 					next(w, r)
 					return
 				}
 			}
 			// Signature check failed — replay body so error handler can read it
-			r.Body = io.NopCloser(bytes.NewReader(body))
+			replayRequestBody(r, body)
 		}
 
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -834,8 +835,7 @@ func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
 
 // authOrPayBinary is authOrPay for endpoints whose request body is binary
 // (e.g. /broadcast accepts raw BEEF). Differences from authOrPay:
-//  1. No signed-envelope fallback — an envelope parse would corrupt the body
-//     via io.LimitReader truncation for large BEEF inputs.
+//  1. No signed-envelope fallback — its credential read would corrupt a large BEEF body.
 //  2. x402 delegation requires a positive price for the endpoint. A zero-
 //     priced endpoint on a payment-gate-configured node would otherwise
 //     pass through unauthenticated via resolvePayees' "no payees = free"

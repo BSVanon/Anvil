@@ -200,9 +200,25 @@ identity key before storing.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
+| `/lookup` | POST | No | Canonical lookup query |
+| `/overlay/query` | POST | No | Legacy lookup query |
 | `/overlay/lookup` | GET | No | SHIP peer discovery by topic |
 | `/overlay/register` | POST | Bearer | Register a SHIP token |
 | `/overlay/deregister` | POST | Bearer | Remove a SHIP peer |
+
+### Lookup pages
+
+`POST /lookup` and `POST /overlay/query` return up to 10,000 outputs and no
+more than 8 MiB of encoded response data per page. A request without an
+`X-Overlay-Cursor` header always receives the first page. Send the
+`X-Overlay-Cursor` value from a truncated response to continue at the next
+output.
+
+`X-Overlay-Truncated: true` means another page is available. The accompanying
+`X-Overlay-Cursor` response header is the offset for that next request.
+`X-Overlay-Omitted` is the number of outputs skipped because one output could
+not fit in the 8 MiB response allowance. It may be present with either a final
+or a truncated page.
 
 ## Wallet Endpoints (operator only)
 

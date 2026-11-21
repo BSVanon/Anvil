@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/overlay/gaspstatus"
+	"github.com/BSVanon/Anvil/internal/overlay/lookupguard"
 	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
 	"github.com/bsv-blockchain/go-sdk/overlay"
@@ -80,13 +81,9 @@ func (h *Handlers) writeSyncHeaders(w http.ResponseWriter) {
 // docs/internal/conformance-vectors/overlay/submit.json):
 //
 //   - Request body: raw BEEF bytes. With x-includes-off-chain-values:
-//     true, body is `varint(len) + offChainValues + BEEF` — len is the
-//     off-chain prefix length encoded as a BSV varint (1/3/5/9 bytes).
-//     The vector body_hex `04 deadbeef 0100beef...` codifies this
-//     order. (Q2 in UPSTREAM_QUESTIONS notes a possible SDK-vs-vector
-//     parse discrepancy; we follow the vector because that's what we
-//     can actually test against.)
-//   - x-topics header: JSON array of topic names, e.g. ["tm_uhrp"].
+//     true, body is `varint(BEEF length) + BEEF + offChainValues`.
+//   - x-topics header: a comma-separated topic list, with the earlier JSON
+//     array form accepted during transition.
 //   - Response: 200 + STEAK JSON on success; 400 with a canonical
 //     error envelope `{status:"error",message:string}` otherwise
 //     (vector overlay.submit.7 + overlay.lookup.10), or 504 with the
@@ -212,16 +209,37 @@ func (h *Handlers) Lookup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "query required")
 		return
 	}
-	answer, err := lookupFor(r, h.Engine, &lookup.LookupQuestion{
+	cursor, err := lookupguard.ParseCursor(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := boundedLookupForWire(r, h.Engine, &lookup.LookupQuestion{
 		Service: raw.Service,
 		Query:   raw.Query,
-	})
+	}, cursor, r.Header.Get("x-aggregation") == "yes")
 	if err != nil {
 		if errors.Is(err, engine.ErrUnknownTopic) {
 			writeError(w, http.StatusBadRequest, "unknown lookup service: "+raw.Service)
 			return
 		}
 		writeError(w, http.StatusBadRequest, "lookup failed: "+err.Error())
+		return
+	}
+	if r.Header.Get("x-aggregation") == "yes" {
+		result, err = capAggregatedAnswer(result, cursor)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "aggregate: "+err.Error())
+			return
+		}
+	}
+	lookupguard.WriteHeaders(w, result)
+	answer := result.Answer
+	if r.Header.Get("x-aggregation") == "yes" {
+		t.Close()
+		if err := writeAggregatedAnswer(w, answer); err != nil {
+			writeError(w, http.StatusInternalServerError, "aggregate: "+err.Error())
+		}
 		return
 	}
 	encoded, err := json.Marshal(answer)
@@ -239,12 +257,6 @@ func (h *Handlers) Lookup(w http.ResponseWriter, r *http.Request) {
 	// return before this one.
 	t.Close()
 	boundAnswerWrite(w, len(encoded))
-	if r.Header.Get("x-aggregation") == "yes" {
-		if err := writeAggregatedAnswer(w, answer); err != nil {
-			writeError(w, http.StatusInternalServerError, "aggregate: "+err.Error())
-		}
-		return
-	}
 	writeJSONBytes(w, http.StatusOK, encoded)
 }
 
@@ -328,22 +340,6 @@ func (h *Handlers) preflight(w http.ResponseWriter, r *http.Request) {}
 
 // --- helpers ---------------------------------------------------------------
 
-// parseTopicsHeader decodes the x-topics request header (JSON array of
-// strings). Returns an empty slice on empty header, and an error on
-// malformed JSON or on more than maxDistinctTopics distinct names.
-// Duplicates are removed, keeping each name's first position, so the engine
-// and the rest of the route see each topic once.
-func parseTopicsHeader(raw string) ([]string, error) {
-	if raw == "" {
-		return nil, nil
-	}
-	var topics []string
-	if err := json.Unmarshal([]byte(raw), &topics); err != nil {
-		return nil, err
-	}
-	return dedupTopics(topics)
-}
-
 // writeJSON writes the JSON-marshalled value with the given status. If
 // marshalling fails we silently drop the body — the status header is
 // already on the wire so a partial response is the best we can do.
@@ -372,35 +368,6 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, errorEnvelope{Status: "error", Message: msg})
 }
 
-// splitOffChainValues separates the `varint(len) + offChainValues +
-// BEEF` body shape when `x-includes-off-chain-values: true`. When the
-// header is absent or any value other than "true", the whole body is
-// the BEEF and OffChainValues is nil. Vector body_hex
-// `04 deadbeef 0100beef...` (overlay.submit.8) is the canonical
-// reference for this order.
-func splitOffChainValues(body []byte, header string) (beef, offChain []byte, err error) {
-	if header != "true" {
-		return body, nil, nil
-	}
-	if len(body) == 0 {
-		return nil, nil, errors.New("empty body")
-	}
-	n, advance, err := readVarInt(body)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read varint: %w", err)
-	}
-	rest := body[advance:]
-	if uint64(len(rest)) < n {
-		return nil, nil, fmt.Errorf("off-chain prefix declares %d bytes but only %d available", n, len(rest))
-	}
-	offChain = rest[:n]
-	beef = rest[n:]
-	if len(beef) == 0 {
-		return nil, nil, errors.New("empty BEEF after off-chain prefix")
-	}
-	return beef, offChain, nil
-}
-
 // requireOctetStream enforces the canonical POST /submit Content-Type
 // per vector overlay.submit.11 (`Content-Type: application/json`
 // instead of `application/octet-stream` → 400). We accept the header
@@ -420,36 +387,4 @@ func requireOctetStream(header string) error {
 		return fmt.Errorf("Content-Type must be application/octet-stream, got %q", mediaType)
 	}
 	return nil
-}
-
-// readVarInt decodes a Bitcoin-flavored variable-length integer from
-// the beginning of buf. Returns the decoded value and the number of
-// bytes consumed. Spec: <0xfd → 1 byte; 0xfd → next 2 bytes; 0xfe →
-// next 4 bytes; 0xff → next 8 bytes (all little-endian).
-func readVarInt(buf []byte) (uint64, int, error) {
-	if len(buf) == 0 {
-		return 0, 0, errors.New("empty buffer")
-	}
-	first := buf[0]
-	switch {
-	case first < 0xfd:
-		return uint64(first), 1, nil
-	case first == 0xfd:
-		if len(buf) < 3 {
-			return 0, 0, errors.New("truncated varint (0xfd)")
-		}
-		return uint64(buf[1]) | uint64(buf[2])<<8, 3, nil
-	case first == 0xfe:
-		if len(buf) < 5 {
-			return 0, 0, errors.New("truncated varint (0xfe)")
-		}
-		return uint64(buf[1]) | uint64(buf[2])<<8 | uint64(buf[3])<<16 | uint64(buf[4])<<24, 5, nil
-	default: // 0xff
-		if len(buf) < 9 {
-			return 0, 0, errors.New("truncated varint (0xff)")
-		}
-		v := uint64(buf[1]) | uint64(buf[2])<<8 | uint64(buf[3])<<16 | uint64(buf[4])<<24 |
-			uint64(buf[5])<<32 | uint64(buf[6])<<40 | uint64(buf[7])<<48 | uint64(buf[8])<<56
-		return v, 9, nil
-	}
 }

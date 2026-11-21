@@ -1,6 +1,7 @@
 package lookups
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BSVanon/Anvil/internal/overlay/lookupguard"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -185,8 +187,8 @@ func formulasFromRecords(recs []uhrpItemRecord) []lookup.LookupFormula {
 // pass, cold review B1) is set by the one caller — the uhrpUrl query
 // path — that needs BRC-26-only answers; a direct content_hash query
 // passes false and keeps seeing both formats.
-func (s *UHRPLookupService) scanByHash(hashHex string, canonicalOnly bool, extra uhrpQueryFilter) ([]lookup.LookupFormula, error) {
-	recs, err := s.itemsByHash(hashHex)
+func (s *UHRPLookupService) scanByHash(ctx context.Context, hashHex string, canonicalOnly bool, extra uhrpQueryFilter) ([]lookup.LookupFormula, error) {
+	recs, err := s.itemsByHashContext(ctx, hashHex)
 	if err != nil {
 		return nil, err
 	}
@@ -197,10 +199,15 @@ func (s *UHRPLookupService) scanByHash(hashHex string, canonicalOnly bool, extra
 // entry indexed under the given content hash, so callers can apply
 // filterUHRPRecords before deciding what to return.
 func (s *UHRPLookupService) itemsByHash(hashHex string) ([]uhrpItemRecord, error) {
+	return s.itemsByHashContext(context.Background(), hashHex)
+}
+
+func (s *UHRPLookupService) itemsByHashContext(ctx context.Context, hashHex string) ([]uhrpItemRecord, error) {
 	prefix := []byte(uhrpHashPrefix + hashHex + ":")
 	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
 	defer iter.Release()
 	var recs []uhrpItemRecord
+	pager := lookupguard.NewPager(ctx)
 	for iter.Next() {
 		op, ok := decodeHashIndexKey(iter.Key(), len(prefix))
 		if !ok {
@@ -219,6 +226,13 @@ func (s *UHRPLookupService) itemsByHash(hashHex string) ([]uhrpItemRecord, error
 		}
 		if !ok {
 			continue // hash-index entry with no item body — defensive, shouldn't happen
+		}
+		take, stop := pager.Take()
+		if stop {
+			break
+		}
+		if !take {
+			continue
 		}
 		recs = append(recs, uhrpItemRecord{uhrpItem: item, outpoint: op})
 	}
@@ -246,11 +260,12 @@ func (s *UHRPLookupService) loadItem(op *transaction.Outpoint) (uhrpItem, bool, 
 
 // allItemRecords loads every item in the local index, decoded. Shared by
 // scanAllItems and countByHash so both apply the identical filter.
-func (s *UHRPLookupService) allItemRecords() ([]uhrpItemRecord, error) {
+func (s *UHRPLookupService) allItemRecords(ctx context.Context) ([]uhrpItemRecord, error) {
 	prefix := []byte(uhrpItemPrefix)
 	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
 	defer iter.Release()
 	var recs []uhrpItemRecord
+	pager := lookupguard.NewPager(ctx)
 	for iter.Next() {
 		op, ok := decodeItemKey(iter.Key())
 		if !ok {
@@ -263,6 +278,13 @@ func (s *UHRPLookupService) allItemRecords() ([]uhrpItemRecord, error) {
 			// the whole list scan over one bad entry.
 			slog.Warn("uhrp lookup: skipping corrupt record in list scan",
 				"key", string(iter.Key()), "error", err)
+			continue
+		}
+		take, stop := pager.Take()
+		if stop {
+			break
+		}
+		if !take {
 			continue
 		}
 		recs = append(recs, uhrpItemRecord{uhrpItem: item, outpoint: op})
@@ -278,8 +300,8 @@ func (s *UHRPLookupService) allItemRecords() ([]uhrpItemRecord, error) {
 // AND-combines hostIdentityKey/expiryTime into this base set, matching
 // canonical UHRPLookupService.ts's query semantics; the zero value
 // matches everything.
-func (s *UHRPLookupService) scanAllItems(extra uhrpQueryFilter) ([]lookup.LookupFormula, error) {
-	recs, err := s.allItemRecords()
+func (s *UHRPLookupService) scanAllItems(ctx context.Context, extra uhrpQueryFilter) ([]lookup.LookupFormula, error) {
+	recs, err := s.allItemRecords(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -289,8 +311,8 @@ func (s *UHRPLookupService) scanAllItems(extra uhrpQueryFilter) ([]lookup.Lookup
 // countByHash returns a hash→count map computed over the surviving items
 // (after filterUHRPRecords and extra), so an expired, superseded-legacy,
 // or filtered-out advert doesn't inflate a hash's reported host count.
-func (s *UHRPLookupService) countByHash(extra uhrpQueryFilter) (map[string]int, error) {
-	recs, err := s.allItemRecords()
+func (s *UHRPLookupService) countByHash(ctx context.Context, extra uhrpQueryFilter) (map[string]int, error) {
+	recs, err := s.allItemRecords(ctx)
 	if err != nil {
 		return nil, err
 	}

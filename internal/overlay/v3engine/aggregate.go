@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/BSVanon/Anvil/internal/overlay/lookupguard"
+	"github.com/BSVanon/Anvil/internal/overlay/routeguard"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	"github.com/bsv-blockchain/go-sdk/overlay/lookup"
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -65,10 +67,83 @@ func writeAggregatedAnswer(w http.ResponseWriter, answer *lookup.LookupAnswer) e
 			"outputs", len(items), "error", err)
 		return writePerOutputAnswer(w, items)
 	}
+	if int64(len(payload)) > routeguard.LookupAllowance {
+		return fmt.Errorf("lookup response is over %d bytes", routeguard.LookupAllowance)
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write(payload)
 	return err
+}
+
+// capAggregatedAnswer applies the response allowance to the bytes the binary
+// writer will actually send. An output that cannot fit by itself is omitted;
+// a later output that would overflow a non-empty page starts the next page.
+func capAggregatedAnswer(result lookupguard.Result, cursor int) (lookupguard.Result, error) {
+	answer := result.Answer
+	if answer == nil || answer.Type == lookup.AnswerTypeFreeform {
+		return result, nil
+	}
+	outputs := make([]*lookup.OutputListItem, 0, len(answer.Outputs))
+	positions := make([]int, 0, len(answer.Outputs))
+	omittedBefore := make([]int, 0, len(answer.Outputs))
+	omitted := result.Omitted
+	for i, item := range answer.Outputs {
+		alone, err := aggregatedAnswerSize([]*lookup.OutputListItem{item})
+		if err != nil {
+			return lookupguard.Result{}, err
+		}
+		if alone > routeguard.LookupAllowance {
+			omitted++
+			continue
+		}
+		outputs = append(outputs, item)
+		positions = append(positions, i)
+		omittedBefore = append(omittedBefore, omitted)
+	}
+
+	size, err := aggregatedAnswerSize(outputs)
+	if err != nil {
+		return lookupguard.Result{}, err
+	}
+	if size > routeguard.LookupAllowance {
+		first, last := 1, len(outputs)-1
+		for first < last {
+			middle := first + (last-first+1)/2
+			middleSize, err := aggregatedAnswerSize(outputs[:middle])
+			if err != nil {
+				return lookupguard.Result{}, err
+			}
+			if middleSize <= routeguard.LookupAllowance {
+				first = middle
+			} else {
+				last = middle - 1
+			}
+		}
+		return lookupguard.Result{
+			Answer:    outputListAnswer(outputs[:first]),
+			Truncated: true,
+			Next:      cursor + positions[first],
+			Omitted:   omittedBefore[first],
+		}, nil
+	}
+	if result.Truncated && len(outputs) > 0 {
+		return lookupguard.Result{Answer: outputListAnswer(outputs), Truncated: true, Next: result.Next, Omitted: omitted}, nil
+	}
+	return lookupguard.Result{Answer: outputListAnswer(outputs), Omitted: omitted}, nil
+}
+
+func aggregatedAnswerSize(outputs []*lookup.OutputListItem) (int64, error) {
+	items := usableOutputs(outputs)
+	payload, err := buildAggregate(items)
+	if err == nil {
+		return int64(len(payload)), nil
+	}
+	return perOutputAnswerSize(items), nil
+}
+
+func outputListAnswer(outputs []*lookup.OutputListItem) *lookup.LookupAnswer {
+	return &lookup.LookupAnswer{Type: lookup.AnswerTypeOutputList, Outputs: outputs}
 }
 
 // answerOutput is an output of a lookup answer with the txid of the
@@ -104,6 +179,7 @@ func usableOutputs(outputs []*lookup.OutputListItem) []answerOutput {
 var (
 	parseAnswerBEEF    = transaction.NewTransactionFromBEEF
 	serialiseAggregate = (*transaction.Beef).Bytes
+	buildAggregate     = aggregateOutputs
 )
 
 // subjectTxid returns the txid of the transaction beef carries, turning a
@@ -190,6 +266,9 @@ func aggregatedBytes(aggregated *transaction.Beef) (b []byte, err error) {
 // whose beef is not an array, and go-sdk's facilitator decodes either form
 // into []byte. The answer is streamed, so it never sits in memory whole.
 func writePerOutputAnswer(w http.ResponseWriter, outputs []answerOutput) error {
+	if perOutputAnswerSize(outputs) > routeguard.LookupAllowance {
+		return fmt.Errorf("lookup response is over %d bytes", routeguard.LookupAllowance)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	bw := bufio.NewWriterSize(w, 32<<10)
@@ -212,6 +291,40 @@ func writePerOutputAnswer(w http.ResponseWriter, outputs []answerOutput) error {
 	}
 	bw.WriteString("]}\n")
 	return bw.Flush()
+}
+
+func perOutputAnswerSize(outputs []answerOutput) int64 {
+	const head = `{"type":"output-list","outputs":[`
+	const itemHead = `{"beef":[`
+	const itemMiddle = `],"outputIndex":`
+	const tail = "]}\n"
+	size := int64(len(head) + len(tail))
+	for i, out := range outputs {
+		if i > 0 {
+			size++
+		}
+		size += int64(len(itemHead) + len(itemMiddle) + len(strconv.FormatUint(uint64(out.item.OutputIndex), 10)) + 1)
+		for j, b := range out.item.Beef {
+			if j > 0 {
+				size++
+			}
+			size += decimalByteLen(b)
+			if size > routeguard.LookupAllowance {
+				return size
+			}
+		}
+	}
+	return size
+}
+
+func decimalByteLen(b byte) int64 {
+	if b < 10 {
+		return 1
+	}
+	if b < 100 {
+		return 2
+	}
+	return 3
 }
 
 // writeVarInt encodes a uint64 as a Bitcoin-flavoured variable-length

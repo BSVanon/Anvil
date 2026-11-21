@@ -158,7 +158,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 
 	switch {
 	case q.ContentHash != "":
-		formulas, err := s.scanByHash(strings.ToLower(q.ContentHash), viaUhrpUrl, extra)
+		formulas, err := s.scanByHash(ctx, strings.ToLower(q.ContentHash), viaUhrpUrl, extra)
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +168,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		}, nil
 
 	case q.List == "all":
-		formulas, err := s.scanAllItems(extra)
+		formulas, err := s.scanAllItems(ctx, extra)
 		if err != nil {
 			return nil, err
 		}
@@ -178,7 +178,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		}, nil
 
 	case q.List == "hashes":
-		counts, err := s.countByHash(extra)
+		counts, err := s.countByHash(ctx, extra)
 		if err != nil {
 			return nil, err
 		}
@@ -188,7 +188,7 @@ func (s *UHRPLookupService) Lookup(ctx context.Context, question *lookup.LookupQ
 		}, nil
 
 	case extra.active():
-		formulas, err := s.scanAllItems(extra)
+		formulas, err := s.scanAllItems(ctx, extra)
 		if err != nil {
 			return nil, err
 		}
