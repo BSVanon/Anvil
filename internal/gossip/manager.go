@@ -270,9 +270,12 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 	})
 
 	// Register message handler before starting. By the time this fires,
-	// establishAndAuthorizePeer below has already re-keyed this peer's
-	// map entry to its identity hex and checked allowed_peers — this
-	// callback only still needs to run the one-time bond check.
+	// establishAndAuthorizePeer below has usually already re-keyed this
+	// peer's map entry to its identity hex and checked allowed_peers —
+	// but go-sdk gives no ordering guarantee between that call returning
+	// and this callback firing for the peer's first general message, so
+	// the check below runs here too, defensively, the same as AcceptPeer
+	// already does for the symmetric inbound case.
 	peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
 		pkHex := fmt.Sprintf("%x", senderPK.Compressed())
 
@@ -283,6 +286,18 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 			needsBondCheck = true
 		}
 		m.mu.Unlock()
+
+		// [mesh] allowed_peers, defense in depth: establishAndAuthorizePeer
+		// below is the primary check for an outbound dial, but if this
+		// callback's first message ever ran before that check returns, a
+		// message from a peer about to be refused must still never reach
+		// handleMessage below. Factored into outboundAllowlistGate so the
+		// check can be exercised directly in a test: the ordering this
+		// guards against has no documented guarantee either way and no
+		// deterministic reproduction from outside go-sdk's internals.
+		if err := m.outboundAllowlistGate(needsBondCheck, pkHex, endpoint); err != nil {
+			return err
+		}
 
 		// Verify bond on first message (identity just revealed)
 		if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
@@ -365,6 +380,21 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 
 	// Request catch-up for critical topics (catalog, feeds)
 	m.requestCatchUp(peer)
+	return nil
+}
+
+// outboundAllowlistGate is ConnectPeer's defense-in-depth [mesh]
+// allowed_peers check: called from the ListenForGeneralMessages callback
+// above with needsBondCheck already determined, it reports an error when
+// pkHex's first message must not proceed to the bond check or
+// handleMessage. Returns nil when needsBondCheck is false (this peer's
+// first message already passed, or ConnectPeer's primary check in
+// establishAndAuthorizePeer owns the decision this time) or when pkHex is
+// allowed.
+func (m *Manager) outboundAllowlistGate(needsBondCheck bool, pkHex, endpoint string) error {
+	if needsBondCheck && !m.checkAllowedPeer(pkHex, "outbound", endpoint) {
+		return fmt.Errorf("peer identity not in allowed_peers")
+	}
 	return nil
 }
 
