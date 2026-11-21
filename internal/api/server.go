@@ -324,7 +324,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /mempool/watch/subscribe", s.openRead(s.handleWatchSubscribe))
 
 	// /broadcast accepts auth token OR x402 payment. Pre-wired for the wallet's
-	// future x402 client (E.2 migration in ANVIL_NODE_HANDOFF.md) — consumers
+	// future x402 client — consumers
 	// with auth tokens keep working unchanged.
 	s.mux.HandleFunc("POST /broadcast", s.tipCredential(s.handleBroadcast, s.authOrPayBinary(s.handleBroadcast)))
 	// POST /data accepts bearer auth OR x402 payment (if payment gate exists).
@@ -333,8 +333,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /data", s.authOrPay(s.handlePostData))
 	s.mux.HandleFunc("OPTIONS /data", cors(func(w http.ResponseWriter, r *http.Request) {}))
 
-	// v3.0.6: canonical StorageUploader stub. @bsv/sdk's StorageUploader
-	// (used by SendBSV-Wallet's v14 storage-sync) calls `${host}/quote`
+	// StorageUploader calls `${host}/quote`
 	// on each configured host to discover storage pricing. Anvil isn't a
 	// canonical storage host yet (no /upload, no retention semantics, no
 	// x402 quote pricing) — but unregistered routes return 404 without
@@ -345,9 +344,8 @@ func (s *Server) routes() {
 	// cleanly (per StorageUploader.ts:152) and continue with other
 	// hosts.
 	//
-	// Full canonical /quote + /upload implementation tracked separately
-	// (see docs/internal/SENDBSV_INBOUND_DEPOSITS_REQUEST.md Ask 1
-	// follow-up). v3.0.6 ships only the CORS-clean stub.
+	// Full canonical /quote + /upload support is not implemented; this is a
+	// CORS-clean stub.
 	s.mux.HandleFunc("POST /quote", cors(s.handleStorageQuoteStub))
 	s.mux.HandleFunc("OPTIONS /quote", cors(func(w http.ResponseWriter, r *http.Request) {}))
 	s.mux.HandleFunc("POST /overlay/register", s.requireAuth(s.handleOverlayRegister))
@@ -426,8 +424,7 @@ func (s *Server) openPublic(next http.HandlerFunc) http.HandlerFunc {
 //   - x-aggregation (canonical /lookup, vector overlay.lookup.3
 //     binary-aggregated response opt-in)
 //
-// Codex review 2968609c62a2eb51 flagged the original list missing the
-// last two — apps migrating to canonical /submit + /lookup with those
+// The last two headers are required so callers migrating to canonical /submit + /lookup with those
 // opt-ins would have failed CORS preflight even though the routes
 // themselves were CORS-wrapped.
 func cors(next http.HandlerFunc) http.HandlerFunc {
@@ -668,7 +665,7 @@ No stablecoins. No payment channels. No facilitator servers.
 }
 
 // handleStorageQuoteStub returns a canonical-shaped error so the
-// @bsv/sdk StorageUploader (used by SendBSV-Wallet v14 storage-sync)
+// @bsv/sdk StorageUploader
 // treats Anvil as an unavailable storage provider and continues with
 // other configured hosts. We're not lying about being a storage host
 // — we just return what the StorageUploader interprets as "this host
@@ -682,8 +679,7 @@ No stablecoins. No payment channels. No facilitator servers.
 //
 // Full canonical /quote + /upload implementation (real x402 pricing,
 // retention semantics, BRC storage-host protocol) is a separate
-// roadmap item — see docs/internal/SENDBSV_INBOUND_DEPOSITS_REQUEST.md
-// follow-up.
+// roadmap item.
 func (s *Server) handleStorageQuoteStub(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK) // canonical shape uses 200 + error in body, not HTTP 4xx

@@ -12,13 +12,13 @@ import (
 	"github.com/BSVanon/Anvil/internal/content"
 )
 
-// originHeader/outpointHeader are decision 5's mirror headers. A HEAD
+// originHeader/outpointHeader identify the served origin and outpoint. A HEAD
 // request against a public ordinals gateway
 // (https://ordinals.gorillapool.io/content/<origin>?seq=-1, checked
 // 2026-11-20) returned only standard/CDN headers — date, content-type,
 // content-length, server, x-powered-by, vary, cache-control, etag,
 // cf-cache-status, report-to, nel, cf-ray — no origin or outpoint header
-// of its own to reuse, so this uses decision 5's fallback names.
+// of its own to reuse, so this uses these names.
 const (
 	originHeader   = "X-Origin"
 	outpointHeader = "X-Outpoint"
@@ -33,19 +33,18 @@ type SiteHandlerConfig struct {
 	Content        contentFetcher
 	Versions       Versions // nil defaults to DefaultVersions{}
 	RootMaxAge     time.Duration
-	ContentScope   string // "site" (default) or "any" — decision 6
+	ContentScope   string // "site" (default) or "any"
 	TrustProxy     bool
 	TrustProxyHops int
 	Counters       *Counters // default a fresh, unshared Counters
 	Logger         *slog.Logger
 }
 
-// SiteHandler serves a publisher's own domain (decision 5): "/" (the
+// SiteHandler serves a publisher's own domain: "/" (the
 // latest version) and "/content/<txid>_<vout>" (an exact, immutable
-// outpoint), subject to Policy and the content scope (decision 6), with
-// per-client rate limiting (decision 8) and no per-request logging of
-// anything but a fetch-failed txid (decision 8). It also implements
-// decision 2's "anything else: a plain 404" for any Host that Policy
+// outpoint), subject to Policy and the content scope, with per-client rate
+// limiting and no per-request logging except a fetch-failed txid. It returns
+// a plain 404 for any Host that Policy
 // refuses — Router delegates every non-API-host request here unconditionally.
 type SiteHandler struct {
 	policy     *Policy
@@ -94,14 +93,14 @@ func NewSiteHandler(cfg SiteHandlerConfig) *SiteHandler {
 }
 
 // Stats returns the aggregate counters, ready for internal/api's
-// SetGatewayStats hook (decision 8).
+// SetGatewayStats hook.
 func (sh *SiteHandler) Stats() map[string]int64 {
 	return sh.counters.Snapshot()
 }
 
 // ServeHTTP implements http.Handler.
 func (sh *SiteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Decision 5: every site response, success or error, carries this.
+	// Every site response, success or error, carries this.
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	sh.counters.Requests.Add(1)
 
@@ -137,7 +136,7 @@ func (sh *SiteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveRoot implements decision 5's "/": the latest version, with a
+// serveRoot implements "/": the latest version, with a
 // short max-age, an ETag honouring If-None-Match, and the mirror headers.
 func (sh *SiteHandler) serveRoot(w http.ResponseWriter, r *http.Request, origin string) {
 	outpoint, err := sh.versions.Latest(origin)
@@ -161,7 +160,7 @@ func (sh *SiteHandler) serveRoot(w http.ResponseWriter, r *http.Request, origin 
 	}
 	data, contentType, err := sh.content.Inscription(r.Context(), txid, vout)
 	if err != nil {
-		// Decision 8: content-fetch errors log the txid only.
+		// Content-fetch errors log the txid only.
 		sh.logger.Warn("gateway content fetch failed", "txid", txid)
 		http.Error(w, "fetch failed", http.StatusBadGateway)
 		return
@@ -174,8 +173,8 @@ func (sh *SiteHandler) serveRoot(w http.ResponseWriter, r *http.Request, origin 
 	_, _ = w.Write(data)
 }
 
-// serveContentPath implements decision 5's "/content/<txid>_<vout>",
-// subject to decision 6's content scope.
+// serveContentPath implements "/content/<txid>_<vout>", subject to the
+// content scope.
 //
 // With ?seq, the outpoint is an origin, and the version of it that seq
 // names is served instead.

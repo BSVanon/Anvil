@@ -25,7 +25,7 @@ func TestValidateDomain(t *testing.T) {
 		{"trailing hyphen label rejected", "bad-.example.org", "", false},
 		{"underscore rejected (not LDH)", "bad_domain.org", "", false},
 		{"multi-label subdomain", "sub.Example.ORG", "sub.example.org", true},
-		// N2: a bare IP literal is never a meaningful "domain" entry.
+		// A bare IP literal is never a meaningful "domain" entry.
 		{"IPv4 literal rejected", "127.0.0.1", "", false},
 		{"IPv4 literal rejected (public-looking)", "203.0.113.42", "", false},
 		{"IPv6 literal rejected (loopback)", "::1", "", false},
@@ -227,7 +227,7 @@ func TestAllowlist_MissingFileIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestAllowlist_APIHostDomainEntryIgnoredOnReload is D2's hot-reload
+// TestAllowlist_APIHostDomainEntryIgnoredOnReload verifies hot-reload
 // overlap rule: a "domain" entry equal to api_host is stripped from the
 // snapshot on load (and on every subsequent reload), with exactly one
 // warning per bad mtime, rather than silently sitting in the snapshot as

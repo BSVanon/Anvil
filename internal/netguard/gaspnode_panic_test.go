@@ -10,8 +10,8 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
-// TestGaspNodeMalformed_RecoversAPanic: cold review round 4 cycle 6's RISK 3
-// -- gaspNodeMalformed parsed untrusted hex with no recover of its own --
+// TestGaspNodeMalformed_RecoversAPanic verifies that gaspNodeMalformed parses
+// untrusted hex with recovery --
 // fixed by running the parse under netguard.Contain. With
 // parseGASPTransaction swapped for a stub that panics, the call is refused
 // (a non-empty reason, fail closed) instead of ending the process, and
@@ -44,7 +44,7 @@ func TestGaspNodeMalformed_RecoversAPanic(t *testing.T) {
 
 // gaspNodeMutationRounds is how many mutated inputs
 // TestGaspNodeMalformed_MutatedTransactionsNeverPanic runs through the real
-// parser. Cold review round 4 cycle 6's original probe ran 400,000 and found
+// parser. The original probe ran 400,000 and found
 // no panic; this permanent regression keeps the same mutation shapes at a
 // tenth of that, fast enough for every run (including -race), since the
 // recover itself is already proven deterministically by
@@ -52,8 +52,8 @@ func TestGaspNodeMalformed_RecoversAPanic(t *testing.T) {
 // against the real parser, not reproving the recover fires.
 const gaspNodeMutationRounds = 40_000
 
-// TestGaspNodeMalformed_MutatedTransactionsNeverPanic is cold review round
-// 4 cycle 6's parse-panic probe, adapted into a permanent regression:
+// TestGaspNodeMalformed_MutatedTransactionsNeverPanic is a permanent
+// parse-panic regression:
 // mutations of a malformed and an honest transaction's raw bytes, decoded
 // into a gasp.Node and run through the real, unswapped parseGASPTransaction
 // (transaction.NewTransactionFromBytes), must never panic past

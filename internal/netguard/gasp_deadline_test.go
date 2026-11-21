@@ -17,8 +17,8 @@ import (
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/gasp"
 )
 
-// TestGuard_GASPHeaderStallIsBounded is cold review round 4 cycle 6b's RISK
-// 1 reproduction: before withinHeaderDeadline existed, only the body read
+// TestGuard_GASPHeaderStallIsBounded verifies that before withinHeaderDeadline,
+// only the body read
 // had a deadline, so a peer that sent its response headers late -- or never
 // -- blocked the whole exchange with no bound, and since GASP sync runs one
 // peer and topic at a time on the root context, one such peer froze every
@@ -52,8 +52,8 @@ func TestGuard_GASPHeaderStallIsBounded(t *testing.T) {
 	}
 }
 
-// TestGuard_GASPSyncTrickleIsCutByMinRate is cold review round 4 cycle 6b's
-// RISK 1 second half: before isGASPSync existed, a /requestSyncResponse 200
+// TestGuard_GASPSyncTrickleIsCutByMinRate verifies that before isGASPSync,
+// a /requestSyncResponse 200
 // fell through RoundTrip's generic cappedBody wrap, capped on size alone,
 // with no deadline and no minimum rate -- unlike a /requestForeignGASPNode
 // reply, which already read under both. A peer that answers headers
@@ -114,8 +114,8 @@ func TestGuard_GASPSyncHonestReplyStillPasses(t *testing.T) {
 	}
 }
 
-// TestGASPReadTimeout pins gaspReadTimeout's formula directly (cold review
-// round 4 cycle 6b's RISK 2): GASPReadBase plus declared length over
+// TestGASPReadTimeout pins gaspReadTimeout's formula directly: GASPReadBase
+// plus declared length over
 // GASPReadRate, capped at GASPReadMax, with an undeclared (-1) length
 // getting the cap outright. A behavioral test paced in real time, like
 // TestGuard_GASPNodeHonestLargeReplyAtModerateRatePasses below, can only
@@ -196,8 +196,8 @@ func pacedWrite(w http.ResponseWriter, body []byte, ratePerSec int) {
 	}
 }
 
-// TestGuard_GASPNodeHonestLargeReplyAtModerateRatePasses is cold review
-// round 4 cycle 6b's RISK 2 positive case: a 20 MB /requestForeignGASPNode
+// TestGuard_GASPNodeHonestLargeReplyAtModerateRatePasses verifies that a
+// 20 MB /requestForeignGASPNode
 // reply (what a roughly 10 MB transaction and its proof hex out to) from a
 // peer sustaining about 1 MB/s -- comfortably over bodyread's minimum rate,
 // and well under gaspReadTimeout's 70s allowance for this size -- must not
@@ -232,15 +232,15 @@ func TestGuard_GASPNodeHonestLargeReplyAtModerateRatePasses(t *testing.T) {
 	// instant send the deadline logic never had to matter for) and a loose
 	// upper bound well short of the 180s cap or the computed 70s deadline.
 	if took < 10*time.Second {
-		t.Errorf("reply arrived in %v, want the pacing to have held it to around 20s", took)
+		t.Errorf("reply arrived in %v, want the pacing to have held it to approximately 20s", took)
 	}
 	if took > 90*time.Second {
 		t.Errorf("reply took %v, want comfortably under the ~70s deadline this size computes to", took)
 	}
 }
 
-// TestGuard_GASPNodeTrickleStillCutByMinRate is cold review round 4 cycle
-// 6b's RISK 2 "minimum rate unchanged" check, on the /requestForeignGASPNode
+// TestGuard_GASPNodeTrickleStillCutByMinRate verifies the minimum-rate check
+// on the /requestForeignGASPNode
 // path itself (TestGuard_GASPSyncTrickleIsCutByMinRate covers the same
 // guarantee on /requestSyncResponse): readGASPReply is shared by both
 // checkGASPNode and checkGASPSync, so introducing gaspReadTimeout's

@@ -24,7 +24,7 @@ var gaspOutpoint = &transaction.Outpoint{Txid: chainhash.Hash{0x01}, Index: 0}
 
 // malformedReparseTx returns the raw bytes of a minimal version-2
 // transaction with one input whose unlocking script ends in an undecodable
-// instruction: the B1 shape (cold review round 4) checkGASPNode must refuse.
+// instruction: checkGASPNode must refuse it.
 // It needs no funded parent, BEEF or SPV proof -- EndsMalformed
 // (internal/scriptcost) is a syntactic read of the unlocking script's own
 // bytes alone, and checkGASPNode never calls spv.Verify or the interpreter.
@@ -78,7 +78,7 @@ func gaspNodeReply(t *testing.T, rawTx []byte) []byte {
 }
 
 // gaspNodeReplyWithProof is gaspNodeReply with a non-empty Proof: the shape
-// RISK 4 (cold review round 4 cycle 6) named, where spv.Verify accepts a
+// where spv.Verify accepts a
 // transaction a merkle path proves mined without ever running its scripts,
 // so gaspNodeMalformed must not check one. proof need not be a real merkle
 // path: gaspNodeMalformed only ever reads whether it is empty, the same as
@@ -94,7 +94,7 @@ func gaspNodeReplyWithProof(t *testing.T, rawTx []byte, proof string) []byte {
 }
 
 // TestGuard_RefusesMalformedGASPNodeReply: a hostile SHIP-advertised peer's
-// /requestForeignGASPNode reply carrying the B1 shape is refused through
+// /requestForeignGASPNode reply carrying the malformed script is refused through
 // http.DefaultClient before go-overlay-services' own
 // OverlayGASPRemote.RequestNode (gasp-remote.go) ever decodes it -- an
 // ordinary failed request to that one peer, the same as a network error
@@ -122,8 +122,7 @@ func TestGuard_RefusesMalformedGASPNodeReply(t *testing.T) {
 // populates every field doNodeRequest's own gasp.Node can carry -- Proof,
 // TxMetadata, OutputMetadata and Inputs, not just RawTx, GraphID and
 // OutputIndex -- so a guard change that dropped or altered one of them in
-// the slice it hands on would show up here (cold review round 4 cycle 6b
-// nit; folds in zz_rev2_roundtrip_test.go's TestRev2_HonestFullNodeThroughGuard,
+// the slice it hands on would show up here.
 // which checked the same guarded-vs-unguarded property through the same
 // code path).
 func TestGuard_PassesHonestGASPNodeReply(t *testing.T) {
@@ -171,14 +170,14 @@ func TestGuard_PassesHonestGASPNodeReply(t *testing.T) {
 // stringPtr returns a pointer to s, for a gasp.Node literal's Proof field.
 func stringPtr(s string) *string { return &s }
 
-// TestGuard_RefusesEveryTrailingByteVariant is cold review round 4 cycle 6's
-// B1 reproduction, adapted into a permanent regression: checkGASPNode used to
+// TestGuard_RefusesEveryTrailingByteVariant is a permanent regression:
+// checkGASPNode used to
 // decode a reply with json.Unmarshal, which fails on anything after the JSON
 // object, so it handed every one of these variants on unchecked (fail open),
 // while go-overlay-services' own json.Decoder.Decode reads only the first
 // value and accepts every one of them, embedded malformed script included.
 // Decoding the same way (decodeGASPNode) closes the gap: every variant below
-// carries the B1 shape and must be refused, exactly as the plain control
+// carries the malformed-script shape and must be refused, exactly as the plain control
 // already was.
 func TestGuard_RefusesEveryTrailingByteVariant(t *testing.T) {
 	good := gaspNodeReply(t, malformedReparseTx(t))
@@ -209,7 +208,7 @@ func TestGuard_RefusesEveryTrailingByteVariant(t *testing.T) {
 // carries a Proof is handed on even though its transaction's unlocking
 // script ends in an undecodable instruction -- the exact shape
 // TestGuard_RefusesMalformedGASPNodeReply proves refused on its own, here
-// paired with a Proof (cold review round 4 cycle 6, RISK 4). spv.Verify
+// paired with a Proof. spv.Verify
 // never runs the scripts of a transaction a merkle path proves mined, so
 // refusing this would refuse a shape go-sdk's own verification can never
 // reach.

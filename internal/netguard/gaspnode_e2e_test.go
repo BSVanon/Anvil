@@ -40,15 +40,14 @@ func gaspE2ENodeReply(t *testing.T, tx *transaction.Transaction, proof string) [
 }
 
 // TestGuard_GASPSyncNeverAppendsAMalformedChildToTheRealStorage is cold
-// review round 4 cycle 6's B1 end-to-end reproduction (zz_rev_gasp_e2e_test),
-// adapted into a permanent, fast regression: a hostile GASP peer serves a
-// child node carrying the B1 shape, fetched through the real, unmodified
+// permanent, fast regression: a hostile GASP peer serves a child node carrying
+// the malformed-script shape, fetched through the real, unmodified
 // OverlayGASPRemote.RequestNode the way GASP.Sync fetches every node, in a
 // fake server that routes by txid as a real peer's /requestForeignGASPNode
 // would. The guard's refusal must stop the node before it is ever appended
 // to the real OverlayGASPStorage's temporary graph -- so the real
 // ValidateGraphAnchor, which runs spv.Verify with no budget of its own (the
-// B1 heap bomb's target, go-overlay-services gasp-storage.go:317), is never
+// target, go-overlay-services gasp-storage.go:317), is never
 // reached for it -- while a separate, honest node from the same peer is
 // unaffected: one hostile reply fails only its own exchange.
 func TestGuard_GASPSyncNeverAppendsAMalformedChildToTheRealStorage(t *testing.T) {
@@ -132,10 +131,8 @@ const (
 	gaspE2ETimeBound = 2 * time.Second
 )
 
-// TestGuard_GASPBypassNeverReachesVerify is the original cold review round 4
-// cycle 6 reviewer's reproduction (zz_rev_gasp_e2e_test.go,
-// TestRev_GASPBypassReachesVerify), ported as a permanent regression and
-// closing the two gaps cold review round 4 cycle 6b's re-review found in it:
+// TestGuard_GASPBypassNeverReachesVerify is a permanent regression that
+// closes two gaps:
 // its malformed child had no large parent, so it could not show a heap
 // regression, and -- like TestGuard_GASPSyncNeverAppendsAMalformedChildToTheRealStorage,
 // which this test complements rather than repeats -- a passing run never
@@ -149,8 +146,7 @@ const (
 // JSON object -- is refused by RequestNode alone, as it must be, the real
 // OverlayGASPStorage is never reached at all, asserted cheaply (heap and
 // time bounds, with the large parent behind it to make that bound mean
-// something). Only if RequestNode ever failed to refuse it -- the B1
-// bypass this whole cold review round 4 cycle reopened -- does the test go
+// something). Only if RequestNode ever failed to refuse it does the test go
 // on to run the real AppendToGraph and ValidateGraphAnchor the original
 // probe named, and fail loudly for reaching them at all, rather than on
 // whatever they happen to decide.
@@ -170,7 +166,7 @@ func TestGuard_GASPBypassNeverReachesVerify(t *testing.T) {
 	parent := overlaytest.SpendingTx(t, &transaction.TransactionOutput{LockingScript: &ls, Satoshis: 50_000})
 	parentOP := &transaction.Outpoint{Txid: *parent.TxID(), Index: 0}
 
-	// The B1 child: spends parent:0, ends in an undecodable instruction.
+	// The malformed child spends parent:0 and ends in an undecodable instruction.
 	malformedChild := transaction.NewTransaction()
 	malformedChild.Version = 2
 	malformedChild.AddInputFromTx(parent, 0, nil)
@@ -259,7 +255,7 @@ func TestGuard_GASPBypassNeverReachesVerify(t *testing.T) {
 				return
 			}
 
-			// Not refused: the B1 bypass this test guards against has
+			// Not refused: the malformed-node bypass this test guards against has
 			// reopened. Follow it all the way through the real storage,
 			// the same as the original probe did, and fail on reaching
 			// ValidateGraphAnchor at all -- not on whatever it returns.
@@ -286,7 +282,7 @@ func TestGuard_GASPBypassNeverReachesVerify(t *testing.T) {
 				}
 			}
 			verr := storage.ValidateGraphAnchor(ctx, rootOP)
-			t.Fatalf("the B1 bypass reopened: a malformed %s child reached the real ValidateGraphAnchor (err=%v) instead of being refused", variant.name, verr)
+			t.Fatalf("a malformed %s child reached the real ValidateGraphAnchor (err=%v) instead of being refused", variant.name, verr)
 		})
 	}
 }

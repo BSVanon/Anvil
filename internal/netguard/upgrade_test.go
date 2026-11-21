@@ -17,7 +17,7 @@ import (
 // gaspUpgradeStreamBytes is how much a hostile peer streams on the hijacked
 // connection after its unrequested 101, in
 // TestGuard_RefusesUnrequestedSwitchingProtocolsFast: large enough that
-// go-overlay-services' unbounded io.ReadAll of a non-200 body (the B2 gap
+// go-overlay-services' unbounded io.ReadAll of a non-200 body (the unbounded-read gap
 // this test closes) would be unmistakable in heap and time if the guard
 // ever let it through.
 const gaspUpgradeStreamBytes = 32 << 20
@@ -25,15 +25,14 @@ const gaspUpgradeStreamBytes = 32 << 20
 // gaspUpgradeHeapBound and gaspUpgradeTimeBound are far under what reading
 // gaspUpgradeStreamBytes would cost: the guard must refuse the 101 before
 // the base transport's body is ever read at all, from net/http's own
-// hijacked-connection special case for a 101 (cold review round 4 cycle 6b,
-// B2).
+// hijacked-connection special case for a 101.
 const (
 	gaspUpgradeHeapBound = 8 << 20
 	gaspUpgradeTimeBound = 2 * time.Second
 )
 
-// TestGuard_RefusesUnrequestedSwitchingProtocolsFast is cold review round 4
-// cycle 6b's B2 reproduction, through the real GASP client: a peer answers a
+// TestGuard_RefusesUnrequestedSwitchingProtocolsFast verifies the real GASP
+// client when a peer answers a
 // /requestForeignGASPNode POST (which never asks for an upgrade) with 101
 // Switching Protocols and then streams bytes on the hijacked connection.
 // go-overlay-services' doNodeRequest treats any non-200 reply's body as an

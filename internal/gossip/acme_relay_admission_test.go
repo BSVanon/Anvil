@@ -47,7 +47,7 @@ func newIdentityWithKey(t *testing.T) (w wallet.Interface, hex string, key *ec.P
 // listens, so the count it observes is independent of any Manager-side
 // bookkeeping.
 //
-// Mutation check for item 2: drop the "peer.IdentityPK == nil" guard in
+// Mutation check: drop the "peer.IdentityPK == nil" guard in
 // BroadcastACMEChallenge's eligibility filter and this test's "sent"
 // assertion fails (the silent peer would be sent to, since peer.Peer is
 // still non-nil).
@@ -109,7 +109,7 @@ func TestBroadcastACMEChallenge_SilentInboundPeerReceivesNothing(t *testing.T) {
 // the fix spec calls for ("don't rely on the first-message admission
 // callback having run").
 //
-// Mutation check for item 2: drop the "m.allowlist.allows(pkHex)" check
+// Mutation check: drop the "m.allowlist.allows(pkHex)" check
 // and this test's "sent" assertion fails.
 func TestBroadcastACMEChallenge_IdentifiedButDisallowedPeerReceivesNothing(t *testing.T) {
 	walletB, _ := newIdentity(t)
@@ -265,7 +265,7 @@ findChallenge:
 // quickly -- proving the lock is released before any send starts, not
 // held for the whole broadcast.
 //
-// Mutation check for item 2: wrap the send loop in the same RLock the
+// Mutation check: wrap the send loop in the same RLock the
 // snapshot uses (restoring the original defer m.mu.RUnlock() over the
 // whole function) and this test's deadline assertion fails, since the
 // write-lock attempt would then queue behind the 5000ms send.

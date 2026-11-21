@@ -171,8 +171,8 @@ func TestGuard_PassesSwitchingProtocolsUntouched(t *testing.T) {
 	}
 }
 
-// TestGuard_RefusesUnrequestedSwitchingProtocols: cold review round 4 cycle
-// 6b's B2 -- a 101 reply to a request that never asked for an upgrade hands
+// TestGuard_RefusesUnrequestedSwitchingProtocols verifies that a 101 reply to
+// a request that never asked for an upgrade hands
 // the caller the raw connection as its body, which go-overlay-services'
 // GASP client then reads in full with no cap on a non-200 status. Refused
 // here instead, with the body closed so the connection is released.

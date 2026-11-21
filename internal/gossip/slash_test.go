@@ -148,7 +148,7 @@ func TestSlashWarningDedup(t *testing.T) {
 	}
 }
 
-// TestSlashWarningSeenStaysBounded is Risk 3: onSlashWarning used to insert
+// TestSlashWarningSeenStaysBounded ensures onSlashWarning does not insert
 // into m.seen with no eviction at all (unlike onData), so a flood of
 // warnings distinguished only by Timestamp could grow m.seen without bound.
 // It now routes its insert through evictSeenLocked — the same bounded

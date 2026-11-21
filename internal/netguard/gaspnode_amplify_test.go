@@ -17,7 +17,7 @@ import (
 // gaspAmplifyPad is how many '<' bytes pad the field under test in
 // TestGuard_ReEncodeDoesNotAmplifyAPaddedField: large enough that the old
 // json.Marshal re-encode (HTML-escaping '<' to "<", 6 bytes each, cold
-// review round 4 cycle 6b's B1) would have been unmistakable against the
+// review would have been unmistakable against the
 // relative bound below, while staying fast for a suite run.
 const gaspAmplifyPad = 2_000_000
 
@@ -40,8 +40,8 @@ const (
 // "<" json.Marshal would produce if this string were re-encoded.
 // json.Marshal HTML-escapes '<', '>' and '&' on the way out, so re-encoding
 // a decoded copy of this field, rather than handing on the bytes decoded,
-// used to multiply the reply's size on the way out (cold review round 4
-// cycle 6b, B1) even though it cost the peer nothing extra to send. "rawTx"
+// used to multiply the reply's size on the way out even though it cost the
+// peer nothing extra to send. "rawTx"
 // pads RawTx itself with non-hex junk instead of a valid transaction --
 // gaspNodeMalformed's hex.DecodeString step lets a non-hex RawTx through
 // unchecked, the same as a Proof skips the check entirely. rawTx carries
@@ -94,8 +94,8 @@ func gaspAmplifyHeapPeak(t *testing.T, reply []byte, cl *http.Client) (peak, bas
 	return peak, base
 }
 
-// TestGuard_ReEncodeDoesNotAmplifyAPaddedField is cold review round 4 cycle
-// 6b's B1 reproduction, adapted into a permanent regression: checkGASPNode
+// TestGuard_ReEncodeDoesNotAmplifyAPaddedField is a permanent regression:
+// checkGASPNode
 // used to hand an honest, checked node on by re-encoding it with
 // json.Marshal, which HTML-escapes '<', '>' and '&' into 6-byte sequences --
 // so any field a hostile peer pads with those characters (metadata, a proof,
@@ -122,10 +122,10 @@ func TestGuard_ReEncodeDoesNotAmplifyAPaddedField(t *testing.T) {
 	}
 
 	// The amplification fix (handing on the bytes decodeGASPNode consumed,
-	// not a re-encoding) must not have reopened B1's original trailing-byte
+	// not a re-encoding) must not reopen the original trailing-byte
 	// gap. A trailing byte alone is not an error -- doNodeRequest's own
 	// Decode tolerates it too -- so this pads a reply that also carries the
-	// B1 malformed-script shape (gaspNodeMalformed's actual refusal) and
+	// malformed-script shape (gaspNodeMalformed's actual refusal) and
 	// confirms it is still caught, exactly as
 	// TestGuard_RefusesEveryTrailingByteVariant's unpadded cases already
 	// are, even with a metadata field escaped and a trailing byte both

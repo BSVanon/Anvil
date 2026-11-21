@@ -274,7 +274,7 @@ func (b *blockingBody) Close() error {
 // MiB of heap. Before this fix, readKnown allocated the full declared
 // length up front (make([]byte, n)), so a peer could make this cost real
 // heap for every reply it merely declared and never had to send (cold
-// review round 4 cycle 6, RISK 1).
+// response body).
 func TestReadKnown_DoesNotPreallocateTheDeclaredLength(t *testing.T) {
 	const declared = 64 << 20
 	body := &blockingBody{closed: make(chan struct{})}

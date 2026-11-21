@@ -55,7 +55,7 @@ func TestCors_AllowsCanonicalOverlayHeaders(t *testing.T) {
 		"x-topics",
 		"x-includes-off-chain-values",
 		"x-aggregation",
-		"x-bsv-topic", // W-10.3 GASP routes (/requestSyncResponse, /requestForeignGASPNode)
+		"x-bsv-topic", // GASP routes (/requestSyncResponse, /requestForeignGASPNode)
 	}
 	lowered := strings.ToLower(allowHeaders)
 	for _, name := range canonical {
@@ -85,7 +85,7 @@ func TestCors_AllowsCanonicalOverlayHeaders(t *testing.T) {
 	}
 }
 
-// TestCors_AllowsGASPPreflight pins the W-10.3 federation surface
+// TestCors_AllowsGASPPreflight pins the federation surface
 // against browser CORS preflight. The canonical /requestSyncResponse
 // and /requestForeignGASPNode routes (handlers_gasp.go) require an
 // X-BSV-Topic header per the upstream OpenAPI spec; without it in

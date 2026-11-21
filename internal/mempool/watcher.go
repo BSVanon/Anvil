@@ -16,8 +16,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,7 +58,7 @@ type Watcher struct {
 	// Fan-out hub for watch hits
 	subMu sync.RWMutex
 	subs  map[string]map[chan WatchHit]struct{} // address → subscriber channels
-	allCh map[chan WatchHit]struct{}             // subscribers for all addresses
+	allCh map[chan WatchHit]struct{}            // subscribers for all addresses
 
 	db     *leveldb.DB // nil = no persistence
 	hits   atomic.Int64

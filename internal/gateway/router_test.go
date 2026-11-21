@@ -88,7 +88,7 @@ func TestRouter_AnythingElseIs404(t *testing.T) {
 	}
 }
 
-// TestRouter_EmptyAPIHostOnlyLoopbackReachesAPI pins D1's fixed rule, in
+// TestRouter_EmptyAPIHostOnlyLoopbackReachesAPI verifies that an empty API host
 // place of what this test used to pin under its old name
 // (TestRouter_EmptyAPIHostIsWildcard): an empty APIHost is NEVER a
 // wildcard. With no APIHost configured, an arbitrary, non-loopback Host
@@ -111,7 +111,7 @@ func TestRouter_EmptyAPIHostOnlyLoopbackReachesAPI(t *testing.T) {
 }
 
 // TestHostile_EmptyAPIHost_ConfiguredSiteStillHitsAPI makes the review's
-// proven B1 repro permanent. Before the fix, router.go's
+// permanent regression. Before the fix, router.go's
 // `rt.APIHost == "" || host == rt.APIHost` sent EVERY Host to the API
 // whenever APIHost was empty — including an allowed, configured site,
 // which should have reached Sites instead. With the fix: an allowed site
@@ -180,11 +180,11 @@ func TestRouter_APIHostTrailingDot(t *testing.T) {
 	}
 }
 
-// TestRouter_LoopbackNamesReachAPI covers D1's loopback rule: localhost
+// TestRouter_LoopbackNamesReachAPI covers the loopback rule: localhost
 // (any case), an IPv4 literal anywhere in 127.0.0.0/8, and ::1 (bracketed
 // or bare, with or without a port) all reach the API even though none of
 // them equals the configured api_host — including a loopback Host WITH a
-// port, item 1's explicit test requirement.
+// port.
 func TestRouter_LoopbackNamesReachAPI(t *testing.T) {
 	rt := &Router{API: stubAPIHandler(), Sites: nil, APIHost: "admin.example.org"}
 
@@ -203,7 +203,7 @@ func TestRouter_LoopbackNamesReachAPI(t *testing.T) {
 	}
 }
 
-// TestRouter_LoopbackAntiSpoof is fix cycle 2 item 3: a Host that merely
+// TestRouter_LoopbackAntiSpoof ensures a Host that merely
 // looks like, contains, or sounds like a loopback name must not take
 // isLoopbackHost's exact-match/IP-literal rule — only "localhost" itself
 // or an actual loopback IP literal (optionally with a port, stripped by
@@ -258,7 +258,7 @@ func TestRouter_NilSitesIs404ForAnythingNotAPIHost(t *testing.T) {
 // TestRouter_StripsPortFromHost confirms a Host header carrying a port
 // (as real HTTP clients send) still matches a site entered without one in
 // the sites file — api_host and the sites file both name hosts with no
-// port (decision 7).
+// port.
 func TestRouter_StripsPortFromHost(t *testing.T) {
 	sites := newTestSiteHandler(t, "site.example.org", testOutpoint(34, 0))
 	rt := &Router{API: stubAPIHandler(), Sites: sites, APIHost: "admin.example.org"}

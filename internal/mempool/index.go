@@ -111,9 +111,9 @@ func (idx *Index) ExpireBefore(cutoff time.Time) int {
 
 // Stats returns a summary of the index state.
 type Stats struct {
-	Total    int   `json:"total"`
-	Shards   int   `json:"active_shards"` // shards with at least 1 entry
-	Largest  int   `json:"largest_shard"`
+	Total   int `json:"total"`
+	Shards  int `json:"active_shards"` // shards with at least 1 entry
+	Largest int `json:"largest_shard"`
 }
 
 // GetStats returns index statistics.

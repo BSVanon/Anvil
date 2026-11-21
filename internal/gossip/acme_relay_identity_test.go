@@ -27,7 +27,7 @@ import (
 // [mesh] allowed_peers, while its own IdentityPK is an identity that is
 // NOT.
 //
-// Mutation check for item 4: check the map key (the range variable)
+// Mutation check: check the map key (the range variable)
 // instead of hex(peer.IdentityPK) and this test's "sent" assertion
 // fails, since the mismatched map key is in allowed_peers.
 func TestBroadcastACMEChallenge_ChecksIdentityHexNotMapKey(t *testing.T) {

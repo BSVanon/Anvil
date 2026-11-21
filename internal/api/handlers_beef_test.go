@@ -341,7 +341,7 @@ func beefAtomic(subject *transaction.Transaction, inner []byte) []byte {
 // (internal/beefnorm) proves is refused. Getting it back from
 // GET /tx/{txid}/beef must not report "confidence":"invalid": that word
 // means a FRESH submission is refused right now, not that an already-served
-// historical payment was bad (cold review round 4's NITs, C4.3,
+// historical payment was bad (
 // handlers_beef.go:85-100).
 func TestGetBEEFRefusedStoredBEEFServesEmptyConfidence(t *testing.T) {
 	srv := testServer(t)

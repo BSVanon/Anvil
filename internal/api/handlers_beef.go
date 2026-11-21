@@ -88,7 +88,7 @@ func serveBEEF(w http.ResponseWriter, r *http.Request, txid string, beefBytes []
 	// (beefnorm.ErrRefused, spv.Result.Refused) must not come back as
 	// "confidence":"invalid" -- that word means a fresh submission is being
 	// refused right now, not that an already-served historical payment was
-	// bad (cold review round 4's NITs, C4.3).
+	// bad.
 	confidence := ""
 	if validator != nil {
 		result, err := validator.ValidateBEEF(r.Context(), beefBytes)

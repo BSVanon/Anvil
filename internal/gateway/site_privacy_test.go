@@ -43,10 +43,10 @@ func (c *capturingHandler) WithGroup(name string) slog.Handler {
 	return &capturingHandler{mu: c.mu, buf: c.buf, h: c.h.WithGroup(name)}
 }
 
-// TestSiteHandler_NoLogPrivacy is decision 8's no-log test: capture every
+// TestSiteHandler_NoLogPrivacy captures every
 // log line written while serving requests that carry a distinctive IP,
 // User-Agent and path, and assert none of those literal values ever reach
-// the log — including on the one line decision 8 does allow (a
+// the log — including on the one allowed line (a
 // content-fetch failure, which logs the txid only).
 func TestSiteHandler_NoLogPrivacy(t *testing.T) {
 	handler, buf := newCapturingHandler()
@@ -74,7 +74,7 @@ func TestSiteHandler_NoLogPrivacy(t *testing.T) {
 	w1 := httptest.NewRecorder()
 	okHandler.ServeHTTP(w1, req1)
 
-	// A request that DOES trigger decision 8's one allowed log line (a
+	// A request that does trigger the one allowed log line (a
 	// content-fetch failure) — the txid it logs is the configured origin's,
 	// never anything from the request itself.
 	failHandler := NewSiteHandler(SiteHandlerConfig{

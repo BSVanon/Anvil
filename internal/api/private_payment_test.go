@@ -22,7 +22,7 @@ import (
 // nothing else — gates `private` envelope data and metadata. A validated
 // app token is a separate, narrower credential that unlocks monetized PUBLIC
 // content on its own topic only; it never gates `private` data. See
-// docs/ANVIL_PRIVATE_FLAG_CONTRACT.md.
+// docs/API_REFERENCE.md, section Private envelopes.
 
 // queryWithProof submits a GET to path with a valid x402 proof attached and
 // returns the decoded /data response. t.Fatal on anything but 200.

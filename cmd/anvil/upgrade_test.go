@@ -27,16 +27,16 @@ func TestVersionNewerOrEqual(t *testing.T) {
 		a, b string
 		want bool
 	}{
-		{"0.5.0", "0.5.0", true},   // equal
-		{"0.5.0", "0.4.1", true},   // newer minor
-		{"0.5.0", "0.4.9", true},   // newer minor beats patch
-		{"0.5.0", "0.6.0", false},  // older minor
-		{"1.0.0", "0.9.9", true},   // newer major
-		{"0.4.1", "0.5.0", false},  // older
-		{"0.5.1", "0.5.0", true},   // newer patch
-		{"0.5.0", "0.5.1", false},  // older patch
-		{"v0.5.0", "0.5.0", true},  // v prefix handled
-		{"0.5.0", "v0.5.0", true},  // v prefix on b
+		{"0.5.0", "0.5.0", true},  // equal
+		{"0.5.0", "0.4.1", true},  // newer minor
+		{"0.5.0", "0.4.9", true},  // newer minor beats patch
+		{"0.5.0", "0.6.0", false}, // older minor
+		{"1.0.0", "0.9.9", true},  // newer major
+		{"0.4.1", "0.5.0", false}, // older
+		{"0.5.1", "0.5.0", true},  // newer patch
+		{"0.5.0", "0.5.1", false}, // older patch
+		{"v0.5.0", "0.5.0", true}, // v prefix handled
+		{"0.5.0", "v0.5.0", true}, // v prefix on b
 	}
 	for _, tt := range tests {
 		got := versionNewerOrEqual(tt.a, tt.b)

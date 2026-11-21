@@ -51,10 +51,10 @@ func buildSignedNonceTx(t *testing.T) (*transaction.Transaction, *NonceUTXO, *ec
 	// Build the spending transaction
 	tx := transaction.NewTransaction()
 	tx.AddInput(&transaction.TransactionInput{
-		SourceTXID:          sourceTxID,
-		SourceTxOutIndex:    0,
-		SequenceNumber:      0xffffffff,
-		SourceTransaction:   sourceTx,
+		SourceTXID:        sourceTxID,
+		SourceTxOutIndex:  0,
+		SequenceNumber:    0xffffffff,
+		SourceTransaction: sourceTx,
 	})
 
 	// Add a payee output

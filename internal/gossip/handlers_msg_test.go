@@ -48,7 +48,7 @@ func sampleMsg(sender, recipient string) *messaging.Message {
 	}
 }
 
-// TestForward_OriginNodeAttestation_RoundTrip is the regression for Codex's High
+// TestForward_OriginNodeAttestation_RoundTrip is a regression for a
 // finding: a message whose Sender is a BRC-31 user (NOT the node) must cross the
 // mesh. Node A attests the user and signs the forward; node B accepts it and
 // delivers, preserving the user identity as sender.
@@ -197,7 +197,7 @@ func TestForward_RejectsNodeSignedUserSenderWithoutOrigin(t *testing.T) {
 }
 
 // TestForward_AnyPeerCanAttestArbitrarySender_DocumentsTrustAssumption locks in
-// the KNOWN trust limitation Codex flagged (review ff263b37, Medium): the mesh
+// the known trust limitation: the mesh
 // forward proves only that *some* peer with a valid OriginNode signature vouched
 // for the sender — it does NOT prove that peer is authoritative for that user.
 // Here a peer (mallory's node) attests a Sender (alice) who never sent anything,

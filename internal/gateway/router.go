@@ -1,5 +1,4 @@
-// Package gateway implements Anvil's gateway mechanism (the B7 brick's
-// architecture decisions 1-9): a host-based Router that serves either the
+// Package gateway implements Anvil's gateway mechanism: a host-based Router that serves either the
 // node's existing API or a publisher's own domain, resolving which origin
 // a domain serves through the ORDFS DNS TXT convention, gated by an
 // operator-maintained sites allowlist.
@@ -8,16 +7,16 @@
 // cmd/anvil's wiring helper — so a standard node's behaviour, config and
 // output stay byte-for-byte what they are today.
 //
-// Three seams exist for the bricks that build on this one (decision 9):
+// The package separates version tracking, policy, and routing:
 //
-//   - Versions (versions.go) — B8 (BRC-159 tip tracking) constructs its
+//   - Versions (versions.go) — BRC-159 tip tracking constructs its
 //     own implementation in place of DefaultVersions and the wiring swaps
 //     it in; nothing here or in SiteHandler needs to change.
-//   - Policy (policy.go) — B8 (version/seq tracking scope) and B9
-//     (certificate issuance) both gate on Policy.Allowed, so there is
+//   - Policy (policy.go) — version and sequence tracking and certificate
+//     issuance both gate on Policy.Allowed, so there is
 //     exactly one allow rule for the whole mechanism.
-//   - Router (this file) — B9 mounts the same Router on 443/80 once it
-//     adds TLS; B7a mounts it only on the existing :9333 API listener.
+//   - Router (this file) — mounts the same Router on 443/80 with TLS or on
+//     the existing :9333 API listener.
 package gateway
 
 import (
@@ -27,7 +26,7 @@ import (
 )
 
 // Router sends each request to the node's API or to a site's handler, by
-// Host header, so one listener can serve both (decision 2; D1 fix).
+// Host header, so one listener can serve both.
 //
 //   - A Host equal to APIHost, or a loopback name (localhost, an IPv4
 //     literal in 127.0.0.0/8, or ::1), reaches API. The loopback rule
@@ -49,7 +48,7 @@ import (
 // which is only ever the case in a test or a degenerate wiring;
 // cmd/anvil's real wiring always builds a SiteHandler when [gateway] is
 // on, and internal/config's Load requires a non-empty api_host whenever
-// [gateway] is enabled (D2), so an empty APIHost in production only ever
+// [gateway] is enabled, so an empty APIHost in production only ever
 // means gateway mode is off (no Router constructed at all).
 type Router struct {
 	API     http.Handler
@@ -72,11 +71,11 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rt.Sites.ServeHTTP(w, r)
 }
 
-// normalizeHost applies D1's Host normalisation — lower-case, strip an
+// normalizeHost applies Host normalisation — lower-case, strip an
 // optional ":port" suffix (handling a bracketed IPv6 literal with no port
 // too), then strip one trailing dot — so a request's Host header, a
 // configured api_host and a sites-file domain entry all compare equal
-// regardless of case or a trailing dot (review R1, R2). Router, Policy and
+// regardless of case or a trailing dot. Router, Policy and
 // SiteHandler all normalise through this one function.
 func normalizeHost(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -89,7 +88,7 @@ func normalizeHost(host string) string {
 	return host
 }
 
-// isLoopbackHost reports whether host (already normalised) is one of D1's
+// isLoopbackHost reports whether host (already normalised) is one of the
 // loopback names: "localhost", an IPv4 literal in 127.0.0.0/8, or ::1.
 func isLoopbackHost(host string) bool {
 	if host == "localhost" {

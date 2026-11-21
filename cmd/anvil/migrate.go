@@ -18,7 +18,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb"
 )
 
-// cmdOverlayMigrate runs the W-4 phase B backfill: reads every legacy
+// cmdOverlayMigrate runs the legacy-data backfill: reads every legacy
 // `ovl:<topic>:<txid>:<vout>` LevelDB entry and writes the canonical v3
 // records (ovl3 primary + txi3/topi3/mst3 indexes).
 //

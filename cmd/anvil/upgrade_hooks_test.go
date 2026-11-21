@@ -142,9 +142,9 @@ ExecStart=/usr/bin/some-other-binary
 // gates the upgrade-time overlay-migrate hook.
 func TestNeedsV3Migrate(t *testing.T) {
 	cases := []struct {
-		name       string
-		current    string
-		next       string
+		name        string
+		current     string
+		next        string
 		wantMigrate bool
 	}{
 		{"v2.3.2 -> v3.0.0 fires", "2.3.2", "3.0.0", true},

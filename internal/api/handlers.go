@@ -134,7 +134,7 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 
 	// authed gates `private` envelope omission below: operator bearer token
 	// ONLY — a verified x402 payment or a valid app token is never
-	// sufficient (docs/ANVIL_PRIVATE_FLAG_CONTRACT.md). A payment or an app
+	// sufficient (docs/API_REFERENCE.md, section Private envelopes). A payment or an app
 	// token unredacts only the monetized envelopes it covers, each by its own
 	// rule (envelopeForRequest, envelope_redaction.go).
 	authed := s.isAuthed(r)

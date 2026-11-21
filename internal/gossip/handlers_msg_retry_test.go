@@ -257,7 +257,7 @@ func TestMsgSeenEvictionKeepsSequentialForwardsBounded(t *testing.T) {
 	}
 }
 
-// TestMsgSeenEvictionIncrementsDedupEvictionsCounter is Risk 2:
+// TestMsgSeenEvictionIncrementsDedupEvictionsCounter verifies that
 // TestMsgSeenEvictionBatchesUnownedEntries above only checks which keys
 // survive eviction, never the dedup_evictions stat (status.go's
 // DedupEvictions/IncrDedupEviction) that evictMsgSeenLocked is supposed to

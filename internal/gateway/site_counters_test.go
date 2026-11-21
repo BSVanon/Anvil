@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// TestSiteHandler_Counters is decision 8's counters test: a mix of
+// TestSiteHandler_Counters verifies counters for a mix of
 // allowed, policy-disallowed and scope-refused requests must land in the
 // right aggregate counters, with no per-client or per-site breakdown.
 func TestSiteHandler_Counters(t *testing.T) {

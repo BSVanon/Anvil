@@ -14,8 +14,8 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
-// TestGuard_WithinHeaderDeadlineLeaksNoGoroutine is cold review round 4
-// cycle 6b's RISK 1 goroutine-leak check: withinHeaderDeadline's
+// TestGuard_WithinHeaderDeadlineLeaksNoGoroutine checks that
+// withinHeaderDeadline's
 // context.WithCancel can start a goroutine to propagate a parent context's
 // own cancellation, which only stops once cancel is called -- forgetting to
 // call it on every path (an error before headers arrive, headers arriving

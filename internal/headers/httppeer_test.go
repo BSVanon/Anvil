@@ -124,7 +124,7 @@ func TestSyncFromHTTPPeer_ReorgToHeavierPeerChain(t *testing.T) {
 		t.Fatalf("seed our chain: %v", err)
 	}
 
-	// Peer chain: shares heights 1-3 (A1-A3), then a heavier branch B4..B8.
+	// Peer chain shares heights 1-3, then has a heavier branch at heights 4-8.
 	a3 := ours[2].BlockHash()
 	branch, _ := buildChain(&a3, 5, saltB, 5000)
 	peerChain := append(append([]*wire.BlockHeader{}, ours[:3]...), branch...)
@@ -139,17 +139,17 @@ func TestSyncFromHTTPPeer_ReorgToHeavierPeerChain(t *testing.T) {
 	if tip != 8 || store.Tip() != 8 {
 		t.Fatalf("tip = %d / store %d, want 8 after reorg", tip, store.Tip())
 	}
-	// Heights 1-3 unchanged (A3), height 4+ reorged to the peer branch (B4, B8).
+	// Heights 1-3 are unchanged; height 4 and later are reorged to the peer branch.
 	if h3, _ := store.HashAtHeight(3); !h3.IsEqual(&a3) {
 		t.Fatal("height 3 should still be the shared A3")
 	}
 	b4 := branch[0].BlockHash()
 	if h4, _ := store.HashAtHeight(4); !h4.IsEqual(&b4) {
-		t.Fatal("height 4 should have reorged to the peer branch B4")
+		t.Fatal("height 4 should have reorged to the peer branch")
 	}
 	b8 := branch[4].BlockHash()
 	if h8, _ := store.HashAtHeight(8); !h8.IsEqual(&b8) {
-		t.Fatal("tip should be the peer branch B8")
+		t.Fatal("tip should be the peer branch")
 	}
 }
 

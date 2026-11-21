@@ -168,7 +168,7 @@ func TestPaymentPropertyPaidRequestNeverReceivesPrivateEnvelope(t *testing.T) {
 	pg := testGate(t, 100)
 	for _, kind := range []string{"proof", "direct", "brc121"} {
 		t.Run(kind, func(t *testing.T) {
-			r := propertyPaidRequest(t, pg, "/data?topic=lacriada:household-x", kind, paidOut{testPayeeScript(t), 100})
+			r := propertyPaidRequest(t, pg, "/data?topic=app:private-x", kind, paidOut{testPayeeScript(t), 100})
 			w := httptest.NewRecorder()
 			srv.handleQueryData(w, r)
 			var result struct {

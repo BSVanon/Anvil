@@ -37,8 +37,7 @@ const gaspNodeReplyHeapBytes = 30_000_000
 // extra).
 const gaspNodeReplyHeapCeiling = 900 << 20
 
-// TestGuard_NodeReplyHeapIsBoundedOverUnguarded is cold review round 4 cycle
-// 6's RISK 1 reproduction, adapted into a permanent regression and
+// TestGuard_NodeReplyHeapIsBoundedOverUnguarded is a permanent regression and
 // re-measured against this cycle's fix: one large, honest-shaped GASP node
 // reply's heap cost, guarded (http.DefaultClient, netguard installed)
 // against unguarded (a plain &http.Client{}). bodyread.readKnown no longer

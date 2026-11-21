@@ -101,7 +101,7 @@ func TestApplyMemoryLimit(t *testing.T) {
 	}
 }
 
-// TestApplyMemoryLimit_WarnsBelowTheGuardsBudget (cold review round 4 RISK
+// TestApplyMemoryLimit_WarnsBelowTheGuardsBudget verifies the warning when
 // 11): a chosen limit under the route guard's own MemoryBudget plus
 // ExecAllowance is warned about once, whether it came from a small cgroup
 // limit or directly from GOMEMLIMIT; a limit at or over that floor is not.

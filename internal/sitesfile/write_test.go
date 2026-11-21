@@ -273,7 +273,7 @@ func testSecondGID(t *testing.T) (int, bool) {
 }
 
 // TestAtomicWriteFile_KeepsAnExistingFilesOwnerAndGroup proves the
-// regression item 1 fixes: replacing an existing file through
+// Regression: replacing an existing file through
 // AtomicWriteFile must not silently hand it back owned by whoever is
 // running this process (what a plain os.CreateTemp-plus-rename does by
 // default) — it must come back owned exactly as it was.
@@ -322,7 +322,7 @@ func TestAtomicWriteFile_KeepsAnExistingFilesOwnerAndGroup(t *testing.T) {
 	}
 }
 
-// TestAtomicWriteFile_NewFileGetsTheRequestedOwner is item 2's other
+// TestAtomicWriteFile_NewFileGetsTheRequestedOwner verifies the other
 // half of the same rule: a file that does NOT already exist gets
 // newUID/newGID, rather than whatever os.CreateTemp defaulted to.
 func TestAtomicWriteFile_NewFileGetsTheRequestedOwner(t *testing.T) {

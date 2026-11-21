@@ -1,6 +1,6 @@
 package gateway
 
-// Fix cycle 2's item 2 tests: the scope scan cache's amplification bound
+// The scope scan cache's amplification bound
 // (a persistently failing reference costs at most one rescan per TTL
 // window, and the per-outpoint negative-fetch cache that bound shares
 // across different sites). Split out of scope_test.go, which already
@@ -15,7 +15,7 @@ import (
 )
 
 // TestScopeCache_PersistentlyFailingReferenceRescansAtMostOncePerTTLWindow
-// is fix cycle 2's first required test (item 2): a scan whose only
+// verifies that a scan whose only
 // problem is one persistently failing reference must not pay for a full
 // rescan on every single call — only the first call inside
 // scopeIncompleteCacheTTL does the real work; a second call still inside
@@ -55,7 +55,7 @@ func TestScopeCache_PersistentlyFailingReferenceRescansAtMostOncePerTTLWindow(t 
 }
 
 // TestScopeCache_IncompleteResultExpiresAndRecoversWhenHealthy is fix
-// cycle 2's second required test (item 2): once scopeIncompleteCacheTTL
+// verifies that once scopeIncompleteCacheTTL
 // has passed, a reference that has since started working again gets the
 // full, correct answer — the short TTL bounds the cost of a failure, it
 // does not wedge a site into a permanently-incomplete scope the way
@@ -86,7 +86,7 @@ func TestScopeCache_IncompleteResultExpiresAndRecoversWhenHealthy(t *testing.T) 
 }
 
 // TestScopeCache_FailedOutpointFetchIsNegativelyCachedAcrossOrigins is
-// the other half of fix cycle 2's item 2: the per-outpoint negative-fetch
+// verifies the per-outpoint negative-fetch
 // cache (negativeCachingFetcher) is shared across different (origin,
 // latestOutpoint) keys, not scoped to one site's own result cache — two
 // different sites that both reference the very same broken outpoint must

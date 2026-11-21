@@ -58,4 +58,3 @@ func (c *brc121LiveCounts) decrement(owner [32]byte) {
 		delete(c.counts, owner)
 	}
 }
-

@@ -2,7 +2,7 @@
  * anvil-mesh — Thin TypeScript client for the Anvil mesh network.
  *
  * Handles auth token derivation, envelope signing, publish, and query.
- * Eliminates the pain points that burned us with SendBSV-Rates:
+ * Provides a stable interface for TypeScript clients:
  *   - HMAC auth token derivation (no more guessing)
  *   - @bsv/sdk sign() double-hash (pass raw preimage, not pre-hash)
  *   - Envelope preimage format (handled internally)

@@ -8,7 +8,7 @@ import (
 )
 
 // TestHonestShapes_NeverEndMalformed proves routeguard's malformed-script refusal.
-// review round 4: scriptcost.EndsMalformed, wired at
+// scriptcost.EndsMalformed, wired at
 // internal/overlay/routeguard/scriptcheck.go) never trips on real, honest
 // traffic. Every fixture here is a realistic unlocking script this
 // package's own TestCheckPassesHonestScripts already proves passes Check

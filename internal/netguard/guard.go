@@ -28,7 +28,7 @@
 // arrive within HeaderTimeout of the request, or it is cancelled; a 101
 // Switching Protocols reply is refused outright unless the request itself
 // asked for the upgrade, since net/http hands an upgraded reply's body on as
-// the raw, unbounded connection (cold review round 4 cycle 6b, RISK 1, B2).
+// the raw, unbounded connection.
 // Every reply to an overlay lookup is read in full, up to
 // peerhygiene.MaxLookupResponseBytes, under one of bodyread.LookupPermits read
 // permits, and only then validated and decoded under one of
@@ -44,10 +44,9 @@
 // under gaspReadTimeout's size-scaled deadline and the same minimum rate a
 // lookup reply reads under. A GASP node reply is then decoded exactly as
 // go-overlay-services' own doNodeRequest decodes it, refused if it does not
-// decode that way or if its transaction has an unlocking script the B1
-// reparse bug (cold review round 4) could reach, and otherwise handed on as
-// exactly the bytes decoded, never re-encoded (cold review round 4 cycle 6b's
-// own B1: re-encoding a string field padded with '<', '>' or '&' can grow it
+// decode that way or if its transaction has a malformed unlocking script, and
+// otherwise handed on as exactly the bytes decoded, never re-encoded: re-encoding
+// a string field padded with '<', '>' or '&' can grow it
 // 6x under json.Marshal's HTML-escaping); see checkGASPNode. A sync reply has
 // no transaction to check and is handed on as read; see checkGASPSync.
 package netguard
@@ -110,8 +109,7 @@ func Install() {
 }
 
 // HeaderTimeout bounds how long a lookup or GASP exchange may wait for
-// response headers, from sending the request (cold review round 4 cycle 6b,
-// RISK 1): before this, only the body read had a deadline, so a peer that
+// response headers, from sending the request. Before this, only the body read had a deadline, so a peer that
 // never sent headers at all, or a redirect hop that never answered, blocked
 // that exchange forever -- and GASP sync runs one peer and topic at a time
 // on the root context, so one such peer froze every later one too.
@@ -181,13 +179,12 @@ func requestedUpgrade(req *http.Request) bool {
 // untouched. A 101 Switching Protocols response hands the caller the raw,
 // unbounded connection as its body (net/http's own transport special-cases
 // it); that is only safe when req itself asked for the upgrade, so an
-// unrequested one is refused outright instead (cold review round 4 cycle 6b,
-// B2: go-overlay-services' GASP client reads any non-200 reply's body in
+// unrequested one is refused outright instead: go-overlay-services' GASP client reads any non-200 reply's body in
 // full with no cap, so an unrequested 101 from a SHIP-advertised peer, with
 // Connection: Upgrade set on the reply alone, let that peer stream without
 // limit). A /submit exchange is bounded as a whole by roundTripSubmit. A
 // lookup or GASP exchange's response headers are bounded by
-// withinHeaderDeadline before the base transport is even asked (RISK 1);
+// withinHeaderDeadline before the base transport is even asked;
 // their 200 replies are read, decoded (GASP nodes only) and re-bounded by
 // checkLookup, checkGASPNode or checkGASPSync.
 func (g *guard) RoundTrip(req *http.Request) (*http.Response, error) {

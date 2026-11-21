@@ -38,7 +38,7 @@ func main() {
 
 	reg := interop.NewRegistry()
 
-	// Workstream A — canonical health + admin/config surface. Fixture config
+	// Canonical health and admin/config surface. Fixture config
 	// matches the conformance vectors' expectations (service.name="overlay-node",
 	// network="main", counts=2). Three scenarios so vectors .2 and .5 route
 	// to the right node-state fixture:
@@ -76,7 +76,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Workstream A — BRC-31 auth handshake (Pass 1: schema + missing-header
+	// BRC-31 auth handshake (schema and missing-header
 	// vectors). The canonical handler at /.well-known/auth is the same handler
 	// the topicmanagement dispatcher already hosts; brc31_handshake just
 	// reuses it. Crypto vectors land in Pass 2.
@@ -86,7 +86,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Workstream B — overlay.submit. Default scenario has no KnownTopics
+	// overlay.submit. Default scenario has no KnownTopics
 	// filter; "known-topics" scenario enables it for vector .7 (unknown
 	// topic manager → 400). Happy-path vectors require per-vector fixture
 	// scenarios; the dispatcher's RegisterHappyPathScenariosFromVectors
@@ -117,9 +117,9 @@ func main() {
 	}
 
 	// TODO: register more dispatchers as workstreams land:
-	//   - Workstream C: overlay.lookup
-	//   - Workstream D: SHIP/SLAP (overlay.topicmanagement bans/evictions)
-	//   - Workstream E: sync.gasprotocol
+	//   - overlay.lookup
+	//   - SHIP/SLAP (overlay.topicmanagement bans/evictions)
+	//   - sync.gasprotocol
 
 	report := interop.Run(context.Background(), files, reg)
 	interop.FormatSummary(os.Stdout, files, report)

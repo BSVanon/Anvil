@@ -1,8 +1,8 @@
 # Anvil v3.0.0 — Canonical Engine Adoption
 
-**Release date:** TBD (pending Robert's approval — this doc is staged for the eventual `gh release create` body).
+**Release date:** 2026-05-24.
 
-**Headline:** Anvil migrates from its independent overlay implementation to `bsv-blockchain/go-overlay-services` v1.3.1 as the canonical engine, adds canonical BRC-88 SHIP/SLAP federation via go-sdk's `LookupResolver` and `DEFAULT_SLAP_TRACKERS`, and ports the canonical UMP + Identity topic primitives so BRC-100 wallets (Babbage MetaNet, SendBSV-Wallet) can resolve user-recovery anchors and identity certificates directly against any Anvil node.
+**Headline:** Anvil migrates from its independent overlay implementation to `bsv-blockchain/go-overlay-services` v1.3.1 as the canonical engine, adds canonical BRC-88 SHIP/SLAP federation via go-sdk's `LookupResolver` and `DEFAULT_SLAP_TRACKERS`, and ports canonical UMP and Identity topic primitives so BRC-100 wallets can resolve user-recovery anchors and identity certificates directly against any Anvil node.
 
 This is a major release because the overlay engine swap is non-trivial and operators must run a one-time migration step. The on-disk LevelDB format is compatible — the new engine reads the same files — but the canonical engine uses a new key family (`ovl3:` etc.) and the migration step populates that family from the legacy `ovl:` entries.
 
@@ -27,7 +27,7 @@ The new HTTP routes are at the canonical paths:
 - `POST /arc-ingest`
 - `POST /requestSyncResponse`, `POST /requestForeignGASPNode` (canonical BRC-88 federation; see below)
 
-The legacy `/overlay/submit` / `/overlay/query` / `/overlay/topics` / `/overlay/services` routes are preserved indefinitely via a thin compat shim (Lens 2 = 2c per `OVERLAY_PROTOCOL_ALIGNMENT_PLAN.md`). Existing apps that haven't migrated to canonical routes continue to work unchanged.
+The legacy `/overlay/submit` / `/overlay/query` / `/overlay/topics` / `/overlay/services` routes are preserved indefinitely via a thin compatibility shim. Existing clients that have not migrated to canonical routes continue to work unchanged.
 
 ### Canonical BRC-88 SHIP/SLAP federation
 
@@ -50,7 +50,7 @@ v3 federation wired: 6 topics syncable via canonical SHIP/SLAP (trackers=4)
 
 ### Canonical UMP topic (`tm_users`)
 
-v3.0.0 hosts the canonical User Management Protocol topic for BRC-100 cross-device passkey recovery. BRC-100 wallets (Babbage MetaNet, SendBSV-Wallet) publish 12-field UMP PushDrop tokens carrying encrypted recovery primaries; Anvil indexes the `presentationHash` (field 6) and `recoveryHash` (field 7) for fast resolution.
+v3.0.0 hosts the canonical User Management Protocol topic for BRC-100 cross-device passkey recovery. BRC-100 wallets publish 12-field UMP PushDrop tokens carrying encrypted recovery primaries; Anvil indexes the `presentationHash` (field 6) and `recoveryHash` (field 7) for fast resolution.
 
 Supported queries on `ls_users`:
 
@@ -69,11 +69,11 @@ Supported queries on `ls_identity`:
 - `{identityKey: <hex>}` — resolve cert by subject's compressed pubkey (full support)
 - `{certifierKey: <hex>}` — Anvil extension: scope queries to a trusted certifier (full support)
 - `{outpoint: "<txid>.<vout>"}` — republish / health check (full support)
-- `{attributes: {handle, domain}}` — paymail handle resolution; **deferred (W-11)** — still unscheduled (v3.1.0 shipped tm_kvstore, not this path)
+- `{attributes: {handle, domain}}` — paymail handle resolution; deferred and not scheduled
 
 The `attributes` query path returns an explicit Freeform answer with `{deferred:true, use:"identityKey"}` so wallets can immediately fall back to the two-step paymail protocol (`.well-known/bsvalias` HTTP gateway → identityKey → `ls_identity` by identityKey). The two-step works fully in v3.0.0; only the overlay-native one-step path is deferred.
 
-See `docs/internal/SENDBSV_USERS_TOPIC_REQUEST.md` § "Identity attributes deferral (W-11)" for the rationale and the resolution options.
+The two-step paymail path is supported; the overlay-native query remains deferred.
 
 ### LevelDB sub-prefix layout
 
@@ -112,27 +112,17 @@ All families share Anvil's existing overlay LevelDB. No new database is required
 
 ## App-layer migrations
 
-| App | Effort | Status |
+| Client kind | Effort | Status |
 |---|---|---|
-| Anvil-Swap | 1-2 days | Pending |
+| DEX front end | 1-2 days | Pending |
 | Coin-tracking client | 2-4 hours (no changes required if using legacy `/overlay/*` shim) | Pending |
-| SendBSV-Wallet | 1 day (paymail via two-step path) | Pending |
-
-The internal migration tracker for these apps is at `docs/internal/APP_MIGRATION_TODO.md` (not shipped in the binary).
-
-## Verification history
-
-v3.0.0 completed nine verification rounds during development:
-
-`14a2d703` · `4e45ac06` · `c62abe3d` · `16624e3045f4f808` · `8b025722ece11767` · `93c0fe5a44610be1` · `077b962a02931dce` · `51bd511ccdb6f022` · `5741981d5028ea7c` · `86b6c0b969f87286` · `d671fa17fe5cc746` · `fe9707876f5618ca` · `2968609c62a2eb51` · `3a9624c1312037f8` · `f9addfb917695695` · `09ddf00c90061eac` · `9730ed97b8e75d6c` · `6daa58cb1a6f43e4` · `18af38d602483289` · `eea841a080448a49` · `c0de9d28e77cf578` · `af6f0eb413563048` · `cb6ce43d5e579dcf`
-
-Notable W-10 (federation) finds: per-tx revocation strategy instead of concatenated InputBEEF, SDKBroadcaster admission semantics (local-mempool-admit = success, ARC = best-effort), BEEF-empty hydration preserves TopicOrService via local SHIP/SLAP record lookup.
+| Wallet using the two-step paymail path | 1 day | Pending |
 
 ## Test coverage
 
-~144 real-engine production-path tests across federation, GASP routes, storage adapter, lookup services, and admission paths. All 12 W-10-affected packages race-clean under `go test -race -count=1`.
+~144 real-engine production-path tests across federation, GASP routes, storage adapter, lookup services, and admission paths were race-clean under `go test -race -count=1`.
 
-Conformance suite holds at PASS:38/80 (identical to W-6 baseline) — fixture-driven, not engine-driven; the "PASS surge" workstream that would register ts-stack topic managers + run against the live engine is explicitly out of v3.0.0 scope.
+The conformance suite holds at PASS:38/80 and is fixture-driven rather than engine-driven.
 
 ## Build
 
@@ -151,7 +141,7 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=1 go build -o dist/anvil-linux-arm64 ./cmd/a
 ## Known limitations
 
 1. **BEEF-empty post-migration**: legacy admissions migrated by `anvil overlay-migrate` end up with empty BEEF in `beef3:`. `/lookup` drops these results at hydrate time. Either re-submit the affected txs or wait for the future BEEF-fetch workstream. See migration guide § "Known limitation".
-2. **Identity attributes query deferred**: `{attributes: {handle, domain}}` returns a deferred-flag Freeform answer. Wallets use the two-step paymail protocol instead. See `docs/internal/SENDBSV_USERS_TOPIC_REQUEST.md` § "Identity attributes deferral (W-11)".
+2. **Identity attributes query deferred**: `{attributes: {handle, domain}}` returns a deferred-flag Freeform answer. Wallets use the two-step paymail protocol instead.
 3. **Upstream go-sdk Q16 race**: `go-sdk@v1.2.23/auth/peer.go:976 handleGeneralMessage` has a known race vs `peer.go:285 ToPeer` that manifests under `go test -race` in `internal/gossip`. Pre-existing since v1.2.20, ACCEPTED in every audit, not a v3.0.0 blocker.
 4. **Topic ports placement**: UMP + Identity Go implementations live in `internal/overlay/topics/` as transitional placement. Long-term home is upstream `bsv-blockchain/go-overlay-discovery-services` when that repo gains a topic-impl partition.
 

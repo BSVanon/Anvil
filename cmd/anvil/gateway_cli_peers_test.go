@@ -340,7 +340,7 @@ func TestApplyGatewayPeers_LeavesNoStagingFileBehind(t *testing.T) {
 	}
 }
 
-// TestApplyGatewayPeers_ConcurrentAddsAllSurvive is item 4's required
+// TestApplyGatewayPeers_ConcurrentAddsAllSurvive verifies that concurrent
 // coverage: the read of the current peer list, the caller's change, and
 // the write must all run under one lock, so N concurrent additions of N
 // distinct peers all survive — none of them can read a list that's

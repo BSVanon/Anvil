@@ -75,7 +75,7 @@ const (
 	ReasonBroadcastTooComplex Reason = "broadcast_too_complex"
 	// ReasonMalformedScript is routeguard.ErrMalformedScript
 	// (routeguard.MalformedScriptCode): an unlocking script whose node-exact
-	// parse ends in an undecodable instruction, the B1 reparse-heap-bomb
+	// parse ends in an undecodable instruction, the malformed-script case
 	// trigger. 400. Wired at v3engine.writeGuardError and
 	// legacyshim.writeLegacyGuardError.
 	ReasonMalformedScript Reason = "malformed_script"
@@ -84,7 +84,7 @@ const (
 	// or writeLegacyGuardError: PreVerify's own scripts-did-not-verify
 	// fallback, or a BEEF with no subject transaction, neither one the guard
 	// refusing for a resource reason. Carved out of ReasonOtherGuardError
-	// (cold review round 4 cycle 6 NIT) so a flood of genuinely invalid
+	// so a flood of genuinely invalid
 	// transactions is told apart, in the log, from the guard's own limits
 	// kicking in; the status each route answers is unchanged (legacy keeps
 	// mapping these through statusForSubmitError, canonical keeps its flat
@@ -94,7 +94,7 @@ const (
 	// default branch of writeGuardError or writeLegacyGuardError, other than
 	// ReasonInvalidTransaction: a submit refused before the engine saw it,
 	// for a reason none of the other Reasons name. Logging it closes the gap
-	// cold review round 4's NITs flagged -- that branch was previously
+	// invalid-input handling requires this branch; it was previously
 	// unlogged -- without widening the closed Reason vocabulary for every
 	// future case there.
 	ReasonOtherGuardError Reason = "other_guard_error"

@@ -16,7 +16,7 @@ import (
 // fetch's cached fallback, refresh-slot capacity, and refresh-reservation
 // eviction order. The shared fetcher test doubles and BEEF-building helpers
 // these tests draw on live in handlers_beef_test.go. Split from that file
-// with no behavior change (bu_b4_specs.md item 7); every test below is
+// with no behavior change; every test below is
 // unchanged from before the split.
 
 func TestGetBEEFRefreshesCachedUnprovenSubject(t *testing.T) {

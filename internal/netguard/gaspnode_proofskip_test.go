@@ -37,10 +37,10 @@ const (
 	gaspProofSkipTimeBound = 2 * time.Second
 )
 
-// TestGuard_ProvenNodeSkipsScriptsEvenWithAWrongProof is cold review round 4
-// cycle 6b's RISK 4 pin: go-sdk's spv.Verify accepts a transaction a merkle
+// TestGuard_ProvenNodeSkipsScriptsEvenWithAWrongProof verifies that go-sdk's
+// spv.Verify accepts a transaction a merkle
 // path proves mined without ever running its scripts, which is why
-// gaspNodeMalformed never checks a node carrying a Proof for the B1 reparse
+// gaspNodeMalformed never checks a node carrying a Proof for the malformed-script
 // shape (see its own doc comment in gaspnode.go). That is only
 // refusal-cheap, though, if a WRONG proof -- one that parses as a valid
 // merkle path but is not actually for this transaction -- is itself

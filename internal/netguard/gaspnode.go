@@ -23,7 +23,7 @@ import (
 // is sized for a lookup answer's 2 MiB cap, but GASP replies run up to
 // MaxResponseBytes (64 MiB), where it demanded an honest peer sustain about
 // 2.2 MB/s, and refused a 20 MB reply (a 10 MB transaction) from any peer
-// slower than about 0.67 MB/s (cold review round 4 cycle 6b, RISK 1/2).
+// slower than about 0.67 MB/s.
 // gaspReadTimeout grows the deadline with the declared length instead of
 // using one flat number, capped at GASPReadMax; an undeclared length (-1)
 // gets the cap outright, since there is nothing to scale from. The minimum
@@ -70,8 +70,8 @@ func isGASPNode(req *http.Request) bool {
 // OverlayGASPRemote.GetInitialResponse's POST to host + "/requestSyncResponse"
 // (go-overlay-services' pkg/core/engine/gasp-remote.go), judged the same way
 // isGASPNode judges its own path. Its reply has no transaction to check for
-// the B1 shape, only a size, deadline and minimum rate to read it under
-// (cold review round 4 cycle 6b, RISK 1): before this it fell through
+// malformed transaction scripts, only a size, deadline and minimum rate to read it under.
+// Before this it fell through
 // RoundTrip's generic cappedBody wrap, capped on size alone, with neither a
 // deadline nor a rate floor.
 func isGASPSync(req *http.Request) bool {
@@ -116,14 +116,14 @@ func (g *guard) readGASPReply(resp *http.Response) ([]byte, func(), error) {
 // maxBytes -- the cap this traffic already had before this check existed
 // (see the package doc comment, which sizes it for one transaction and its
 // proof) -- under gaspReadTimeout's deadline and the guard's minimum rate
-// (cold review round 4 cycle 6/6b, RISK 1).
+// to prevent stalled or excessively slow replies.
 //
 // It then decodes the body exactly as OverlayGASPRemote.doNodeRequest itself
 // will (go-overlay-services pkg/core/engine/gasp-remote.go:184): one
 // json.Decoder.Decode of the first JSON value -- the same call doNodeRequest
 // makes on resp.Body, made here first, on the bytes already read. Matching
 // that decode, rather than json.Unmarshal's stricter whole-body parse this
-// check used before, is what closes cold review round 4 cycle 6's B1:
+// check used before, is what prevents malformed trailing data from bypassing validation:
 // Unmarshal fails -- and the old code handed the reply on unchecked, fail
 // open -- for a reply doNodeRequest decodes cleanly, such as one JSON object
 // followed by a trailing byte, a second object, "]" or a NUL: free for a
@@ -136,7 +136,7 @@ func (g *guard) readGASPReply(resp *http.Response) ([]byte, func(), error) {
 // The decoded node is checked for the one confirmed shape (gaspNodeMalformed)
 // and, if clear, handed on as exactly the bytes decodeGASPNode consumed to
 // produce it -- not the bytes received (a trailing byte is dropped) and not
-// a re-encoding of the checked node (cold review round 4 cycle 6b's B1: a
+// a re-encoding of the checked node: a
 // string field padded with '<', '>' or '&' re-encodes up to 6x larger under
 // json.Marshal's HTML-escaping, for about 2 GiB of heap on one cap-sized
 // reply, free for any peer at boot). Slicing the already-read bytes instead
@@ -163,7 +163,7 @@ func (g *guard) checkGASPNode(resp *http.Response) (*http.Response, error) {
 // way checkGASPNode reads its own reply (readGASPReply), and hands it on
 // unchanged: GetInitialResponse's InitialResponse has no transaction, so
 // there is nothing here for gaspNodeMalformed to check, only a size,
-// deadline and rate to read it under (cold review round 4 cycle 6b, RISK 1).
+// deadline and rate to read it under.
 func (g *guard) checkGASPSync(resp *http.Response) (*http.Response, error) {
 	body, release, err := g.readGASPReply(resp)
 	if err != nil {
@@ -211,7 +211,7 @@ func decodeGASPNode(body []byte) (node *gasp.Node, consumed []byte, err error) {
 
 // parseGASPTransaction is transaction.NewTransactionFromBytes, held in a
 // variable so a test can make it panic and confirm the recover in
-// gaspNodeMalformed (cold review round 4 cycle 6, RISK 3) turns that into a
+// gaspNodeMalformed turns that into a
 // refusal instead of reaching Sync's errgroup goroutine, which nothing above
 // RequestNode recovers.
 var parseGASPTransaction = transaction.NewTransactionFromBytes
@@ -222,19 +222,18 @@ var parseGASPTransaction = transaction.NewTransactionFromBytes
 // adds a refusal for one confirmed shape, never a stricter GASP decoder than
 // doNodeRequest's own.
 //
-// A node carrying a Proof is never checked (cold review round 4 cycle 6,
-// RISK 4): ValidateGraphAnchor's spv.Verify accepts a transaction a merkle
+// A node carrying a Proof is never checked: ValidateGraphAnchor's spv.Verify accepts a transaction a merkle
 // path proves mined without ever running its scripts (go-sdk v1.7.7
 // spv/verify.go's doc comment: "A transaction with a merkle path is
 // accepted once chainTracker confirms the path"; verifyUnmined stops at a
-// proven txid before calling verifyTx). The B1 reparse trigger this function
+// proven txid before calling verifyTx). The malformed-script condition this function
 // looks for needs a script to run, so it can never fire for a proven node --
 // refusing one anyway would block syncing an on-chain-valid graph over a
 // shape that is harmless once mined, such as a mined Chronicle transaction
 // with a top-level OP_RETURN followed by a tail that only looks malformed.
 //
 // Parsing node.RawTx and walking its inputs runs under netguard.Contain
-// (cold review round 4 cycle 6, RISK 3): an untrusted hex string reaching
+// so an untrusted hex string reaching
 // go-sdk's transaction parser with no recover of its own must not be able to
 // end the process from this goroutine. A panic there is treated as a
 // confirmed malformed shape -- refused, fail closed -- and logged by Contain

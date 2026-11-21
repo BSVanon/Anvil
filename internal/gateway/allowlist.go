@@ -17,8 +17,8 @@ import (
 )
 
 // Snapshot is one parsed, immutable version of the sites file: the set of
-// allowed domains and the set of allowed origins (decision 3's two entry
-// kinds). The zero value is empty — nothing allowed.
+// allowed domains and the set of allowed origins. The zero value is empty —
+// nothing allowed.
 type Snapshot struct {
 	domains map[string]struct{}
 	origins map[string]struct{}
@@ -46,17 +46,17 @@ func (s *Snapshot) HasOrigin(origin string) bool {
 
 // HasAnyOrigin reports whether the sites file lists any "origin" entries
 // at all. Policy uses this to decide whether a Host with no domain entry
-// is even worth a speculative TXT lookup (decision 4's flood guard).
+// is even worth a speculative TXT lookup, avoiding unnecessary DNS requests.
 func (s *Snapshot) HasAnyOrigin() bool {
 	return s != nil && len(s.origins) > 0
 }
 
-// Allowlist is the sites file's live, hot-reloaded state (decision 7). The
+// Allowlist is the sites file's live, hot-reloaded state. The
 // zero value is not usable; construct with NewAllowlist.
 type Allowlist struct {
 	path              string
 	registrationsPath string
-	apiHost           string // normalised; a "domain" entry equal to this is ignored on reload (D2)
+	apiHost           string // normalised; an equal "domain" entry is ignored on reload
 	logger            *slog.Logger
 
 	current atomic.Pointer[Snapshot]
@@ -69,20 +69,20 @@ type Allowlist struct {
 
 // NewAllowlist loads path once and returns an Allowlist reflecting it. A
 // missing file is not an error — an operator can turn gateway mode on
-// before adding any sites and add them later with the CLI (B7b) — it just
+// before adding any sites and add them later with the CLI — it just
 // means nothing is allowed yet. Call Reload periodically (cmd/anvil's
-// wiring runs it off a 5s ticker, per decision 7) to pick up edits with no
+// wiring runs it off a 5s ticker) to pick up edits with no
 // restart.
 //
 // apiHost (internal/config's resolved [gateway] api_host) is never allowed
-// as a site: D2's "the API always wins over a site entry" is already
+// as a site: the API always wins over a site entry and is already
 // structurally guaranteed by Router (it checks api_host before ever
 // consulting Sites), but a "domain" entry equal to apiHost is additionally
 // stripped from every snapshot outright, on load and on every reload, with
 // one warning per bad mtime — so an operator sees the misconfiguration
 // instead of a silently-ineffective sites-file line. internal/config's
 // Load separately refuses this same overlap outright at config load time;
-// this is the hot-reload-time half of D2's overlap rule, for an entry
+// this is the hot-reload-time half of that overlap rule, for an entry
 // added after the node is already running.
 func NewAllowlist(path, apiHost string, logger *slog.Logger) *Allowlist {
 	return NewAllowlistWithRegistrations(path, "", apiHost, logger)
@@ -114,7 +114,7 @@ func (a *Allowlist) Snapshot() *Snapshot {
 // Reload re-reads both files and atomically swaps in their merged snapshot.
 // A parse error — or the file vanishing after one existed — keeps the
 // last good snapshot and logs once per distinct mtime, so a broken edit
-// doesn't spam the log every 5s until it's fixed (decision 7).
+// doesn't spam the log every 5s until it's fixed.
 func (a *Allowlist) Reload() {
 	a.reloadMu.Lock()
 	defer a.reloadMu.Unlock()
@@ -185,7 +185,7 @@ func (a *Allowlist) logBad(path string, mtime time.Time, err error) {
 }
 
 // logOverlap warns, once per distinct mtime, that the sites file lists
-// api_host as a "domain" entry — D2's overlap rule — and that the entry
+// api_host as a "domain" entry and that the entry
 // was ignored rather than silently shadowed by Router's api_host-first
 // ordering.
 func (a *Allowlist) logOverlap(mtime time.Time) {
@@ -200,7 +200,7 @@ func (a *Allowlist) logOverlap(mtime time.Time) {
 // every line is valid (a comment, blank, "domain <name>" or
 // "origin <txid>_<vout>") and the result is a complete new Snapshot, or
 // the first bad line fails the whole parse and the caller keeps its
-// previous Snapshot — decision 7's atomic swap means a half-good edit
+// previous Snapshot — an atomic swap means a half-good edit
 // never silently drops the other, still-valid entries.
 func parseSitesFile(data []byte) (*Snapshot, error) {
 	snap := &Snapshot{domains: map[string]struct{}{}, origins: map[string]struct{}{}}
@@ -250,8 +250,8 @@ func parseSitesFile(data []byte) (*Snapshot, error) {
 var ldhLabel = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
 // validateDomain lowercases raw, strips one trailing dot, and requires
-// every label to be ASCII LDH (decision 7) and the whole string to not be
-// an IP literal (N2): a bare IPv4 or IPv6 address is never a meaningful
+// every label to be ASCII LDH and the whole string to not be
+// an IP literal: a bare IPv4 or IPv6 address is never a meaningful
 // "domain" entry for the _ordfs TXT convention this package implements,
 // and refusing it outright is clearer than relying on IPv6's colons to
 // incidentally fail the LDH check. Punycode (xn--...) is already plain
@@ -281,7 +281,7 @@ var outpointRe = regexp.MustCompile(`^([0-9a-fA-F]{64})_([0-9]+)$`)
 
 // parseOutpoint validates and normalises a txid_vout string: the txid is
 // lowercased, and the vout must be decimal and fit in a uint32 — at most
-// 2^32-1 (decision 4).
+// 2^32-1.
 func parseOutpoint(raw string) (string, bool) {
 	m := outpointRe.FindStringSubmatch(raw)
 	if m == nil {

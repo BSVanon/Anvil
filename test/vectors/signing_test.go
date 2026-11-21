@@ -14,7 +14,7 @@ import (
 )
 
 // TestSigningVectors validates that Go's envelope signing matches the shared
-// test vectors. The same vectors are validated by JS in SendBSV-Rates.
+// test vectors. The same vectors are validated by JavaScript clients.
 // If this test fails, Go and JS will produce incompatible signatures.
 func TestSigningVectors(t *testing.T) {
 	data, err := os.ReadFile("envelope_signing.json")
@@ -35,10 +35,10 @@ func TestSigningVectors(t *testing.T) {
 				Durable   bool   `json:"durable"`
 				Timestamp int64  `json:"timestamp"`
 				Monet     *struct {
-					Model          string `json:"model"`
-					PayeeScript    string `json:"payee_locking_script_hex"`
-					PriceSats      int    `json:"price_sats"`
-					AuthPubkey     string `json:"auth_pubkey"`
+					Model       string `json:"model"`
+					PayeeScript string `json:"payee_locking_script_hex"`
+					PriceSats   int    `json:"price_sats"`
+					AuthPubkey  string `json:"auth_pubkey"`
 				} `json:"monetization"`
 			} `json:"envelope"`
 			ExpectedPreimage  string `json:"expected_preimage"`
@@ -72,10 +72,10 @@ func TestSigningVectors(t *testing.T) {
 			}
 			if v.Envelope.Monet != nil {
 				env.Monetization = &envelope.Monetization{
-					Model:                  v.Envelope.Monet.Model,
-					PayeeLockingScriptHex:  v.Envelope.Monet.PayeeScript,
-					PriceSats:              v.Envelope.Monet.PriceSats,
-					AuthPubkey:             v.Envelope.Monet.AuthPubkey,
+					Model:                 v.Envelope.Monet.Model,
+					PayeeLockingScriptHex: v.Envelope.Monet.PayeeScript,
+					PriceSats:             v.Envelope.Monet.PriceSats,
+					AuthPubkey:            v.Envelope.Monet.AuthPubkey,
 				}
 			}
 

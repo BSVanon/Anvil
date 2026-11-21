@@ -17,7 +17,7 @@ import "context"
 // is unlocked per envelope, by the outputs the payment carries
 // (paymentCovers, paid_outputs_context.go). A payment must never unlock a
 // `private` envelope or its metadata; only isAuthed gates those reads. See
-// docs/ANVIL_PRIVATE_FLAG_CONTRACT.md for the full contract.
+// docs/API_REFERENCE.md, section Private envelopes, for the full contract.
 type paidContextKey struct{}
 
 // withPaid returns ctx carrying the verified-payment marker for this request.

@@ -439,10 +439,10 @@ func Load(path string) (*Config, error) {
 			TAALURL: "https://arc.taal.com",
 		},
 		// JungleBus is backwards-compatibility-only as of v3.0.0
-		// (W-10.5). The bespoke SHIP/SLAP discovery + on-chain publish
+		// . The bespoke SHIP/SLAP discovery + on-chain publish
 		// paths it powered have been retired in favor of canonical
 		// BRC-88 SHIP/SLAP via go-sdk's LookupResolver — see
-		// docs/internal/W10_FEDERATION_PLAN.md. The TOML parser still
+		// built-in federation. The TOML parser still
 		// accepts this section so legacy anvil.toml files don't break,
 		// but every field below is a runtime no-op. Default is
 		// disabled to avoid suggesting the old path is still active.
@@ -457,7 +457,7 @@ func Load(path string) (*Config, error) {
 			GASPSyncIntervalSecs:   1800, // v3.0.7 default — was hardcoded 300s pre-v3.0.7
 			GASPSyncRunTimeoutSecs: 600,
 			AdvertiseIntervalSecs:  1800, // matches SyncAdvertisements historic cadence
-			// SHIPTrackers + SLAPTrackers left blank by default; W-10.3
+			// SHIPTrackers + SLAPTrackers left blank by default; canonical
 			// wiring in cmd/anvil/main.go falls back to go-sdk's
 			// overlay/lookup.DEFAULT_SLAP_TRACKERS (Project Babbage's
 			// public BSVA US/EU/AP + users.bapp.dev hosts) when the

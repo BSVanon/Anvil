@@ -280,15 +280,14 @@ func main() {
 	defer mpool.Close()
 
 	// Anvil's overlay subsystem. The legacy in-process engine (legacy
-	// internal/overlay.Engine) was removed in W-7 (2026-05-16); the
+	// internal/overlay.Engine) was removed; the
 	// canonical v3 engine + legacy compat shim wired below replace it.
 	// overlayDir survives because it owns the LevelDB shared with the
 	// v3 engine + federation storage AND the Anvil-Mesh internal peer
 	// directory (Bootstrap, ForEachSHIP, AddSHIPPeerFromGossip, etc.) —
 	// these are NOT BRC-88 federation, they are Anvil's internal mesh
-	// peer discovery for anvil-a/anvil-b coordination, per the Codex
-	// 14a2d703 scope carve-out (reference_anvil_teranode_boundary.md).
-	// W-10.5 retired the BRC-88-equivalent paths (on-chain SHIP publish,
+	// peer discovery for anvil-a/anvil-b coordination.
+	// Canonical federation retired the BRC-88-equivalent paths (on-chain SHIP publish,
 	// JungleBus SHIP/SLAP discovery) because those duplicate what
 	// canonical federation now does; Anvil-Mesh internal discovery
 	// stays.
@@ -329,12 +328,12 @@ func main() {
 			log.Fatalf("auto-migrate legacy overlay data: %v", err)
 		}
 
-		// W-5 phase B-c: wire the v3 canonical engine + legacy compat
+		// Wire the v3 canonical engine and legacy compatibility
 		// shim against the same LevelDB. headerStore is reused as the
 		// chaintracker.ChainTracker (headers.Store satisfies the
 		// interface directly).
 		//
-		// W-10.3: federation surface (Advertiser, LookupResolver, GASP
+		// The federation surface (Advertiser, LookupResolver, GASP
 		// SyncConfiguration, SHIP/SLAP trackers, Broadcaster) is wired
 		// AFTER nodeWallet construction below — it needs the wallet
 		// for admin-token PushDrop signing. The engine boots without
@@ -427,7 +426,7 @@ func main() {
 			}
 		}()
 
-		// W-10.5: JungleBus subscription block retired. The bespoke
+		// The JungleBus subscription block is retired. The bespoke
 		// path used JungleBus to discover other anvil-mesh nodes' SHIP
 		// admin tokens on-chain; canonical BRC-88 SLAP discovery via
 		// go-sdk's LookupResolver (with DEFAULT_SLAP_TRACKERS or
@@ -470,17 +469,17 @@ func main() {
 			// nonce minting / x402 silently fails.
 			go nodeWallet.RunAutoScan(context.Background(), 30*time.Minute)
 
-			// W-10.3: canonical BRC-88 federation. Now that the wallet
+			// Canonical BRC-88 federation. Now that the wallet
 			// exists, upgrade the v3 engine in place with the canonical
 			// Advertiser + LookupResolver + GASP SyncConfiguration.
 			// Federation participation is opt-out via
 			// cfg.Overlay.EnableGASPSync = false.
-			// W-10.3 federation wiring + B5 [overlay] named_peers
+			// Federation wiring and [overlay] named_peers
 			// closed-network override both live in wireV3Federation
 			// (federation_loops.go); deferred to stop its background loop(s) at shutdown.
 			defer wireV3Federation(cfg, v3Eng, gaspTracker, shipStore, slapStore, anvilStore, nodeWallet, logger)()
 
-			// W-10.5: Bespoke on-chain SHIP publish retired. The
+			// Bespoke on-chain SHIP publishing is retired. The
 			// canonical federation Advertiser wired above publishes
 			// SHIP+SLAP advertisements for every active topic via
 			// admin-token PushDrop on the next SyncAdvertisements pass.
@@ -835,18 +834,16 @@ func main() {
 		}()
 	}
 
-	// W-5/W-7: canonical v3 engine + legacy /overlay/* compat shim
+	// The canonical v3 engine and legacy /overlay/* compatibility shim
 	// own all overlay-protocol HTTP routes. Mesh routes
 	// (/overlay/lookup, /overlay/register, /overlay/deregister) stay
-	// registered by internal/api/server.go and are unaffected — per
-	// Codex review 14a2d703 scope carve-out.
+	// registered by internal/api/server.go and are unaffected.
 	//
 	// CorsWrap is REQUIRED for both registrations so browser callers
-	// (Foundry, Anvil-Swap UI, future TS SDK consumers) get the
+	// (browser callers and future SDK consumers) get the
 	// canonical Access-Control-* headers — including the canonical
 	// x-includes-off-chain-values + x-aggregation custom headers
-	// (Codex reviews d671fa17fe5cc746, fe9707876f5618ca,
-	// 2968609c62a2eb51 walked through this surface).
+	// required custom headers.
 	if v3Handlers != nil {
 		v3Handlers.Register(srv.Mux(), srv.CorsWrap)
 	}

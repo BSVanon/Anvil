@@ -209,11 +209,11 @@ func TestResolver_Singleflight(t *testing.T) {
 }
 
 // TestResolver_FloodGuardThrottlesDistinctUncachedHosts replaces the old
-// TestResolver_FloodGuard now that AllowSpeculative is gone (B2): the
+// TestResolver_FloodGuard verifies behavior after AllowSpeculative was removed: the
 // flood guard is consulted inside Lookup itself, only on a genuine cache
 // miss for a speculative (no-domain-entry) host. A flood of distinct,
 // never-before-seen hosts is still capped at the guard's burst — counted
-// here by real DNS calls made, per item 2's "count DNS calls, don't time
+// here by real DNS calls rather than elapsed time.
 // them" — and, separately, the guard still refills after elapsed time.
 func TestResolver_FloodGuardThrottlesDistinctUncachedHosts(t *testing.T) {
 	fake := &fakeTXTLookup{err: &net.DNSError{IsNotFound: true}}

@@ -18,7 +18,7 @@ import (
 // exact topic it was validated for — see appTokenTopicMatches. It is never
 // "authenticated" (Server.isAuthed/isOperatorToken, auth.go) and never
 // unlocks a `private` envelope or its metadata, on this topic or any other.
-// See docs/ANVIL_PRIVATE_FLAG_CONTRACT.md for the full contract.
+// See docs/API_REFERENCE.md, section Private envelopes, for the full contract.
 type appTokenTopicKey struct{}
 
 // withAppTokenTopic returns ctx carrying the topic T that this request's

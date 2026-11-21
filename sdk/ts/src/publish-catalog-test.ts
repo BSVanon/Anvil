@@ -1,6 +1,6 @@
 /**
  * Publish test app listings to the anvil:catalog topic.
- * Run from VPS: cd /opt/sendbsv-rates && node path/to/this/file
+ * Run with Node.js: node path/to/this/file
  */
 import { AnvilClient } from './index.js';
 

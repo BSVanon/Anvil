@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestParseOrdfsTXT is decision 4's parsing table: valid, case, spaces,
+// TestParseOrdfsTXT is a parsing table: valid, case, spaces,
 // multiple strings (already concatenated by Go's resolver before this
 // function sees them — represented here as one record string), duplicate
 // records, conflicting values, bad txid or vout, missing.

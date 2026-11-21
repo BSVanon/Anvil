@@ -176,7 +176,7 @@ func TestLoadStandardModeUnchanged(t *testing.T) {
 	}
 }
 
-// TestLoadGatewayAPIHostDefaultsFromPublicURL is D2's default-fill rule:
+// TestLoadGatewayAPIHostDefaultsFromPublicURL verifies the default-fill rule:
 // api_host left unset is resolved from [node] public_url's host, so a
 // gateway node needs no api_host of its own as long as public_url agrees.
 func TestLoadGatewayAPIHostDefaultsFromPublicURL(t *testing.T) {
@@ -199,9 +199,9 @@ enabled = true
 	}
 }
 
-// TestLoadGatewayFailsWhenAPIHostAndPublicURLBothEmpty is D2: with
+// TestLoadGatewayFailsWhenAPIHostAndPublicURLBothEmpty verifies that with
 // [gateway] enabled, Load fails when api_host can't be resolved from
-// anywhere — D1's Router has no wildcard any more, so an api_host-less
+// anywhere — Router has no wildcard, so an api_host-less
 // gateway would be unreachable at its own API.
 func TestLoadGatewayFailsWhenAPIHostAndPublicURLBothEmpty(t *testing.T) {
 	dir := t.TempDir()
@@ -212,7 +212,7 @@ func TestLoadGatewayFailsWhenAPIHostAndPublicURLBothEmpty(t *testing.T) {
 	}
 }
 
-// TestLoadGatewayFailsWhenAPIHostAndPublicURLDisagree is D2: Load refuses
+// TestLoadGatewayFailsWhenAPIHostAndPublicURLDisagree verifies that Load refuses
 // an explicit api_host whose host doesn't match an explicit public_url's
 // host, since overlay federation calls this node at public_url and a
 // mismatch would make Router 404 it.
@@ -233,7 +233,7 @@ api_host = "other.example.org"
 	}
 }
 
-// TestLoadGatewayFailsWhenAPIHostListedAsSite is D2's sites-file overlap
+// TestLoadGatewayFailsWhenAPIHostListedAsSite verifies sites-file overlap
 // rule: Load refuses a config whose sites file lists api_host itself as
 // a "domain" entry — the API always wins, so a site entry for the same
 // host is a misconfiguration, not a silent no-op.
@@ -294,7 +294,7 @@ api_host = "other.example.org"
 	}
 }
 
-// TestLoadRejectsInvalidContentScope is D3: only "", "site" or "any" are
+// TestLoadRejectsInvalidContentScope verifies that only "", "site" or "any" are
 // accepted for [gateway] content_scope; anything else fails Load, rather
 // than silently falling back to "site" as it used to.
 func TestLoadRejectsInvalidContentScope(t *testing.T) {
@@ -306,7 +306,7 @@ func TestLoadRejectsInvalidContentScope(t *testing.T) {
 	}
 }
 
-// TestLoadAcceptsValidContentScopeValues is D3's positive case, for both
+// TestLoadAcceptsValidContentScopeValues is the positive case, for both
 // explicit values (empty/default is already covered by
 // TestLoadGatewayDefaults and TestLoadGatewayExplicitValues).
 func TestLoadAcceptsValidContentScopeValues(t *testing.T) {

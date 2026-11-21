@@ -26,8 +26,7 @@ func gaspDownstreamDecode(body []byte) (*gasp.Node, error) {
 	return node, nil
 }
 
-// TestGuard_DecodeMatchesDoNodeRequest is cold review round 4 cycle 6b's
-// nit, adapted from zz_rev2_roundtrip_test.go's TestRev2_RoundTripFidelity:
+// TestGuard_DecodeMatchesDoNodeRequest verifies that:
 // across a wide range of edge-case /requestForeignGASPNode reply bodies
 // (null and missing fields, duplicate and case-variant keys, escapes,
 // invalid UTF-8, unknown fields, trailing junk, a leading BOM, a top-level
@@ -41,8 +40,7 @@ func gaspDownstreamDecode(body []byte) (*gasp.Node, error) {
 //
 // The original probe compared decodeGASPNode's result to a json.Marshal
 // re-encoding of it redecoded downstream, because at the time checkGASPNode
-// handed a re-encoded node on (the B1 amplification cold review round 4
-// cycle 6b's own fix removed, cold review round 4 cycle 6c item 1). That
+// handed a re-encoded node on. That
 // comparison no longer matches what the guard does: checkGASPNode now hands
 // on decodeGASPNode's consumed return, body sliced to exactly the bytes one
 // Decode call read, so this instead confirms that slice, redecoded the same

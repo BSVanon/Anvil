@@ -11,7 +11,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
-// TestOnACMEChallenge_OversizePayloadNeverUnmarshalled is item 6's
+// TestOnACMEChallenge_OversizePayloadNeverUnmarshalled verifies that an
 // required oversize test: a payload bigger than
 // acmeChallengeMaxPayloadBytes is refused before json.Unmarshal ever
 // runs on it — proved through the acmeOversizeDropped seam, not just by
@@ -121,7 +121,7 @@ func newRateLimitedTestManager(t *testing.T, name string, w wallet.Interface) *M
 	return m
 }
 
-// TestOnACMEChallenge_BurstBeyondRateIsDropped is item 6's required
+// TestOnACMEChallenge_BurstBeyondRateIsDropped verifies that a burst beyond
 // rate-limit test: with burst 2, a third well-formed, under-cap
 // payload from the same peer in the same instant is dropped — reusing
 // the data path's own per-peer limiter (allowPeerMessage,

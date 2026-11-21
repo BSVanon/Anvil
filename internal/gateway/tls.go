@@ -57,7 +57,7 @@ type ACMEManagerConfig struct {
 	// degenerate wiring would pass nil; cmd/anvil's real wiring always
 	// has one.
 	Policy *Policy
-	// APIHost is the Host that reaches this node's own API (D1) — see
+	// APIHost is the Host that reaches this node's own API — see
 	// GatewayConfig.APIHost. Allowed to get a certificate too, same as
 	// an allowed site.
 	APIHost string

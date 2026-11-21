@@ -142,7 +142,7 @@ func TestTwoNodeMeshGossip(t *testing.T) {
 // (because monetization is part of the signing digest).
 //
 // This is the end-to-end proof that the non-custodial payment policy
-// is tamper-proof across the Foundry mesh.
+// is tamper-proof across the mesh.
 func TestMonetizedEnvelopeGossipIntegrity(t *testing.T) {
 	// --- Node B: receiver ---
 	dirB, _ := os.MkdirTemp("", "anvil-mesh-mon-b-*")

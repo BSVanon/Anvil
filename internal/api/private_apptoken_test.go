@@ -23,7 +23,7 @@ import (
 // credential for monetized public content on its own exact topic only. It
 // never gates `private` envelope data (only isAuthed does — auth.go) and
 // never widens to a different or prefix-related topic. See
-// docs/ANVIL_PRIVATE_FLAG_CONTRACT.md.
+// docs/API_REFERENCE.md, section Private envelopes.
 
 // TestAppTokenDoesNotUnlockPrivateEnvelope: a `private` envelope on a
 // token-gated (Model 4) topic is NOT served by a caller presenting a valid,

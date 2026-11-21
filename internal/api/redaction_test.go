@@ -23,7 +23,7 @@ func TestPaidPayloadRedactedForPublicReads(t *testing.T) {
 		TTL:       60,
 		Timestamp: 1700000000,
 		Monetization: &envelope.Monetization{
-			Model:    "passthrough",
+			Model:     "passthrough",
 			PriceSats: 50,
 		},
 	}
@@ -68,7 +68,7 @@ func TestPaidPayloadVisibleForAuthenticatedReads(t *testing.T) {
 		TTL:       60,
 		Timestamp: 1700000000,
 		Monetization: &envelope.Monetization{
-			Model:    "passthrough",
+			Model:     "passthrough",
 			PriceSats: 50,
 		},
 	}
@@ -163,7 +163,7 @@ func TestPaidRedactionDoesNotMutateStore(t *testing.T) {
 		TTL:       60,
 		Timestamp: 1700000000,
 		Monetization: &envelope.Monetization{
-			Model:    "passthrough",
+			Model:     "passthrough",
 			PriceSats: 50,
 		},
 	}

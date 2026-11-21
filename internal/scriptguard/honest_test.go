@@ -171,7 +171,7 @@ func bsv21Spend(t testing.TB) spend {
 }
 
 // mneeSpend spends an output of the MNEE cosign shape that
-// Anvil-Swap/src/avos/mnee-output-template.ts records from mainnet: the
+// Mainnet records use the following
 // envelope, OP_DUP OP_HASH160 <pkh> OP_EQUALVERIFY OP_CHECKSIGVERIFY
 // <cosigner> OP_CHECKSIG. The cosigner is a test key, not MNEE's.
 func mneeSpend(t testing.TB) spend {

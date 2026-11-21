@@ -21,11 +21,11 @@ type GatewayConfig struct {
 	Enabled bool `toml:"enabled"`
 
 	// APIHost is the Host header that reaches this node's own API once
-	// gateway mode is on (D1). Left unset, Load resolves it from [node]
+	// gateway mode is on. Left unset, Load resolves it from [node]
 	// public_url's host — overlay federation calls this node at
 	// public_url, so the two must agree, and a gateway node that sets
 	// only public_url (not api_host) gets a working default for free. If
-	// [gateway] is enabled and neither is set, Load fails: D1's Router has
+	// [gateway] is enabled and neither is set, Load fails: Router has
 	// no wildcard any more (an empty APIHost reaches only a loopback
 	// Host, never an arbitrary one), so a gateway with no api_host at all
 	// would be unreachable at its own API. If both are set and their
@@ -54,7 +54,7 @@ type GatewayConfig struct {
 
 	// ContentScope is "" (defaults to "site"), "site" (internal/gateway's
 	// reference-reachability check) or "any" (today's unrestricted
-	// /content/ behaviour), tightened by D3: Load rejects anything else
+	// /content/ behaviour). Load rejects anything else
 	// outright rather than silently falling back to "site".
 	ContentScope string `toml:"content_scope"`
 
@@ -112,8 +112,8 @@ func validateNodeMode(mode string) error {
 
 // finalizeGateway is the one call Load makes for every gateway-related
 // default and validation: [node] mode (validateNodeMode),
-// GatewayConfig's own numeric/path defaults, D3's strict content_scope
-// check, and D2's api_host resolution and its two overlap rules with the
+// GatewayConfig's own numeric/path defaults, strict content_scope checking,
+// and api_host resolution and its two overlap rules with the
 // sites file. configPath is Load's own config-file path, needed for
 // SitesFile's "next to this node's own config file" default.
 func finalizeGateway(cfg *Config, configPath string) error {
@@ -154,7 +154,7 @@ func finalizeGateway(cfg *Config, configPath string) error {
 		cfg.Gateway.SitesFile = filepath.Join(filepath.Dir(configPath), "gateway-sites.conf")
 	}
 
-	// D2: api_host is resolved from, and reconciled against, [node]
+	// api_host is resolved from, and reconciled against, [node]
 	// public_url. With the gateway off, none of this can stop the node
 	// from starting: a disagreeing api_host/
 	// public_url and an api_host that happens to also be listed in the

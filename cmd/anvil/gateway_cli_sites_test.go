@@ -10,7 +10,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/sitesfile"
 )
 
-// TestGatewaySiteAddEntry_RefusesTheConfigResolvedAPIHost is item 5's
+// TestGatewaySiteAddEntry_RefusesTheConfigResolvedAPIHost verifies the
 // required coverage: cmdGatewaySite hands gatewaySiteAdd (here,
 // gatewaySiteAddEntry, its error-returning core) cfg.Gateway.APIHost —
 // config.Load's own already-resolved value, not a hand-typed copy of

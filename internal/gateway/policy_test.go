@@ -106,7 +106,7 @@ func TestPolicy_TXTDoesNotMatchAnyOriginEntry(t *testing.T) {
 }
 
 func TestPolicy_DomainEntryWithNoValidTXT(t *testing.T) {
-	// Decision 3: "a listed domain with no valid TXT gets a 404."
+	// A listed domain with no valid TXT gets a 404.
 	fake := &fakeTXTLookup{records: nil} // no TXT record at all
 	p, _, _ := newTestPolicy(t, "domain example.org\n", fake)
 
@@ -134,7 +134,7 @@ func TestPolicy_NoDomainNoOriginEntriesSkipsLookupEntirely(t *testing.T) {
 // burst with distinct speculative (no-domain-entry) hosts — each a
 // genuine cache miss, so each burns one guard token and one real DNS call
 // — then confirms one more distinct host is refused with no new DNS call
-// at all (B2: the guard still gates a genuine cache miss exactly as
+// at all; the guard still gates a genuine cache miss exactly as
 // before; what changed is that it no longer ALSO gates a cache hit — see
 // TestHostile_FloodGuardThrottlesCachedOriginTraffic).
 func TestPolicy_FloodGuardBlocksSpeculativeLookup(t *testing.T) {
@@ -159,11 +159,11 @@ func TestPolicy_FloodGuardBlocksSpeculativeLookup(t *testing.T) {
 }
 
 // TestHostile_FloodGuardThrottlesCachedOriginTraffic makes the review's
-// proven B2 repro permanent: a cached, allowed, origin-only host (no
+// permanent regression: a cached, allowed, origin-only host (no
 // domain entry — its only path to being allowed is its TXT resolving to a
 // listed "origin" entry) must never be refused by the flood guard, no
 // matter how exhausted the guard's global burst is, because a cache hit
-// never reaches the guard at all (B2 moved the check to after Resolver's
+// never reaches the guard at all because the check follows Resolver's
 // own cache lookup, inside Lookup, never ahead of it in Policy.Allowed as
 // before). Before the fix, every one of these calls re-consulted the
 // guard regardless of the cache, so exhausting the burst on unrelated

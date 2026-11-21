@@ -191,7 +191,7 @@ func TestPrivateEnvelopeNotBroadcast(t *testing.T) {
 
 	env := &envelope.Envelope{
 		Type:      "data",
-		Topic:     "lacriada:household-x",
+		Topic:     "app:private-x",
 		Payload:   "sealed",
 		Pubkey:    "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
 		TTL:       0,
@@ -231,7 +231,7 @@ func TestDropPrivate(t *testing.T) {
 	}
 }
 
-// TestVisiblePageFiltersBeforePaginating is the mesh-pull regression (Codex
+// TestVisiblePageFiltersBeforePaginating is the mesh-pull regression:
 // 1b290a5d MEDIUM): with the newest window full of private envelopes, the page
 // must still return the older PUBLIC envelopes with a correct HasMore — the
 // pre-fix code paginated first (limit+1) then filtered, hiding public data

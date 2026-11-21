@@ -51,7 +51,7 @@ const (
 const scopeScanTimeout = 2 * time.Minute
 
 // scopeIncompleteCacheTTL and scopeFailedFetchTTL bound retry behavior for
-// amplification bound (item 2). Before this, an incomplete result was
+// amplification bound. Before this, an incomplete result was
 // never cached at all, so a site that references one persistently
 // failing outpoint paid for a full breadth-first rescan — up to
 // scopeScanTimeout and scopeMaxOutpoints fetches — on every single
@@ -163,7 +163,7 @@ func (r *scopeResult) has(outpoint string) bool {
 // already gives both — concurrent callers for the same key share one
 // scan, and its result is memoized under that key. content wraps
 // whatever was passed to newScopeCache in a negativeCachingFetcher (fix
-// cycle 2), so every scan sharing this scopeCache also shares one
+// shared scan), so every scan sharing this scopeCache also shares one
 // per-outpoint negative-fetch cache. now is overridable in tests, the
 // same way Resolver's is.
 type scopeCache struct {

@@ -23,7 +23,7 @@ import (
 // the fetcher's own not-found/unconfirmed cases. The shared BEEF-building
 // helper these tests draw on (mustDecodeScript) lives in
 // handlers_beef_test.go. Split from that file with no behavior change
-// (bu_b4_specs.md item 7); every test below is unchanged from before the
+// ; every test below is unchanged from before the
 // split.
 
 func testServerWithFetcher(t *testing.T, fetcher *spv.ProofFetcher) *Server {

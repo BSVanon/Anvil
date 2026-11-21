@@ -13,7 +13,7 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-// Transport-level mutation checks for B5 review BLOCKER 2: a refused peer
+// Transport-level mutation checks ensure a refused peer
 // must receive zero application messages, inbound and outbound. These use a
 // bare go-sdk auth.Peer (not wrapped in a Manager) to count messages on the
 // refused side, so the count is independent of Manager-side bookkeeping —
