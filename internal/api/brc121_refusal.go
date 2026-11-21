@@ -43,18 +43,18 @@ const (
 	// codeBRC121Replayed: the transaction already paid for a request (the
 	// node's replay record), or the node wallet already holds it.
 	codeBRC121Replayed = "ERR_BRC121_REPLAYED"
-	// codeBRC121NotAccepted: the payment was verified but not recorded. ARC
-	// refused it, did not answer, or reported it mined deeper than the
-	// node takes, or the node wallet could not record it. Unless ARC refused
-	// it, the node keeps it (brc121_journal.go) and records it once the
-	// network accepts it; it is not served again.
+	// codeBRC121NotAccepted: ARC conclusively refused a verified payment.
 	codeBRC121NotAccepted = "ERR_BRC121_NOT_ACCEPTED"
 	// codeBRC121Busy (503): every ARC submit slot is taken, or the client
 	// already has brc121ClientShare payments in validation.
 	codeBRC121Busy = "ERR_BRC121_BUSY"
 	// codeBRC121WalletUnavailable (500): the node wallet failed to derive the
-	// payment key or to read its own records.
+	// payment key.
 	codeBRC121WalletUnavailable = "ERR_BRC121_WALLET_UNAVAILABLE"
+	// codeBRC121PaymentKept means the journal durably holds the payment.
+	codeBRC121PaymentKept = "PAYMENT_KEPT"
+	// codeBRC121PaymentUnrecorded means the journal could not hold it.
+	codeBRC121PaymentUnrecorded = "PAYMENT_UNRECORDED"
 )
 
 // brc121Refusal is a refused BRC-121 payment: its code, its HTTP status and,
@@ -76,7 +76,7 @@ var (
 	errBRC121MixedMethods = &brc121Refusal{status: http.StatusBadRequest, code: codeBRC121MixedMethods,
 		msg: "pay a request by one method: x-bsv-beef cannot be sent with X-Bsv-Payment or X402-Proof"}
 	errBRC121ClientBusy = &brc121Refusal{status: http.StatusServiceUnavailable, code: codeBRC121Busy,
-		msg: "this client already has its share of BRC-121 payments in validation; retry the same payment shortly", retryAfter: time.Second}
+		msg: "this client already has 36 BRC-121 payments in progress; retry the same payment shortly", retryAfter: time.Second}
 	errBRC121SubmitsBusy = &brc121Refusal{status: http.StatusServiceUnavailable, code: codeBRC121Busy,
 		msg: "every payment submit slot is in use; retry the same payment shortly", retryAfter: directPaymentBusyRetry}
 )
@@ -85,7 +85,19 @@ func errBRC121Wallet(msg string) error {
 	return &brc121Refusal{status: http.StatusInternalServerError, code: codeBRC121WalletUnavailable, msg: msg}
 }
 
-// writeBRC121Refusal answers a refused BRC-121 payment. A 402 or 503 repeats
+func errBRC121Kept(txid, detail string) error {
+	return &brc121Refusal{status: http.StatusServiceUnavailable, code: codeBRC121PaymentKept,
+		msg:        "the node durably kept payment " + txid + "; " + detail + "; do not pay again; retry the same request shortly",
+		retryAfter: time.Second}
+}
+
+func errBRC121Unrecorded(txid, detail string) error {
+	return &brc121Refusal{status: http.StatusServiceUnavailable, code: codeBRC121PaymentUnrecorded,
+		msg:        "the node could not keep payment " + txid + "; " + detail + "; do not pay again; retry the same request shortly",
+		retryAfter: time.Second}
+}
+
+// writeBRC121Refusal answers a refused BRC-121 payment. Only a 402 repeats
 // the offer when the request's challenge would make one (offerSats above 0).
 func (b *brc121Gate) writeBRC121Refusal(w http.ResponseWriter, r *http.Request, offerSats int, err error) {
 	var ref *brc121Refusal
@@ -93,7 +105,7 @@ func (b *brc121Gate) writeBRC121Refusal(w http.ResponseWriter, r *http.Request, 
 		ref = &brc121Refusal{status: http.StatusPaymentRequired, code: codeBRC121NotAccepted, msg: err.Error()}
 	}
 	b.counts.refused(ref.code)
-	if offerSats > 0 && ref.status != http.StatusInternalServerError && ref.status != http.StatusBadRequest {
+	if offerSats > 0 && ref.status == http.StatusPaymentRequired {
 		b.setOffer(w, offerSats)
 	}
 	msg := "BRC-121 payment refused: " + err.Error()

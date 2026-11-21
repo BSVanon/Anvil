@@ -66,6 +66,14 @@ type paymentReplaySet struct {
 	size     int
 }
 
+type paymentReplayClaim uint8
+
+const (
+	replayClaimed paymentReplayClaim = iota
+	replayAccepted
+	replayInFlight
+)
+
 // newPaymentReplaySet returns a set that remembers txids for window, and at
 // most capacity of them, which is at least 1: a set that could hold none
 // would have nothing to evict when it is full.
@@ -84,17 +92,23 @@ func newPaymentReplaySet(window time.Duration, capacity int, now func() time.Tim
 // accepted within the window, or when another request is verifying it now.
 // Every true return must be followed by end.
 func (s *paymentReplaySet) begin(txid chainhash.Hash) bool {
+	return s.claim(txid) == replayClaimed
+}
+
+// claim distinguishes a payment already served from one another request is
+// still checking. Callers that take a claim must release it with end.
+func (s *paymentReplaySet) claim(txid chainhash.Hash) paymentReplayClaim {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expire()
 	if _, ok := s.accepted[txid]; ok {
-		return false
+		return replayAccepted
 	}
 	if _, ok := s.inFlight[txid]; ok {
-		return false
+		return replayInFlight
 	}
 	s.inFlight[txid] = struct{}{}
-	return true
+	return replayClaimed
 }
 
 // end releases begin's claim. An accepted payment's txid is remembered; a

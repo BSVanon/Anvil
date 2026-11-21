@@ -144,7 +144,8 @@ type PaymentGate struct {
 	// this map, its price overrides priceSats for that endpoint.
 	endpointPrices map[string]int
 
-	headerTip         func() uint32     // the node's header tip (checkPaymentDepth, payment_arc.go)
+	headerTip         func() uint32 // the node's header tip (checkPaymentDepth, payment_arc.go)
+	headersFresh      func(time.Time) bool
 	replays           *paymentReplaySet // accepted payments, on either path (payment_replay.go)
 	mu                sync.Mutex
 	pendingChallenges map[string]*pendingChallenge
@@ -172,6 +173,7 @@ type PaymentGateConfig struct {
 	MaxAppPriceSats  int
 	EndpointPrices   map[string]int // path → satoshis override
 	HeaderTip        func() uint32  // the node's header tip, nil if it has none
+	HeadersFresh     func(time.Time) bool
 
 	// mintBudget bounds the wallet mints of a NonceProvider that is not a
 	// UTXONoncePool; nil means the process-wide defaultMintBudget
@@ -215,6 +217,7 @@ func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 		maxAppPriceSats:   cfg.MaxAppPriceSats,
 		endpointPrices:    cfg.EndpointPrices,
 		headerTip:         cfg.HeaderTip,
+		headersFresh:      cfg.HeadersFresh,
 		replays:           newPaymentReplaySet(directPaymentReplayWindow, directPaymentReplayCapacity, time.Now),
 		pendingChallenges: make(map[string]*pendingChallenge),
 		maxPending:        maxPendingChallenges,
@@ -244,7 +247,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = pg.withNodePrice(r) // read per envelope (node_price_context.go)
 		topic := r.URL.Query().Get("topic")
-		payees, tokenGated := pg.resolvePayees(r)
+		payees, tokenGated, disabledFallback := pg.resolvePayees(r)
 		// Skip the toll only when THIS request's token gate already
 		// validated a token for this exact topic; payment.go sets no auth signal.
 		if tokenGated && appTokenTopicMatches(r, topic) {
@@ -257,14 +260,14 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if pg.takesBRC121(r) {
-			pg.serveBRC121(w, r, next, payees, tokenGated) // brc121.go
+			pg.serveBRC121(w, r, next, payees, tokenGated, disabledFallback) // brc121.go
 			return
 		}
 		proofHeader := r.Header.Get(HeaderX402Proof)
 		bsvPayment := r.Header.Get(HeaderBSVPayment)
 		if proofHeader == "" && bsvPayment == "" {
-			pg.offerBRC121(w, r, payees, tokenGated)
-			pg.issueChallengeForPayees(w, r, payees)
+			offer := pg.brc121Offer(r, payees, tokenGated, disabledFallback)
+			pg.issueChallengeForPayees(w, r, payees, offer)
 			return
 		}
 
@@ -299,7 +302,7 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 // issueChallengeForPayees builds and returns a 402 challenge. In order: the
 // footprint cap, the body read (payment_bodyread.go), the pending-challenge
 // cap (payment_pending.go) and the budget-bounded mint (payment_budget.go).
-func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Request, payees []Payee) {
+func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Request, payees []Payee, offerSats int) {
 	if n := challengeFootprint(r, payees); n > maxChallengeFootprint {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf(
 			"request too large for a payment challenge: method, host, path, query and payee scripts are %d bytes, the limit is %d",
@@ -367,6 +370,10 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 
 	go pg.cleanExpired()
 
+	if offerSats > 0 {
+		pg.brc121.setOffer(w, offerSats)
+		pg.brc121.counts.add(&pg.brc121.counts.offered)
+	}
 	w.Header().Set(HeaderX402Challenge, base64Url(challengeJSON))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusPaymentRequired)

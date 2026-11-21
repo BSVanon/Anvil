@@ -54,6 +54,14 @@ func TestBRC121OfferOnNodeOnlyChallengesOnly(t *testing.T) {
 			t.Fatalf("%s: a challenge with an app payee or a token gate must not offer BRC-121 (%d)", topic, w.Code)
 		}
 	}
+	srv.paymentGate.allowPassthrough, srv.paymentGate.allowSplit = false, false
+	for _, topic := range []string{"pass", "split"} {
+		w := getWithHeaders(srv, "/data?topic="+topic, nil)
+		if w.Code != http.StatusPaymentRequired || w.Header().Get(HeaderX402Challenge) == "" {
+			t.Fatalf("%s: disabling the app model must retain the node's x402 challenge", topic)
+		}
+		assertNoBRC121Offer(t, w)
+	}
 }
 
 // TestBRC121CORSAllowsItsHeaders: the node's CORS answer allows the five

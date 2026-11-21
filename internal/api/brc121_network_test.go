@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/spv"
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
 // journaled is how many payments f's journal keeps.
@@ -35,8 +34,7 @@ func TestBRC121ARCRefusalNotJournaled(t *testing.T) {
 	for _, a := range []struct {
 		status string
 		code   int
-	}{{"REJECTED", 0}, {"DOUBLE_SPEND_ATTEMPTED", 0}, {"SEEN_IN_ORPHAN_MEMPOOL", 0}, {"INVALID", 0}, {"MALFORMED", 0},
-		{"", 465}, {"", 462}} {
+	}{{"REJECTED", 0}, {"", 465}, {"", 462}} {
 		f := newBRC121Fix(t, 100)
 		f.arc.answer(a.status, a.code)
 		w := f.serve(brc121Path, "10.0.0.1:1", f.payment(t, 100, brc121Pay{}))
@@ -50,7 +48,7 @@ func TestBRC121ARCRefusalNotJournaled(t *testing.T) {
 }
 
 // TestBRC121ARCTimeoutJournaled: a payment ARC does not answer within the
-// submit bound is answered 402 and kept in the journal, unrecorded.
+// submit bound is answered 503 and kept in the journal, unrecorded.
 func TestBRC121ARCTimeoutJournaled(t *testing.T) {
 	shortSubmits(t, 100*time.Millisecond)
 	f := newBRC121Fix(t, 100)
@@ -60,23 +58,25 @@ func TestBRC121ARCTimeoutJournaled(t *testing.T) {
 	f.arc.hold = hold
 	f.arc.mu.Unlock()
 	w := f.serve(brc121Path, "10.0.0.1:1", f.payment(t, 100, brc121Pay{}))
-	if w.Code != http.StatusPaymentRequired || codeOf(t, w) != codeBRC121NotAccepted {
-		t.Fatalf("want 402 %s, got %d %s", codeBRC121NotAccepted, w.Code, w.Body.String())
+	if w.Code != http.StatusServiceUnavailable || codeOf(t, w) != codeBRC121PaymentKept {
+		t.Fatalf("want 503 %s, got %d %s", codeBRC121PaymentKept, w.Code, w.Body.String())
 	}
+	assertNoBRC121Offer(t, w)
 	if internalizes, _ := f.wallet.recorded(); internalizes != 0 || f.journaled() != 1 {
 		t.Fatalf("want the payment kept unrecorded, got %d internalizes and %d kept", internalizes, f.journaled())
 	}
 }
 
 // TestBRC121InternalizeErrorJournaled: a payment the network accepted but the
-// wallet failed to record is answered 402 and kept.
+// wallet failed to record is answered 503 and kept.
 func TestBRC121InternalizeErrorJournaled(t *testing.T) {
 	f := newBRC121Fix(t, 100)
 	f.wallet.internalizeErr = errors.New("storage unavailable")
 	w := f.serve(brc121Path, "10.0.0.1:1", f.payment(t, 100, brc121Pay{}))
-	if w.Code != http.StatusPaymentRequired || codeOf(t, w) != codeBRC121NotAccepted || f.journaled() != 1 {
-		t.Fatalf("want 402 %s and the payment kept, got %d %s and %d kept", codeBRC121NotAccepted, w.Code, w.Body.String(), f.journaled())
+	if w.Code != http.StatusServiceUnavailable || codeOf(t, w) != codeBRC121PaymentKept || f.journaled() != 1 {
+		t.Fatalf("want 503 %s and the payment kept, got %d %s and %d kept", codeBRC121PaymentKept, w.Code, w.Body.String(), f.journaled())
 	}
+	assertNoBRC121Offer(t, w)
 }
 
 // TestBRC121SubmitsBusy503: with every ARC submit slot taken, a payment is
@@ -92,9 +92,10 @@ func TestBRC121SubmitsBusy503(t *testing.T) {
 		}
 	}()
 	w := f.serve(brc121Path, "10.0.0.1:1", f.payment(t, 100, brc121Pay{}))
-	if w.Code != http.StatusServiceUnavailable || codeOf(t, w) != codeBRC121Busy || w.Header().Get("Retry-After") == "" {
-		t.Fatalf("want 503 %s with Retry-After, got %d %s", codeBRC121Busy, w.Code, w.Body.String())
+	if w.Code != http.StatusServiceUnavailable || codeOf(t, w) != codeBRC121PaymentKept || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("want 503 %s with Retry-After, got %d %s", codeBRC121PaymentKept, w.Code, w.Body.String())
 	}
+	assertNoBRC121Offer(t, w)
 	if f.arc.calls.Load() != 0 || f.journaled() != 1 {
 		t.Fatalf("want no ARC call and the payment kept, got %d calls and %d kept", f.arc.calls.Load(), f.journaled())
 	}
@@ -108,7 +109,7 @@ func TestBRC121NotOfferedOrTakenWithoutWalletOrARC(t *testing.T) {
 	hs := brc121HeaderStore(t, payer.source)
 	for _, noARC := range []bool{false, true} {
 		wallet := newFakeBRC121Wallet()
-		_, client := newBRC121ARC(t)
+		_, client := newBRC121Stub()
 		cfg := PaymentGateConfig{PriceSats: 100, PayeeScriptHex: testPayeeScript(t), NonceProvider: &DevNonceProvider{}, ARCClient: client}
 		if noARC {
 			cfg.ARCClient = nil
@@ -221,8 +222,8 @@ func TestBRC121ConcurrentIdenticalPaymentsServedOnce(t *testing.T) {
 	}
 }
 
-// TestBRC121ClientShare: a client with brc121ClientShare payments in
-// validation gets 503 for a fifth, while another client is served.
+// TestBRC121ClientShare: a fifth payment waits until one of the client's four
+// validations finishes, then is served.
 func TestBRC121ClientShare(t *testing.T) {
 	f := newBRC121Fix(t, 100)
 	f.wallet.blockSender = f.payer.identity.PubKey()
@@ -240,29 +241,15 @@ func TestBRC121ClientShare(t *testing.T) {
 	for i := 0; i < brc121ClientShare; i++ {
 		<-f.wallet.started
 	}
-	// The fifth is answered at once, or reaches the derivation, which only
-	// a client past its share would.
 	fifth := make(chan *httptest.ResponseRecorder, 1)
 	h5 := f.payment(t, 100, brc121Pay{})
 	go func() { fifth <- f.serve(brc121Path, "10.0.0.1:1", h5) }()
-	var w *httptest.ResponseRecorder
-	select {
-	case w = <-fifth:
-	case <-f.wallet.started:
-		close(f.wallet.release)
-		wg.Wait()
-		t.Fatal("a fifth payment from one client was taken into validation")
-	}
-	if w.Code != http.StatusServiceUnavailable || codeOf(t, w) != codeBRC121Busy || w.Header().Get("Retry-After") == "" {
-		t.Fatalf("a fifth payment from one client: want 503 %s with Retry-After, got %d %s", codeBRC121Busy, w.Code, w.Body.String())
-	}
-	other, _ := ec.NewPrivateKey()
-	b := &brc121Payer{identity: other, funding: f.payer.funding, source: f.payer.source, next: 40}
-	if w := f.serve(brc121Path, "10.0.0.2:2", b.pay(t, f.server(), 100, f.now, brc121Pay{})); w.Code != http.StatusOK {
-		t.Fatalf("another client: want 200, got %d %s", w.Code, w.Body.String())
-	}
+	waitForBRC121Shares(t, f.pg.brc121.shares, rateLimitKey("10.0.0.1"), 4, 1)
 	close(f.wallet.release)
 	wg.Wait()
+	if w := <-fifth; w.Code != http.StatusOK {
+		t.Fatalf("fifth payment: want 200 after a share frees, got %d %s", w.Code, w.Body.String())
+	}
 }
 
 // TestBRC121JournalSweepRecordsKeptPayment: a payment kept after an ARC
@@ -276,8 +263,8 @@ func TestBRC121JournalSweepRecordsKeptPayment(t *testing.T) {
 	n.arc.hold = hold
 	n.arc.mu.Unlock()
 	h := n.payer.pay(t, n.server, 100, time.Now(), brc121Pay{})
-	if w := n.serve(h); w.Code != http.StatusPaymentRequired {
-		t.Fatalf("want 402 on an ARC timeout, got %d %s", w.Code, w.Body.String())
+	if w := n.serve(h); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 on an ARC timeout, got %d %s", w.Code, w.Body.String())
 	}
 	p := &brc121Payment{}
 	if err := p.readBRC121BEEF(h[headerBRC121Beef], 100); err != nil {
@@ -314,7 +301,7 @@ func TestBRC121SweepDropsRefusedPayment(t *testing.T) {
 		t.Fatal("want the payment kept")
 	}
 	f.wallet.internalizeErr = nil
-	f.arc.answer("DOUBLE_SPEND_ATTEMPTED", 0)
+	f.arc.answer("REJECTED", 0)
 	f.now = f.now.Add(2 * time.Minute)
 	f.pg.sweepBRC121(context.Background())
 	if internalizes, held := f.wallet.recorded(); f.journaled() != 0 || held != 0 || internalizes != 1 {
@@ -350,7 +337,7 @@ func TestBRC121JournalSurvivesReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &brc121Entry{TxID: "ab", Vout: 1, Nonce: "AAECAwQFBgc=", Time: "1", Sender: "02aa", Satoshis: 100, BEEF: []byte{1, 2}, Kept: 7}
-	if err := j.add(e); err != nil {
+	if _, err := j.add(e); err != nil {
 		t.Fatal(err)
 	}
 	_ = j.close()
@@ -374,7 +361,11 @@ func TestBRC121JournalCap(t *testing.T) {
 		j.kept[string(rune(0x10000+i))] = f.now.Unix()
 	}
 	f.wallet.internalizeErr = errors.New("storage unavailable")
-	f.serve(brc121Path, "10.0.0.1:1", f.payment(t, 100, brc121Pay{}))
+	w := f.serve(brc121Path, "10.0.0.1:1", f.payment(t, 100, brc121Pay{}))
+	if w.Code != http.StatusServiceUnavailable || codeOf(t, w) != codeBRC121PaymentUnrecorded {
+		t.Fatalf("want 503 %s, got %d %s", codeBRC121PaymentUnrecorded, w.Code, w.Body.String())
+	}
+	assertNoBRC121Offer(t, w)
 	if f.journaled() != maxBRC121JournalEntries || f.pg.brc121.counts.full != 1 {
 		t.Fatalf("want entry %d refused and counted, got %d kept, %d refused", maxBRC121JournalEntries+1, f.journaled(), f.pg.brc121.counts.full)
 	}

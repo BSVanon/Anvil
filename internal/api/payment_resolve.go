@@ -52,9 +52,10 @@ func (r *TopicMonetizationResolver) Resolve(topic string) *envelope.Monetization
 // resolvePayees determines the payee list for a request based on the
 // topic's monetization metadata and the node's config.
 //
-// Returns the payee list and whether this is a token-gated topic (skip x402).
+// Returns the payee list, whether this is a token-gated topic (skip x402),
+// and whether the node payee is a fallback for a disabled app model.
 // An empty payee list with tokenGated=false means the request is free (pass through).
-func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGated bool) {
+func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGated, disabledFallback bool) {
 	// The node's payee, only when the node charges on this path; the same
 	// price and script the gate records for the per-envelope decision
 	// (nodePayee, node_price_context.go).
@@ -72,39 +73,39 @@ func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGate
 	topic := r.URL.Query().Get("topic")
 	if pg.resolver == nil || topic == "" || !isAppContentRoute(r) {
 		if nodePayee != nil {
-			return []Payee{*nodePayee}, false
+			return []Payee{*nodePayee}, false, false
 		}
-		return nil, false // node is free, no app monetization to check
+		return nil, false, false // node is free, no app monetization to check
 	}
 
 	mon := pg.resolver.Resolve(topic)
 	if mon == nil {
 		if nodePayee != nil {
-			return []Payee{*nodePayee}, false
+			return []Payee{*nodePayee}, false, false
 		}
-		return nil, false
+		return nil, false, false
 	}
 
 	switch mon.Model {
 	case envelope.MonetizationPassthrough:
 		if !pg.allowPassthrough {
 			if nodePayee != nil {
-				return []Payee{*nodePayee}, false
+				return []Payee{*nodePayee}, false, true
 			}
-			return nil, false
+			return nil, false, true
 		}
 		return []Payee{{
 			Role:             "content",
 			LockingScriptHex: mon.PayeeLockingScriptHex,
 			AmountSats:       capAppPrice(mon.PriceSats, pg.maxAppPriceSats),
-		}}, false
+		}}, false, false
 
 	case envelope.MonetizationSplit:
 		if !pg.allowSplit {
 			if nodePayee != nil {
-				return []Payee{*nodePayee}, false
+				return []Payee{*nodePayee}, false, true
 			}
-			return nil, false
+			return nil, false, true
 		}
 		appPayee := Payee{
 			Role:             "content",
@@ -112,9 +113,9 @@ func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGate
 			AmountSats:       capAppPrice(mon.PriceSats, pg.maxAppPriceSats),
 		}
 		if nodePayee != nil {
-			return []Payee{*nodePayee, appPayee}, false
+			return []Payee{*nodePayee, appPayee}, false, false
 		}
-		return []Payee{appPayee}, false
+		return []Payee{appPayee}, false, false
 
 	case envelope.MonetizationToken:
 		// tokenGated=true tells the caller (payment.go's Middleware) to
@@ -124,21 +125,21 @@ func (pg *PaymentGate) resolvePayees(r *http.Request) (payees []Payee, tokenGate
 		// validated token, a token-model topic owes the node's own price
 		// like any other topic.
 		if nodePayee != nil {
-			return []Payee{*nodePayee}, true
+			return []Payee{*nodePayee}, true, false
 		}
-		return nil, true
+		return nil, true, false
 
 	case envelope.MonetizationFree:
 		if nodePayee != nil {
-			return []Payee{*nodePayee}, false
+			return []Payee{*nodePayee}, false, false
 		}
-		return nil, false
+		return nil, false, false
 
 	default:
 		if nodePayee != nil {
-			return []Payee{*nodePayee}, false
+			return []Payee{*nodePayee}, false, false
 		}
-		return nil, false
+		return nil, false, false
 	}
 }
 

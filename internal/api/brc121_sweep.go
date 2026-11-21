@@ -39,7 +39,7 @@ func (pg *PaymentGate) runBRC121Sweep(b *brc121Gate) {
 // sweepBRC121 tries each journal entry at least brc121SweepMinAge old, oldest
 // first and one at a time: an entry past brc121JournalTTL is dropped and
 // counted, with only its txid logged; otherwise it is sent to ARC again,
-// through the same submit cap. Accepted or mined, it is recorded in the node
+// through the sweep's reserved submit slot. Accepted or mined, it is recorded in the node
 // wallet, which takes a transaction it already holds as a merge, and the
 // entry is deleted. Refused outright (arcRefusedOutright), the entry is
 // deleted. Anything else keeps it for the next sweep, and a full submit cap
@@ -57,7 +57,7 @@ func (pg *PaymentGate) sweepBRC121(ctx context.Context) {
 			continue
 		}
 		if now.Sub(time.Unix(e.Kept, 0)) > brc121JournalTTL {
-			b.journal.remove(txid)
+			b.drop(txid)
 			b.counts.add(&b.counts.dropped)
 			b.logger.Warn("BRC-121 journal entry expired unclaimed", "txid", txid)
 			continue
@@ -75,7 +75,7 @@ func (pg *PaymentGate) sweepEntry(ctx context.Context, e *brc121Entry) (busy boo
 	b := pg.brc121
 	p, err := e.payment()
 	if err != nil {
-		b.journal.remove(e.TxID)
+		b.drop(e.TxID)
 		b.counts.add(&b.counts.dropped)
 		b.logger.Error("BRC-121 journal entry unreadable, dropped", "txid", e.TxID, "error", err)
 		return false
@@ -85,20 +85,13 @@ func (pg *PaymentGate) sweepEntry(ctx context.Context, e *brc121Entry) (busy boo
 	}
 	recorded := false
 	defer func() { pg.replays.end(p.txid, recorded) }()
-	ef, err := p.tx.EF()
-	if err != nil {
-		return false
-	}
-	resp, err := submitDirectPayment(ctx, pg.arcClient, ef)
+	resp, err := b.submitPayment(ctx, pg.arcClient, p, true)
 	if errors.Is(err, errDirectPaymentSubmitsBusy) {
 		return true
 	}
-	if err == nil {
-		err = checkARCAcceptance(resp)
-	}
 	if err != nil {
 		if arcRefusedOutright(resp, err) {
-			b.journal.remove(e.TxID)
+			b.drop(e.TxID)
 			b.counts.add(&b.counts.dropped)
 			b.logger.Info("BRC-121 kept payment refused by the network, dropped", "txid", e.TxID)
 		}
@@ -111,7 +104,7 @@ func (pg *PaymentGate) sweepEntry(ctx context.Context, e *brc121Entry) (busy boo
 		return false
 	}
 	recorded = true
-	b.journal.remove(e.TxID)
+	b.drop(e.TxID)
 	b.counts.add(&b.counts.claimed)
 	return false
 }

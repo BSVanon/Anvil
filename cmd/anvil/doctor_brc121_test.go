@@ -17,7 +17,8 @@ func TestDoctorBRC121(t *testing.T) {
 		{"journal full", `{"brc121":{"offered":true,"journal":{"entries":4096,"cap":4096,"oldest_age_secs":120}}}`, "tok", 1},
 		{"journal under its cap", `{"brc121":{"offered":true,"journal":{"entries":3,"cap":4096,"oldest_age_secs":120}}}`, "tok", 0},
 		{"not offered", `{"brc121":{"offered":false,"reason":"no ARC client"}}`, "tok", 0},
-		{"an older node", `{}`, "tok", 0},
+		{"failed stats read", `{}`, "tok", 1},
+		{"setup failure", `{"brc121":{"offered":false,"reason":"open journal: permission denied"}}`, "tok", 1},
 		{"no token", `{}`, "", 0},
 	}
 	for _, tc := range cases {

@@ -88,6 +88,10 @@ func TestBRC121RefusalsBeforeARC(t *testing.T) {
 		{"a BEEF that is not base64", codeBRC121Malformed, func(f *brc121Fix) map[string]string {
 			return withHeader(f.payment(t, 100, brc121Pay{}), headerBRC121Beef, "not base64!")
 		}},
+		{"a BEEF that is not canonical base64", codeBRC121Malformed, func(f *brc121Fix) map[string]string {
+			h := f.payment(t, 100, brc121Pay{})
+			return withHeader(h, headerBRC121Beef, h[headerBRC121Beef][:4]+"\n"+h[headerBRC121Beef][4:])
+		}},
 		{"a sender key that is not canonical", codeBRC121Malformed, func(f *brc121Fix) map[string]string {
 			h := f.payment(t, 100, brc121Pay{})
 			return withHeader(h, headerBRC121Sender, "04"+h[headerBRC121Sender][2:])

@@ -86,18 +86,18 @@ func openBRC121Journal(dir string) (*brc121Journal, error) {
 func (j *brc121Journal) close() error { return j.db.Close() }
 
 // add keeps e. A txid already kept is kept once, at its first time.
-func (j *brc121Journal) add(e *brc121Entry) error {
+func (j *brc121Journal) add(e *brc121Entry) (bool, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if _, ok := j.kept[e.TxID]; ok {
-		return nil
+		return false, nil
 	}
 	if len(j.kept) >= maxBRC121JournalEntries {
-		return errBRC121JournalFull
+		return false, errBRC121JournalFull
 	}
 	v, err := json.Marshal(e)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var at [8]byte
 	binary.BigEndian.PutUint64(at[:], uint64(e.Kept))
@@ -105,10 +105,10 @@ func (j *brc121Journal) add(e *brc121Entry) error {
 	batch.Put(append(append([]byte{}, brc121EntryPrefix...), e.TxID...), v)
 	batch.Put(append(append([]byte{}, brc121KeptPrefix...), e.TxID...), at[:])
 	if err := j.db.Write(batch, brc121Sync); err != nil {
-		return err
+		return false, err
 	}
 	j.kept[e.TxID] = e.Kept
-	return nil
+	return true, nil
 }
 
 // get loads the entry kept for txid.
@@ -125,18 +125,20 @@ func (j *brc121Journal) get(txid string) (*brc121Entry, error) {
 }
 
 // remove drops txid's entry, if one is kept.
-func (j *brc121Journal) remove(txid string) {
+func (j *brc121Journal) remove(txid string) bool {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if _, ok := j.kept[txid]; !ok {
-		return
+		return false
 	}
 	batch := new(leveldb.Batch)
 	batch.Delete(append(append([]byte{}, brc121EntryPrefix...), txid...))
 	batch.Delete(append(append([]byte{}, brc121KeptPrefix...), txid...))
 	if err := j.db.Write(batch, brc121Sync); err == nil {
 		delete(j.kept, txid)
+		return true
 	}
+	return false
 }
 
 // has reports whether txid is kept.
@@ -184,19 +186,38 @@ func (j *brc121Journal) due(cutoff time.Time) []string {
 
 // keep records p in the journal. A full journal refuses it: that is counted,
 // and logged at most once a minute.
-func (b *brc121Gate) keep(p *brc121Payment) {
-	err := b.journal.add(&brc121Entry{
+func (b *brc121Gate) keep(p *brc121Payment) error {
+	if b.journal.has(p.txid.String()) {
+		return nil
+	}
+	if err := b.live.reserve(p.client); err != nil {
+		return err
+	}
+	added, err := b.journal.add(&brc121Entry{
 		TxID: p.txid.String(), Vout: p.vout, Nonce: p.nonce, Time: p.time,
 		Sender: p.sender.ToDERHex(), Satoshis: p.sats, BEEF: p.atomic, Kept: b.now().Unix(),
 	})
+	if !added {
+		b.live.cancel(p.client)
+	}
 	switch {
 	case err == nil:
-		b.counts.add(&b.counts.journaled)
+		if added {
+			b.live.bind(p.txid.String(), p.client)
+			b.counts.add(&b.counts.journaled)
+		}
 	case errors.Is(err, errBRC121JournalFull):
 		b.counts.add(&b.counts.full)
 		b.logFullOnce()
 	default:
 		b.logger.Error("BRC-121 journal write failed", "txid", p.txid.String(), "error", err)
+	}
+	return err
+}
+
+func (b *brc121Gate) drop(txid string) {
+	if b.journal.remove(txid) {
+		b.live.release(txid)
 	}
 }
 

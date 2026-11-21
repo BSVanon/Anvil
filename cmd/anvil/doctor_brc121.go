@@ -18,11 +18,15 @@ func doctorBRC121(apiURL, token string) int {
 	stats := httpGetAuth(apiURL+"/stats", token)
 	b, _ := stats["brc121"].(map[string]interface{})
 	if b == nil {
-		warn("BRC-121: /stats did not report it (a node older than this one)")
-		return 0
+		fail("BRC-121: failed to read its state from /stats")
+		return 1
 	}
 	if offered, _ := b["offered"].(bool); !offered {
 		reason, _ := b["reason"].(string)
+		if reason != "no node wallet" && reason != "no ARC client" && reason != "no SPV validator or data directory" && reason != "the node takes no payment" {
+			fail("BRC-121: setup failed (%s)", reason)
+			return 1
+		}
 		pass("BRC-121: not offered (%s)", reason)
 		return 0
 	}

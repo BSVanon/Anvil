@@ -1,6 +1,12 @@
 package api
 
-import "net/http"
+import (
+	"bytes"
+	"net/http"
+	"time"
+
+	"github.com/libsv/go-p2p/wire"
+)
 
 // newServerPaymentGate builds the server's payment gate from its config. The
 // header store's tip backs the depth check on direct payments
@@ -14,6 +20,20 @@ func newServerPaymentGate(cfg ServerConfig, resolver *TopicMonetizationResolver)
 	if cfg.HeaderStore != nil {
 		tip = cfg.HeaderStore.Tip
 	}
+	var fresh func(time.Time) bool
+	if cfg.HeaderStore != nil && cfg.HeaderStaleAfterSecs > 0 {
+		fresh = func(now time.Time) bool {
+			raw, err := cfg.HeaderStore.HeaderAtHeight(cfg.HeaderStore.Tip())
+			if err != nil {
+				return false
+			}
+			var h wire.BlockHeader
+			if err := h.Deserialize(bytes.NewReader(raw)); err != nil {
+				return false
+			}
+			return now.Unix()-h.Timestamp.Unix() <= int64(cfg.HeaderStaleAfterSecs)
+		}
+	}
 	pg := NewPaymentGate(PaymentGateConfig{
 		PriceSats:        cfg.PaymentSatoshis,
 		PayeeScriptHex:   cfg.PayeeScriptHex,
@@ -26,6 +46,7 @@ func newServerPaymentGate(cfg ServerConfig, resolver *TopicMonetizationResolver)
 		MaxAppPriceSats:  cfg.MaxAppPriceSats,
 		EndpointPrices:   cfg.EndpointPrices,
 		HeaderTip:        tip,
+		HeadersFresh:     fresh,
 	})
 	if pg != nil { // nil when the node takes no payment
 		pg.clientKey = func(r *http.Request) string {

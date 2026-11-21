@@ -39,7 +39,7 @@ func newRealBRC121Node(t *testing.T) *realBRC121Node {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ps.Close() })
-	arc, client := newBRC121ARC(t)
+	arc, client := newBRC121Stub()
 	broadcaster := txrelay.NewBroadcaster(txrelay.NewMempool(), client, slog.Default())
 	key, _ := ec.NewPrivateKey()
 	nw, err := anvilwallet.New(key.Wif(), t.TempDir(), hs, ps, broadcaster, client, slog.Default())
@@ -51,6 +51,9 @@ func newRealBRC121Node(t *testing.T) *realBRC121Node {
 		NonceProvider: &DevNonceProvider{}, ARCClient: client, HeaderTip: hs.Tip})
 	if err := pg.enableBRC121(nw.Wallet(), spv.NewValidator(hs), t.TempDir(), slog.Default()); err != nil {
 		t.Fatal(err)
+	}
+	pg.brc121.submit = func(ctx context.Context, p *brc121Payment, sweep bool) (*txrelay.ARCResponse, error) {
+		return submitBRC121With(ctx, p, sweep, arc.send)
 	}
 	t.Cleanup(pg.closeBRC121)
 	server, err := ec.PublicKeyFromString(pg.brc121.server)
@@ -88,8 +91,8 @@ func (n *realBRC121Node) spendable(t *testing.T, txid string) []sdk.Output {
 
 // TestBRC121RealWalletRecordsSpendablePayment: with the node's own wallet, a
 // BRC-121 payment is recorded and listed in the change basket as spendable,
-// its transaction leaves "sending" once the wallet's background broadcast
-// reaches ARC, and the wallet then spends it: it signs a transaction taking
+// its transaction reaches "broadcasted" once the wallet's background broadcast
+// admits it locally and announces it to the mesh, and the wallet then spends it: it signs a transaction taking
 // that output as its input, which go-sdk's interpreter verifies.
 func TestBRC121RealWalletRecordsSpendablePayment(t *testing.T) {
 	n := newRealBRC121Node(t)
@@ -108,8 +111,8 @@ func TestBRC121RealWalletRecordsSpendablePayment(t *testing.T) {
 		t.Fatalf("want the 100-sat output listed spendable in the change basket, got %+v", outs)
 	}
 
-	// The wallet's background broadcaster (internalize.go:452-457) takes the
-	// transaction out of "sending" once ARC answers it.
+	// The wallet's background broadcaster takes the transaction to BroadcastRaw,
+	// which admits it to the local mempool and announces it to mesh peers.
 	deadline := time.Now().Add(10 * time.Second)
 	status := ""
 	for time.Now().Before(deadline) {
@@ -119,15 +122,15 @@ func TestBRC121RealWalletRecordsSpendablePayment(t *testing.T) {
 		}
 		if len(res.Transactions) == 1 {
 			status = string(res.Transactions[0].Status)
-			if status != "sending" {
+			if status == "broadcasted" {
 				break
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Logf("payment status after the background broadcast: %q", status)
-	if status == "" || status == "sending" || status == "failed" {
-		t.Fatalf("the payment never left sending: %q", status)
+	if status != "broadcasted" {
+		t.Fatalf("the payment status did not reach broadcasted: %q", status)
 	}
 
 	// Spend it: the wallet funds a 50-sat output from its change basket,

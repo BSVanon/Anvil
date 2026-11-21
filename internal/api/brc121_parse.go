@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/beefnorm"
+	"github.com/BSVanon/Anvil/internal/beefscan"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
@@ -49,6 +50,7 @@ type brc121Payment struct {
 	txid   chainhash.Hash
 	atomic []byte // the subject and its kept ancestry, as an Atomic BEEF
 	sats   uint64 // what output vout pays
+	client [32]byte
 }
 
 func refuseMalformed(format string, a ...interface{}) error {
@@ -73,6 +75,9 @@ func readBRC121Headers(h http.Header, now time.Time) (*brc121Payment, string, er
 	if err := checkPaymentHeaderSize(headerBRC121Beef, beef); err != nil {
 		return nil, "", refuseMalformed("%v", err)
 	}
+	if !canonicalBase64(beef) {
+		return nil, "", refuseMalformed("%s is not canonical base64", headerBRC121Beef)
+	}
 	key, err := compressedKey(sender)
 	if !brc121CompressedRe.MatchString(sender) || err != nil || key.ToDERHex() != strings.ToLower(sender) {
 		return nil, "", refuseMalformed("%s is not a compressed public key", headerBRC121Sender)
@@ -80,20 +85,27 @@ func readBRC121Headers(h http.Header, now time.Time) (*brc121Payment, string, er
 	if !canonicalBase64(nonce) {
 		return nil, "", refuseMalformed("%s is not canonical base64", headerBRC121Nonce)
 	}
-	millis, ok := unsignedSafe(ts)
-	if !ok {
-		return nil, "", refuseMalformed("%s is not a millisecond timestamp", headerBRC121Time)
-	}
-	// In whole milliseconds, as the reference middleware compares them.
-	if d := time.Duration(now.UnixMilli()-int64(millis)) * time.Millisecond; d > brc121Window || d < -brc121Window {
-		return nil, "", brc121Refuse(codeBRC121Stale, fmt.Sprintf("%s is %s from this node's clock; the most BRC-121 allows is %s",
-			headerBRC121Time, d, brc121Window))
+	if err := checkBRC121Time(ts, now); err != nil {
+		return nil, "", err
 	}
 	index, ok := unsignedSafe(vout)
 	if !ok || index > 1<<32-1 {
 		return nil, "", refuseMalformed("%s is not an output index", headerBRC121Vout)
 	}
 	return &brc121Payment{sender: key, nonce: nonce, time: ts, vout: uint32(index)}, beef, nil
+}
+
+func checkBRC121Time(ts string, now time.Time) error {
+	millis, ok := unsignedSafe(ts)
+	if !ok {
+		return refuseMalformed("%s is not a millisecond timestamp", headerBRC121Time)
+	}
+	// In whole milliseconds, as the reference middleware compares them.
+	if d := time.Duration(now.UnixMilli()-int64(millis)) * time.Millisecond; d > brc121Window || d < -brc121Window {
+		return brc121Refuse(codeBRC121Stale, fmt.Sprintf("%s is %s from this node's clock; the most BRC-121 allows is %s",
+			headerBRC121Time, d, brc121Window))
+	}
+	return nil
 }
 
 // canonicalBase64 is the reference middleware's isCanonicalBase64
@@ -130,6 +142,9 @@ func (p *brc121Payment) readBRC121BEEF(beef string, price int) error {
 	n, err := parseBRC121BEEF(raw)
 	if err != nil {
 		return brc121Refuse(codeBRC121BadBEEF, fmt.Sprintf("%s is not a BEEF this node reads: %v", headerBRC121Beef, err))
+	}
+	if used := beefscan.Consumed(raw); used != len(raw) {
+		return brc121Refuse(codeBRC121BadBEEF, fmt.Sprintf("%s has %d trailing bytes", headerBRC121Beef, len(raw)-used))
 	}
 	if n.Format != transaction.ATOMIC_BEEF {
 		return brc121Refuse(codeBRC121BadBEEF, headerBRC121Beef+" must be an Atomic BEEF (BRC-95)")

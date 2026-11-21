@@ -37,7 +37,7 @@ const brc121RecordTimeout = 30 * time.Second
 // is shown to pay this node's own derivation. A payment that passes the
 // checks but is not recorded is kept in the journal (brc121_journal.go)
 // unless ARC refused it outright: its payer has already broadcast it.
-func (pg *PaymentGate) acceptBRC121(ctx context.Context, h http.Header, price int) (*X402Receipt, error) {
+func (pg *PaymentGate) acceptBRC121(ctx context.Context, h http.Header, price int, client [32]byte) (*X402Receipt, error) {
 	b := pg.brc121
 	p, beef, err := readBRC121Headers(h, b.now())
 	if err != nil {
@@ -55,34 +55,53 @@ func (pg *PaymentGate) acceptBRC121(ctx context.Context, h http.Header, price in
 	if err := b.verifyProofs(ctx, p.atomic); err != nil {
 		return nil, err
 	}
+	p.client = client
 
 	// One transaction pays for one request, on every payment path
 	// (payment_replay.go); the claim is kept only for a recorded payment.
-	if !pg.replays.begin(p.txid) {
+	switch pg.replays.claim(p.txid) {
+	case replayAccepted:
 		return nil, brc121Refuse(codeBRC121Replayed, errPaymentReplayed(p.txid.String()).Error())
+	case replayInFlight:
+		if err := b.keep(p); err != nil {
+			return nil, errBRC121Unrecorded(p.txid.String(), err.Error())
+		}
+		return nil, errBRC121Kept(p.txid.String(), "another request is still checking it")
 	}
 	recorded := false
 	defer func() { pg.replays.end(p.txid, recorded) }()
+	if err := b.keep(p); err != nil {
+		return nil, errBRC121Unrecorded(p.txid.String(), err.Error())
+	}
 	held, err := b.walletHolds(ctx, p.txid.String())
 	if err != nil {
-		b.keep(p)
-		return nil, errBRC121Wallet(fmt.Sprintf("the node wallet could not read its records: %v", err))
+		return nil, errBRC121Kept(p.txid.String(), fmt.Sprintf("the node wallet could not read its records: %v", err))
 	}
 	if held {
+		b.drop(p.txid.String())
 		return nil, brc121Refuse(codeBRC121Replayed, fmt.Sprintf("payment %s is already in the node wallet", p.txid))
 	}
 
-	if err := pg.brc121Network(ctx, p); err != nil {
-		return nil, err
+	final, err := pg.brc121Network(ctx, p)
+	if err != nil {
+		if final {
+			b.drop(p.txid.String())
+			return nil, brc121Refuse(codeBRC121NotAccepted, fmt.Sprintf("the network refused payment %s: %v", p.txid, err))
+		}
+		return nil, errBRC121Kept(p.txid.String(), fmt.Sprintf("the network outcome is not final: %v", err))
+	}
+	if b.beforeRecord != nil {
+		if err := b.beforeRecord(); err != nil {
+			return nil, errBRC121Kept(p.txid.String(), err.Error())
+		}
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), brc121RecordTimeout)
 	defer cancel()
 	if err := b.record(rctx, p); err != nil {
-		b.keep(p)
-		return nil, brc121Refuse(codeBRC121NotAccepted, fmt.Sprintf("the node wallet did not record payment %s: %v; the node keeps it and records it later", p.txid, err))
+		return nil, errBRC121Kept(p.txid.String(), fmt.Sprintf("the node wallet did not record it: %v", err))
 	}
 	recorded = true
-	b.journal.remove(p.txid.String())
+	b.drop(p.txid.String())
 	return &X402Receipt{
 		TxID:         p.txid.String(),
 		Satoshis:     int(p.sats),
@@ -127,36 +146,21 @@ func (b *brc121Gate) walletHolds(ctx context.Context, txid string) (bool, error)
 
 // brc121Network sends p to ARC in Extended Format (BRC-30), the format the
 // X-Bsv-Payment path submits, built from the BEEF's source transactions,
-// through the same submit cap and time bound (submitDirectPayment). It
-// returns nil once ARC reports the payment accepted and within the node's
-// depth bound (checkARCAcceptance, checkPaymentDepth). A payment ARC did not
-// accept is kept for the sweep unless ARC refused it outright
-// (arcRefusedOutright).
-func (pg *PaymentGate) brc121Network(ctx context.Context, p *brc121Payment) error {
-	b := pg.brc121
-	ef, err := p.tx.EF()
-	if err != nil {
-		return brc121Refuse(codeBRC121BadBEEF, fmt.Sprintf("build the payment's extended format: %v", err))
-	}
-	resp, err := submitDirectPayment(ctx, pg.arcClient, ef)
+// with its unconfirmed ancestors through one submit cap and time bound. The
+// boolean reports a conclusive refusal; every other error leaves the payment
+// for the sweep.
+func (pg *PaymentGate) brc121Network(ctx context.Context, p *brc121Payment) (bool, error) {
+	resp, err := pg.brc121.submitPayment(ctx, pg.arcClient, p, false)
 	if errors.Is(err, errDirectPaymentSubmitsBusy) {
-		b.keep(p)
-		return errBRC121SubmitsBusy
-	}
-	if err == nil {
-		err = checkARCAcceptance(resp)
+		return false, errBRC121SubmitsBusy
 	}
 	if err != nil {
-		if !arcRefusedOutright(resp, err) {
-			b.keep(p)
-		}
-		return brc121Refuse(codeBRC121NotAccepted, fmt.Sprintf("the network did not accept payment %s: %v", p.txid, err))
+		return arcRefusedOutright(resp, err), err
 	}
 	if err := pg.checkPaymentDepth(resp); err != nil {
-		b.keep(p)
-		return brc121Refuse(codeBRC121NotAccepted, err.Error())
+		return false, err
 	}
-	return nil
+	return false, nil
 }
 
 // record internalizes p in the node wallet as a wallet payment (BRC-121
@@ -199,11 +203,8 @@ func (b *brc121Gate) record(ctx context.Context, p *brc121Payment) error {
 // still on its way, an error about the request rather than the
 // transaction) may still end with the payment accepted, so it is kept.
 //
-// The statuses are the ones go-sdk's ARC broadcaster treats as failures
-// (transaction/broadcaster/arc.go:190-196, with any ORPHAN status at
-// 218-225), less MINED_IN_STALE_BLOCK, whose transaction is mined again. The
-// toolbox's problematic statuses (services/internal/arc/tx_status.go:42-44)
-// add UNKNOWN, which is kept: it says nothing about the transaction.
+// REJECTED is ARC's documented final transaction status. Orphan, double-spend
+// attempt, unknown and stale-block statuses remain eligible to transition.
 // The HTTP statuses are ARC's codes for an invalid transaction
 // (pkg/api/status.go:14-31 and 53-120): unlocking scripts (461), inputs
 // missing or spent (462), malformed (463), outputs (464), fee too low (465),
@@ -212,7 +213,7 @@ func (b *brc121Gate) record(ctx context.Context, p *brc121Payment) error {
 // and 475 (mined ancestors without a BUMP) are about the form the node sent,
 // and are retried.
 var (
-	arcRefusedStatuses = map[string]bool{"REJECTED": true, "DOUBLE_SPEND_ATTEMPTED": true, "SEEN_IN_ORPHAN_MEMPOOL": true, "INVALID": true, "MALFORMED": true}
+	arcRefusedStatuses = map[string]bool{"REJECTED": true}
 	arcRefusedHTTP     = map[int]bool{461: true, 462: true, 463: true, 464: true, 465: true, 466: true, 471: true, 472: true, 473: true, 474: true}
 )
 

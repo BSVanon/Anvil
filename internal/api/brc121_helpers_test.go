@@ -43,6 +43,7 @@ type fakeBRC121Wallet struct {
 	internalizes   int
 	merges         int
 	internalizeErr error
+	listErr        error
 	blockSender    *ec.PublicKey // derivations for this sender wait on release
 	started        chan struct{}
 	release        chan struct{}
@@ -109,6 +110,9 @@ func (f *fakeBRC121Wallet) InternalizeAction(_ context.Context, args sdk.Interna
 func (f *fakeBRC121Wallet) ListTransactions(_ context.Context, args wdk.ListTransactionsArgs, _ string) (*wdk.ListTransactionsResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	res := &wdk.ListTransactionsResult{}
 	for _, id := range args.TxIDs {
 		if f.held[id] {
@@ -133,32 +137,7 @@ type brc121ARC struct {
 	status   string
 	httpCode int
 	hold     chan struct{}
-}
-
-func newBRC121ARC(t *testing.T) (*brc121ARC, *txrelay.ARCClient) {
-	t.Helper()
-	a := &brc121ARC{status: "SEEN_ON_NETWORK"}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		a.calls.Add(1)
-		a.mu.Lock()
-		status, code, hold := a.status, a.httpCode, a.hold
-		a.mu.Unlock()
-		if hold != nil {
-			select {
-			case <-hold:
-			case <-r.Context().Done():
-				return
-			}
-		}
-		if code != 0 {
-			w.WriteHeader(code)
-			_, _ = w.Write([]byte(`{"title":"refused"}`))
-			return
-		}
-		_ = json.NewEncoder(w).Encode(txrelay.ARCResponse{TxID: "mock", Status: status})
-	}))
-	t.Cleanup(srv.Close)
-	return a, txrelay.NewARCClient(srv.URL, "")
+	bodies   [][]byte
 }
 
 func (a *brc121ARC) answer(status string, httpCode int) {
@@ -312,7 +291,7 @@ func newBRC121Fix(t *testing.T, price int) *brc121Fix {
 	t.Helper()
 	payer := newBRC121Payer()
 	hs := brc121HeaderStore(t, payer.source)
-	arc, client := newBRC121ARC(t)
+	arc, client := newBRC121Stub()
 	pg := NewPaymentGate(PaymentGateConfig{PriceSats: price, PayeeScriptHex: testPayeeScript(t),
 		NonceProvider: &DevNonceProvider{}, ARCClient: client, HeaderTip: hs.Tip})
 	f := &brc121Fix{pg: pg, wallet: newFakeBRC121Wallet(), arc: arc, payer: payer, now: time.Now(), dir: t.TempDir()}
@@ -321,6 +300,9 @@ func newBRC121Fix(t *testing.T, price int) *brc121Fix {
 	}
 	t.Cleanup(pg.closeBRC121)
 	pg.brc121.now = func() time.Time { return f.now }
+	pg.brc121.submit = func(ctx context.Context, p *brc121Payment, sweep bool) (*txrelay.ARCResponse, error) {
+		return submitBRC121With(ctx, p, sweep, arc.send)
+	}
 	return f
 }
 
@@ -360,6 +342,13 @@ func codeOf(t *testing.T, w *httptest.ResponseRecorder) string {
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
 	return body.Code
+}
+
+func assertNoBRC121Offer(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if w.Header().Get(headerBRC121Sats) != "" || w.Header().Get(headerBRC121Server) != "" {
+		t.Fatalf("unexpected BRC-121 offer on %d: %v", w.Code, w.Header())
+	}
 }
 
 func withHeader(h map[string]string, k, v string) map[string]string {

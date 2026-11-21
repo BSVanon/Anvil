@@ -258,7 +258,7 @@ func TestPaymentGate_OversizedChallengeMintsNothing(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	pg.issueChallengeForPayees(w, httptest.NewRequest(http.MethodGet, "/data?topic=x", nil),
-		[]Payee{{Role: "content", LockingScriptHex: strings.Repeat("6a", maxChallengeFootprint/2), AmountSats: 1}})
+		[]Payee{{Role: "content", LockingScriptHex: strings.Repeat("6a", maxChallengeFootprint/2), AmountSats: 1}}, 0)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("long payee script: got %d, want 400", w.Code)
 	}

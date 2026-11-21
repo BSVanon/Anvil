@@ -106,39 +106,40 @@ type HealthCheck struct {
 
 // ServerConfig holds all parameters for NewServer.
 type ServerConfig struct {
-	HeaderStore         headerStore
-	ProofStore          *spv.ProofStore
-	EnvelopeStore       *envelope.Store
-	OverlayDir          *overlay.Directory
-	Validator           *spv.Validator
-	Broadcaster         *txrelay.Broadcaster
-	GossipMgr           *gossip.Manager
-	AuthToken           string
-	RateLimit           int
-	TrustProxy          bool
-	TrustProxyHops      int
-	MessageboxRateLimit int
-	MessageboxRateBurst int
-	PaymentSatoshis     int
-	PayeeScriptHex      string
-	NonceProvider       NonceProvider
-	AllowPassthrough    bool
-	AllowSplit          bool
-	AllowTokenGating    bool
-	MaxAppPriceSats     int
-	EndpointPrices      map[string]int // per-endpoint price overrides
-	ARCClient           *txrelay.ARCClient
-	RequireMempool      bool
-	Logger              *slog.Logger
-	NodeName            string
-	IdentityPub         string
-	BondChecker         *bond.Checker
-	P2PTxSource         content.TxSource
-	P2PBlockSource      content.BlockTxSource
-	HeaderLookup        func(int) string
-	ExplorerOrigin      string // fallback content_origin for /explorer when catalog is empty
-	PublicURL           string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
-	HeaderSyncStatus    func() headers.SyncStats
+	HeaderStore          headerStore
+	ProofStore           *spv.ProofStore
+	EnvelopeStore        *envelope.Store
+	OverlayDir           *overlay.Directory
+	Validator            *spv.Validator
+	Broadcaster          *txrelay.Broadcaster
+	GossipMgr            *gossip.Manager
+	AuthToken            string
+	RateLimit            int
+	TrustProxy           bool
+	TrustProxyHops       int
+	MessageboxRateLimit  int
+	MessageboxRateBurst  int
+	PaymentSatoshis      int
+	PayeeScriptHex       string
+	NonceProvider        NonceProvider
+	AllowPassthrough     bool
+	AllowSplit           bool
+	AllowTokenGating     bool
+	MaxAppPriceSats      int
+	EndpointPrices       map[string]int // per-endpoint price overrides
+	ARCClient            *txrelay.ARCClient
+	RequireMempool       bool
+	HeaderStaleAfterSecs int
+	Logger               *slog.Logger
+	NodeName             string
+	IdentityPub          string
+	BondChecker          *bond.Checker
+	P2PTxSource          content.TxSource
+	P2PBlockSource       content.BlockTxSource
+	HeaderLookup         func(int) string
+	ExplorerOrigin       string // fallback content_origin for /explorer when catalog is empty
+	PublicURL            string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
+	HeaderSyncStatus     func() headers.SyncStats
 	// ServiceHealthFn returns this node's own service-process health as
 	// "healthy" | "degraded" | "broken" | "" (unknown). Wired from main.go
 	// using the diagnostics package. Used to surface service_health on
@@ -158,9 +159,8 @@ type ServerConfig struct {
 	// keeps the legacy operator-token gate.
 	Wallet  sdk.Interface
 	DataDir string // the node's data_dir; holds the BRC-121 payment journal
-	// CustomCapabilities are operator-declared capability entries merged into
-	// the /.well-known/anvil manifest. Lets an operator advertise AVOS oracle
-	// availability, custom data relays, etc., without Anvil code changes.
+	// CustomCapabilities are operator entries merged into the manifest.
+	// They allow custom capability declarations without code changes.
 	CustomCapabilities []map[string]interface{}
 }
 
