@@ -53,6 +53,18 @@ func TestHostPolicy_UnknownHostRefusedWithoutACMECall(t *testing.T) {
 	}
 }
 
+// TestHostPolicy_RefusesLoopbackHost exercises newHostPolicy's own
+// returned function directly, against every shape it defends against —
+// including "localhost" and "::1", neither of which actually reaches
+// this function via the real autocert.Manager.GetCertificate path at
+// all: that entry point refuses any server name with no dot in it
+// before HostPolicy ever runs (autocert.go:255-256 at v0.59.0), and
+// both of those have none. Exercising newHostPolicy directly for them
+// is still correct — defense in depth, right if HostPolicy is ever
+// reached some other way, or if that upstream pre-check ever changes —
+// while TestNewACMEManager_RefusesLoopbackAndIPLiteralWithoutACMECall
+// (below) proves the dotted cases ("127.0.0.1", "127.5.5.5") really do
+// reach this refusal through the real, wired-up Manager.
 func TestHostPolicy_RefusesLoopbackHost(t *testing.T) {
 	fake := &fakeTXTLookup{records: []string{"ordfs=" + testOutpoint(62, 0)}}
 	p, _, _ := newTestPolicy(t, "domain allowed.example.org\n", fake)
@@ -67,6 +79,13 @@ func TestHostPolicy_RefusesLoopbackHost(t *testing.T) {
 	}
 }
 
+// TestHostPolicy_RefusesIPLiteral is RefusesLoopbackHost's counterpart
+// for non-loopback IP literals, with the same caveat: "2001:db8::1" has
+// no dot and never reaches this function via the real GetCertificate
+// path either, for the reason given in RefusesLoopbackHost's doc
+// comment. "93.184.216.34" is also covered, through the real Manager,
+// by TestNewACMEManager_RefusesLoopbackAndIPLiteralWithoutACMECall
+// below.
 func TestHostPolicy_RefusesIPLiteral(t *testing.T) {
 	fake := &fakeTXTLookup{records: []string{"ordfs=" + testOutpoint(63, 0)}}
 	p, _, _ := newTestPolicy(t, "domain allowed.example.org\n", fake)
@@ -78,6 +97,52 @@ func TestHostPolicy_RefusesIPLiteral(t *testing.T) {
 		} else if !errors.Is(err, errHostNotAllowed) {
 			t.Errorf("host %q: error = %v, want errHostNotAllowed", host, err)
 		}
+	}
+}
+
+// TestNewACMEManager_RefusesLoopbackAndIPLiteralWithoutACMECall is the
+// integration-level test: loopback and IP-literal hosts refused through
+// the real autocert.Manager.GetCertificate, with a real
+// tls.ClientHelloInfo — not just through newHostPolicy's own returned
+// function in isolation, above — the same proof
+// TestNewACMEManager_RefusesUnallowedHostWithoutACMECall already gives
+// an unknown host, extended to these two refusal reasons.
+//
+// Only hosts containing a dot are usable here: autocert's own
+// GetCertificate refuses anything else — "localhost", "::1",
+// "2001:db8::1" — for an unrelated reason, before HostPolicy ever runs
+// (see RefusesLoopbackHost's doc comment above), so asserting
+// errHostNotAllowed for those specific inputs through this path would
+// be testing the wrong thing; they stay covered directly against
+// newHostPolicy instead.
+func TestNewACMEManager_RefusesLoopbackAndIPLiteralWithoutACMECall(t *testing.T) {
+	var hits int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	fake := &fakeTXTLookup{records: []string{"ordfs=" + testOutpoint(64, 0)}}
+	p, _, _ := newTestPolicy(t, "domain allowed.example.org\n", fake)
+	cache := NewCache(t.TempDir(), nil, nil, nil, nil)
+	manager := NewACMEManager(ACMEManagerConfig{
+		Cache: cache, Policy: p, Directory: ts.URL, AcceptTOS: true,
+	})
+
+	for _, host := range []string{"127.0.0.1", "127.5.5.5", "93.184.216.34"} {
+		_, err := manager.GetCertificate(&tls.ClientHelloInfo{
+			ServerName:   host,
+			CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+		})
+		if err == nil {
+			t.Errorf("GetCertificate succeeded for %q, want it refused", host)
+		} else if !errors.Is(err, errHostNotAllowed) {
+			t.Errorf("host %q: error = %v, want errHostNotAllowed", host, err)
+		}
+	}
+	if got := atomic.LoadInt32(&hits); got != 0 {
+		t.Fatalf("the fake ACME directory was hit %d times for loopback/IP-literal hosts, want 0", got)
 	}
 }
 
@@ -242,6 +307,42 @@ func TestHTTPServer_ServesReplicatedHTTP01Token(t *testing.T) {
 	}
 	if rw.Body.String() != "the-key-authorization" {
 		t.Fatalf("body = %q, want the replicated token value", rw.Body.String())
+	}
+}
+
+// TestHTTPServer_ServesHTTP01TokenReceivedViaApplyReceived is the
+// required end-to-end test: ServesReplicatedHTTP01Token, above, seeds
+// its entry with a direct cache.dir.Put, bypassing the one path a
+// value like this actually arrives by — a peer's MsgACMEChallenge,
+// landing on ApplyReceived (acme_replication.go). This test goes
+// through ApplyReceived itself, then confirms the port-80 handler
+// serves exactly what it received: the two halves of this feature —
+// receiving a replicated entry, and serving one — proved together, not
+// each only against a cache seeded by hand.
+func TestHTTPServer_ServesHTTP01TokenReceivedViaApplyReceived(t *testing.T) {
+	const senderHex = "02331111111111111111111111111111111111111111111111111111111111bb"
+	fake := &fakeTXTLookup{records: []string{"ordfs=" + testOutpoint(68, 0)}}
+	p, _, _ := newTestPolicy(t, "domain allowed.example.org\n", fake)
+
+	cache := NewCache(t.TempDir(), nil, p, []string{senderHex}, nil)
+	if err := cache.ApplyReceived(senderHex, "tok456+http-01", []byte("the-key-authorization"), time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("ApplyReceived: %v", err)
+	}
+
+	// Same HostPolicy-gates-HTTPHandler-too note as
+	// ServesReplicatedHTTP01Token above.
+	manager := NewACMEManager(ACMEManagerConfig{Cache: cache, Policy: p})
+	srv := NewHTTPServer(":0", manager, p, "")
+
+	req := httptest.NewRequest("GET", "http://allowed.example.org/.well-known/acme-challenge/tok456", nil)
+	rw := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rw.Code, rw.Body.String())
+	}
+	if rw.Body.String() != "the-key-authorization" {
+		t.Fatalf("body = %q, want the value ApplyReceived stored", rw.Body.String())
 	}
 }
 
