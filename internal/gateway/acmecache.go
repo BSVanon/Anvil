@@ -164,9 +164,11 @@ func (c *Cache) Put(ctx context.Context, key string, data []byte) error {
 // attempt, not an audit log.
 //
 // Written directly to the Cache's own directory rather than through
-// autocert.Cache.Put/dir.Put: autocert.DirCache derives its on-disk
-// filename from the cache key via url.QueryEscape, and a plain domain
-// name never needs escaping, so a literal join (via errorNotePath) is
+// autocert.Cache.Put/dir.Put: autocert.DirCache anchors every key it's
+// given via filepath.Join(dir, filepath.Clean("/"+name)) — cache.go:43
+// (Get), :84 (Put), :98 (Delete), golang.org/x/crypto's
+// acme/autocert — never url.QueryEscape, and errorNotePath anchors
+// domain's note path the identical way, so a literal join there is
 // equivalent here and avoids giving this note a key shape (certKey.String)
 // that might someday collide with a real cache entry.
 //
