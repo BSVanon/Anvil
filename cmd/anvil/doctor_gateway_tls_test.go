@@ -191,3 +191,89 @@ func TestDoctorGatewayTLSChecks_ReplicationPossible(t *testing.T) {
 		}
 	})
 }
+
+// TestDoctorGatewayTLSChecks_NoAcmeDirectoryIsNeverCreated confirms
+// doctor's certificate check is read-only: with no acme directory on
+// disk yet, it reports "no certificates yet" and the directory still
+// does not exist afterwards -- doctor must never call gateway.NewCache
+// or any other path that would create it.
+func TestDoctorGatewayTLSChecks_NoAcmeDirectoryIsNeverCreated(t *testing.T) {
+	dataDir := t.TempDir()
+	sitesPath := filepath.Join(dataDir, "gateway-sites.conf")
+	if err := os.WriteFile(sitesPath, []byte("domain none-yet.example.org\n"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	acmeDir := filepath.Join(dataDir, "acme")
+
+	cfg := &config.Config{}
+	cfg.Gateway.Enabled = true
+	cfg.Gateway.SitesFile = sitesPath
+	cfg.Node.DataDir = dataDir
+
+	out := captureStdout(t, func() { doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
+	if !strings.Contains(out, "no certificates yet") {
+		t.Errorf("expected a 'no certificates yet' line, got:\n%s", out)
+	}
+	if _, err := os.Stat(acmeDir); !os.IsNotExist(err) {
+		t.Errorf("acme directory exists after doctor ran (stat err=%v) — doctor must never create it", err)
+	}
+}
+
+// TestDoctorGatewayTLSChecks_WrongModeIsAFail confirms a pre-existing
+// acme directory with the wrong mode (not 0700) is reported as a
+// genuine issue, with a one-line fix.
+func TestDoctorGatewayTLSChecks_WrongModeIsAFail(t *testing.T) {
+	dataDir := t.TempDir()
+	sitesPath := filepath.Join(dataDir, "gateway-sites.conf")
+	if err := os.WriteFile(sitesPath, []byte("domain none-yet.example.org\n"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	acmeDir := filepath.Join(dataDir, "acme")
+	if err := os.Mkdir(acmeDir, 0755); err != nil { // wrong: NewCache itself always creates 0700
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.Enabled = true
+	cfg.Gateway.SitesFile = sitesPath
+	cfg.Node.DataDir = dataDir
+
+	var issues int
+	out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
+	if !strings.Contains(out, "mode is") || !strings.Contains(out, "0700") {
+		t.Errorf("expected a FAIL line naming the wrong mode and 0700, got:\n%s", out)
+	}
+	if issues < 1 {
+		t.Errorf("issues = %d, want at least 1 for a wrong-mode acme directory", issues)
+	}
+}
+
+// TestDoctorGatewayTLSChecks_CorrectModeIsNotAFail confirms the mode
+// check doesn't false-positive on a directory already shaped the way
+// gateway.NewCache itself creates one.
+func TestDoctorGatewayTLSChecks_CorrectModeIsNotAFail(t *testing.T) {
+	dataDir := t.TempDir()
+	sitesPath := filepath.Join(dataDir, "gateway-sites.conf")
+	if err := os.WriteFile(sitesPath, []byte("domain none-yet.example.org\n"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	acmeDir := filepath.Join(dataDir, "acme")
+	if err := os.Mkdir(acmeDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{}
+	cfg.Gateway.Enabled = true
+	cfg.Gateway.SitesFile = sitesPath
+	cfg.Node.DataDir = dataDir
+
+	var issues int
+	out := captureStdout(t, func() { issues = doctorGatewayChecks(cfg, noAPIURL, noTXTStatus, noPortBound) })
+	if strings.Contains(out, "mode is") {
+		t.Errorf("expected no mode complaint for a correctly-moded directory, got:\n%s", out)
+	}
+	// Only assert on mode specifically: an owner mismatch may or may not
+	// fire depending on whether an "anvil" user exists on the machine
+	// running this test, which this test doesn't control.
+	_ = issues
+}

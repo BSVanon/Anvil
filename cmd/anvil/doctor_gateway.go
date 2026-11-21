@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net"
+	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -125,21 +127,33 @@ func doctorGatewayTLSChecks(cfg *config.Config, apiURL string, entries []sitesfi
 	// the only state available to it. Skipped with no data_dir
 	// configured — a bare test fixture, never a real boot, since
 	// internal/config always has one.
+	//
+	// Read-only: this never calls gateway.NewCache (which would create
+	// the directory, at whatever mode and owner doctor's own process
+	// happens to run as — root, if invoked as "sudo anvil doctor" — a
+	// directory the daemon, running as a different user, might then be
+	// unable to write to). OpenCacheIfExists only ever reads.
 	if cfg.Node.DataDir != "" {
-		cache := gateway.NewCache(filepath.Join(cfg.Node.DataDir, "acme"), nil, nil, nil, nil)
-		for _, e := range entries {
-			if e.Kind != "domain" {
-				continue
+		acmeDir := filepath.Join(cfg.Node.DataDir, "acme")
+		cache, ok := gateway.OpenCacheIfExists(acmeDir)
+		if !ok {
+			pass("no certificates yet (%s does not exist)", acmeDir)
+		} else {
+			for _, e := range entries {
+				if e.Kind != "domain" {
+					continue
+				}
+				state := cache.SiteCertState(context.Background(), e.Value)
+				switch {
+				case state.LastError != "":
+					warn("%s: certificate error — %s", e.Value, state.LastError)
+				case state.Present:
+					pass("%s: certificate valid until %s", e.Value, state.NotAfter.UTC().Format(time.RFC3339))
+				default:
+					warn("%s: no certificate issued yet", e.Value)
+				}
 			}
-			state := cache.SiteCertState(context.Background(), e.Value)
-			switch {
-			case state.LastError != "":
-				warn("%s: certificate error — %s", e.Value, state.LastError)
-			case state.Present:
-				pass("%s: certificate valid until %s", e.Value, state.NotAfter.UTC().Format(time.RFC3339))
-			default:
-				warn("%s: no certificate issued yet", e.Value)
-			}
+			issues += doctorAcmeDirOwnershipAndMode(acmeDir)
 		}
 	}
 
@@ -152,6 +166,52 @@ func doctorGatewayTLSChecks(cfg *config.Config, apiURL string, entries []sitesfi
 					warn("ACME challenge replication configured but no mesh peer is connected right now")
 				}
 			}
+		}
+	}
+
+	return issues
+}
+
+// doctorAcmeDirOwnershipAndMode checks dir's owner and mode once it's
+// already known to exist (see doctorGatewayTLSChecks — this is never
+// called when the directory is absent; OpenCacheIfExists reports that
+// case on its own, and there is nothing to check ownership of yet).
+//
+// The owner must be the daemon user, "anvil" — looked up the same way
+// internal/sitesfile's own owner-tracking code does (user.Lookup by
+// name, via cmd/anvil/deploy.go's ensureUser), skipping the check
+// entirely where there's no such user at all, such as a developer's
+// workstation that never runs the real daemon user. The mode must be
+// 0700, the same mode gateway.NewCache itself creates a fresh directory
+// with.
+//
+// Report-only: doctorGatewayChecks and doctorGatewayTLSChecks take no
+// --yes/fix parameter today (unlike cmdDoctor's own separate
+// runSelfHealingChecks path), and adding one here would mean rewriting
+// every existing call site across this package's test files for a
+// single new check. A wrong owner or mode is reported as a FAIL with
+// the one-line fix to run by hand, the same way an unbound port is
+// reported without doctor binding it itself.
+func doctorAcmeDirOwnershipAndMode(dir string) int {
+	issues := 0
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		// Already confirmed to exist by the caller a moment ago; a
+		// failure here (removed concurrently, a permissions change) is
+		// outside what this check can usefully diagnose.
+		return issues
+	}
+
+	if mode := info.Mode().Perm(); mode != 0700 {
+		fail("%s mode is %04o, want 0700 — run: chmod 0700 %s", dir, mode, dir)
+		issues++
+	}
+
+	if _, err := user.Lookup("anvil"); err == nil {
+		if owner := fileOwner(dir); owner != "" && owner != "anvil" {
+			fail("%s owned by %q, want \"anvil\" — run: chown anvil %s", dir, owner, dir)
+			issues++
 		}
 	}
 
