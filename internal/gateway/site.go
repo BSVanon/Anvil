@@ -75,7 +75,7 @@ func NewSiteHandler(cfg SiteHandlerConfig) *SiteHandler {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &SiteHandler{
+	sh := &SiteHandler{
 		policy:     cfg.Policy,
 		content:    cfg.Content,
 		versions:   versions,
@@ -88,6 +88,8 @@ func NewSiteHandler(cfg SiteHandlerConfig) *SiteHandler {
 		trustProxy: cfg.TrustProxy,
 		trustHops:  cfg.TrustProxyHops,
 	}
+	sh.setVersionHistory(versions)
+	return sh
 }
 
 // Stats returns the aggregate counters, ready for internal/api's
@@ -119,10 +121,9 @@ func (sh *SiteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.URL.Path == "/" && r.URL.Query().Has("seq"):
-		// R5 / bu_b7_spec.md:60: "Anything else, including ?seq= until
-		// B8: 404." B8 gives ?seq= its own meaning (requesting a specific
-		// tracked version); until then it must not silently fall through
-		// to "/"'s plain latest-version behaviour below.
+		// A version is asked for as /content/<origin>?seq= (serveVersion).
+		// "/" with a seq is not served, and must not fall through to "/"'s
+		// plain latest-version behaviour below.
 		sh.counters.NotFound.Add(1)
 		http.NotFound(w, r)
 	case r.URL.Path == "/":
@@ -173,7 +174,8 @@ func (sh *SiteHandler) serveRoot(w http.ResponseWriter, r *http.Request, origin 
 }
 
 // serveContentPath implements decision 5's "/content/<txid>_<vout>",
-// subject to decision 6's content scope.
+// subject to decision 6's content scope. With ?seq, the outpoint is an
+// origin, and the version of it that seq names is served instead.
 func (sh *SiteHandler) serveContentPath(w http.ResponseWriter, r *http.Request, origin string) {
 	target := strings.TrimPrefix(r.URL.Path, "/content/")
 	outpoint, ok := parseOutpoint(target)
@@ -195,6 +197,10 @@ func (sh *SiteHandler) serveContentPath(w http.ResponseWriter, r *http.Request, 
 			http.NotFound(w, r)
 			return
 		}
+	}
+	if r.URL.Query().Has("seq") {
+		sh.serveVersion(w, r, outpoint)
+		return
 	}
 
 	txid, vout, ok := splitOutpoint(outpoint)
