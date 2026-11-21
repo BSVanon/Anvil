@@ -73,15 +73,19 @@ func nodePriced(env *envelope.Envelope) bool {
 // nodePriceCovered reports whether r has paid the node's own price recorded
 // by the gate that priced it (nodePrice): true when that price is 0 or no
 // gate ran, since a free node prices nothing; otherwise only when r carries a
-// verified payment, on either payment path, with one output that pays the
-// node's own payee script at least that price. An output paying any other
-// script, an app's or the payer's own, never counts.
+// verified payment with one output that pays the node's own payee script at
+// least that price, on the X-Bsv-Payment or X402-Proof path, or a BRC-121
+// payment of at least that price to the node wallet (its nodeCoverage). An
+// output paying any other script, an app's or the payer's own, never counts.
 func nodePriceCovered(r *http.Request) bool {
 	np, _ := r.Context().Value(nodePriceKey{}).(*nodePrice)
 	if np == nil || np.sats <= 0 {
 		return true
 	}
 	p, _ := r.Context().Value(verifiedPaymentKey{}).(*verifiedPayment)
+	if p != nil && p.nodeCoverage >= uint64(np.sats) {
+		return true
+	}
 	if p == nil || len(np.script) == 0 {
 		return false
 	}

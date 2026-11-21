@@ -22,6 +22,7 @@ import (
 type verifiedPayment struct {
 	outputs         map[string]uint64 // locking script bytes -> the largest single output paying it
 	maxAppPriceSats int               // the gate's max_app_price_sats, 0 when none
+	nodeCoverage    uint64            // what a BRC-121 payment paid the node: node coverage only (brc121.go)
 }
 
 type verifiedPaymentKey struct{}
@@ -48,6 +49,7 @@ func (pg *PaymentGate) withPayment(ctx context.Context, receipt *X402Receipt) co
 	return context.WithValue(withPaid(ctx), verifiedPaymentKey{}, &verifiedPayment{
 		outputs:         receipt.outputs,
 		maxAppPriceSats: pg.maxAppPriceSats,
+		nodeCoverage:    receipt.nodeCoverage,
 	})
 }
 

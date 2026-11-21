@@ -88,10 +88,11 @@ type ProofPayment struct {
 // --- Receipt (server → client) ---
 
 type X402Receipt struct {
-	TxID      string            `json:"txid"`
-	Satoshis  int               `json:"satoshis"`
-	Timestamp int64             `json:"timestamp"`
-	outputs   map[string]uint64 // what the payment paid, never sent (paid_outputs_context.go)
+	TxID         string            `json:"txid"`
+	Satoshis     int               `json:"satoshis"`
+	Timestamp    int64             `json:"timestamp"`
+	outputs      map[string]uint64 // what the payment paid, never sent (paid_outputs_context.go)
+	nodeCoverage uint64            // what a BRC-121 payment paid the node, never sent (brc121.go)
 }
 
 // --- NonceProvider interface ---
@@ -132,6 +133,8 @@ type PaymentGate struct {
 	arcClient      *txrelay.ARCClient // for mempool acceptance verification
 	resolver       *TopicMonetizationResolver
 	clientKey      func(*http.Request) string // the key a client's body reads are shared out under (payment_bodyshare.go)
+	brc121         *brc121Gate                // BRC-121 payments, nil when the gate takes none (brc121.go)
+	brc121Off      string                     // why the gate takes no BRC-121 payments
 
 	allowPassthrough bool
 	allowSplit       bool
@@ -253,10 +256,14 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		if pg.takesBRC121(r) {
+			pg.serveBRC121(w, r, next, payees, tokenGated) // brc121.go
+			return
+		}
 		proofHeader := r.Header.Get(HeaderX402Proof)
 		bsvPayment := r.Header.Get(HeaderBSVPayment)
-
 		if proofHeader == "" && bsvPayment == "" {
+			pg.offerBRC121(w, r, payees, tokenGated)
 			pg.issueChallengeForPayees(w, r, payees)
 			return
 		}
