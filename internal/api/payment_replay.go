@@ -1,0 +1,165 @@
+package api
+
+import (
+	"sync"
+	"time"
+
+	"github.com/bsv-blockchain/go-sdk/chainhash"
+)
+
+// Replay protection for payments. An X-Bsv-Payment is not bound to a
+// challenge, so without it one transaction would pay for any number of
+// requests. BRC-121 section 5 step 5 refuses a replayed payment with 402
+// (0121.md:97). The gate remembers the txid of every payment it accepts, on
+// either payment path, in one set, and refuses that txid again on either path
+// with ERR_PAYMENT_REPLAYED: a transaction accepted as an X402-Proof cannot pay
+// again as an X-Bsv-Payment, or the other way round.
+//
+// The memory is bounded: a txid is kept for directPaymentReplayWindow, and at
+// most directPaymentReplayCapacity txids are kept. Once full, the set refuses
+// new payments until an entry expires. It never evicts an accepted payment to
+// admit another one.
+// Measured full (TestDirectPaymentReplaySetMemory): 9.2 MB (8.8 MiB) of heap.
+// The set lives in memory only, so a restart empties it. A direct payment
+// that ARC reports as mined deeper than maxDirectPaymentDepth blocks is
+// refused whether or not the set remembers it (checkPaymentDepth,
+// payment_arc.go), so neither eviction nor a restart reopens an old mined
+// payment. The known limit is that the in-memory set is empty after a restart,
+// and an entry is forgotten after its window.
+const (
+	directPaymentReplayWindow   = 24 * time.Hour
+	directPaymentReplayCapacity = 100_000
+)
+
+// errPaymentReplayed refuses a payment whose transaction, txid, already paid
+// for a request on either payment path, or is being verified for another
+// request right now.
+func errPaymentReplayed(txid string) error {
+	return &paymentRefusal{code: codePaymentReplayed,
+		msg: "payment transaction " + txid + " was already used: one transaction pays for one request"}
+}
+
+var errPaymentReplayFull = &paymentRefusal{
+	code:       codePaymentReplayFull,
+	msg:        "payment replay protection is full; retry the same transaction after capacity expires",
+	retryAfter: time.Minute,
+}
+
+// replayEntry is one accepted payment txid and when it was accepted, as the
+// time since the set was made (monotonic, and 8 bytes rather than 24).
+type replayEntry struct {
+	txid chainhash.Hash
+	at   time.Duration
+}
+
+// paymentReplaySet holds the txids of accepted payments, and the txids
+// being verified right now, so that two requests carrying the same payment at
+// once cannot both pass.
+type paymentReplaySet struct {
+	mu       sync.Mutex
+	now      func() time.Time
+	base     time.Time // when the set was made
+	window   time.Duration
+	capacity int
+	accepted map[chainhash.Hash]struct{}
+	inFlight map[chainhash.Hash]struct{}
+	ring     []replayEntry // accepted txids in acceptance order, oldest at head
+	head     int
+	size     int
+}
+
+type paymentReplayClaim uint8
+
+const (
+	replayClaimed paymentReplayClaim = iota
+	replayAccepted
+	replayInFlight
+	replayFull
+)
+
+// newPaymentReplaySet returns a set that remembers txids for window, and at
+// most capacity of them, which is at least 1: a set that could hold none
+// would have nothing to evict when it is full.
+func newPaymentReplaySet(window time.Duration, capacity int, now func() time.Time) *paymentReplaySet {
+	return &paymentReplaySet{
+		now:      now,
+		base:     now(),
+		window:   window,
+		capacity: max(capacity, 1),
+		accepted: make(map[chainhash.Hash]struct{}),
+		inFlight: make(map[chainhash.Hash]struct{}),
+	}
+}
+
+// begin claims txid for one verification. It returns false when txid was
+// accepted within the window, or when another request is verifying it now.
+// Every true return must be followed by end.
+func (s *paymentReplaySet) begin(txid chainhash.Hash) bool {
+	return s.claim(txid) == replayClaimed
+}
+
+// claim distinguishes a payment already served from one another request is
+// still checking. Callers that take a claim must release it with end.
+func (s *paymentReplaySet) claim(txid chainhash.Hash) paymentReplayClaim {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expire()
+	if _, ok := s.accepted[txid]; ok {
+		return replayAccepted
+	}
+	if _, ok := s.inFlight[txid]; ok {
+		return replayInFlight
+	}
+	// Reserve capacity for every verification in flight. If they all pass,
+	// end can remember every one without evicting an earlier acceptance.
+	if s.size+len(s.inFlight) >= s.capacity {
+		return replayFull
+	}
+	s.inFlight[txid] = struct{}{}
+	return replayClaimed
+}
+
+// end releases begin's claim. An accepted payment's txid is remembered; a
+// refused one's is forgotten, so the payer can retry it, for example after ARC
+// was unreachable.
+func (s *paymentReplaySet) end(txid chainhash.Hash, accepted bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.inFlight, txid)
+	if !accepted {
+		return
+	}
+	s.expire()
+	s.push(replayEntry{txid: txid, at: s.now().Sub(s.base)})
+	s.accepted[txid] = struct{}{}
+}
+
+// expire forgets the txids accepted longer than the window ago.
+func (s *paymentReplaySet) expire() {
+	cutoff := s.now().Sub(s.base) - s.window
+	for s.size > 0 && s.ring[s.head].at <= cutoff {
+		s.popOldest()
+	}
+}
+
+func (s *paymentReplaySet) popOldest() {
+	delete(s.accepted, s.ring[s.head].txid)
+	s.ring[s.head] = replayEntry{}
+	s.head = (s.head + 1) % len(s.ring)
+	s.size--
+}
+
+// push appends e at the tail, growing the ring up to capacity entries. The
+// caller makes room first, so a ring at capacity is never full here.
+func (s *paymentReplaySet) push(e replayEntry) {
+	if s.size == len(s.ring) {
+		n := min(max(2*len(s.ring), 64), s.capacity)
+		grown := make([]replayEntry, n)
+		for i := 0; i < s.size; i++ {
+			grown[i] = s.ring[(s.head+i)%len(s.ring)]
+		}
+		s.ring, s.head = grown, 0
+	}
+	s.ring[(s.head+s.size)%len(s.ring)] = e
+	s.size++
+}

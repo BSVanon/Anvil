@@ -696,20 +696,18 @@ func main() {
 			}
 
 			go pub.RunHeartbeat(feedCtx, 60*time.Second, feeds.HeartbeatSources{
-				HeightFn:   headerStore.Tip,
-				PeersFn:    gossipMgr.PeerCount,
-				TopicsFn:   envStore.Topics,
-				DemandFn:   gossipMgr.DemandMap,
-				UpstreamFn: upstreamFn,
+				HeightFn:            headerStore.Tip,
+				PeersFn:             gossipMgr.PeerCount,
+				TopicsFn:            heartbeatTopicsFn(envStore),
+				DemandFn:            gossipMgr.DemandMap,
+				PrivateOnlyTopicsFn: heartbeatPrivateOnlyTopicsFn(envStore),
+				UpstreamFn:          upstreamFn,
 			})
-
-			// Block tip feed removed — experimental, no consumers.
-			// Header sync continues internally for x402 payment verification.
 
 			log.Printf("feeds: heartbeat (60s) publisher started")
 		}
 	}
-
+	api.ConfigureMintBudget(cfg.API.X402MintBurst, cfg.API.X402MintsPerMinute)
 	// x402 payment gating — requires identity.wif + wallet; forced off without both
 	paymentSatoshis := cfg.API.PaymentSatoshis
 	var payeeScriptHex string
@@ -752,7 +750,6 @@ func main() {
 		log.Printf("x402: payment_satoshis=%d but identity.wif or wallet missing — payment gating DISABLED", paymentSatoshis)
 		paymentSatoshis = 0
 	}
-
 	var p2pTxFetcher *p2p.TxFetcher
 	var p2pBlockFetcher *p2p.BlockTxFetcher
 	if len(cfg.BSV.Nodes) > 0 {
@@ -764,36 +761,37 @@ func main() {
 	// REST API
 	validator := spv.NewValidator(headerStore)
 	srv := api.NewServer(api.ServerConfig{
-		HeaderStore:         headerStore,
-		ProofStore:          proofStore,
-		EnvelopeStore:       envStore,
-		OverlayDir:          overlayDir,
-		Validator:           validator,
-		Broadcaster:         broadcaster,
-		GossipMgr:           gossipMgr,
-		AuthToken:           cfg.API.AuthToken,
-		RateLimit:           cfg.API.RateLimit,
-		TrustProxy:          cfg.API.TrustProxy,
-		TrustProxyHops:      cfg.API.TrustProxyHops,
-		MessageboxRateLimit: cfg.API.MessageboxRateLimit,
-		MessageboxRateBurst: cfg.API.MessageboxRateBurst,
-		PaymentSatoshis:     paymentSatoshis,
-		PayeeScriptHex:      payeeScriptHex,
-		NonceProvider:       nonceProvider,
-		AllowPassthrough:    cfg.API.AppPayments.AllowPassthrough,
-		AllowSplit:          cfg.API.AppPayments.AllowSplit,
-		AllowTokenGating:    cfg.API.AppPayments.AllowTokenGating,
-		MaxAppPriceSats:     cfg.API.AppPayments.MaxAppPriceSats,
-		EndpointPrices:      cfg.API.EndpointPrices,
-		ARCClient:           arcClient,
-		RequireMempool:      cfg.API.RequireMempool,
-		Logger:              logger,
-		NodeName:            cfg.Node.Name,
-		IdentityPub:         identityPubHex,
-		BondChecker:         bondCheck,
-		ExplorerOrigin:      cfg.API.ExplorerOrigin,
-		PublicURL:           cfg.Node.PublicURL,
-		HeaderSyncStatus:    syncer.Stats,
+		HeaderStore:          headerStore,
+		ProofStore:           proofStore,
+		EnvelopeStore:        envStore,
+		OverlayDir:           overlayDir,
+		Validator:            validator,
+		Broadcaster:          broadcaster,
+		GossipMgr:            gossipMgr,
+		AuthToken:            cfg.API.AuthToken,
+		RateLimit:            cfg.API.RateLimit,
+		TrustProxy:           cfg.API.TrustProxy,
+		TrustProxyHops:       cfg.API.TrustProxyHops,
+		MessageboxRateLimit:  cfg.API.MessageboxRateLimit,
+		MessageboxRateBurst:  cfg.API.MessageboxRateBurst,
+		PaymentSatoshis:      paymentSatoshis,
+		PayeeScriptHex:       payeeScriptHex,
+		NonceProvider:        nonceProvider,
+		AllowPassthrough:     cfg.API.AppPayments.AllowPassthrough,
+		AllowSplit:           cfg.API.AppPayments.AllowSplit,
+		AllowTokenGating:     cfg.API.AppPayments.AllowTokenGating,
+		MaxAppPriceSats:      cfg.API.AppPayments.MaxAppPriceSats,
+		EndpointPrices:       cfg.API.EndpointPrices,
+		ARCClient:            arcClient,
+		RequireMempool:       cfg.API.RequireMempool,
+		HeaderStaleAfterSecs: cfg.BSV.HeaderStaleAfterSecs,
+		Logger:               logger,
+		NodeName:             cfg.Node.Name,
+		IdentityPub:          identityPubHex,
+		BondChecker:          bondCheck,
+		ExplorerOrigin:       cfg.API.ExplorerOrigin,
+		PublicURL:            cfg.Node.PublicURL,
+		HeaderSyncStatus:     syncer.Stats,
 		ServiceHealthFn: func() string {
 			orphans, _ := diagnostics.FindOrphans()
 			if len(orphans) > 0 {
@@ -859,8 +857,8 @@ func main() {
 			return hash.String()
 		},
 		CustomCapabilities: cfg.Capabilities.Custom,
+		DataDir:            cfg.Node.DataDir,
 	})
-
 	if nodeWallet != nil {
 		nodeWallet.RegisterRoutes(srv.Mux(), srv.RequireAuth)
 	}

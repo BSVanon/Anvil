@@ -98,11 +98,24 @@ type HeartbeatPayload struct {
 // Grouped into a struct instead of growing the positional argument list each
 // time a new field is added to the payload.
 type HeartbeatSources struct {
-	HeightFn   func() uint32
-	PeersFn    func() int
-	TopicsFn   func() map[string]int
-	DemandFn   func() map[string]int // optional
-	UpstreamFn func() *UpstreamStatus // optional
+	HeightFn func() uint32
+	PeersFn  func() int
+	// TopicsFn MUST return PUBLIC topics only (e.g. envelope.Store.PublicTopics,
+	// never Store.Topics) — the result is broadcast to every mesh peer and
+	// gossiped onward.
+	TopicsFn func() map[string]int
+	DemandFn func() map[string]int // optional
+	// PrivateOnlyTopicsFn, when set, MUST return the set of topic names that
+	// have at least one envelope on this node but no public one at all
+	// (e.g. envelope.Store.PrivateOnlyTopics). publishHeartbeat uses it to
+	// drop exactly those entries from DemandFn's result before broadcasting
+	// demand — never anything else. A topic merely absent from the current
+	// TopicsFn snapshot (expired ephemeral, or known only via a peer's
+	// MergeDemand) is NOT private-only and must keep passing through
+	// unchanged; only PrivateOnlyTopicsFn's membership decides a drop. Nil
+	// means nothing is dropped here at all.
+	PrivateOnlyTopicsFn func() map[string]struct{}
+	UpstreamFn          func() *UpstreamStatus // optional
 }
 
 // RunHeartbeat publishes a mesh:heartbeat envelope every interval.
@@ -138,7 +151,24 @@ func (p *Publisher) publishHeartbeat(ttl int, sources HeartbeatSources) {
 
 	var demand map[string]int
 	if sources.DemandFn != nil {
-		demand = sources.DemandFn()
+		// Drop demand only for topics that are private-only on this node —
+		// everything else (including a topic merely absent from topicMap
+		// right now, such as an expired ephemeral topic or demand merged in
+		// from a peer's own heartbeat) passes through unchanged. A topic
+		// that has ONLY private envelopes must never have its name or
+		// demand leaked to mesh peers via the heartbeat.
+		var privateOnly map[string]struct{}
+		if sources.PrivateOnlyTopicsFn != nil {
+			privateOnly = sources.PrivateOnlyTopicsFn()
+		}
+		raw := sources.DemandFn()
+		demand = make(map[string]int, len(raw))
+		for topic, count := range raw {
+			if _, isPrivateOnly := privateOnly[topic]; isPrivateOnly {
+				continue
+			}
+			demand[topic] = count
+		}
 	}
 
 	var upstream *UpstreamStatus

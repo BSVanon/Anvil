@@ -88,7 +88,7 @@ func dialStalledClient(t *testing.T, ts *httptest.Server, path string) net.Conn 
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetReadBuffer(2048)
 	}
-	req := "GET " + path + " HTTP/1.1\r\nHost: stalled.test\r\nConnection: keep-alive\r\n\r\n"
+	req := "GET " + path + " HTTP/1.1\r\nHost: stalled.test\r\nX-Anvil-Auth: test-token\r\nConnection: keep-alive\r\n\r\n"
 	if _, err := conn.Write([]byte(req)); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestStalledSocketReleasesMessageboxSubscribe(t *testing.T) {
 	srv := testServerWithMsgStore(t)
 	ts, released := stalledSSEServer(t, srv.Handler())
 
-	path := "/messages/subscribe?messageBox=stallbox&recipient=stallrecipient&token=" + srv.authToken
+	path := "/messages/subscribe?messageBox=stallbox&recipient=stallrecipient"
 	dialStalledClient(t, ts, path)
 	time.Sleep(30 * time.Millisecond)
 

@@ -320,18 +320,15 @@ func (s *Server) handleMessageSession(w http.ResponseWriter, r *http.Request) {
 
 // resolveSSECaller authenticates the messagebox SSE subscription. A per-identity
 // session token (minted at /messages/session) scopes the stream strictly to that
-// identity; a valid operator token (via ?token= since EventSource can't set
-// headers, or via header) is accepted as a broad, node-scoped fallback for
-// tooling. Returns the recipient identity to stream and ok.
+// identity; a valid operator token in a header is accepted as a broad,
+// node-scoped fallback for tooling. Returns the recipient identity to stream
+// and ok. The operator credential is never accepted from the URL.
 func (s *Server) resolveSSECaller(w http.ResponseWriter, r *http.Request) (identityHex string, scoped bool, ok bool) {
 	tok := r.URL.Query().Get("token")
 	if s.msgSessions != nil {
 		if id, found := s.msgSessions.resolve(tok, time.Now()); found {
 			return id, true, true
 		}
-	}
-	if s.authToken != "" && tok == s.authToken {
-		return s.identityPub, false, true
 	}
 	if s.operatorTokenValid(r) {
 		return s.identityPub, false, true

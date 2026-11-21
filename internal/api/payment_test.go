@@ -599,9 +599,10 @@ func TestDirectPaymentRejectsEmptyHeader(t *testing.T) {
 		PriceSats:      100,
 		PayeeScriptHex: payeeScript,
 		NonceProvider:  &DevNonceProvider{},
+		ARCClient:      mockARCServer(t), // direct payments need ARC
 	})
 
-	_, err := pg.verifyDirectPayment("", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	_, err := pg.verifyDirectPayment(t.Context(), "", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err == nil {
 		t.Fatal("should reject empty payment header")
 	}
@@ -616,9 +617,10 @@ func TestDirectPaymentRejectsGarbage(t *testing.T) {
 		PriceSats:      100,
 		PayeeScriptHex: payeeScript,
 		NonceProvider:  &DevNonceProvider{},
+		ARCClient:      mockARCServer(t), // direct payments need ARC
 	})
 
-	_, err := pg.verifyDirectPayment("not-a-transaction", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	_, err := pg.verifyDirectPayment(t.Context(), "not-a-transaction", []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err == nil {
 		t.Fatal("should reject invalid transaction data")
 	}
@@ -630,12 +632,13 @@ func TestDirectPaymentRejectsInsufficientOutputs(t *testing.T) {
 		PriceSats:      100,
 		PayeeScriptHex: payeeScript,
 		NonceProvider:  &DevNonceProvider{},
+		ARCClient:      mockARCServer(t), // direct payments need ARC
 	})
 
 	// Build a raw tx paying a WRONG script
 	wrongScript, _ := hex.DecodeString("76a914000000000000000000000000000000000000000088ac")
 	txHex := hex.EncodeToString(buildRawTx(wrongScript, 200))
-	_, err := pg.verifyDirectPayment(txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
+	_, err := pg.verifyDirectPayment(t.Context(), txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
 	if err == nil {
 		t.Fatal("should reject tx that doesn't pay the declared payee")
 	}
@@ -658,30 +661,6 @@ func buildRawTx(lockingScript []byte, satoshis uint64) []byte {
 		LockingScript: &ls,
 	})
 	return tx.Bytes()
-}
-
-func TestDirectPaymentAcceptsValidTx(t *testing.T) {
-	payeeScript := testPayeeScript(t)
-	pg := NewPaymentGate(PaymentGateConfig{
-		PriceSats:      100,
-		PayeeScriptHex: payeeScript,
-		NonceProvider:  &DevNonceProvider{},
-		// No ARC client — skip broadcast
-	})
-
-	payeeBytes, _ := hex.DecodeString(payeeScript)
-	txHex := hex.EncodeToString(buildRawTx(payeeBytes, 100))
-	receipt, err := pg.verifyDirectPayment(txHex, []Payee{{Role: "infrastructure", LockingScriptHex: payeeScript, AmountSats: 100}})
-	if err != nil {
-		t.Fatalf("should accept valid direct payment: %v", err)
-	}
-	if receipt.Satoshis != 100 {
-		t.Fatalf("expected 100 sats in receipt, got %d", receipt.Satoshis)
-	}
-	if receipt.TxID == "" {
-		t.Fatal("receipt should have a txid")
-	}
-	t.Logf("direct payment accepted: txid=%s sats=%d", receipt.TxID[:16], receipt.Satoshis)
 }
 
 // helper to suppress unused import

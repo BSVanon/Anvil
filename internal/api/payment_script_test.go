@@ -36,7 +36,7 @@ type keyNonceProvider struct {
 // and exhaust; payment_budget_test.go tests the budget.
 func (*keyNonceProvider) noncesCostNothing() {}
 
-func (p *keyNonceProvider) MintNonce() (*NonceUTXO, error) {
+func (p *keyNonceProvider) MintNonce(context.Context) (*NonceUTXO, error) {
 	addr, err := bsvscript.NewAddressFromPublicKey(p.key.PubKey(), true)
 	if err != nil {
 		return nil, err
@@ -200,7 +200,7 @@ func TestNonceScriptsRefuseNonPushOnly(t *testing.T) {
 	previous := nonceScriptTimeout
 	nonceScriptTimeout = 5 * time.Second // long enough that running the bomb shows
 	t.Cleanup(func() { nonceScriptTimeout = previous })
-	nonce, _ := (&keyNonceProvider{key: mustKey(t)}).MintNonce()
+	nonce, _ := (&keyNonceProvider{key: mustKey(t)}).MintNonce(t.Context())
 	lock, _ := bsvscript.NewFromHex(nonce.LockingScriptHex)
 	for _, version := range []uint32{1, 2} {
 		tx := nonceSpend(t, nonce, nil, version, 500, testPayeeScript(t), fourKBBomb())
@@ -227,7 +227,7 @@ func TestNonceScriptsStopAtTimeout(t *testing.T) {
 	slowLock := bsvscript.Script((*slow)[1003:]) // the opcodes after the 1000-byte push
 	seed := &bsvscript.Script{}
 	_ = seed.AppendPushData(bytes.Repeat([]byte{0x42}, 1000))
-	nonce, _ := (&keyNonceProvider{key: mustKey(t)}).MintNonce()
+	nonce, _ := (&keyNonceProvider{key: mustKey(t)}).MintNonce(t.Context())
 	tx := nonceSpend(t, nonce, nil, 1, 500, testPayeeScript(t), seed)
 	start := time.Now()
 	err := runNonceScripts(tx, 0, &transaction.TransactionOutput{LockingScript: &slowLock, Satoshis: 1})
@@ -245,7 +245,7 @@ func TestNonceScriptsStopAtTimeout(t *testing.T) {
 // interpreter, with errNonceUnlockingNotP2PKH.
 func TestNonceUnlockingMustBeP2PKHShaped(t *testing.T) {
 	key := mustKey(t)
-	nonce, _ := (&keyNonceProvider{key: key}).MintNonce()
+	nonce, _ := (&keyNonceProvider{key: key}).MintNonce(t.Context())
 	sig := bytes.Repeat([]byte{0x30}, 71)
 	pub := key.PubKey().Compressed()
 	pushes := func(items ...[]byte) *bsvscript.Script {

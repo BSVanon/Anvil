@@ -1,16 +1,51 @@
 package api
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/clientkey"
+	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
-// requireAuth rejects requests without a valid bearer token.
-// Accepts either "Authorization: Bearer <token>" or "X-App-Token: <token>".
-// If no auth token is configured, ALL writes are rejected — secure by default.
+// matchesOperatorToken does an exact, constant-time comparison of candidate
+// against this node's configured operator token. Returns false immediately
+// (no ConstantTimeCompare call at all) when candidate is empty or no token
+// is configured — only a WRONG-but-present candidate needs the comparison
+// itself to run in constant time, so an absent header costs nothing extra.
+func (s *Server) matchesOperatorToken(candidate string) bool {
+	if s.authToken == "" || candidate == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(s.authToken)) == 1
+}
+
+// isOperatorToken reports whether r carries this node's operator token via
+// EITHER "X-Anvil-Auth: <token>" or "Authorization: Bearer <token>", each
+// checked independently and in constant time. A stale or wrong value in one
+// header must never hide a correct value in the other — checking them in a
+// fixed "X-Anvil-Auth wins if present" order would do exactly that, so
+// neither header gets priority over the other. This is the ONLY credential
+// that may unlock a `private` envelope or its metadata (see isAuthed below)
+// and the one that admits a read for free regardless of any payment/token
+// gate (see Server.openRead, server.go). requireAuth and requireAuthSSE
+// share this same check. Returns false when no operator token is configured.
+func (s *Server) isOperatorToken(r *http.Request) bool {
+	if s.matchesOperatorToken(r.Header.Get("X-Anvil-Auth")) {
+		return true
+	}
+	if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
+		return s.matchesOperatorToken(auth[7:])
+	}
+	return false
+}
+
+// requireAuth rejects requests that don't carry this node's operator token
+// (isOperatorToken: X-Anvil-Auth or Authorization: Bearer, either one, in
+// constant time). If no auth token is configured, ALL writes are rejected —
+// secure by default.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Handle CORS preflight for authenticated endpoints
@@ -27,17 +62,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Check X-Anvil-Auth (operator wallet/write auth), then Authorization header.
-		// X-App-Token is reserved for app topic gating — not used for operator auth.
-		token := r.Header.Get("X-Anvil-Auth")
-		if token == "" {
-			auth := r.Header.Get("Authorization")
-			if len(auth) > 7 && auth[:7] == "Bearer " {
-				token = auth[7:]
-			}
-		}
-
-		if token != s.authToken {
+		if !s.isOperatorToken(r) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -47,9 +72,8 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// requireAuthSSE is like requireAuth but also accepts ?token= query parameter.
-// SSE endpoints need this because EventSource cannot set custom HTTP headers.
-// Scoped only to SSE routes — write endpoints must NOT use this.
+// requireAuthSSE is the header-only operator gate for legacy SSE routes.
+// The broad node credential is never accepted from a URL query parameter.
 func (s *Server) requireAuthSSE(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
@@ -65,26 +89,48 @@ func (s *Server) requireAuthSSE(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Check headers first (same as requireAuth)
-		token := r.Header.Get("X-Anvil-Auth")
-		if token == "" {
-			auth := r.Header.Get("Authorization")
-			if len(auth) > 7 && auth[:7] == "Bearer " {
-				token = auth[7:]
-			}
-		}
-		// SSE fallback: accept ?token= query param (EventSource can't set headers)
-		if token == "" {
-			token = r.URL.Query().Get("token")
-		}
-
-		if token != s.authToken {
+		if !s.isOperatorToken(r) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		next(w, r)
 	}
+}
+
+// isAuthed reports whether the request is authenticated: this node's
+// operator token, checked in constant time (isOperatorToken, above) — the
+// ONLY signal that gates `private` envelope data and metadata. A verified
+// x402 payment (withPayment, paid_outputs_context.go) and a validated app
+// token (appTokenTopic, app_token_context.go) are never sufficient on their
+// own. What either one unlocks of a monetized payload is decided per
+// envelope, by envelopeCovered (envelope_redaction.go).
+func (s *Server) isAuthed(r *http.Request) bool {
+	return s.isOperatorToken(r)
+}
+
+// latestVisibleEnvelope returns the newest envelope on a topic that the caller
+// may see: for unauthenticated callers (isAuthed=false) Private envelopes are
+// skipped, so a private meta:/identity: envelope never leaks through the
+// discovery/identity helper reads; authenticated callers get the newest
+// regardless. Returns nil if none is visible. Used for the small, low-cardinality
+// meta:/identity: topics.
+func (s *Server) latestVisibleEnvelope(topic string, isAuthed bool) *envelope.Envelope {
+	if s.envelopeStore == nil {
+		return nil
+	}
+	if isAuthed {
+		envs, _ := s.envelopeStore.QueryExactTopicAll(topic, 1)
+		if len(envs) > 0 {
+			return envs[0]
+		}
+		return nil
+	}
+	envs, _ := s.envelopeStore.QueryPublicExactTopic(topic, 1, 0)
+	if len(envs) > 0 {
+		return envs[0]
+	}
+	return nil
 }
 
 // RateLimiter implements a token-bucket rate limiter keyed by client IP.

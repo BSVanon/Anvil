@@ -6,6 +6,7 @@ package gossip
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/bsv-blockchain/go-sdk/auth"
@@ -326,18 +327,23 @@ func dropPrivate(envs []*envelope.Envelope) []*envelope.Envelope {
 	return kept
 }
 
-// visiblePage takes a newest-first envelope set, drops Private envelopes (never
-// served over the mesh pull), applies the Since backward-pagination cursor
-// (return envelopes strictly older than Since), then returns one page of at
-// most `limit` plus whether more remain. Filtering happens BEFORE pagination so
-// private envelopes in the newest window can't hide older public ones behind
-// HasMore=false.
-func visiblePage(all []*envelope.Envelope, limit int, since int64) (page []*envelope.Envelope, hasMore bool) {
+// visiblePage takes an envelope set, drops Private envelopes, applies the
+// compound backward-pagination cursor, and returns one stable newest-first
+// page. It remains as the small in-memory pagination oracle used by tests; the
+// request path reads the bounded public store index directly.
+func visiblePage(all []*envelope.Envelope, limit int, after envelope.PageCursor) (page []*envelope.Envelope, hasMore bool) {
 	all = dropPrivate(all)
-	if since > 0 {
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Timestamp != all[j].Timestamp {
+			return all[i].Timestamp > all[j].Timestamp
+		}
+		return envelope.CursorFor(all[i]).ID < envelope.CursorFor(all[j]).ID
+	})
+	if after.ID != "" {
 		filtered := all[:0]
 		for _, e := range all {
-			if e.Timestamp < since {
+			cursor := envelope.CursorFor(e)
+			if e.Timestamp < after.Timestamp || (e.Timestamp == after.Timestamp && cursor.ID > after.ID) {
 				filtered = append(filtered, e)
 			}
 		}
@@ -351,6 +357,11 @@ func visiblePage(all []*envelope.Envelope, limit int, since int64) (page []*enve
 
 // onDataRequest handles a pull-based catch-up query.
 func (m *Manager) onDataRequest(senderPKHex string, senderPK *ec.PublicKey, raw json.RawMessage) error {
+	if !m.allowPeerMessage(senderPKHex) {
+		m.logger.Debug("peer rate-limited, dropping data request", "peer", truncate(senderPKHex))
+		return nil
+	}
+
 	var req DataRequestPayload
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil
@@ -368,19 +379,30 @@ func (m *Manager) onDataRequest(senderPKHex string, senderPK *ec.PublicKey, raw 
 		limit = 100
 	}
 
-	// Fetch the FULL topic set (QueryByTopic already loads all before its own
-	// truncation, so limit=0 is no costlier), then drop private + apply the
-	// Since cursor BEFORE paginating. Filtering before pagination is essential:
-	// a newest window full of private envelopes must not hide older public ones
-	// behind HasMore=false and permanently under-sync a mixed private/public
-	// topic over the mesh pull.
-	all, _ := m.store.QueryByTopic(req.Topic, 0)
-	results, hasMore := visiblePage(all, limit, req.Since)
+	after := envelope.PageCursor{}
+	if req.Cursor != nil {
+		after = *req.Cursor
+	} else if req.Since > 0 {
+		// Compatibility with timestamp-only peers. New peers always send the
+		// compound cursor below, which is required to cross equal timestamps.
+		after = envelope.PageCursor{Timestamp: req.Since, ID: strings.Repeat("f", 32)}
+	}
+	results, _ := m.store.QueryPublicTopicPrefix(req.Topic, limit+1, after)
+	hasMore := len(results) > limit
+	if hasMore {
+		results = results[:limit]
+	}
+	var nextCursor *envelope.PageCursor
+	if hasMore && len(results) > 0 {
+		cursor := envelope.CursorFor(results[len(results)-1])
+		nextCursor = &cursor
+	}
 
 	resp, err := Encode(MsgDataResponse, DataResponsePayload{
-		Topic:     req.Topic,
-		Envelopes: results,
-		HasMore:   hasMore,
+		Topic:      req.Topic,
+		Envelopes:  results,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
 	})
 	if err != nil {
 		return err
@@ -395,31 +417,28 @@ func (m *Manager) onDataRequest(senderPKHex string, senderPK *ec.PublicKey, raw 
 	return nil
 }
 
-// onDataResponse handles catch-up response. Stores locally without re-gossiping.
-// If HasMore is true, sends a follow-up request with Since set to the oldest
-// timestamp received, up to maxCatchUpRounds total per topic.
+// onDataResponse handles catch-up response. Stores locally without re-gossiping
+// and follows the last valid envelope's compound cursor when more data exists.
 func (m *Manager) onDataResponse(senderPKHex string, senderPK *ec.PublicKey, raw json.RawMessage) error {
 	var resp DataResponsePayload
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil
 	}
 
-	var oldestTS int64
+	var lastValid *envelope.Envelope
 	for _, env := range resp.Envelopes {
 		if err := env.Validate(); err != nil {
 			continue
 		}
+		lastValid = env
 		if m.store != nil {
 			_ = m.store.Ingest(env)
-		}
-		if oldestTS == 0 || env.Timestamp < oldestTS {
-			oldestTS = env.Timestamp
 		}
 	}
 
 	// Follow up if the responder has more data and we haven't exceeded the
 	// catch-up round limit (5 rounds = max 500 envelopes per topic per peer).
-	if resp.HasMore && oldestTS > 0 {
+	if resp.HasMore && lastValid != nil {
 		roundKey := senderPKHex + ":" + resp.Topic
 		m.mu.RLock()
 		rounds := m.catchUpRounds[roundKey]
@@ -432,10 +451,12 @@ func (m *Manager) onDataResponse(senderPKHex string, senderPK *ec.PublicKey, raw
 			m.catchUpRounds[roundKey] = rounds + 1
 			m.mu.Unlock()
 
+			cursorValue := envelope.CursorFor(lastValid)
 			payload, err := Encode(MsgDataRequest, DataRequestPayload{
-				Topic: resp.Topic,
-				Limit: 100,
-				Since: oldestTS,
+				Topic:  resp.Topic,
+				Since:  cursorValue.Timestamp,
+				Limit:  100,
+				Cursor: &cursorValue,
 			})
 			if err == nil {
 				m.mu.RLock()

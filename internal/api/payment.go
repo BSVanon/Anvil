@@ -1,16 +1,12 @@
 package api
 
 import (
-	"bytes"
+	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +21,7 @@ const (
 	HeaderX402Challenge = "X402-Challenge"
 	HeaderX402Proof     = "X402-Proof"
 	HeaderX402Receipt   = "X402-Receipt"
-	// Calhooon x402 compatibility: direct payment in Atomic BEEF format.
+	// Direct payment: an Extended Format (BRC-30) tx; raw and Atomic BEEF are refused.
 	HeaderBSVPayment = "X-Bsv-Payment"
 )
 
@@ -93,16 +89,18 @@ type ProofPayment struct {
 // --- Receipt (server → client) ---
 
 type X402Receipt struct {
-	TxID      string `json:"txid"`
-	Satoshis  int    `json:"satoshis"`
-	Timestamp int64  `json:"timestamp"`
+	TxID         string            `json:"txid"`
+	Satoshis     int               `json:"satoshis"`
+	Timestamp    int64             `json:"timestamp"`
+	outputs      map[string]uint64 // what the payment paid, never sent (paid_outputs_context.go)
+	nodeCoverage uint64            // what a BRC-121 payment paid the node, never sent (brc121.go)
 }
 
 // --- NonceProvider interface ---
 
 // NonceProvider mints nonce UTXOs for 402 challenges.
 type NonceProvider interface {
-	MintNonce() (*NonceUTXO, error)
+	MintNonce(context.Context) (*NonceUTXO, error)
 }
 
 // DevNonceProvider generates deterministic nonces without real UTXOs.
@@ -111,7 +109,10 @@ type DevNonceProvider struct {
 	counter atomic.Int64
 }
 
-func (d *DevNonceProvider) MintNonce() (*NonceUTXO, error) {
+func (d *DevNonceProvider) MintNonce(ctx context.Context) (*NonceUTXO, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	n := d.counter.Add(1)
 	h := sha256.Sum256([]byte(fmt.Sprintf("dev-nonce-%d-%d", n, time.Now().UnixNano())))
 	return &NonceUTXO{
@@ -135,6 +136,9 @@ type PaymentGate struct {
 	requireMempool bool
 	arcClient      *txrelay.ARCClient // for mempool acceptance verification
 	resolver       *TopicMonetizationResolver
+	clientKey      func(*http.Request) string // the key a client's body reads are shared out under (payment_bodyshare.go)
+	brc121         *brc121Gate                // BRC-121 payments, nil when the gate takes none (brc121.go)
+	brc121Off      string                     // why the gate takes no BRC-121 payments
 
 	allowPassthrough bool
 	allowSplit       bool
@@ -144,6 +148,10 @@ type PaymentGate struct {
 	// this map, its price overrides priceSats for that endpoint.
 	endpointPrices map[string]int
 
+	headerTip         func() uint32 // the node's header tip (checkPaymentDepth, payment_arc.go)
+	headerAtHeight    func(uint32) ([]byte, error)
+	headersFresh      func(time.Time) bool
+	replays           *paymentReplaySet // accepted payments, on either path (payment_replay.go)
 	mu                sync.Mutex
 	pendingChallenges map[string]*pendingChallenge
 	reservedPending   int // places held for challenges being issued (payment_pending.go)
@@ -169,6 +177,9 @@ type PaymentGateConfig struct {
 	AllowSplit       bool
 	MaxAppPriceSats  int
 	EndpointPrices   map[string]int // path → satoshis override
+	HeaderTip        func() uint32  // the node's header tip, nil if it has none
+	HeaderAtHeight   func(uint32) ([]byte, error)
+	HeadersFresh     func(time.Time) bool
 
 	// mintBudget bounds the wallet mints of a NonceProvider that is not a
 	// UTXONoncePool; nil means the process-wide defaultMintBudget
@@ -211,6 +222,10 @@ func NewPaymentGate(cfg PaymentGateConfig) *PaymentGate {
 		allowSplit:        cfg.AllowSplit,
 		maxAppPriceSats:   cfg.MaxAppPriceSats,
 		endpointPrices:    cfg.EndpointPrices,
+		headerTip:         cfg.HeaderTip,
+		headerAtHeight:    cfg.HeaderAtHeight,
+		headersFresh:      cfg.HeadersFresh,
+		replays:           newPaymentReplaySet(directPaymentReplayWindow, directPaymentReplayCapacity, time.Now),
 		pendingChallenges: make(map[string]*pendingChallenge),
 		maxPending:        maxPendingChallenges,
 	}
@@ -237,9 +252,19 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		payees, tokenGated := pg.resolvePayees(r)
-		if tokenGated {
-			r.Header.Set("X-Anvil-Authed", "true")
+		r = pg.withNodePrice(r) // read per envelope (node_price_context.go)
+		topic := r.URL.Query().Get("topic")
+		payees, tokenGated, disabledFallback := pg.resolvePayees(r)
+		// Skip the toll only when THIS request's token gate already
+		// validated a token for this exact topic; payment.go sets no auth signal.
+		if tokenGated && appTokenTopicMatches(r, topic) {
+			next(w, r)
+			return
+		}
+		// A disabled content-payment model cannot be unlocked by the node's
+		// own fallback payee. Serve the ordinary redacted response without
+		// offering a payment that cannot reveal it.
+		if disabledFallback {
 			next(w, r)
 			return
 		}
@@ -248,54 +273,66 @@ func (pg *PaymentGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		if pg.takesBRC121(r) {
+			pg.serveBRC121(w, r, next, payees, tokenGated, disabledFallback) // brc121.go
+			return
+		}
 		proofHeader := r.Header.Get(HeaderX402Proof)
 		bsvPayment := r.Header.Get(HeaderBSVPayment)
-
 		if proofHeader == "" && bsvPayment == "" {
-			pg.issueChallengeForPayees(w, r, payees)
+			offer := pg.brc121Offer(r, payees, tokenGated, disabledFallback)
+			if offer > 0 {
+				pg.issueBRC121Offer(w, offer)
+				return
+			}
+			pg.issueChallengeForPayees(w, r, payees, 0)
 			return
 		}
 
-		// Calhooon compatibility: x-bsv-payment contains a raw/BEEF tx
-		// that pays the declared payees directly (no challenge-nonce binding).
+		// X-Bsv-Payment: an Extended Format tx that pays the payees
+		// directly, with no challenge (verifyDirectPayment).
 		if bsvPayment != "" && proofHeader == "" {
-			receipt, err := pg.verifyDirectPayment(bsvPayment, payees)
+			receipt, err := pg.verifyDirectPayment(r.Context(), bsvPayment, payees)
 			if err != nil {
-				writeError(w, paymentRejectionStatus(r, err), "direct payment rejected: "+err.Error())
+				writePaymentRejection(w, r, "direct payment rejected: ", err)
 				return
 			}
 			receiptJSON, _ := json.Marshal(receipt)
 			w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
-			r.Header.Set("X-Anvil-Authed", "true")
-			next(w, r)
+			// Paid, never authenticated (withPayment, paid_outputs_context.go).
+			next(w, r.WithContext(pg.withPayment(r.Context(), receipt)))
 			return
 		}
 
-		receipt, err := pg.verifyProof(r, proofHeader)
+		receipt, err := pg.verifyProof(w, r, proofHeader)
 		if err != nil {
-			writeError(w, paymentRejectionStatus(r, err), "payment rejected: "+err.Error())
+			writePaymentRejection(w, r, "payment rejected: ", err)
 			return
 		}
 
 		receiptJSON, _ := json.Marshal(receipt)
 		w.Header().Set(HeaderX402Receipt, base64Url(receiptJSON))
-		r.Header.Set("X-Anvil-Authed", "true")
-		next(w, r)
+		// Paid, never authenticated (withPayment, paid_outputs_context.go).
+		next(w, r.WithContext(pg.withPayment(r.Context(), receipt)))
 	}
 }
 
-// issueChallengeForPayees builds and returns a 402 challenge. Everything that
-// can refuse the challenge runs before it takes a nonce: the size of what the
-// challenge keeps, the cap on pending challenges (payment_pending.go), and the
-// body read. A nonce the mint budget refuses (payment_budget.go) answers 503
-// with Retry-After.
-func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Request, payees []Payee) {
+// issueChallengeForPayees builds and returns a 402 challenge. In order: the
+// footprint cap, the body read (payment_bodyread.go), the pending-challenge
+// cap (payment_pending.go) and the budget-bounded mint (payment_budget.go).
+func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Request, payees []Payee, offerSats int) {
 	if n := challengeFootprint(r, payees); n > maxChallengeFootprint {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf(
 			"request too large for a payment challenge: method, host, path, query and payee scripts are %d bytes, the limit is %d",
 			n, maxChallengeFootprint))
 		return
 	}
+	bodyBytes, ok := pg.readChallengeBody(w, r)
+	if !ok {
+		return
+	}
+	bodyHash := sha256Hex(bodyBytes)
+	headerHash := canonicalHeaderHash(r)
 	place, wait, ok := pg.reservePending()
 	if !ok {
 		refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonPendingCapExceeded)
@@ -304,21 +341,11 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 	}
 	defer place.release()
 
-	bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	bodyHash := sha256Hex(bodyBytes)
-	// Restore body for downstream handlers
-	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	headerHash := canonicalHeaderHash(r)
-
-	nonce, err := pg.nonceProvider.MintNonce()
+	nonce, err := pg.nonceProvider.MintNonce(r.Context())
 	if err != nil {
-		var spent *mintBudgetError
-		if errors.As(err, &spent) {
-			refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonMintBudgetExceeded)
-			writeUnavailable(w, spent.retryAfter, "no payment nonce available: the node's nonce budget is spent, retry later")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to mint nonce: "+err.Error())
+		// Classified in payment_nonce_errors.go: budget-exceeded gets 503,
+		// anything else gets 500.
+		writeMintNonceError(w, r, err)
 		return
 	}
 
@@ -361,36 +388,12 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 
 	go pg.cleanExpired()
 
+	if offerSats > 0 {
+		pg.brc121.setOffer(w, offerSats)
+		pg.brc121.counts.add(&pg.brc121.counts.offered)
+	}
 	w.Header().Set(HeaderX402Challenge, base64Url(challengeJSON))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusPaymentRequired)
 	_ = json.NewEncoder(w).Encode(challenge)
-}
-
-// --- Helpers ---
-
-func sha256Hex(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
-}
-
-func base64Url(data []byte) string {
-	return base64.RawURLEncoding.EncodeToString(data)
-}
-
-func canonicalHeaderHash(r *http.Request) string {
-	bindHeaders := []string{"host", "content-type", "accept"}
-	var pairs []string
-	for _, name := range bindHeaders {
-		val := r.Header.Get(name)
-		if val == "" && name == "host" {
-			val = r.Host
-		}
-		if val != "" {
-			pairs = append(pairs, name+":"+strings.TrimSpace(val))
-		}
-	}
-	sort.Strings(pairs)
-	canonical := strings.Join(pairs, "\n") + "\n"
-	return sha256Hex([]byte(canonical))
 }

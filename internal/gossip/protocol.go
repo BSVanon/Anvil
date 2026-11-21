@@ -91,16 +91,18 @@ type TopicsPayload struct {
 
 // DataRequestPayload requests cached envelopes for a topic.
 type DataRequestPayload struct {
-	Topic string `json:"topic"`
-	Since int64  `json:"since,omitempty"`
-	Limit int    `json:"limit,omitempty"`
+	Topic  string               `json:"topic"`
+	Since  int64                `json:"since,omitempty"`
+	Limit  int                  `json:"limit,omitempty"`
+	Cursor *envelope.PageCursor `json:"cursor,omitempty"`
 }
 
 // DataResponsePayload replies with cached envelopes.
 type DataResponsePayload struct {
-	Topic     string               `json:"topic"`
-	Envelopes []*envelope.Envelope `json:"envelopes"`
-	HasMore   bool                 `json:"hasMore"`
+	Topic      string               `json:"topic"`
+	Envelopes  []*envelope.Envelope `json:"envelopes"`
+	HasMore    bool                 `json:"hasMore"`
+	NextCursor *envelope.PageCursor `json:"nextCursor,omitempty"`
 }
 
 // SHIPSyncPayload carries SHIP peer registrations between mesh peers.

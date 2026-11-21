@@ -74,10 +74,25 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.envelopeStore != nil {
+		// openRead admits an unauthenticated or paying caller too (not just
+		// the operator) — show the public-only view by default; only the
+		// operator sees the full aggregate. The ephemeral/durable totals
+		// must use the SAME filter as topics: an unfiltered total next to a
+		// public-only topic map lets a caller recover the private count by
+		// subtraction (durable+ephemeral minus the topic sum), which is
+		// just as much a leak as naming the topic directly.
+		topics := s.envelopeStore.PublicTopics()
+		ephemeral := s.envelopeStore.PublicCountEphemeral()
+		durable := s.envelopeStore.PublicCountDurable()
+		if s.isAuthed(r) {
+			topics = s.envelopeStore.Topics()
+			ephemeral = s.envelopeStore.CountEphemeral()
+			durable = s.envelopeStore.CountDurable()
+		}
 		stats["envelopes"] = map[string]interface{}{
-			"ephemeral": s.envelopeStore.CountEphemeral(),
-			"durable":   s.envelopeStore.CountDurable(),
-			"topics":    s.envelopeStore.Topics(),
+			"ephemeral": ephemeral,
+			"durable":   durable,
+			"topics":    topics,
 		}
 	}
 
@@ -130,6 +145,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if s.isAuthed(r) { // the operator's view only (brc121.go)
+		stats["brc121"] = s.paymentGate.brc121Status()
+	}
 	if len(warnings) > 0 {
 		stats["warnings"] = warnings
 	}

@@ -120,35 +120,6 @@ func (s *Server) handleNodePublish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isAuthed reports whether the request carries a valid authorization signal for
-// read-gated content (private envelopes, paid payloads): the internal
-// X-Anvil-Authed marker that ONLY the token/payment middleware sets (client
-// copies are stripped at the trust boundary — see Handler), or the operator
-// bearer token.
-func (s *Server) isAuthed(r *http.Request) bool {
-	return r.Header.Get("X-Anvil-Authed") == "true" ||
-		(s.authToken != "" && r.Header.Get("Authorization") == "Bearer "+s.authToken)
-}
-
-// latestVisibleEnvelope returns the newest envelope on a topic that the caller
-// may see: for unauthenticated callers (isAuthed=false) Private envelopes are
-// skipped, so a private meta:/identity: envelope never leaks through the
-// discovery/identity helper reads; authenticated callers get the newest
-// regardless. Returns nil if none is visible. Used for the small, low-cardinality
-// meta:/identity: topics.
-func (s *Server) latestVisibleEnvelope(topic string, isAuthed bool) *envelope.Envelope {
-	if s.envelopeStore == nil {
-		return nil
-	}
-	envs, _ := s.envelopeStore.QueryByTopic(topic, 0) // newest-first
-	for _, e := range envs {
-		if isAuthed || !e.Private {
-			return e
-		}
-	}
-	return nil
-}
-
 func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 	if s.envelopeStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "envelope store not configured")
@@ -161,8 +132,16 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track demand for this topic.
-	if s.gossipMgr != nil {
+	// authed gates `private` envelope omission below: operator bearer token
+	// ONLY — a verified x402 payment or a valid app token is never
+	// sufficient (docs/ANVIL_PRIVATE_FLAG_CONTRACT.md). A payment or an app
+	// token unredacts only the monetized envelopes it covers, each by its own
+	// rule (envelopeForRequest, envelope_redaction.go).
+	authed := s.isAuthed(r)
+
+	// Track demand for this topic — operator reads never count, so the
+	// operator's own reads can't be mistaken for mesh-wide demand.
+	if s.gossipMgr != nil && !authed {
 		s.gossipMgr.IncrDemand(topic)
 	}
 
@@ -179,14 +158,23 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Sscanf(s, "%d", &since) // bad input keeps zero
 	}
 
-	envs, err := s.envelopeStore.QueryByTopic(topic, limit)
+	var envs []*envelope.Envelope
+	var err error
+	if authed {
+		envs, err = s.envelopeStore.QueryExactTopicAll(topic, 0)
+	} else {
+		// The public exact-topic index contains neither private envelopes nor
+		// subtopics. The caller's limit therefore bounds storage work without
+		// making private writes observable through count or latency.
+		envs, err = s.envelopeStore.QueryPublicExactTopic(topic, limit, since)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query error: %v", err))
 		return
 	}
 
-	// Filter by timestamp if since is set (results are newest-first)
-	if since > 0 {
+	// Operator reads use the complete index and apply response filters here.
+	if authed && since > 0 {
 		filtered := envs[:0]
 		for _, env := range envs {
 			if env.Timestamp > since {
@@ -196,28 +184,19 @@ func (s *Server) handleQueryData(w http.ResponseWriter, r *http.Request) {
 		envs = filtered
 	}
 
-	// Authenticated = bearer token, successful x402 payment, or valid app token.
-	// Gates paid-payload redaction + private-envelope omission below.
-	isAuthed := s.isAuthed(r)
+	if authed && limit > 0 && len(envs) > limit {
+		envs = envs[:limit]
+	}
 
-	// Clone envelopes for response — never mutate the in-memory store.
-	// Private envelopes are OMITTED entirely for unauthenticated callers (not
-	// just payload-redacted) so neither the sealed blob nor its metadata
-	// (topic/pubkey/timestamp/size) leaks; authenticated callers (operator
-	// bearer / x402 / app token) see them in full.
+	// Private envelopes were already dropped above for callers who are not
+	// authenticated, omitted entirely (not just payload-redacted) so
+	// neither the sealed blob nor its metadata (topic/pubkey/timestamp/size)
+	// leaks; operator bearer token callers see them in full. Paying never
+	// unlocks one. Each remaining envelope is served, or redacted into a copy
+	// (the in-memory store is never mutated), by its own monetization.
 	responseEnvs := make([]*envelope.Envelope, 0, len(envs))
 	for _, env := range envs {
-		if env.Private && !isAuthed {
-			continue
-		}
-		if !isAuthed && env.Monetization != nil && env.Monetization.PriceSats > 0 {
-			// Shallow copy + redact payload
-			redacted := *env
-			redacted.Payload = "[paid content — access via HTTP 402]"
-			responseEnvs = append(responseEnvs, &redacted)
-		} else {
-			responseEnvs = append(responseEnvs, env)
-		}
+		responseEnvs = append(responseEnvs, envelopeForRequest(r, env, authed))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -387,89 +366,4 @@ func readBEEF(r *http.Request) ([]byte, error) {
 	}
 
 	return body, nil
-}
-
-// handleAppRedirect serves /app/{name} — redirects to the latest inscription
-// for a named app from the anvil:catalog topic. Every node in the mesh can
-// serve this because the catalog gossips across all peers.
-func (s *Server) handleAppRedirect(w http.ResponseWriter, r *http.Request) {
-	appName := r.PathValue("name")
-	if appName == "" {
-		writeError(w, http.StatusBadRequest, "app name required")
-		return
-	}
-
-	if s.envelopeStore == nil {
-		writeError(w, http.StatusServiceUnavailable, "no envelope store")
-		return
-	}
-
-	envs, err := s.envelopeStore.QueryByTopic("anvil:catalog", 100)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "catalog query failed")
-		return
-	}
-
-	// Search for matching app
-	for _, env := range envs {
-		var listing struct {
-			Name          string `json:"name"`
-			ContentOrigin string `json:"content_origin"`
-		}
-		if err := json.Unmarshal([]byte(env.Payload), &listing); err != nil {
-			continue
-		}
-		if strings.EqualFold(listing.Name, appName) && listing.ContentOrigin != "" {
-			target := "/content/" + listing.ContentOrigin
-			if s.publicURL != "" {
-				target = s.publicURL + target
-			}
-			http.Redirect(w, r, target, http.StatusFound)
-			return
-		}
-	}
-
-	writeError(w, http.StatusNotFound, fmt.Sprintf("app %q not found in catalog or has no content_origin", appName))
-}
-
-// handleAppRedirectWithFallback is like handleAppRedirect but falls back
-// to a configured content origin when the catalog has no matching entry.
-// Used by /explorer to survive catalog expiry.
-func (s *Server) handleAppRedirectWithFallback(w http.ResponseWriter, r *http.Request, fallbackOrigin string) {
-	appName := r.PathValue("name")
-
-	if s.envelopeStore != nil {
-		envs, err := s.envelopeStore.QueryByTopic("anvil:catalog", 100)
-		if err == nil {
-			for _, env := range envs {
-				var listing struct {
-					Name          string `json:"name"`
-					ContentOrigin string `json:"content_origin"`
-				}
-				if err := json.Unmarshal([]byte(env.Payload), &listing); err != nil {
-					continue
-				}
-				if strings.EqualFold(listing.Name, appName) && listing.ContentOrigin != "" {
-					target := "/content/" + listing.ContentOrigin
-					if s.publicURL != "" {
-						target = s.publicURL + target
-					}
-					http.Redirect(w, r, target, http.StatusFound)
-					return
-				}
-			}
-		}
-	}
-
-	// Fall back to configured origin
-	if fallbackOrigin != "" {
-		target := "/content/" + fallbackOrigin
-		if s.publicURL != "" {
-			target = s.publicURL + target
-		}
-		http.Redirect(w, r, target, http.StatusFound)
-		return
-	}
-
-	writeError(w, http.StatusNotFound, "explorer not configured")
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,6 +145,65 @@ func TestHeartbeatOmitsUpstreamStatusWhenNotProvided(t *testing.T) {
 	}
 	if _, present := raw["upstream_status"]; present {
 		t.Error("upstream_status should be omitted when UpstreamFn not provided")
+	}
+}
+
+// TestHeartbeatDemandDropsOnlyPrivateOnlyTopics: a demand entry is dropped
+// from the published heartbeat only when PrivateOnlyTopicsFn reports its
+// topic as private-only. A demand entry for a topic that is simply absent
+// from TopicsFn's current snapshot — an expired ephemeral topic, or demand
+// merged in from a peer's own heartbeat — is NOT private-only and must
+// still reach the published heartbeat unchanged. A caller can increment
+// demand for any topic string, including a private-only one
+// (gossip.Manager.IncrDemand has no privacy awareness at all); the
+// heartbeat is the chokepoint that must not forward a private-only topic's
+// name to every mesh peer, without being so blunt that it also drops a
+// topic this node simply has no local envelope for right now.
+func TestHeartbeatDemandDropsOnlyPrivateOnlyTopics(t *testing.T) {
+	pub, store, _ := testPublisher(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go pub.RunHeartbeat(ctx, 50*time.Millisecond, HeartbeatSources{
+		HeightFn: func() uint32 { return 1 },
+		PeersFn:  func() int { return 0 },
+		TopicsFn: func() map[string]int { return map[string]int{"oracle:rates:bsv": 5} },
+		DemandFn: func() map[string]int {
+			return map[string]int{
+				"oracle:rates:bsv":     3, // public, present in TopicsFn
+				"lacriada:household-x": 7, // private-only — must not survive the filter
+				"remote:topic":         2, // absent from TopicsFn but NOT private-only (e.g. merged from a peer) — must survive
+			}
+		},
+		PrivateOnlyTopicsFn: func() map[string]struct{} {
+			return map[string]struct{}{"lacriada:household-x": {}}
+		},
+	})
+
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+
+	envs, _ := store.QueryByTopic("mesh:heartbeat", 10)
+	if len(envs) == 0 {
+		t.Fatal("no heartbeat envelopes published")
+	}
+
+	if strings.Contains(envs[0].Payload, "lacriada:household-x") {
+		t.Fatalf("a private-only topic must not appear in the heartbeat's demand map: %s", envs[0].Payload)
+	}
+
+	var hb HeartbeatPayload
+	if err := json.Unmarshal([]byte(envs[0].Payload), &hb); err != nil {
+		t.Fatalf("invalid heartbeat payload: %v", err)
+	}
+	if hb.Demand["oracle:rates:bsv"] != 3 {
+		t.Fatalf("expected the public topic's demand to survive the filter, got %v", hb.Demand)
+	}
+	if _, present := hb.Demand["lacriada:household-x"]; present {
+		t.Fatalf("private-only topic's demand must be filtered out, got %v", hb.Demand)
+	}
+	if hb.Demand["remote:topic"] != 2 {
+		t.Fatalf("a topic merely absent from TopicsFn (not private-only) must survive the filter unchanged, got %v", hb.Demand)
 	}
 }
 

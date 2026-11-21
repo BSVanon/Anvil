@@ -395,8 +395,10 @@ type APIConfig struct {
 	MessageboxRateLimit int              `toml:"messagebox_rate_limit"`
 	MessageboxRateBurst int              `toml:"messagebox_rate_burst"`
 	PaymentSatoshis     int              `toml:"payment_satoshis"` // default per-request price; 0 = free
-	RequireMempool      bool             `toml:"require_mempool"`  // require ARC SEEN_ON_NETWORK before accepting x402 payment
+	RequireMempool      bool             `toml:"require_mempool"`  // require ARC SEEN_ON_NETWORK or MINED before accepting an X402-Proof; refused without ARC
 	EndpointPrices      map[string]int   `toml:"endpoint_prices"`  // per-endpoint price overrides (path → sats)
+	X402MintBurst       int              `toml:"x402_mint_burst"`
+	X402MintsPerMinute  int              `toml:"x402_mints_per_minute"`
 	AppPayments         AppPaymentConfig `toml:"app_payments"`
 	ExplorerOrigin      string           `toml:"explorer_origin"` // fallback content_origin for /explorer (survives catalog expiry)
 	// NoncePoolSize is the target number of pre-minted x402 nonce UTXOs kept warm

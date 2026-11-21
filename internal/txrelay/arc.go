@@ -2,6 +2,7 @@ package txrelay
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -52,18 +53,26 @@ func (c *ARCClient) SetFailover(url, apiKey string) {
 // Tries the primary ARC first; on failure, falls back to the secondary if configured.
 // ARC endpoint: POST /v1/tx
 func (c *ARCClient) Submit(raw []byte) (*ARCResponse, error) {
-	resp, err := c.submitTo(c.baseURL, c.apiKey, raw)
-	if err != nil && c.failoverURL != "" {
-		resp, err = c.submitTo(c.failoverURL, c.failoverKey, raw)
+	return c.SubmitContext(context.Background(), raw)
+}
+
+// SubmitContext is Submit under ctx: each request to ARC carries ctx, so the
+// submit, failover included, ends when ctx does, and once ctx has ended the
+// secondary is not tried. Submit is SubmitContext with a context that never
+// ends, bounded only by the client's own timeout.
+func (c *ARCClient) SubmitContext(ctx context.Context, raw []byte) (*ARCResponse, error) {
+	resp, err := c.submitTo(ctx, c.baseURL, c.apiKey, raw)
+	if err != nil && c.failoverURL != "" && ctx.Err() == nil {
+		resp, err = c.submitTo(ctx, c.failoverURL, c.failoverKey, raw)
 	}
 	return resp, err
 }
 
-func (c *ARCClient) submitTo(baseURL, apiKey string, raw []byte) (*ARCResponse, error) {
+func (c *ARCClient) submitTo(ctx context.Context, baseURL, apiKey string, raw []byte) (*ARCResponse, error) {
 	url := baseURL + "/v1/tx"
 
 	body := bytes.NewReader(raw)
-	req, err := http.NewRequest("POST", url, body)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -84,7 +93,7 @@ func (c *ARCClient) submitTo(baseURL, apiKey string, raw []byte) (*ARCResponse, 
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("ARC returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, &ARCHTTPError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var arcResp ARCResponse

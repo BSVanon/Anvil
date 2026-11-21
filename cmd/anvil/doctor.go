@@ -413,7 +413,7 @@ func cmdDoctor(args []string) {
 			warn("wallet not responding (may need funding)")
 		}
 	}
-
+	issues += doctorBRC121(apiURL, cfg.API.AuthToken)
 	// ── 8. Self-healing checks (orphans, crash loops, version skew) ──
 	section("Self-Healing Checks")
 	issues += runSelfHealingChecks(cfg.Node.DataDir, apiURL, fix, *yes)

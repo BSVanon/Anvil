@@ -89,15 +89,15 @@ func (m *Monetization) Validate() error {
 // sha256(type + "\n" + topic + "\n" + payload + "\n" + ttl + "\n" + durable + "\n" + timestamp)
 // This prevents any field from being changed without breaking the signature.
 type Envelope struct {
-	Version   int    `json:"version,omitempty"`   // protocol version (0/absent = v0, future-proofing)
-	Type      string `json:"type"`                // always "data"
-	Topic     string `json:"topic"`               // topic string e.g. "oracle:rates:bsv"
-	Payload   string `json:"payload"`             // application data (opaque to the node)
-	Signature string `json:"signature"`           // DER hex signature over canonical digest
-	Pubkey    string `json:"pubkey"`              // compressed pubkey hex of the signer
-	TTL       int    `json:"ttl"`                 // seconds until expiry (0 = check Durable)
-	Durable   bool   `json:"durable,omitempty"`   // if true + TTL==0: persist forever
-	Timestamp int64  `json:"timestamp"`           // unix timestamp when created (required)
+	Version   int    `json:"version,omitempty"` // protocol version (0/absent = v0, future-proofing)
+	Type      string `json:"type"`              // always "data"
+	Topic     string `json:"topic"`             // topic string e.g. "oracle:rates:bsv"
+	Payload   string `json:"payload"`           // application data (opaque to the node)
+	Signature string `json:"signature"`         // DER hex signature over canonical digest
+	Pubkey    string `json:"pubkey"`            // compressed pubkey hex of the signer
+	TTL       int    `json:"ttl"`               // seconds until expiry (0 = check Durable)
+	Durable   bool   `json:"durable,omitempty"` // if true + TTL==0: persist forever
+	Timestamp int64  `json:"timestamp"`         // unix timestamp when created (required)
 
 	// NoGossip controls whether this envelope is forwarded to mesh peers.
 	// Default (false/absent) = gossip to all peers. Set true to suppress push
@@ -110,8 +110,9 @@ type Envelope struct {
 	// Private is push-suppression PLUS read-gating ("write-can't-read at the
 	// transport"): the node stores and can dual-write/mirror the sealed blob,
 	// but never forwards it to peers (neither push nor pull) and serves it via
-	// GET /data and SSE only to authenticated callers (operator bearer / x402 /
-	// app token). Unauthenticated HTTP reads and ALL mesh pulls omit it
+	// GET /data and SSE only to a caller holding this node's own operator
+	// bearer token — a verified x402 payment or a validated app token is
+	// never sufficient. Unauthenticated HTTP reads and ALL mesh pulls omit it
 	// entirely — so neither the blob nor its metadata (topic, size, timing,
 	// pubkey) leaks to unauthorized callers. Persistence + dual-write are
 	// unchanged. Implies no_gossip. Covered by the signature (below) so it

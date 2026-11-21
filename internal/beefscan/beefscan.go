@@ -183,6 +183,14 @@ func Scan(b []byte) Shape {
 	return w.shape
 }
 
+// Consumed is the number of bytes belonging to the first BEEF in b. It is
+// useful to require a strict encoding after the ordinary shape checks.
+func Consumed(b []byte) int {
+	w := &walker{b: b}
+	w.walk()
+	return w.pos
+}
+
 // Check is Default.Check(b).
 func Check(b []byte) error { return Default.Check(b) }
 

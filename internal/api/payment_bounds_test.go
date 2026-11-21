@@ -2,7 +2,7 @@ package api
 
 import (
 	"bytes"
-	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -15,8 +15,10 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/txrelay"
 	"github.com/bsv-blockchain/go-sdk/chainhash"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	bsvscript "github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 )
 
 // paddedPayment pays 200 sats to payeeScriptHex and carries pad bytes in an
@@ -44,6 +46,65 @@ func paddedPayment(t *testing.T, nonce *NonceUTXO, payeeScriptHex string, pad in
 	return tx
 }
 
+// paddedSignedDirectPayment is paddedPayment's X-Bsv-Payment counterpart: a
+// genuinely signed P2PKH spend (embedded source output + real signature,
+// same shape as buildSignedDirectPaymentTx, payment_direct_verify_test.go)
+// paying 200 sats to payeeScriptHex, padded with pad bytes in an OP_FALSE
+// OP_RETURN output for header-size-cap testing. verifyDirectPaymentInputs
+// verifies every input's signature unconditionally, so a direct-payment
+// test fixture — unlike paddedPayment's nonce-bound fixture, which the
+// proof flow's dev-mode nonce sentinel exempts from that check — needs one.
+// Returned pre-serialized as extended-format hex (EFHex requires the
+// embedded source output tx.Bytes() alone would drop).
+func paddedSignedDirectPayment(t *testing.T, payeeScriptHex string, pad int) string {
+	t.Helper()
+	key, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	addr, err := bsvscript.NewAddressFromPublicKey(key.PubKey(), true)
+	if err != nil {
+		t.Fatalf("derive address: %v", err)
+	}
+	lockScript, err := p2pkh.Lock(addr)
+	if err != nil {
+		t.Fatalf("build lock script: %v", err)
+	}
+	sourceTx := transaction.NewTransaction()
+	sourceTx.AddOutput(&transaction.TransactionOutput{Satoshis: 1000, LockingScript: lockScript})
+	sourceTxID := sourceTx.TxID()
+
+	tx := transaction.NewTransaction()
+	tx.AddInput(&transaction.TransactionInput{
+		SourceTXID:        sourceTxID,
+		SourceTxOutIndex:  0,
+		SequenceNumber:    0xffffffff,
+		SourceTransaction: sourceTx,
+	})
+	payee, err := bsvscript.NewFromHex(payeeScriptHex)
+	if err != nil {
+		t.Fatalf("payee script: %v", err)
+	}
+	tx.AddOutput(&transaction.TransactionOutput{Satoshis: 200, LockingScript: payee})
+	data := &bsvscript.Script{bsvscript.OpFALSE, bsvscript.OpRETURN}
+	_ = data.AppendPushData(make([]byte, pad))
+	tx.AddOutput(&transaction.TransactionOutput{LockingScript: data})
+
+	unlock, err := p2pkh.Unlock(key, nil)
+	if err != nil {
+		t.Fatalf("create unlock template: %v", err)
+	}
+	tx.Inputs[0].UnlockingScriptTemplate = unlock
+	if err := tx.Sign(); err != nil {
+		t.Fatalf("sign tx: %v", err)
+	}
+	efHex, err := tx.EFHex()
+	if err != nil {
+		t.Fatalf("serialize extended format: %v", err)
+	}
+	return efHex
+}
+
 // serveGateMeasured is serveGate that also reports the bytes allocated while
 // the request was served.
 func serveGateMeasured(pg *PaymentGate, header, value string) (*httptest.ResponseRecorder, uint64) {
@@ -58,12 +119,13 @@ func serveGateMeasured(pg *PaymentGate, header, value string) (*httptest.Respons
 // is decoded, even when its content would pay; one at the cap is decoded.
 func TestPaymentHeaderSizeCap(t *testing.T) {
 	pg := testGate(t, 100)
+	pg.arcClient = mockARCServer(t) // direct payments need ARC
 	payee := testPayeeScript(t)
 	proof := func(pad int) string {
 		ch := gateChallenge(t, pg, "/status")
 		return proofForTx(t, ch, paddedPayment(t, ch.NonceUTXO, payee, pad))
 	}
-	direct := func(pad int) string { return hex.EncodeToString(paddedPayment(t, nil, payee, pad).Bytes()) }
+	direct := func(pad int) string { return paddedSignedDirectPayment(t, payee, pad) }
 	atCap := strings.Repeat("ab", maxPaymentHeaderBytes/2)
 	cases := []struct {
 		name, header, value string
@@ -95,7 +157,7 @@ func TestX402ProofAttemptsSpendChallenge(t *testing.T) {
 	ch := gateChallenge(t, pg, "/status")
 	wrongPayee := buildProof(t, ch, 200, "76a914000000000000000000000000000000000000000088ac")
 	for i := 1; i <= maxProofAttempts; i++ {
-		if w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, wrongPayee); w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "no output pays") {
+		if w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, wrongPayee); w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "no distinct output pays") {
 			t.Fatalf("failed proof %d: got %d %s", i, w.Code, w.Body.String())
 		}
 	}
@@ -111,17 +173,17 @@ func TestX402ProofAttemptsSpendChallenge(t *testing.T) {
 	}
 }
 
-// An honest client whose proof fails twice for a reason it cannot control,
-// here ARC answering 503, pays on its third try with the same proof.
+// An ambiguous ARC failure answers 503 without consuming a proof attempt or
+// offering a replacement payment. The same proof remains retryable.
 func TestX402RetryAfterTransientARCFailure(t *testing.T) {
 	var calls atomic.Int32
 	arc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if calls.Add(1) <= 2 {
+		if calls.Add(1) <= maxProofAttempts+1 {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"txid":"00","txStatus":"SEEN_ON_NETWORK"}`))
+		_ = json.NewEncoder(w).Encode(txrelay.ARCResponse{TxID: submittedTxID(t, r), Status: "SEEN_ON_NETWORK"})
 	}))
 	t.Cleanup(arc.Close)
 	payee := testPayeeScript(t)
@@ -129,13 +191,23 @@ func TestX402RetryAfterTransientARCFailure(t *testing.T) {
 		RequireMempool: true, ARCClient: txrelay.NewARCClient(arc.URL, "")})
 	ch := gateChallenge(t, pg, "/status")
 	proof := buildProof(t, ch, 200, payee)
-	for i := 1; i <= 2; i++ {
-		if w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, proof); w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "ARC broadcast failed") {
-			t.Fatalf("try %d: got %d %s, want 402 from ARC", i, w.Code, w.Body.String())
+	for i := 1; i <= maxProofAttempts+1; i++ {
+		w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, proof)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "ARC broadcast failed") {
+			t.Fatalf("try %d: got %d %s, want 503 from ambiguous ARC failure", i, w.Code, w.Body.String())
+		}
+		if w.Header().Get(HeaderX402Challenge) != "" || w.Header().Get(headerBRC121Sats) != "" {
+			t.Fatalf("try %d advertised a new payment after an ambiguous submit", i)
 		}
 	}
+	pg.mu.Lock()
+	pending := len(pg.pendingChallenges)
+	pg.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("ambiguous failures consumed the challenge; %d pending, want 1", pending)
+	}
 	if w := serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, proof); w.Code != http.StatusOK {
-		t.Fatalf("third try: got %d %s, want 200", w.Code, w.Body.String())
+		t.Fatalf("same proof after ambiguous failures: got %d %s, want 200", w.Code, w.Body.String())
 	}
 }
 
@@ -163,8 +235,11 @@ func TestX402UnboundProofsDoNotCountAgainstChallenge(t *testing.T) {
 }
 
 // Concurrent proofs for one challenge are counted when they start, so only
-// maxProofAttempts of them reach the expensive steps. Here they wait on a
-// blocked ARC while every other sender is refused.
+// maxProofAttempts of them reach the expensive steps. Of those, the one that
+// claims the transaction first waits on a blocked ARC; the others carry the
+// same transaction while it is in flight, so they are refused as replays
+// (payment_replay.go), and the last of them removes the spent challenge.
+// Every sender past the count is refused, as spent or as unknown.
 func TestX402ConcurrentProofsCappedPerChallenge(t *testing.T) {
 	release := make(chan struct{})
 	var arcCalls atomic.Int32
@@ -189,24 +264,34 @@ func TestX402ConcurrentProofsCappedPerChallenge(t *testing.T) {
 		go func() { results <- serveGate(pg, http.MethodGet, "/status", HeaderX402Proof, proof) }()
 	}
 	deadline := time.After(10 * time.Second)
-	for refused := 0; refused < senders-maxProofAttempts; refused++ {
+	spent, inFlight := 0, 0
+	for spent+inFlight < senders-1 {
 		select {
 		case w := <-results:
-			if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "challenge spent") {
-				t.Fatalf("sender past the budget: got %d %s, want 402 challenge spent", w.Code, w.Body.String())
+			switch {
+			case w.Code == http.StatusPaymentRequired && (strings.Contains(w.Body.String(), "challenge spent") ||
+				strings.Contains(w.Body.String(), "unknown or expired challenge")):
+				spent++
+			case w.Code == http.StatusPaymentRequired && strings.Contains(w.Body.String(), codePaymentReplayed):
+				inFlight++
+			default:
+				t.Fatalf("a sender refused while one proof waits on ARC: got %d %s", w.Code, w.Body.String())
 			}
 		case <-deadline:
-			t.Fatalf("%d of %d senders refused after 10s; %d proofs reached ARC", refused, senders-maxProofAttempts, arcCalls.Load())
+			t.Fatalf("%d senders refused as spent and %d as in flight after 10s; %d proofs reached ARC", spent, inFlight, arcCalls.Load())
 		}
+	}
+	if spent != senders-maxProofAttempts || inFlight != maxProofAttempts-1 {
+		t.Fatalf("got %d refused as spent and %d as in flight, want %d and %d", spent, inFlight, senders-maxProofAttempts, maxProofAttempts-1)
 	}
 	releaseARC()
-	for i := 0; i < maxProofAttempts; i++ {
-		if w := <-results; w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "ARC broadcast failed") {
-			t.Fatalf("counted proof: got %d %s, want 402 from ARC", w.Code, w.Body.String())
-		}
+	if w := <-results; w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), codePaymentSubmitUncertain) {
+		t.Fatalf("the proof that claimed the transaction: got %d %s, want uncertain-submit 503", w.Code, w.Body.String())
+	} else if w.Header().Get(HeaderX402Challenge) != "" || w.Header().Get(headerBRC121Sats) != "" {
+		t.Fatal("ambiguous ARC failure advertised another payment")
 	}
-	if n := arcCalls.Load(); n != maxProofAttempts {
-		t.Fatalf("%d proofs reached ARC, want %d", n, maxProofAttempts)
+	if n := arcCalls.Load(); n != 1 {
+		t.Fatalf("%d proofs reached ARC, want 1", n)
 	}
 }
 
@@ -223,6 +308,7 @@ func TestX402ReachableOnFreeNodeThroughPublishedTopic(t *testing.T) {
 		AllowPassthrough: true,
 		AllowSplit:       true,
 		MaxAppPriceSats:  10000,
+		ARCClient:        mockARCServer(t), // direct payments need ARC
 	})
 	srv.mux = http.NewServeMux()
 	srv.routes()

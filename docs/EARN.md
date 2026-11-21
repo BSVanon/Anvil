@@ -13,12 +13,19 @@ This is x402 — micropayments over HTTP, using BSV transactions as proof-of-pay
 ## How it works
 
 1. Client requests a gated endpoint
-2. Anvil responds `402 Payment Required` with a challenge (price, payee script, nonce)
-3. Client builds a BSV transaction paying the challenge amount to the payee
-4. Client retries the request with `X402-Proof` header containing the payment proof
+2. For the node's own price, Anvil responds `402 Payment Required` with a
+   BRC-121 offer in the `x-bsv-sats` and `x-bsv-server` headers
+3. A BRC-42 wallet builds the BRC-121 payment transaction
+4. The client retries the request with the five `x-bsv-*` payment headers
 5. Anvil verifies the proof and serves the response
 
 The client pays. The node verifies. Your address receives the funds. Nobody custodies anything.
+
+`X402-Proof` challenges are deprecated in favor of BRC-121. A 402 that offers
+BRC-121 does not advertise an `X402-Challenge` and does not mint a nonce coin.
+Existing proofs and challenges from routes where BRC-121 cannot pay all payees
+remain accepted. App passthrough and split prices use `X-Bsv-Payment` direct
+payments because the node cannot derive or hold an app's BRC-121 key.
 
 ## Four payment models
 

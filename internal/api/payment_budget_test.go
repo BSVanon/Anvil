@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sync"
@@ -37,9 +38,9 @@ type countingProvider struct {
 	mints atomic.Int64
 }
 
-func (p *countingProvider) MintNonce() (*NonceUTXO, error) {
+func (p *countingProvider) MintNonce(ctx context.Context) (*NonceUTXO, error) {
 	p.mints.Add(1)
-	return p.dev.MintNonce()
+	return p.dev.MintNonce(ctx)
 }
 
 // waitPoolMints waits until prov has minted want nonces and the pool has no
@@ -117,12 +118,12 @@ func TestNoncePool_RefillAndOnDemandMintsSpendTheBudget(t *testing.T) {
 	pool := newUTXONoncePool(prov, 100, nil, newMintBudget(mintBurst, mintsPerMinute, clock.now))
 	waitPoolMints(t, pool, prov, mintBurst)
 	for i := 0; i < mintBurst; i++ {
-		if _, err := pool.MintNonce(); err != nil {
+		if _, err := pool.MintNonce(t.Context()); err != nil {
 			t.Fatalf("pooled nonce %d: %v", i+1, err)
 		}
 	}
 	waitPoolMints(t, pool, prov, mintBurst)
-	_, err := pool.MintNonce()
+	_, err := pool.MintNonce(t.Context())
 	var spent *mintBudgetError
 	if !errors.As(err, &spent) || spent.retryAfter != 30*time.Second {
 		t.Fatalf("empty pool, spent budget: got %v, want a mint budget error with 30s", err)
@@ -130,7 +131,7 @@ func TestNoncePool_RefillAndOnDemandMintsSpendTheBudget(t *testing.T) {
 	waitPoolMints(t, pool, prov, mintBurst)
 
 	clock.advance(30 * time.Second)
-	if _, err := pool.MintNonce(); err != nil {
+	if _, err := pool.MintNonce(t.Context()); err != nil {
 		t.Fatalf("on-demand mint 30s later: %v", err)
 	}
 	waitPoolMints(t, pool, prov, mintBurst+1)
@@ -138,7 +139,7 @@ func TestNoncePool_RefillAndOnDemandMintsSpendTheBudget(t *testing.T) {
 	// 330s in all earn 11 mints; the on-demand mint starts a refill that
 	// takes what is left.
 	clock.advance(300 * time.Second)
-	if _, err := pool.MintNonce(); err != nil {
+	if _, err := pool.MintNonce(t.Context()); err != nil {
 		t.Fatalf("on-demand mint 330s in: %v", err)
 	}
 	waitPoolMints(t, pool, prov, mintBurst+11)
@@ -171,8 +172,16 @@ func TestPaymentGate_ConcurrentChallengesMintOnlyTheBudget(t *testing.T) {
 	for c := range codes {
 		count[c]++
 	}
-	if count[[2]string{"Payment Required", ""}] != mintBurst || count[[2]string{"Service Unavailable", "30"}] != callers-mintBurst {
-		t.Fatalf("got %v, want %d challenges and %d 503s with Retry-After 30", count, mintBurst, callers-mintBurst)
+	challenges := count[[2]string{"Payment Required", ""}]
+	capacityRefusals := count[[2]string{"Service Unavailable", "1"}]
+	budgetRefusals := count[[2]string{"Service Unavailable", "30"}]
+	if challenges != mintBurst || capacityRefusals+budgetRefusals != callers-mintBurst {
+		t.Fatalf("got %v, want %d challenges and %d capacity-or-budget refusals", count, mintBurst, callers-mintBurst)
+	}
+	for result := range count {
+		if result != [2]string{"Payment Required", ""} && result != [2]string{"Service Unavailable", "1"} && result != [2]string{"Service Unavailable", "30"} {
+			t.Fatalf("unexpected challenge result %v in %v", result, count)
+		}
 	}
 	if n := prov.mints.Load(); n != mintBurst {
 		t.Fatalf("%d concurrent challenges minted %d nonces, want %d", callers, n, mintBurst)

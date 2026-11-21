@@ -106,39 +106,40 @@ type HealthCheck struct {
 
 // ServerConfig holds all parameters for NewServer.
 type ServerConfig struct {
-	HeaderStore         headerStore
-	ProofStore          *spv.ProofStore
-	EnvelopeStore       *envelope.Store
-	OverlayDir          *overlay.Directory
-	Validator           *spv.Validator
-	Broadcaster         *txrelay.Broadcaster
-	GossipMgr           *gossip.Manager
-	AuthToken           string
-	RateLimit           int
-	TrustProxy          bool
-	TrustProxyHops      int
-	MessageboxRateLimit int
-	MessageboxRateBurst int
-	PaymentSatoshis     int
-	PayeeScriptHex      string
-	NonceProvider       NonceProvider
-	AllowPassthrough    bool
-	AllowSplit          bool
-	AllowTokenGating    bool
-	MaxAppPriceSats     int
-	EndpointPrices      map[string]int // per-endpoint price overrides
-	ARCClient           *txrelay.ARCClient
-	RequireMempool      bool
-	Logger              *slog.Logger
-	NodeName            string
-	IdentityPub         string
-	BondChecker         *bond.Checker
-	P2PTxSource         content.TxSource
-	P2PBlockSource      content.BlockTxSource
-	HeaderLookup        func(int) string
-	ExplorerOrigin      string // fallback content_origin for /explorer when catalog is empty
-	PublicURL           string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
-	HeaderSyncStatus    func() headers.SyncStats
+	HeaderStore          headerStore
+	ProofStore           *spv.ProofStore
+	EnvelopeStore        *envelope.Store
+	OverlayDir           *overlay.Directory
+	Validator            *spv.Validator
+	Broadcaster          *txrelay.Broadcaster
+	GossipMgr            *gossip.Manager
+	AuthToken            string
+	RateLimit            int
+	TrustProxy           bool
+	TrustProxyHops       int
+	MessageboxRateLimit  int
+	MessageboxRateBurst  int
+	PaymentSatoshis      int
+	PayeeScriptHex       string
+	NonceProvider        NonceProvider
+	AllowPassthrough     bool
+	AllowSplit           bool
+	AllowTokenGating     bool
+	MaxAppPriceSats      int
+	EndpointPrices       map[string]int // per-endpoint price overrides
+	ARCClient            *txrelay.ARCClient
+	RequireMempool       bool
+	HeaderStaleAfterSecs int
+	Logger               *slog.Logger
+	NodeName             string
+	IdentityPub          string
+	BondChecker          *bond.Checker
+	P2PTxSource          content.TxSource
+	P2PBlockSource       content.BlockTxSource
+	HeaderLookup         func(int) string
+	ExplorerOrigin       string // fallback content_origin for /explorer when catalog is empty
+	PublicURL            string // HTTPS public URL for /app/ redirects (e.g. "https://anvil.sendbsv.com")
+	HeaderSyncStatus     func() headers.SyncStats
 	// ServiceHealthFn returns this node's own service-process health as
 	// "healthy" | "degraded" | "broken" | "" (unknown). Wired from main.go
 	// using the diagnostics package. Used to surface service_health on
@@ -156,11 +157,10 @@ type ServerConfig struct {
 	// each request is authenticated by the sender's own identity key — no
 	// shared operator secret in public clients. Nil (mesh/wallet disabled)
 	// keeps the legacy operator-token gate.
-	Wallet sdk.Interface
-
-	// CustomCapabilities are operator-declared capability entries merged into
-	// the /.well-known/anvil manifest. Lets an operator advertise AVOS oracle
-	// availability, custom data relays, etc., without Anvil code changes.
+	Wallet  sdk.Interface
+	DataDir string // the node's data_dir; holds the BRC-121 payment journal
+	// CustomCapabilities are operator entries merged into the manifest.
+	// They allow custom capability declarations without code changes.
 	CustomCapabilities []map[string]interface{}
 	MessagingPolicy    MessagingPolicy // see its doc comment
 }
@@ -187,18 +187,7 @@ func NewServer(cfg ServerConfig) *Server {
 		cfg.TrustProxyHops,
 	)
 	resolver := NewTopicMonetizationResolver(cfg.EnvelopeStore)
-	pg := NewPaymentGate(PaymentGateConfig{
-		PriceSats:        cfg.PaymentSatoshis,
-		PayeeScriptHex:   cfg.PayeeScriptHex,
-		NonceProvider:    cfg.NonceProvider,
-		RequireMempool:   cfg.RequireMempool,
-		ARCClient:        cfg.ARCClient,
-		Resolver:         resolver,
-		AllowPassthrough: cfg.AllowPassthrough,
-		AllowSplit:       cfg.AllowSplit,
-		MaxAppPriceSats:  cfg.MaxAppPriceSats,
-		EndpointPrices:   cfg.EndpointPrices,
-	})
+	pg := newServerPaymentGate(cfg, resolver)
 	tg := NewTokenGate(resolver, cfg.AllowTokenGating)
 	logger := cfg.Logger
 	if logger == nil {
@@ -259,8 +248,8 @@ func (s *Server) routes() {
 	}))
 	s.mux.HandleFunc("GET /status", s.openRead(s.handleStatus))
 	s.mux.HandleFunc("GET /stats", s.openRead(s.handleStats))
-	s.mux.HandleFunc("GET /mesh/status", cors(s.handleMeshStatus))
-	s.mux.HandleFunc("GET /mesh/nodes", cors(s.handleMeshNodes))
+	s.mux.HandleFunc("GET /mesh/status", s.openPublic(s.handleMeshStatus))
+	s.mux.HandleFunc("GET /mesh/nodes", s.openPublic(s.handleMeshNodes))
 	s.mux.HandleFunc("GET /headers/tip", s.openRead(s.handleHeadersTip))
 	s.mux.HandleFunc("GET /headers/range", s.openRead(s.handleHeadersRange))
 	// Chaintracks-compatible SPV header source for the SendBSV wallet's
@@ -315,7 +304,7 @@ func (s *Server) routes() {
 	// Apps and Explorer use this to discover payment capabilities.
 	s.mux.HandleFunc("GET /.well-known/x402", cors(s.handleX402Discovery))
 	s.mux.HandleFunc("GET /.well-known/x402-info", cors(s.handleX402Info))
-	s.mux.HandleFunc("GET /.well-known/anvil", cors(s.handleAnvilManifest))
+	s.mux.HandleFunc("GET /.well-known/anvil", s.openPublic(s.handleAnvilManifest))
 	s.mux.HandleFunc("GET /.well-known/identity", cors(s.handleIdentity))
 	s.mux.HandleFunc("GET /app/{name}", cors(s.handleAppRedirect))
 	s.mux.HandleFunc("GET /explorer", cors(func(w http.ResponseWriter, r *http.Request) {
@@ -376,21 +365,30 @@ func (s *Server) routes() {
 	}
 }
 
-// openRead wraps a handler with CORS, rate limiting, token gating, and x402 payment gating.
+// openRead wraps a handler with CORS, rate limiting, token gating, and x402
+// payment gating — except for the operator's own bearer token, admitted free.
 func (s *Server) openRead(next http.HandlerFunc) http.HandlerFunc {
-	h := next
+	gated := next
 	if s.paymentGate != nil {
-		h = s.paymentGate.Middleware(h)
+		gated = s.paymentGate.Middleware(gated)
 	}
 	if s.tokenGate != nil {
-		h = s.tokenGate.Middleware(h)
+		gated = s.tokenGate.Middleware(gated)
+	}
+	// The operator is never charged on a read route — admit a valid
+	// operator token before the payment/token gate chain even runs, so it
+	// can neither 402 nor 401 them. Matches authOrPay.
+	h := func(w http.ResponseWriter, r *http.Request) {
+		if s.isOperatorToken(r) {
+			next(w, r)
+			return
+		}
+		gated(w, r)
 	}
 	if s.rateLimiter != nil {
 		h = s.rateLimiter.Middleware(h)
 	}
-	// CORS: open read endpoints are public and safe to call from any origin.
-	// Required for browser-based consumers like the Anvil Explorer.
-	return cors(h)
+	return cors(credentialDependentRead(h))
 }
 
 // openPublic mounts a handler as public infrastructure: CORS + rate limiting,
@@ -434,10 +432,10 @@ func cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics, x-includes-off-chain-values, x-aggregation, X-BSV-Topic, X-Overlay-Cursor")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics, x-includes-off-chain-values, x-aggregation, X-BSV-Topic, X-Overlay-Cursor, x-bsv-beef, x-bsv-sender, x-bsv-nonce, x-bsv-time, x-bsv-vout")
 		// Expose the /overlay/query readiness headers so browser callers can read
 		// them (custom response headers are hidden from JS unless exposed).
-		w.Header().Set("Access-Control-Expose-Headers", "X-Overlay-Gasp-Enabled, X-Overlay-Gasp-Initial-Sync-Done, X-Overlay-Gasp-Last-Sync-Unix, X-Overlay-Gasp-Interval-Secs, X-Overlay-Truncated, X-Overlay-Cursor, X-Overlay-Omitted, X-BEEF-Source, X-BEEF-Subject-Proven")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Overlay-Gasp-Enabled, X-Overlay-Gasp-Initial-Sync-Done, X-Overlay-Gasp-Last-Sync-Unix, X-Overlay-Gasp-Interval-Secs, X-Overlay-Truncated, X-Overlay-Cursor, X-Overlay-Omitted, X-BEEF-Source, X-BEEF-Subject-Proven, x-bsv-sats, x-bsv-server")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -698,10 +696,12 @@ func (s *Server) handleStorageQuoteStub(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleAnvilManifest(w http.ResponseWriter, r *http.Request) {
 	tip := s.headerStore.Tip()
 
-	// Build capabilities from live topics
+	// Build capabilities from live topics. This route carries no auth layer
+	// at all (cors only) — PublicTopics (not Topics) so a private topic's
+	// name/count never appears in a manifest any crawler can fetch.
 	capabilities := []map[string]interface{}{}
 	if s.envelopeStore != nil {
-		for topic, count := range s.envelopeStore.Topics() {
+		for topic, count := range s.envelopeStore.PublicTopics() {
 			cap := map[string]interface{}{
 				"type":      "data-feed",
 				"topic":     topic,
@@ -778,21 +778,15 @@ func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
 		// Handle CORS preflight for authOrPay endpoints
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, x-bsv-beef, x-bsv-sender, x-bsv-nonce, x-bsv-time, x-bsv-vout")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
-		// Check X-Anvil-Auth first, then Authorization (same order as requireAuth)
-		token := r.Header.Get("X-Anvil-Auth")
-		if token == "" {
-			if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
-				token = auth[7:]
-			}
-		}
-		if token != "" && s.authToken != "" && token == s.authToken {
-			r.Header.Set("X-Anvil-Authed", "true")
+		// Operator bearer token, constant-time — same helper isAuthed and
+		// openRead use (auth.go).
+		if s.isOperatorToken(r) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			next(w, r)
 			return
@@ -851,21 +845,14 @@ func (s *Server) authOrPayBinary(next http.HandlerFunc) http.HandlerFunc {
 		// CORS preflight
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, x-bsv-beef, x-bsv-sender, x-bsv-nonce, x-bsv-time, x-bsv-vout")
 			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
-		// 1. Bearer token
-		token := r.Header.Get("X-Anvil-Auth")
-		if token == "" {
-			if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
-				token = auth[7:]
-			}
-		}
-		if token != "" && s.authToken != "" && token == s.authToken {
-			r.Header.Set("X-Anvil-Authed", "true")
+		// 1. Bearer token, constant-time — same helper isAuthed and openRead use.
+		if s.isOperatorToken(r) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			next(w, r)
 			return
@@ -897,14 +884,13 @@ func (s *Server) authOrPayBinary(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Trust boundary: strip any client-supplied X-Anvil-Authed. This header
-		// is an INTERNAL authorization signal that only the token/payment
-		// middleware may set (on a validated app-token or x402 payment);
-		// handlers read it to authorize read-gated content (private envelopes,
-		// paid payloads). Without this strip a client could send
-		// `X-Anvil-Authed: true` and — on a node with no gate configured — read
-		// content it never authenticated for. Server middleware re-sets it
-		// downstream on genuine success, so legitimate auth is unaffected.
+		// Trust boundary: strip any client-supplied X-Anvil-Authed. Nothing in
+		// this codebase sets or reads it as a signal anymore — the operator
+		// token is re-checked directly on every request (isOperatorToken,
+		// auth.go), and a validated app token or verified payment is carried
+		// as an unexported request-context value a client cannot set at all
+		// (app_token_context.go, paid_context.go). Stripped here as defense
+		// in depth only.
 		r.Header.Del("X-Anvil-Authed")
 		serveAndAbandonUnread(s.mux, w, r)
 	})

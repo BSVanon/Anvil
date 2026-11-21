@@ -26,8 +26,8 @@ import (
 // The signature is DER-encoded, verified against the auth_pubkey from
 // the topic's envelope monetization metadata.
 type TokenGate struct {
-	resolver     *TopicMonetizationResolver
-	enabled      bool
+	resolver       *TopicMonetizationResolver
+	enabled        bool
 	validityWindow time.Duration
 }
 
@@ -53,8 +53,14 @@ func (tg *TokenGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A token requirement, like app pricing (payment_resolve.go), only
+		// ever applies on a topic's own content route (isAppContentRoute,
+		// content_route.go): GET or HEAD on /data or /data/subscribe. A node
+		// route's ?topic= is irrelevant to what it serves, so a token-model
+		// topic must never 401/403 /stats, /headers/tip or any other node
+		// route just because the query string happens to name that topic.
 		topic := r.URL.Query().Get("topic")
-		if topic == "" {
+		if topic == "" || !isAppContentRoute(r) {
 			next(w, r)
 			return
 		}
@@ -77,8 +83,15 @@ func (tg *TokenGate) Middleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		r.Header.Set("X-Anvil-Authed", "true")
-		next(w, r)
+		// Carry the validated topic and the key that issued the token as
+		// request-context values — never a header, never "authenticated". A
+		// validated token is a credential for token-model PUBLIC content on
+		// exactly this topic, issued by exactly this key; it is read by
+		// payment.go (toll skip) and by envelopeForRequest
+		// (envelope_redaction.go), and it is NEVER consulted by
+		// isAuthed/isOperatorToken.
+		ctx := withAppTokenIssuer(withAppTokenTopic(r.Context(), topic), mon.AuthPubkey)
+		next(w, r.WithContext(ctx))
 	}
 }
 

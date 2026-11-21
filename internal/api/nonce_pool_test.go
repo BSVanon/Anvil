@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"testing"
@@ -17,7 +18,7 @@ type mockNonceProvider struct {
 // exhaust; payment_budget_test.go tests the budget.
 func (*mockNonceProvider) noncesCostNothing() {}
 
-func (m *mockNonceProvider) MintNonce() (*NonceUTXO, error) {
+func (m *mockNonceProvider) MintNonce(context.Context) (*NonceUTXO, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.counter++
@@ -43,7 +44,7 @@ func TestUTXONoncePoolMintFromPool(t *testing.T) {
 	}
 
 	// Mint from pool — should be instant (no new provider call)
-	nonce, err := pool.MintNonce()
+	nonce, err := pool.MintNonce(t.Context())
 	if err != nil {
 		t.Fatalf("MintNonce: %v", err)
 	}
@@ -67,7 +68,7 @@ func TestUTXONoncePoolOnDemandWhenEmpty(t *testing.T) {
 	}
 
 	// Pool is empty — should mint on-demand
-	nonce, err := pool.MintNonce()
+	nonce, err := pool.MintNonce(t.Context())
 	if err != nil {
 		t.Fatalf("MintNonce on-demand: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestUTXONoncePoolReplenishTriggered(t *testing.T) {
 
 	// Drain to below 25% (below 2)
 	for i := 0; i < 7; i++ {
-		pool.MintNonce()
+		pool.MintNonce(t.Context())
 	}
 
 	// Should have 1 left, and replenish should be triggered

@@ -78,8 +78,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check auth status for private omission + paid redaction (same as GET /data)
-	isAuthed := s.isAuthed(r)
+	// authed gates private-envelope omission; a payment or an app token
+	// unredacts only the monetized envelopes it covers, each by its own rule
+	// (envelopeForRequest, envelope_redaction.go), the same as GET /data
+	// (handlers.go). Paying never unlocks a private envelope over SSE either.
+	authed := s.isAuthed(r)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -99,8 +102,9 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track demand for this topic.
-	if s.gossipMgr != nil {
+	// Track demand for this topic — operator reads never count, so the
+	// operator's own subscriptions can't be mistaken for mesh-wide demand.
+	if s.gossipMgr != nil && !authed {
 		s.gossipMgr.IncrDemand(topic)
 	}
 
@@ -114,18 +118,17 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case env := <-ch:
-			// Private envelopes are never streamed to unauthenticated
-			// subscribers (read-gated, matching GET /data omission).
-			if env.Private && !isAuthed {
+			// Private envelopes are never streamed to callers who are not
+			// authenticated (read-gated, matching GET /data omission). A
+			// verified payment alone is never sufficient.
+			if env.Private && !authed {
 				continue
 			}
-			// Redact paid payloads for unauthenticated subscribers
-			outEnv := env
-			if !isAuthed && env.Monetization != nil && env.Monetization.PriceSats > 0 {
-				redacted := *env
-				redacted.Payload = "[paid content — access via HTTP 402]"
-				outEnv = &redacted
-			}
+			// The hub delivers only envelopes on exactly the subscribed topic
+			// (envelopeHub.notify), so every envelope here is on the topic
+			// this request's payment or token was checked against. Each is
+			// still served or redacted by its own monetization.
+			outEnv := envelopeForRequest(r, env, authed)
 
 			data, err := json.Marshal(outEnv)
 			if err != nil {

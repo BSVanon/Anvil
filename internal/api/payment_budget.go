@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -9,7 +11,7 @@ import (
 	"time"
 )
 
-// The nonce mint budget (cold-review round 3, S7).
+// The nonce mint budget.
 //
 // Every 402 challenge takes a nonce (issueChallengeForPayees). A charging node
 // pops one from its UTXONoncePool, which refills from the wallet once it falls
@@ -32,9 +34,10 @@ import (
 // nonce transaction with one P2PKH input, the nonce output and one change
 // output is 226 bytes and pays 23 sats; with the toolbox's 8 change outputs
 // at most (defs/change_basket.go) it is 464 bytes and 47 sats, and with 3
-// inputs as well 760 bytes and 76 sats. So the worst hour costs 130 nonce sats
-// and 2,990 sats of fees for typical transactions, or 9,880 sats of fees at
-// 76 sats each. A free node mints only for topics an app prices.
+// inputs as well 760 bytes and 76 sats. Those are examples, not a cost bound:
+// a fragmented wallet may select more inputs, and the wallet enforces no
+// corresponding fee or input-count ceiling. A free node mints only for topics
+// an app prices.
 //
 // A charging node's UTXONoncePool does NOT absorb a burst of up to its own
 // size (its poolSize, 100 by default): every mint that fills or refills the
@@ -58,6 +61,12 @@ import (
 const (
 	mintBurst      = 10
 	mintsPerMinute = 2
+	maxNonceMints  = 4
+)
+
+var (
+	nonceMintSlots   = make(chan struct{}, maxNonceMints)
+	nonceMintTimeout = 10 * time.Second
 )
 
 // defaultMintBudget is the process-wide budget that NewUTXONoncePool and
@@ -110,6 +119,25 @@ type mintBudgetError struct {
 	retryAfter time.Duration
 }
 
+type mintCapacityError struct {
+	retryAfter time.Duration
+	msg        string
+}
+
+func (e *mintCapacityError) Error() string { return e.msg }
+
+func takeNonceMintSlot(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case nonceMintSlots <- struct{}{}:
+		return func() { <-nonceMintSlots }, nil
+	default:
+		return nil, &mintCapacityError{retryAfter: time.Second, msg: "nonce mint capacity is busy"}
+	}
+}
+
 func (e *mintBudgetError) Error() string {
 	return fmt.Sprintf("nonce mint budget spent, next mint in %s", e.retryAfter.Round(time.Second))
 }
@@ -123,11 +151,22 @@ type budgetedNonceProvider struct {
 // MintNonce spends one mint from the budget and mints, or returns a
 // *mintBudgetError without calling inner. A mint that inner fails still
 // spends its token, since a failed wallet action may already have paid.
-func (p *budgetedNonceProvider) MintNonce() (*NonceUTXO, error) {
+func (p *budgetedNonceProvider) MintNonce(ctx context.Context) (*NonceUTXO, error) {
+	release, err := takeNonceMintSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if ok, wait := p.budget.take(); !ok {
 		return nil, &mintBudgetError{retryAfter: wait}
 	}
-	return p.inner.MintNonce()
+	mintCtx, cancel := context.WithTimeout(ctx, nonceMintTimeout)
+	defer cancel()
+	nonce, err := p.inner.MintNonce(mintCtx)
+	if err != nil && errors.Is(mintCtx.Err(), context.DeadlineExceeded) {
+		return nil, &mintCapacityError{retryAfter: time.Second, msg: "nonce mint timed out"}
+	}
+	return nonce, err
 }
 
 // costFreeNonces is implemented by nonce providers whose mints spend nothing,
@@ -151,10 +190,16 @@ func withMintBudget(p NonceProvider, budget *mintBudget) NonceProvider {
 
 // writeUnavailable answers 503 with a Retry-After of at least one second.
 func writeUnavailable(w http.ResponseWriter, retryAfter time.Duration, msg string) {
+	setRetryAfter(w, retryAfter)
+	writeError(w, http.StatusServiceUnavailable, msg)
+}
+
+// setRetryAfter sets a Retry-After of retryAfter, rounded up to whole
+// seconds and at least one.
+func setRetryAfter(w http.ResponseWriter, retryAfter time.Duration) {
 	secs := int64(math.Ceil(retryAfter.Seconds()))
 	if secs < 1 {
 		secs = 1
 	}
 	w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
-	writeError(w, http.StatusServiceUnavailable, msg)
 }

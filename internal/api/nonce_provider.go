@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
 	"sync/atomic"
 
 	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	sdk "github.com/bsv-blockchain/go-sdk/wallet"
 )
@@ -24,9 +26,7 @@ func NewWalletNonceProvider(w sdk.Interface) *WalletNonceProvider {
 }
 
 // MintNonce creates a 1-satoshi UTXO via CreateAction and returns its details.
-func (w *WalletNonceProvider) MintNonce() (*NonceUTXO, error) {
-	ctx := context.Background()
-
+func (w *WalletNonceProvider) MintNonce(ctx context.Context) (*NonceUTXO, error) {
 	// Derive a fresh key for this nonce
 	keyResult, err := w.wallet.GetPublicKey(ctx, sdk.GetPublicKeyArgs{
 		EncryptionArgs: sdk.EncryptionArgs{
@@ -54,6 +54,7 @@ func (w *WalletNonceProvider) MintNonce() (*NonceUTXO, error) {
 	lockScriptBytes := []byte(*lockScript)
 
 	// Create a 1-satoshi output via the wallet
+	noRandom := false
 	result, err := w.wallet.CreateAction(ctx, sdk.CreateActionArgs{
 		Description: "x402 nonce UTXO",
 		Outputs: []sdk.CreateActionOutput{
@@ -63,6 +64,7 @@ func (w *WalletNonceProvider) MintNonce() (*NonceUTXO, error) {
 				OutputDescription: "x402 nonce output",
 			},
 		},
+		Options: &sdk.CreateActionOptions{RandomizeOutputs: &noRandom},
 	}, "anvil-x402")
 	if err != nil {
 		return nil, fmt.Errorf("create nonce UTXO: %w", err)
@@ -76,20 +78,47 @@ func (w *WalletNonceProvider) MintNonce() (*NonceUTXO, error) {
 		if err != nil {
 			return nil, fmt.Errorf("sign nonce UTXO: %w", err)
 		}
+		vout, err := nonceOutputIndex(signResult.Tx, lockScriptBytes)
+		if err != nil {
+			return nil, err
+		}
 		return &NonceUTXO{
 			TxID:             signResult.Txid.String(),
-			Vout:             0, // our output is always first
+			Vout:             vout,
 			Satoshis:         1,
 			LockingScriptHex: hex.EncodeToString(lockScriptBytes),
 		}, nil
 	}
 
+	vout, err := nonceOutputIndex(result.Tx, lockScriptBytes)
+	if err != nil {
+		return nil, err
+	}
 	return &NonceUTXO{
 		TxID:             result.Txid.String(),
-		Vout:             0,
+		Vout:             vout,
 		Satoshis:         1,
 		LockingScriptHex: hex.EncodeToString(lockScriptBytes),
 	}, nil
+}
+
+// nonceOutputIndex locates the nonce when the wallet returns transaction
+// bytes. A canonical wallet may omit them; RandomizeOutputs=false then makes
+// the requested output vout 0.
+func nonceOutputIndex(raw, scriptBytes []byte) (int, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	tx, err := transaction.NewTransactionFromBytes(raw)
+	if err != nil {
+		return 0, fmt.Errorf("parse nonce transaction: %w", err)
+	}
+	for i, out := range tx.Outputs {
+		if out.Satoshis == 1 && out.LockingScript != nil && bytes.Equal(*out.LockingScript, scriptBytes) {
+			return i, nil
+		}
+	}
+	return 0, fmt.Errorf("created transaction has no nonce output")
 }
 
 var nonceSeq atomic.Uint64
