@@ -476,15 +476,21 @@ sudo anvil token
 ### Paying a request
 
 A priced request without payment answers 402 with an `X402-Challenge`
-header. There are two ways to pay:
+header. There are three ways to pay:
 
-- **`X402-Proof`** (bound to the challenge): build a transaction that spends
-  the challenge's nonce output and pays every payee the challenge names,
-  then repeat the request with the proof in `X402-Proof`. One challenge pays
-  for one request. Known limit: an external client cannot complete an
-  `X402-Proof` on a production node, because the challenge's nonce output is
-  locked to a key the node derives for itself, and the proof must spend it.
-- **`X-Bsv-Payment`** (direct, no challenge): send an Extended Format
+- **BRC-121** (`x-bsv-*` headers): any BRC-42 wallet pays the node's own
+  price to a one-time key. This is how clients pay the node; see
+  [Paying the node's price with BRC-121](#paying-the-nodes-price-with-brc-121).
+- **`X402-Proof`** (bound to the challenge), for the node's own use: build a
+  transaction that spends the challenge's nonce output and pays every payee
+  the challenge names, then repeat the request with the proof in
+  `X402-Proof`. One challenge pays for one request. Known limit: an external
+  client cannot complete an `X402-Proof` on a production node, because the
+  challenge's nonce output is locked to a key the node derives for itself,
+  and the proof must spend it. Clients pay the node's price with BRC-121.
+- **`X-Bsv-Payment`** (direct, no challenge), unchanged: it pays app prices
+  (passthrough envelopes, a split envelope's app share) and serves x402
+  clients. Send an Extended Format
   (BRC-30) transaction, as hex or base64, that pays the payees. Each input
   must carry the output it spends, so a plain raw transaction is refused, and
   Atomic BEEF is not parsed. The node checks every input's signature against
@@ -562,6 +568,135 @@ A refused payment answers 402, except where this section names 503. When
 the refusal has a stable code, the body is
 `{"status":"error","code":"ERR_...","description":"...","error":"..."}`.
 
+### Paying the node's price with BRC-121
+
+BRC-121 (Simple 402 Payments) lets any BRC-42 wallet pay the node's own
+price. It pays only the node: checking or spending a payment to a derived
+key takes the recipient's private key, so the node cannot take one for an
+app, and it holds no app's money. App prices, both shares of a split
+envelope included, are paid with `X-Bsv-Payment`.
+
+**When the node offers it.** A 402 carries `x-bsv-sats` (the node's price
+for the route) and `x-bsv-server` (the node wallet's identity key) only when
+all of these hold:
+
+- the node runs its wallet and has an ARC client;
+- the request is not token-gated;
+- every payee of the challenge is the node itself, at the node's own payee
+  script;
+- the node's price for the route is above 0.
+
+Both headers are exposed to browsers (`Access-Control-Expose-Headers`), and
+the five request headers are allowed by CORS. A route the node does not
+price never makes an offer, and there the `x-bsv-*` request headers are
+ignored: nothing is checked, broadcast or recorded. A node without its
+wallet or ARC makes no offer either, and ignores the headers: the request
+gets the plain x402 challenge.
+
+Divergence from BRC-121: the 402 body is the x402 challenge JSON, as on
+every other 402. BRC-121 asks for an empty body; its reference client reads
+only the two headers.
+
+**The paid request** repeats the request with five headers: `x-bsv-beef`
+(the payment as a base64 Atomic BEEF, BRC-95), `x-bsv-sender` (the payer's
+identity key), `x-bsv-nonce` (the base64 derivation prefix), `x-bsv-time`
+(Unix milliseconds, as a decimal string) and `x-bsv-vout` (the payment
+output's index). A request that also carries `X-Bsv-Payment` or `X402-Proof`
+is answered 400 with code `ERR_BRC121_MIXED_METHODS`: pay by one method.
+
+**The checks, in order.** Nothing is broadcast or stored before check 4
+shows that the payment pays this node.
+
+1. All five headers, in the shapes and lengths the reference middleware
+   checks: a compressed public key, a canonical base64 nonce of at most 512
+   characters, and unsigned integers for the time and the output index;
+   `x-bsv-beef` within the 256 KiB payment header cap.
+   `ERR_BRC121_MALFORMED`.
+2. `x-bsv-time` within 30 seconds of the node's clock, either way.
+   `ERR_BRC121_STALE`. Keep the node's clock synced (NTP): a clock that is
+   off refuses honest payers.
+3. An Atomic BEEF whose subject transaction is held in full. Only the
+   subject and the ancestry its verification reads are kept, and unrelated
+   entries are dropped. The payment may have at most 10 inputs, each backed
+   by its source transaction. `ERR_BRC121_BAD_BEEF`. Output `x-bsv-vout`
+   must exist and pay at least the price. `ERR_BRC121_UNDERPAID`.
+4. The output is P2PKH to the key the node wallet derives for itself from
+   the sender, the nonce and the time: BRC-29's protocol `3241645161d8`, key
+   ID `<nonce> <base64(time)>`, invoice number
+   `2-3241645161d8-<nonce> <base64(time)>`. `ERR_BRC121_WRONG_KEY`.
+5. Every input's signature, checked against the output it spends, and the
+   BEEF's merkle proofs, checked against the node's headers. A BEEF with no
+   proof at all is refused, since the wallet could never record it.
+   `ERR_BRC121_UNVERIFIABLE`.
+6. The transaction has not paid before. The node checks its replay memory,
+   which the other two payment paths share, then the node wallet's own
+   record, which survives restarts. `ERR_BRC121_REPLAYED`.
+7. ARC accepts it, under the same rules as a direct payment: `SEEN_ON_NETWORK`
+   or `MINED`, the same depth bounds, the 10-second wait and the 16
+   broadcasts at once. `ERR_BRC121_NOT_ACCEPTED`, or `ERR_BRC121_BUSY` (503
+   with `Retry-After`).
+8. The node wallet records it as a wallet payment, with fixed text that
+   carries nothing from the request. `ERR_BRC121_NOT_ACCEPTED` if that
+   fails.
+
+A node wallet that cannot derive the key or read its own records answers
+500 with `ERR_BRC121_WALLET_UNAVAILABLE`. One client, counted as the rate
+limiter counts it, may have at most 4 BRC-121 payments in validation at
+once; one more is answered 503 with `ERR_BRC121_BUSY` and a `Retry-After`.
+
+Every other refusal answers 402 with the coded body. It repeats the offer
+headers when the request's challenge would carry them. Divergence from
+BRC-121, which answers 402 to every failed validation: when the node is busy
+it answers 503 with a `Retry-After`, because the same payment can be sent
+again shortly.
+
+**What it unlocks.** An accepted payment is node coverage of what its output
+paid, and nothing else. It unlocks unmonetized and `free`-model envelopes.
+It covers a split envelope's node share but never its app share, and a
+request pays by one method, so a split envelope stays redacted for a
+BRC-121 payer: it is unlocked by an `X-Bsv-Payment` that pays both shares.
+A BRC-121 payment never covers a passthrough envelope, never unlocks a
+token-model envelope, and never unlocks a `private` envelope. As on the other paths, a price is paid per request. The node's
+answer carries an `X402-Receipt`, as on the other paths.
+
+**Unclaimed payments.** The payer's wallet broadcasts the payment before it
+sends the request. So the node keeps every payment that passed checks 1 to
+5 but was not recorded: ARC was busy, timed out, could not be reached, was
+still processing it or reported it deeper than the bound, or the wallet
+failed. It keeps them in a journal under `data_dir` (`brc121-journal`): at
+most 4096 payments, each for at most 7 days.
+
+Every 2 minutes, each payment kept for at least a minute is sent to ARC
+again:
+
+- **Accepted or mined:** it is recorded in the wallet.
+- **Refused outright:** it is dropped. That is the status `REJECTED`,
+  `DOUBLE_SPEND_ATTEMPTED` or `SEEN_IN_ORPHAN_MEMPOOL`, or HTTP 461 to 466
+  or 471 to 474.
+- **Anything else:** it is kept for the next sweep.
+
+A payment ARC refuses outright at request time is never kept. A request
+whose payment was kept is not served: its payment is recorded later.
+`anvil doctor` shows the journal's size and its oldest entry, and fails when
+the journal is full. The operator's `/stats` view counts offers,
+acceptances, refusals by code, kept, claimed and dropped payments.
+
+**What the node wallet stores.** Spending a BRC-121 payment takes the
+payer's identity key, so the wallet stores that key with the payment,
+together with the nonce and the time. It stores no request path, address or
+other request data.
+
+**Proxies must allow long header lines.** A typical payment, with one input
+and a mined parent, is about 1.3 KB of base64 in `x-bsv-beef`. A payment
+with several inputs, unconfirmed parents or large parents is many times
+that. Nginx's default `large_client_header_buffers 4 8k` refuses a header
+line over 8 KiB with 400. In the server block that proxies to the node,
+match the node's own cap:
+
+```nginx
+large_client_header_buffers 4 256k;
+```
+
 ### What a payment or app token unlocks
 
 Every envelope's payload is unlocked envelope by envelope, by that
@@ -583,6 +718,10 @@ app's:
 - A token-model envelope is unlocked only by an `X-App-Token` validated on
   its exact topic and signed by the `auth_pubkey` that envelope names. A
   payment never unlocks one.
+
+A BRC-121 payment (above) counts as a payment to the node's own script of
+what its output paid. It never pays an app, so it never covers a
+passthrough envelope or a split envelope's app share.
 
 A price is paid per request, not per envelope: one output of at least a
 price, to a payee, covers every envelope in the response that asks that
