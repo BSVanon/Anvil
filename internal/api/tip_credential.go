@@ -172,7 +172,8 @@ func (s *Server) verifyTipUpdate(r *http.Request, h *trackingHooks, body []byte)
 // carriesCredential reports whether r carries a token or a payment, which
 // the gate alone judges.
 func carriesCredential(r *http.Request) bool {
-	for _, name := range []string{"X-Anvil-Auth", "Authorization", "X-App-Token", HeaderX402Proof, HeaderBSVPayment} {
+	for _, name := range []string{"X-Anvil-Auth", "Authorization", "X-App-Token", HeaderX402Proof, HeaderBSVPayment,
+		headerBRC121Beef, headerBRC121Sender, headerBRC121Nonce, headerBRC121Time, headerBRC121Vout} {
 		if r.Header.Get(name) != "" {
 			return true
 		}

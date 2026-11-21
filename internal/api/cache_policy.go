@@ -2,15 +2,31 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"net"
 	"net/http"
 	"strings"
 )
 
+type cachePolicyKey struct{}
+
+// contentCachePolicy preserves content's cache policy unless a token gate is
+// configured, when its response can depend on a credential.
+func contentCachePolicy(s *Server, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		policy := func() bool { return s.tokenGate != nil }
+		next(w, r.WithContext(context.WithValue(r.Context(), cachePolicyKey{}, policy)))
+	}
+}
+
 // credentialDependentRead prevents a shared cache from reusing any response
 // whose representation can vary with the node operator credential.
 func credentialDependentRead(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if policy, ok := r.Context().Value(cachePolicyKey{}).(func() bool); ok && !policy() {
+			next(w, r)
+			return
+		}
 		cw := &credentialCacheWriter{ResponseWriter: w}
 		cw.apply()
 		next(cw, r)

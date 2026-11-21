@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/content"
 	"github.com/BSVanon/Anvil/internal/ordtrack/ordtracktest"
 )
 
@@ -120,6 +121,11 @@ func TestRequestsWithCredentialsAreLeftToTheGate(t *testing.T) {
 		{"X-App-Token": "x"},
 		{HeaderX402Proof: "e30"},
 		{HeaderBSVPayment: "00"},
+		{headerBRC121Beef: "x"},
+		{headerBRC121Sender: "x"},
+		{headerBRC121Nonce: "x"},
+		{headerBRC121Time: "x"},
+		{headerBRC121Vout: "x"},
 	} {
 		got, want := post(f.srv, beef, hdr), post(f.plain, beef, hdr)
 		sameReply(t, "credential header", got, want)
@@ -137,6 +143,75 @@ func TestRequestsWithCredentialsAreLeftToTheGate(t *testing.T) {
 	for deadline := time.Now().Add(5 * time.Second); f.tip() != op(v1, 0); time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the observed broadcast was not followed: tip %s", f.tip())
+		}
+	}
+}
+
+func TestBRC121HeaderLeavesTipUpdateToTheGate(t *testing.T) {
+	f := newTipFixture(t, "test-token", 100)
+	brc := newBRC121Fix(t, 100)
+	f.srv.paymentGate = brc.pg
+	f.srv.mux = http.NewServeMux()
+	f.srv.routes()
+	v1 := f.move(f.w, f.origin, 0, f.inscribed("v1"))
+	body := ordtracktest.AtomicBEEF(t, v1)
+
+	if rec := post(f.srv, body, map[string]string{headerBRC121Nonce: "present"}); rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("BRC-121 header: %d %s", rec.Code, rec.Body.String())
+	}
+	if f.cred.verifies.Load() != 0 || f.tip() != op(f.origin, 0) || getStats(t, f.srv)["broadcast_tip_credential_used"] != 0 {
+		t.Fatal("a BRC-121 header reached the free tip-update path")
+	}
+
+	if rec := post(f.srv, body, nil); rec.Code != http.StatusOK {
+		t.Fatalf("without payment headers: %d %s", rec.Code, rec.Body.String())
+	}
+	if f.cred.verifies.Load() != 1 || f.tip() != op(v1, 0) || getStats(t, f.srv)["broadcast_tip_credential_used"] != 1 {
+		t.Fatal("a header-free tip update did not take the free path")
+	}
+}
+
+func TestBRC121PaymentForTipUpdateIsSettledByTheGate(t *testing.T) {
+	f := newTipFixture(t, "test-token", 100)
+	brc := newBRC121Fix(t, 100)
+	f.srv.paymentGate = brc.pg
+	f.srv.mux = http.NewServeMux()
+	f.srv.routes()
+	v1 := f.move(f.w, f.origin, 0, f.inscribed("v1"))
+
+	rec := post(f.srv, ordtracktest.AtomicBEEF(t, v1), brc.payment(t, 100, brc121Pay{}))
+	if rec.Code != http.StatusOK || brc.arc.calls.Load() != 1 {
+		t.Fatalf("paid tip update: %d %s (%d ARC calls)", rec.Code, rec.Body.String(), brc.arc.calls.Load())
+	}
+	if internalizes, held := brc.wallet.recorded(); internalizes != 1 || held != 1 {
+		t.Fatalf("payment record = %d internalizes, %d held", internalizes, held)
+	}
+	if f.cred.verifies.Load() != 0 || getStats(t, f.srv)["broadcast_tip_credential_used"] != 0 {
+		t.Fatal("a paid tip update used the free tip-update path")
+	}
+}
+
+func TestContentCachePolicyDependsOnTokenGate(t *testing.T) {
+	f := newTipFixture(t, "test-token", 0)
+	path := "/content/" + op(f.origin, 0)
+	request := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		f.srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w
+	}
+
+	if got := request().Header().Get("Cache-Control"); got != content.ImmutableCacheControl {
+		t.Fatalf("anonymous Cache-Control = %q, want %q", got, content.ImmutableCacheControl)
+	}
+	f.srv.tokenGate = NewTokenGate(NewTopicMonetizationResolver(f.srv.envelopeStore), true)
+	w := request()
+	if got := w.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("token-gated Cache-Control = %q, want private, no-store", got)
+	}
+	vary := strings.Join(w.Header().Values("Vary"), ",")
+	for _, credential := range []string{"Authorization", "X-Anvil-Auth"} {
+		if !headerListContains(vary, credential) {
+			t.Fatalf("Vary = %q, want %s", vary, credential)
 		}
 	}
 }

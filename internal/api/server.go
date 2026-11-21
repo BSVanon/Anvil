@@ -313,7 +313,7 @@ func (s *Server) routes() {
 		s.handleAppRedirectWithFallback(w, r, s.explorerOrigin)
 	}))
 	s.mux.HandleFunc("POST /bootstrap/block/{blockHash}", s.requireAuth(s.contentServer.BootstrapBlock))
-	s.mux.HandleFunc("GET /content/{origin}", s.openRead(s.contentServer.ServeContent))
+	s.mux.HandleFunc("GET /content/{origin}", contentCachePolicy(s, s.openRead(s.contentServer.ServeContent)))
 
 	// Address watching (mempool)
 	s.mux.HandleFunc("POST /mempool/watch", s.requireAuth(s.handleAddWatch))
