@@ -93,7 +93,7 @@ func (c *ARCClient) submitTo(ctx context.Context, baseURL, apiKey string, raw []
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("ARC returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, &ARCHTTPError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var arcResp ARCResponse
