@@ -34,13 +34,13 @@ var invoiceSyncWrite = &opt.WriteOptions{Sync: true}
 
 // Invoice is the stored state for a created invoice, keyed by ID.
 type Invoice struct {
-	ID          string `json:"id"`
-	Address     string `json:"address"`
-	PublicKey   string `json:"public_key"`
-	Description string `json:"description"`
+	ID           string `json:"id"`
+	Address      string `json:"address"`
+	PublicKey    string `json:"public_key"`
+	Description  string `json:"description"`
 	Counterparty string `json:"counterparty"`
-	Protocol    string `json:"protocol"`
-	KeyID       string `json:"key_id"`
+	Protocol     string `json:"protocol"`
+	KeyID        string `json:"key_id"`
 }
 
 // NodeWallet wraps go-wallet-toolbox's Wallet with Anvil's infrastructure.
@@ -666,4 +666,3 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v) // best-effort HTTP response
 }
-

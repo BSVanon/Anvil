@@ -158,9 +158,9 @@ func TestSubmit_CallbackInvokedWithDecodedRequest(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	r := submitReq([]byte{0xbe, 0xef}, map[string]string{
-		"Content-Type":                 "application/octet-stream",
-		"x-topics":                     `["tm_ship"]`,
-		"x-includes-off-chain-values":  "true",
+		"Content-Type":                "application/octet-stream",
+		"x-topics":                    `["tm_ship"]`,
+		"x-includes-off-chain-values": "true",
 	})
 	h.ServeHTTP(rec, r)
 

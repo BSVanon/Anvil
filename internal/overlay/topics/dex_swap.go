@@ -1,8 +1,9 @@
 // DEX Swap topic manager for the Anvil overlay engine.
 //
 // Admits transaction outputs that represent swap offers:
-//   Output N:   The offer UTXO (tokens or BSV locked to maker's key)
-//   Output N+1: OP_FALSE OP_RETURN "dex.swap.offer" <version> <json_terms>
+//
+//	Output N:   The offer UTXO (tokens or BSV locked to maker's key)
+//	Output N+1: OP_FALSE OP_RETURN "dex.swap.offer" <version> <json_terms>
 //
 // When the offer UTXO is spent (accepted, revoked, or refund), the topic
 // manager removes it from the active set via CoinsRemoved.
@@ -27,11 +28,11 @@ const DEXSwapVersion = 1
 
 // DEXSwapEntry is the metadata stored for each admitted swap offer.
 type DEXSwapEntry struct {
-	Maker      string          `json:"maker"`
-	Offering   json.RawMessage `json:"offering"`
-	Requesting json.RawMessage `json:"requesting"`
-	RefundHeight int           `json:"refundHeight"`
-	OfferVout  int             `json:"offerVout"`
+	Maker        string          `json:"maker"`
+	Offering     json.RawMessage `json:"offering"`
+	Requesting   json.RawMessage `json:"requesting"`
+	RefundHeight int             `json:"refundHeight"`
+	OfferVout    int             `json:"offerVout"`
 }
 
 // DEXSwapTopicManager implements overlay.TopicManager for DEX swap offers.

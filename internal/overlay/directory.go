@@ -24,15 +24,15 @@ const DefaultSHIPTTL = 6 * time.Hour
 
 // PeerEntry is a discovered SHIP peer for a topic.
 type PeerEntry struct {
-	IdentityPub  string    `json:"identity_pub"`            // compressed pubkey hex
-	Domain       string    `json:"domain"`                  // e.g. "relay.example.com:8333"
-	NodeName     string    `json:"node_name,omitempty"`      // human-readable name from config
-	Version      string    `json:"version,omitempty"`        // node software version (e.g. "0.5.1")
-	Topic        string    `json:"topic"`                   // e.g. "anvil:mainnet"
-	TxID         string    `json:"txid"`                    // on-chain tx or "self-registered" or "gossip"
+	IdentityPub  string    `json:"identity_pub"`        // compressed pubkey hex
+	Domain       string    `json:"domain"`              // e.g. "relay.example.com:8333"
+	NodeName     string    `json:"node_name,omitempty"` // human-readable name from config
+	Version      string    `json:"version,omitempty"`   // node software version (e.g. "0.5.1")
+	Topic        string    `json:"topic"`               // e.g. "anvil:mainnet"
+	TxID         string    `json:"txid"`                // on-chain tx or "self-registered" or "gossip"
 	OutputIndex  int       `json:"output_index"`
 	DiscoveredAt time.Time `json:"discovered_at"`
-	LastSeen     time.Time `json:"last_seen"`               // refreshed on every write (gossip, bootstrap)
+	LastSeen     time.Time `json:"last_seen"` // refreshed on every write (gossip, bootstrap)
 }
 
 // ProviderEntry is a discovered SLAP service provider.

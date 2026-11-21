@@ -63,17 +63,17 @@ func buildUMPScript(t *testing.T, w wallet.Interface, fields [][]byte) []byte {
 // be present in the entry produced by ParseUMPOutput.
 func ump11Fields(presentationHash, recoveryHash []byte) [][]byte {
 	return [][]byte{
-		{0x01},          // 0: passwordSalt (placeholder)
-		{0x02},          // 1: passwordPresentationPrimary (placeholder)
-		{0x03},          // 2: passwordRecoveryPrimary (placeholder)
-		{0x04},          // 3: presentationRecoveryPrimary (placeholder)
-		{0x05},          // 4: passwordPrimaryPrivileged (placeholder)
-		{0x06},          // 5: presentationRecoveryPrivileged (placeholder)
+		{0x01},           // 0: passwordSalt (placeholder)
+		{0x02},           // 1: passwordPresentationPrimary (placeholder)
+		{0x03},           // 2: passwordRecoveryPrimary (placeholder)
+		{0x04},           // 3: presentationRecoveryPrimary (placeholder)
+		{0x05},           // 4: passwordPrimaryPrivileged (placeholder)
+		{0x06},           // 5: presentationRecoveryPrivileged (placeholder)
 		presentationHash, // 6: presentationHash (clear, lookup key)
-		recoveryHash,    // 7: recoveryHash (clear, lookup key)
-		{0x09},          // 8: presentationKeyEncrypted (placeholder)
-		{0x0a},          // 9: passwordKeyEncrypted (placeholder)
-		{0x0b},          // 10: recoveryKeyEncrypted (placeholder)
+		recoveryHash,     // 7: recoveryHash (clear, lookup key)
+		{0x09},           // 8: presentationKeyEncrypted (placeholder)
+		{0x0a},           // 9: passwordKeyEncrypted (placeholder)
+		{0x0b},           // 10: recoveryKeyEncrypted (placeholder)
 	}
 }
 
@@ -84,10 +84,10 @@ func ump11Fields(presentationHash, recoveryHash []byte) [][]byte {
 func ump15FieldsV3(presentationHash, recoveryHash []byte, kdfAlg string, iterations uint32) [][]byte {
 	fields := ump11Fields(presentationHash, recoveryHash)
 	fields = append(fields,
-		[]byte{0x0c, 0x0d, 0x0e},     // 11: profilesEncrypted (>1 byte to skip v3-at-11 detection)
-		[]byte{UMPVersionV3},          // 12: umpVersion (single byte = 3)
-		[]byte(kdfAlg),                // 13: kdfAlgorithm
-		[]byte(`{"iterations":3}`),     // 14: kdfParams (placeholder iterations=3)
+		[]byte{0x0c, 0x0d, 0x0e},   // 11: profilesEncrypted (>1 byte to skip v3-at-11 detection)
+		[]byte{UMPVersionV3},       // 12: umpVersion (single byte = 3)
+		[]byte(kdfAlg),             // 13: kdfAlgorithm
+		[]byte(`{"iterations":3}`), // 14: kdfParams (placeholder iterations=3)
 	)
 	_ = iterations // single-iteration value for now; specific counts would need a real JSON build
 	_ = strings.Repeat

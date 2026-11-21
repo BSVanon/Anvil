@@ -34,12 +34,12 @@ type MonitorStats struct {
 // transaction inventory announcements and selectively fetches transactions
 // matching a coverage filter (first byte of txid).
 type MempoolMonitor struct {
-	addr     string
-	network  wire.BitcoinNet
-	logger   *slog.Logger
-	coverage   map[byte]struct{}
-	maxTxSize  int // skip txs larger than this (0 = no limit)
-	onTx       func(txHash chainhash.Hash, raw []byte)
+	addr      string
+	network   wire.BitcoinNet
+	logger    *slog.Logger
+	coverage  map[byte]struct{}
+	maxTxSize int // skip txs larger than this (0 = no limit)
+	onTx      func(txHash chainhash.Hash, raw []byte)
 
 	conn   net.Conn
 	connMu sync.Mutex

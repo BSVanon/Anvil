@@ -11,8 +11,8 @@ type TokenFields struct {
 	Protocol      string
 	IdentityPub   string
 	Domain        string
-	TopicProvider string         // "topic" for SHIP, "provider" for SLAP
-	LockingPub    *ec.PublicKey  // locking public key from BRC-48 script
+	TopicProvider string        // "topic" for SHIP, "provider" for SLAP
+	LockingPub    *ec.PublicKey // locking public key from BRC-48 script
 }
 
 // ParseTokenScript extracts the data fields from a BRC-48 push-drop script
@@ -70,5 +70,5 @@ var (
 
 type constantError string
 
-func errorf(s string) constantError { return constantError(s) }
+func errorf(s string) constantError   { return constantError(s) }
 func (e constantError) Error() string { return string(e) }

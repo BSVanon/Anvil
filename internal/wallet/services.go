@@ -63,7 +63,7 @@ func (s *AnvilServices) ChainHeaderByHeight(ctx context.Context, height uint32) 
 
 	return &wdk.ChainBlockHeader{
 		ChainBaseBlockHeader: wdk.ChainBaseBlockHeader{
-			Version:      uint32(max(0, int64(hdr.Version))),      // #nosec G115 // clamped non-negative, block versions fit uint32
+			Version:      uint32(max(0, int64(hdr.Version))), // #nosec G115 // clamped non-negative, block versions fit uint32
 			PreviousHash: hdr.PrevBlock.String(),
 			MerkleRoot:   hdr.MerkleRoot.String(),
 			Time:         uint32(max(0, hdr.Timestamp.Unix())), // #nosec G115 // clamped non-negative, block timestamps fit uint32 until 2106

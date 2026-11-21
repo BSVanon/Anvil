@@ -31,9 +31,9 @@ import (
 // (presentationHash, recoveryHash) get their own secondary index so we
 // can resolve a query without scanning every record.
 const (
-	umpItemPrefix         = "lk_users:item:"   // lk_users:item:<txid>:<vout> → JSON UMPRecord
-	umpPresentationPrefix = "lk_users:pres:"   // lk_users:pres:<hash>:<txid>:<vout> → sentinel
-	umpRecoveryPrefix     = "lk_users:rec:"    // lk_users:rec:<hash>:<txid>:<vout> → sentinel
+	umpItemPrefix         = "lk_users:item:" // lk_users:item:<txid>:<vout> → JSON UMPRecord
+	umpPresentationPrefix = "lk_users:pres:" // lk_users:pres:<hash>:<txid>:<vout> → sentinel
+	umpRecoveryPrefix     = "lk_users:rec:"  // lk_users:rec:<hash>:<txid>:<vout> → sentinel
 )
 
 // umpRecord is the per-output state the lookup keeps in LevelDB. Stored

@@ -98,7 +98,7 @@ func pushData(data []byte) []byte {
 func TestDEXSwapAdmit_ValidAdjacent_Admits(t *testing.T) {
 	tm := NewDEXSwapTopicManager()
 	txData := buildSwapTxWithLayout(t,
-		p2pkhScript(t),             // vout 0: the offer
+		p2pkhScript(t),              // vout 0: the offer
 		dexSwapMetadataScript(t, 0), // vout 1: metadata claiming offerVout=0
 	)
 
@@ -169,7 +169,7 @@ func TestDEXSwapAdmit_RejectsOfferVoutAtOPReturn(t *testing.T) {
 	tm := NewDEXSwapTopicManager()
 	// OP_RETURN at vout 0, metadata at vout 1 claiming offerVout=0
 	txData := buildSwapTxWithLayout(t,
-		opReturnScript(t),            // vout 0 — not spendable
+		opReturnScript(t),           // vout 0 — not spendable
 		dexSwapMetadataScript(t, 0), // vout 1
 	)
 
