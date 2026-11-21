@@ -60,7 +60,7 @@ func (pg *PaymentGate) verifyProof(w http.ResponseWriter, r *http.Request, proof
 	liveHeaderHash := canonicalHeaderHash(r)
 	// Read under the payment-body bounds (payment_bodyread.go), which also
 	// leaves the body readable for the handler after the gate (e.g. POST /data).
-	liveBodyBytes, err := readPaymentBody(w, r)
+	liveBodyBytes, err := pg.readPaymentBody(w, r)
 	if err != nil {
 		return nil, err
 	}

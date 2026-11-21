@@ -133,6 +133,7 @@ type PaymentGate struct {
 	requireMempool bool
 	arcClient      *txrelay.ARCClient // for mempool acceptance verification
 	resolver       *TopicMonetizationResolver
+	clientKey      func(*http.Request) string // the key a client's body reads are shared out under (payment_bodyshare.go)
 
 	allowPassthrough bool
 	allowSplit       bool
@@ -143,7 +144,7 @@ type PaymentGate struct {
 	endpointPrices map[string]int
 
 	headerTip         func() uint32     // the node's header tip (checkPaymentDepth, payment_arc.go)
-	replays           *paymentReplaySet // accepted direct payments (payment_replay.go)
+	replays           *paymentReplaySet // accepted payments, on either path (payment_replay.go)
 	mu                sync.Mutex
 	pendingChallenges map[string]*pendingChallenge
 	reservedPending   int // places held for challenges being issued (payment_pending.go)
@@ -300,7 +301,7 @@ func (pg *PaymentGate) issueChallengeForPayees(w http.ResponseWriter, r *http.Re
 			n, maxChallengeFootprint))
 		return
 	}
-	bodyBytes, ok := readChallengeBody(w, r)
+	bodyBytes, ok := pg.readChallengeBody(w, r)
 	if !ok {
 		return
 	}

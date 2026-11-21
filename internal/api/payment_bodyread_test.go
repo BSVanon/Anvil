@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 // is still in flight, and t.Fatalf must only ever run on the test goroutine.
 type clientResult struct {
 	resp *http.Response
+	body []byte // the response body, read before it was closed
 	err  error
 }
 
@@ -45,18 +47,31 @@ func usePaymentBodyPermits(t *testing.T, n int) {
 // until the returned writer is closed. The outcome arrives on the channel.
 func postStalled(t *testing.T, url string, first []byte) (*io.PipeWriter, <-chan clientResult) {
 	t.Helper()
+	return postStalledAs(t, url, "", first)
+}
+
+// postStalledAs is postStalled from client, an address the request names in
+// X-Forwarded-For, which the node takes as the client's address from a
+// loopback peer such as this test's (clientIP, auth.go); "" names none.
+func postStalledAs(t *testing.T, url, client string, first []byte) (*io.PipeWriter, <-chan clientResult) {
+	t.Helper()
 	pr, pw := io.Pipe()
 	req, err := http.NewRequest(http.MethodPost, url, pr)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
+	if client != "" {
+		req.Header.Set("X-Forwarded-For", client)
+	}
 	done := make(chan clientResult, 1)
 	go func() {
 		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		var body []byte
 		if resp != nil {
+			body, _ = io.ReadAll(resp.Body)
 			resp.Body.Close()
 		}
-		done <- clientResult{resp: resp, err: err}
+		done <- clientResult{resp: resp, body: body, err: err}
 	}()
 	if len(first) > 0 {
 		go func() { _, _ = pw.Write(first) }()
@@ -109,7 +124,9 @@ func TestSlowBodyDoesNotHoldPendingPlace(t *testing.T) {
 // TestManySlowBodiesLeavePendingPlacesForHonestCallers: as many stalled-body
 // connections as there are pending places must not prevent an honest,
 // bodyless request from getting its own challenge. With the place reserved
-// before the body read, the stalled bodies would hold every place.
+// before the body read, the stalled bodies would hold every place. Each comes
+// from its own client, so no client's share of the body reads
+// (payment_bodyshare.go) refuses any of them.
 func TestManySlowBodiesLeavePendingPlacesForHonestCallers(t *testing.T) {
 	shrinkPaymentBodyGrace(t, 500*time.Millisecond)
 	srv := testServerWithPaymentGate(t, 100)
@@ -119,7 +136,7 @@ func TestManySlowBodiesLeavePendingPlacesForHonestCallers(t *testing.T) {
 	defer ts.Close()
 
 	for i := 0; i < slowConns; i++ {
-		postStalled(t, ts.URL+"/data", nil)
+		postStalledAs(t, ts.URL+"/data", fmt.Sprintf("198.51.100.%d", i+1), nil)
 	}
 	time.Sleep(100 * time.Millisecond)
 	if n := paymentBodyReads.InUse(); n != slowConns {
@@ -142,7 +159,7 @@ func TestPaymentBodyReadsAreBoundedByPermits(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	// 32 KiB pushes each holder's due time a second past the grace.
+	// 32 KiB pushes each holder's due time two seconds past the grace.
 	first := bytes.Repeat([]byte("a"), 32<<10)
 	_, held1 := postStalled(t, ts.URL+"/data", first)
 	_, held2 := postStalled(t, ts.URL+"/data", first)

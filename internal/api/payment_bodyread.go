@@ -16,21 +16,33 @@ import (
 	"github.com/BSVanon/Anvil/internal/refusallog"
 )
 
+// paymentBodyMinRate is the least average rate, in bytes a second, a payment
+// body must keep up once bodyread.ReadGrace has passed: 16 KiB/s, half
+// bodyread.MinReadRate, the floor the node's overlay routes pace a request
+// body of up to 1 MiB at (routeguard's MinBodyRate), so that one schedule
+// paces every bounded request body the node reads. A body of 1 MB sent at
+// 200 kbit/s keeps it.
+const paymentBodyMinRate = bodyread.MinReadRate / 2
+
 // paymentBodyLimits bound one payment-route body read (readPaymentBody): at
 // most 1 MiB, the cap these reads always had; after bodyread.ReadGrace (2 s)
-// the body must keep up bodyread.MinReadRate (32 KiB/s) on average; and the
-// whole read ends by ReadGrace + 1 MiB / MinReadRate (34 s), the time a 1 MiB
-// body takes at that rate. A var so tests can shrink it.
+// the body must keep up paymentBodyMinRate on average; and the whole read
+// ends by ReadGrace + 1 MiB / paymentBodyMinRate (66 s), the time a 1 MiB body
+// takes at that rate. No body within the cap is long enough for the overlay
+// routes' schedule to ask more of it than that floor: it raises the rate only
+// for a body over 1 MiB, or one too long to arrive within its route's
+// timeout at the floor. A var so tests can shrink it.
 var paymentBodyLimits = bodyread.Limits{
 	Max:     1 << 20,
-	Timeout: bodyread.ReadGrace + (1<<20)*time.Second/bodyread.MinReadRate,
-	MinRate: bodyread.MinReadRate,
+	Timeout: bodyread.ReadGrace + (1<<20)*time.Second/paymentBodyMinRate,
+	MinRate: paymentBodyMinRate,
 	Grace:   bodyread.ReadGrace,
 }
 
 // paymentBodyPermits is how many payment-route bodies are read at once,
 // process-wide, so at most 32 x 1 MiB of them are buffered at a time. A body
-// that finds no permit free within paymentBodyLimits.Grace gets 503.
+// that finds no permit free within paymentBodyLimits.Grace gets 503. One
+// client may hold only paymentBodyClientShare of them (payment_bodyshare.go).
 const paymentBodyPermits = 32
 
 // paymentBodyReads is the pool readPaymentBody takes its permits from. A var
@@ -54,21 +66,22 @@ func (e *paymentBodyError) Error() string { return "request body: " + e.err.Erro
 func (e *paymentBodyError) Unwrap() error { return e.err }
 
 // readPaymentBody reads r's body for a payment check under paymentBodyLimits,
-// holding a permit from paymentBodyReads, and leaves r.Body reading the same
-// bytes again for the handler after the gate. A request with no body takes no
-// permit. Errors are *paymentBodyError.
+// holding one of its client's shares (payment_bodyshare.go) and a permit
+// from paymentBodyReads, and leaves r.Body reading the same bytes again for
+// the handler after the gate. A request with no body takes neither. Errors are
+// *paymentBodyError.
 //
 // bodyread's own timers cut a slow read by closing the body, but closing a
 // server request body does not end a Read blocked on it: net/http's body
 // Close waits for the lock that Read holds. So the read also moves the
 // connection's read deadline along the same schedule before every Read
 // (pacedBody.due), and a stalled body fails at its due time.
-func readPaymentBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+func (pg *PaymentGate) readPaymentBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return []byte{}, nil
 	}
 	p := &pacedBody{body: r.Body, rc: http.NewResponseController(w), limits: paymentBodyLimits}
-	body, err := p.read(r.Context(), r.ContentLength)
+	body, err := p.read(r.Context(), pg.clientKeyFor(r), r.ContentLength)
 	if err != nil {
 		p.expire()
 		return nil, &paymentBodyError{err}
@@ -79,8 +92,8 @@ func readPaymentBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 
 // readChallengeBody is readPaymentBody for the body a challenge binds, and
 // answers a failed read itself; ok is false when it did.
-func readChallengeBody(w http.ResponseWriter, r *http.Request) (body []byte, ok bool) {
-	body, err := readPaymentBody(w, r)
+func (pg *PaymentGate) readChallengeBody(w http.ResponseWriter, r *http.Request) (body []byte, ok bool) {
+	body, err := pg.readPaymentBody(w, r)
 	if err != nil {
 		writePaymentBodyError(w, r, err)
 		return nil, false
@@ -91,9 +104,10 @@ func readChallengeBody(w http.ResponseWriter, r *http.Request) (body []byte, ok 
 // writePaymentBodyError answers a failed payment-body read with the status
 // for its cause, per RFC 9110: 413 Content Too Large (section 15.5.14) for a
 // body over the cap; 408 Request Timeout (15.5.9) for one that did not arrive
-// at its pace; 503 Service Unavailable (15.6.4) when no read permit came free;
-// 500 when the node could not set the deadline; and 400 Bad Request (15.5.1)
-// for anything else the client sent, such as a body cut off or badly chunked.
+// at its pace; 503 Service Unavailable (15.6.4) when no read permit came free,
+// or, with codePaymentBodyShare, when the client already holds its share; 500
+// when the node could not set the deadline; and 400 Bad Request (15.5.1) for
+// anything else the client sent, such as a body cut off or badly chunked.
 func writePaymentBodyError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, bodyread.ErrTooLarge):
@@ -106,6 +120,10 @@ func writePaymentBodyError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, bodyread.ErrNoPermit):
 		refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonBusy)
 		writeUnavailable(w, paymentBodyLimits.Grace, "too many payment request bodies are being read, retry later")
+	case errors.Is(err, errPaymentBodyShare):
+		refusallog.Log(r, http.StatusServiceUnavailable, refusallog.ReasonBusy)
+		writeCodedUnavailable(w, paymentBodyLimits.Grace, codePaymentBodyShare, fmt.Sprintf(
+			"this client already has %d payment request bodies being read; retry once one has finished", paymentBodyShares.limit))
 	case errors.Is(err, errPaymentBodyDeadline):
 		writeError(w, http.StatusInternalServerError, err.Error())
 	default:
@@ -126,9 +144,15 @@ type pacedBody struct {
 	eof    bool  // the body has ended
 }
 
-// read takes a permit, waiting at most Grace for one, and reads the body of
+// read takes one of client's shares, refusing at once when client holds them
+// all, then a permit, waiting at most Grace for one, and reads the body of
 // declared length n (negative when unknown) through bodyread.Read.
-func (p *pacedBody) read(ctx context.Context, n int64) ([]byte, error) {
+func (p *pacedBody) read(ctx context.Context, client string, n int64) ([]byte, error) {
+	leave, ok := paymentBodyShares.take(client)
+	if !ok {
+		return nil, errPaymentBodyShare
+	}
+	defer leave()
 	wait, cancel := context.WithTimeout(ctx, p.limits.Grace)
 	release, err := paymentBodyReads.Acquire(wait)
 	cancel()

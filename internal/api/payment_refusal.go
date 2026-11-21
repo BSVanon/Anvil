@@ -40,6 +40,10 @@ const (
 	// codeDirectPaymentBusy (503): every direct-payment ARC submit slot is
 	// taken (errDirectPaymentSubmitsBusy, payment_submit.go).
 	codeDirectPaymentBusy = "ERR_DIRECT_PAYMENT_BUSY"
+	// codePaymentBodyShare (503): the client already has its share of
+	// payment request bodies being read (errPaymentBodyShare,
+	// payment_bodyshare.go).
+	codePaymentBodyShare = "ERR_PAYMENT_BODY_SHARE"
 )
 
 // paymentRefusal is a payment refused with one of the codes above. One with a

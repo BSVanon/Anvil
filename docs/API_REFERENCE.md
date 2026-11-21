@@ -524,6 +524,16 @@ broadcast at once, node-wide. One more is answered 503 with code
 `ERR_DIRECT_PAYMENT_BUSY` and a `Retry-After`, without being broadcast, and
 the same transaction can be sent again.
 
+**Request bodies on priced routes are read under bounds.** The node reads
+a priced request's body before it checks the payment: at most 1 MiB, which
+must start within 2 seconds and then arrive at 16 KiB a second or faster on
+average. A body over the cap gets 413, and one too slow gets 408. The node
+reads at most 32 such bodies at once; a body that finds none of those reads
+free within 2 seconds gets 503. One client, counted as the rate limiter
+counts it (with the same `trust_proxy` settings), may have at most 4 of its
+bodies being read at once; one more is answered 503 with code
+`ERR_PAYMENT_BODY_SHARE` and a `Retry-After`.
+
 A refused payment answers 402, except where this section names 503. When
 the refusal has a stable code, the body is
 `{"status":"error","code":"ERR_...","description":"...","error":"..."}`.
