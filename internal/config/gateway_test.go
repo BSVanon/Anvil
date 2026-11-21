@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/crypto/acme/autocert"
 )
 
 func writeTestConfig(t *testing.T, dir, body string) string {
@@ -44,6 +46,70 @@ func TestLoadGatewayDefaults(t *testing.T) {
 	}
 	if cfg.Node.Mode != "" {
 		t.Fatalf("expected empty mode, got %q", cfg.Node.Mode)
+	}
+	if cfg.Gateway.HTTPSListen != defaultGatewayHTTPSListen {
+		t.Fatalf("expected https_listen=%q, got %q", defaultGatewayHTTPSListen, cfg.Gateway.HTTPSListen)
+	}
+	if cfg.Gateway.HTTPListen != defaultGatewayHTTPListen {
+		t.Fatalf("expected http_listen=%q, got %q", defaultGatewayHTTPListen, cfg.Gateway.HTTPListen)
+	}
+	if cfg.Gateway.ACMEDirectory != defaultGatewayACMEDirectory {
+		t.Fatalf("expected acme_directory=%q, got %q", defaultGatewayACMEDirectory, cfg.Gateway.ACMEDirectory)
+	}
+	if cfg.Gateway.ACMEEmail != "" {
+		t.Fatalf("expected empty acme_email, got %q", cfg.Gateway.ACMEEmail)
+	}
+	if cfg.Gateway.AcceptTOS {
+		t.Fatal("expected acme_accept_tos=false by default")
+	}
+}
+
+// TestDefaultGatewayACMEDirectoryMatchesAutocert pins
+// defaultGatewayACMEDirectory to autocert's own default, so this
+// package's literal (kept local rather than importing autocert just for
+// one constant — see GatewayConfig.ACMEDirectory's doc comment) can
+// never silently drift from what golang.org/x/crypto/acme/autocert
+// itself would use when [gateway] acme_directory is left unset.
+func TestDefaultGatewayACMEDirectoryMatchesAutocert(t *testing.T) {
+	if defaultGatewayACMEDirectory != autocert.DefaultACMEDirectory {
+		t.Fatalf("defaultGatewayACMEDirectory = %q, want autocert.DefaultACMEDirectory = %q",
+			defaultGatewayACMEDirectory, autocert.DefaultACMEDirectory)
+	}
+}
+
+// TestLoadGatewayACMEExplicitValues confirms the ACME-specific fields
+// round-trip through Load unchanged when set explicitly.
+func TestLoadGatewayACMEExplicitValues(t *testing.T) {
+	dir := t.TempDir()
+	p := writeTestConfig(t, dir, `
+[node]
+name = "gw"
+
+[gateway]
+https_listen = ":8443"
+http_listen = ":8080"
+acme_directory = "https://pebble.example.org/dir"
+acme_email = "ops@example.org"
+acme_accept_tos = true
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Gateway.HTTPSListen != ":8443" {
+		t.Fatalf("https_listen = %q, want :8443", cfg.Gateway.HTTPSListen)
+	}
+	if cfg.Gateway.HTTPListen != ":8080" {
+		t.Fatalf("http_listen = %q, want :8080", cfg.Gateway.HTTPListen)
+	}
+	if cfg.Gateway.ACMEDirectory != "https://pebble.example.org/dir" {
+		t.Fatalf("acme_directory = %q, want the configured override", cfg.Gateway.ACMEDirectory)
+	}
+	if cfg.Gateway.ACMEEmail != "ops@example.org" {
+		t.Fatalf("acme_email = %q, want ops@example.org", cfg.Gateway.ACMEEmail)
+	}
+	if !cfg.Gateway.AcceptTOS {
+		t.Fatal("acme_accept_tos = false, want true")
 	}
 }
 
@@ -193,7 +259,7 @@ api_host = "admin.example.org"
 	}
 }
 
-// TestLoadGatewayDisabledIgnoresAPIHostConflicts is fix cycle 2 item 1:
+// TestLoadGatewayDisabledIgnoresAPIHostConflicts confirms that
 // with [gateway] disabled, nothing gateway-related can stop a node from
 // starting — a disagreeing api_host/public_url and an api_host also
 // listed in the sites file are only real problems once the gateway is
