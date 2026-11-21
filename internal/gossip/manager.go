@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,7 +12,6 @@ import (
 	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/wallet"
-	"golang.org/x/net/websocket"
 
 	"github.com/BSVanon/Anvil/internal/bond"
 	"github.com/BSVanon/Anvil/internal/envelope"
@@ -129,6 +127,10 @@ type Manager struct {
 	dedupEvictions    atomic.Int64
 	duplicateArrivals atomic.Int64
 	catchupTruncated  atomic.Int64
+
+	// unauthConns counts inbound MeshHandler connections currently open
+	// that have not yet reached MarkAuthorized (see reserveUnauthConn).
+	unauthConns atomic.Int32
 }
 
 // peerRate tracks token-bucket rate limiting for a single peer.
@@ -369,6 +371,7 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 	if _, err := m.establishAndAuthorizePeer(ctx, peer, endpoint, "outbound", endpoint, 5000); err != nil {
 		return fmt.Errorf("peer identity not established: %w", err)
 	}
+	transport.MarkAuthorized()
 
 	// Announce our topic interests
 	if err := m.announceInterests(peer); err != nil {
@@ -380,21 +383,6 @@ func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
 
 	// Request catch-up for critical topics (catalog, feeds)
 	m.requestCatchUp(peer)
-	return nil
-}
-
-// outboundAllowlistGate is ConnectPeer's defense-in-depth [mesh]
-// allowed_peers check: called from the ListenForGeneralMessages callback
-// above with needsBondCheck already determined, it reports an error when
-// pkHex's first message must not proceed to the bond check or
-// handleMessage. Returns nil when needsBondCheck is false (this peer's
-// first message already passed, or ConnectPeer's primary check in
-// establishAndAuthorizePeer owns the decision this time) or when pkHex is
-// allowed.
-func (m *Manager) outboundAllowlistGate(needsBondCheck bool, pkHex, endpoint string) error {
-	if needsBondCheck && !m.checkAllowedPeer(pkHex, "outbound", endpoint) {
-		return fmt.Errorf("peer identity not in allowed_peers")
-	}
 	return nil
 }
 
@@ -483,6 +471,7 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 		}
 		if needsBondCheck {
 			m.notePeerIdentity(pkHex)
+			transport.MarkAuthorized()
 			// Reply with our own announces now that this peer's identity
 			// has passed allowed_peers — never before. (We are the
 			// acceptor: the dialer always speaks first, so replying here,
@@ -577,24 +566,6 @@ func (m *Manager) removePeerWithReason(origKey, reason string) {
 		}
 	}
 	m.mu.Unlock()
-}
-
-// MeshHandler returns an http.Handler that accepts inbound WebSocket
-// connections for mesh peering. Mount this on the mesh listen address.
-func (m *Manager) MeshHandler() http.Handler {
-	return websocket.Handler(func(conn *websocket.Conn) {
-		transport := NewServerWSTransport(conn)
-		peerKey, err := m.AcceptPeer(transport)
-		if err != nil {
-			m.logger.Warn("inbound peer accept failed", "error", err)
-			return
-		}
-
-		// Block until the connection closes, then clean up the peer.
-		<-transport.Done()
-		m.removePeerWithReason(peerKey, "transport_closed")
-		m.logger.Info("inbound peer disconnected, cleaned up", "key", truncate(peerKey))
-	})
 }
 
 // SetOnEnvelopeHook adds an additional callback invoked for each mesh-received
