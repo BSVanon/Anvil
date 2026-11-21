@@ -27,15 +27,17 @@ func TestVerifyTipUpdateFromTheBEEFAlone(t *testing.T) {
 		t.Fatalf("SpendsTip = %s %s %v", gotOrigin, tip, ok)
 	}
 	before := h.store.Calls.Load()
-	accept, err := h.tr.VerifyTipUpdate(h.ctx, n, gotOrigin, tip)
+	complete, err := h.tr.VerifyTipUpdate(h.ctx, n, gotOrigin, tip)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n := h.store.Calls.Load() - before; n != 0 {
 		t.Fatalf("%d fetches; the credential path reads only the BEEF", n)
 	}
-	h.wantTip(origin, origin) // nothing changes before accept
-	accept()
+	h.wantTip(origin, origin) // nothing changes before completion
+	if !complete(true) {
+		t.Fatal("successful broadcast was not recorded")
+	}
 	h.wantTip(origin, op(v1, 0))
 	h.wantLatest(origin, op(v1, 0), true)
 	if envs := h.envelopes(); len(envs) != 1 {
@@ -44,6 +46,33 @@ func TestVerifyTipUpdateFromTheBEEFAlone(t *testing.T) {
 	if _, err := h.tr.VerifyTipUpdate(h.ctx, n, origin, origin); !errors.Is(err, errStaleTip) {
 		t.Fatalf("the same update again: err %v, want errStaleTip", err)
 	}
+}
+
+func TestFailedBroadcastReleasesTheTipReservation(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	origin := op(o, 0)
+	h.track(origin)
+	v1 := h.move(o, 0, h.inscribed("v1"))
+	n := h.beefOf(v1)
+	complete, err := h.tr.VerifyTipUpdate(h.ctx, n, origin, origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete(false) {
+		t.Fatal("failed broadcast recorded a link")
+	}
+	if _, _, ok := h.tr.SpendsTip(v1); !ok {
+		t.Fatal("failed broadcast left the tip reserved")
+	}
+	complete, err = h.tr.VerifyTipUpdate(h.ctx, n, origin, origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded := complete(true); !recorded {
+		t.Fatal("retry after release was not recorded")
+	}
+	h.wantTip(origin, op(v1, 0))
 }
 
 func TestVerifyTipUpdateTakesOnlyVerifiedTransfers(t *testing.T) {

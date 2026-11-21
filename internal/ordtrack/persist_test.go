@@ -55,12 +55,13 @@ func TestARestartKeepsEveryChainAndSeqServesAfterIt(t *testing.T) {
 
 	srv := h.contentServer()
 	for _, c := range []struct {
-		query, body, outpoint, cache string
+		query, body, outpoint, cache, ordSeq string
 	}{
-		{"?seq=0", "v0", origin, content.ImmutableCacheControl},
-		{"?seq=1", "v1", op(v1, 0), content.ImmutableCacheControl},
-		{"?seq=2", "v2", op(v2, 0), "public, max-age=60"}, // pending
-		{"?seq=-1", "v2", op(v2, 0), "public, max-age=60"},
+		{"?seq=0", "v0", origin, content.VersionImmutableCacheControl, "0"},
+		{"?seq=1", "v1", op(v1, 0), "public, max-age=60", "1"},
+		{"?seq=2", "v1", op(moved, 0), "public, max-age=60", "2"},
+		{"?seq=3", "v2", op(v2, 0), "public, max-age=60", "3"},
+		{"?seq=-1", "v2", op(v2, 0), "no-store", "3"},
 	} {
 		rec := get(t, srv, "/content/"+origin+c.query)
 		if rec.Code != http.StatusOK || rec.Body.String() != c.body {
@@ -68,7 +69,7 @@ func TestARestartKeepsEveryChainAndSeqServesAfterIt(t *testing.T) {
 		}
 		hd := rec.Header()
 		if hd.Get(content.OriginHeader) != origin || hd.Get(content.OutpointHeader) != c.outpoint ||
-			hd.Get("Cache-Control") != c.cache || hd.Get("Content-Type") != "text/plain" {
+			hd.Get(content.OrdSeqHeader) != c.ordSeq || hd.Get("Cache-Control") != c.cache || hd.Get("Content-Type") != "text/plain" {
 			t.Fatalf("%s: headers %v", c.query, hd)
 		}
 		if !strings.Contains(hd.Get("Access-Control-Expose-Headers"), content.OutpointHeader) {
@@ -79,7 +80,7 @@ func TestARestartKeepsEveryChainAndSeqServesAfterIt(t *testing.T) {
 	if rec := get(t, srv, "/content/"+o.TxID().String()+"?seq=1"); rec.Code != http.StatusOK || rec.Body.String() != "v1" {
 		t.Fatalf("bare txid: %d %q", rec.Code, rec.Body.String())
 	}
-	if rec := get(t, srv, "/content/"+origin+"?seq=3"); rec.Code != http.StatusNotFound {
+	if rec := get(t, srv, "/content/"+origin+"?seq=4"); rec.Code != http.StatusNotFound {
 		t.Fatalf("a version that does not exist: %d", rec.Code)
 	}
 	other := h.mint("other")
@@ -101,5 +102,77 @@ func TestARestartKeepsEveryChainAndSeqServesAfterIt(t *testing.T) {
 	h.wantLatest(origin, op(v1, 0), false)
 	if h.stat("ordtrack_pending") != 0 {
 		t.Fatalf("stats after a second restart = %v", h.tr.Stats())
+	}
+}
+
+func TestRestartMigratesInscriptionOnlySequenceRecords(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	origin := op(o, 0)
+	h.track(origin)
+	v1 := h.move(o, 0, h.inscribed("v1"))
+	moved := h.move(v1, 0, plain())
+	h.observe(v1)
+	h.observe(moved)
+
+	first, _ := h.tr.db.link(origin, 0)
+	inscribed, _ := h.tr.db.link(origin, 1)
+	plainLink, _ := h.tr.db.link(origin, 2)
+	first.Content, first.ContentSeq = "", 0
+	inscribed.Content, inscribed.ContentSeq = "", 0
+	plainLink.Content, plainLink.ContentSeq, plainLink.Seq = "", 0, -1
+	m := h.tr.chains[origin].m
+	m.Versions = 2
+	c := newChange()
+	c.putLink(origin, 0, first)
+	c.putLink(origin, 1, inscribed)
+	c.putLink(origin, 2, plainLink)
+	c.b.Delete(versionKey(origin, 2))
+	c.putMeta(m)
+	if err := h.tr.db.apply(c); err != nil {
+		t.Fatal(err)
+	}
+
+	h.reopen()
+	location, contentAt, pending, err := h.tr.ResolveVersion(origin, 2)
+	if err != nil || location != op(moved, 0) || contentAt != op(v1, 0) || !pending {
+		t.Fatalf("migrated sequence 2 = %s serving %s (pending %v), error %v", location, contentAt, pending, err)
+	}
+	metas, err := h.tr.db.metas()
+	if err != nil || len(metas) != 1 || metas[0].Versions != 3 {
+		t.Fatalf("migrated metadata = %+v, %v", metas, err)
+	}
+}
+
+func TestRestartBackfillsMinedBlockAnchors(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	origin := op(o, 0)
+	h.track(origin)
+	v1 := h.move(o, 0, h.inscribed("v1"))
+	h.chain.Mine(v1)
+	h.observe(v1)
+
+	c := newChange()
+	for i := 0; i < 2; i++ {
+		l, err := h.tr.db.link(origin, i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.MerkleRoot = ""
+		c.putLink(origin, i, l)
+	}
+	if err := h.tr.db.apply(c); err != nil {
+		t.Fatal(err)
+	}
+	h.reopen()
+	if _, _, _, err := h.tr.ResolveVersion(origin, -1); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		l, err := h.tr.db.link(origin, i)
+		if err != nil || l.MerkleRoot == "" {
+			t.Fatalf("link %d anchor = %q, %v", i, l.MerkleRoot, err)
+		}
 	}
 }

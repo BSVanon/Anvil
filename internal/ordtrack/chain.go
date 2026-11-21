@@ -16,21 +16,23 @@ const (
 )
 
 var (
-	errLinkCap    = errors.New("origin is at its link cap")
-	errPendingCap = errors.New("origin is at its cap of unmined links")
+	errLinkCap     = errors.New("origin is at its link cap")
+	errPendingCap  = errors.New("origin is at its cap of unmined links")
+	errTipReserved = errors.New("tracked tip is reserved by another update")
 )
 
 // chain is one origin's state in memory: its summary, its last link (the
 // tip), its last version and its unmined tail. Older links stay in the
 // store only.
 type chain struct {
-	m         meta
-	tip       link
-	latest    link
-	pending   []link // the unmined tail, oldest first
-	tracked   bool
-	capLogged bool
-	nextCheck time.Time // when checkPending may next look at it
+	m              meta
+	tip            link
+	latest         link
+	pending        []link // the unmined tail, oldest first
+	tracked        bool
+	capLogged      bool
+	nextCheck      time.Time // when checkPending may next look at it
+	nextMinedCheck time.Time // when best-chain anchors may next be checked
 }
 
 // firstPending is the index of pending[0].
@@ -59,9 +61,18 @@ func (c *chain) isOpen() bool { return c.tracked && !c.m.Closed }
 func (t *Tracker) apply(cand candidate, s *spend) (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.applyLocked(cand, s, false)
+}
+
+// applyLocked records cand while t.mu is held. allowReserved is true only
+// for the HTTP request that owns cand.tip's reservation.
+func (t *Tracker) applyLocked(cand candidate, s *spend, allowReserved bool) (bool, error) {
 	ch := t.chains[cand.origin]
 	if ch == nil || !ch.isOpen() || ch.tip.Outpoint != cand.tip {
 		return false, nil
+	}
+	if owner := t.reserved[cand.tip]; owner != "" && (!allowReserved || owner != cand.txid) {
+		return false, errTipReserved
 	}
 	if ch.m.Links >= maxLinks {
 		if !ch.capLogged {
@@ -77,21 +88,26 @@ func (t *Tracker) apply(cand candidate, s *spend) (bool, error) {
 		return false, errRolledBack
 	}
 
-	l := link{Txid: s.txid, Prev: cand.tip, Kind: s.kind.String(), Status: statusPending, Seen: t.now().Unix(), Seq: -1}
+	l := link{
+		Txid: s.txid, Prev: cand.tip, Kind: s.kind.String(), Status: statusPending,
+		Seen: t.now().Unix(), Seq: -1, Content: ch.latest.Content, ContentSeq: ch.latest.ContentSeq,
+	}
 	if s.mined {
-		l.Status, l.Height = statusMined, s.height
+		l.Status, l.Height, l.MerkleRoot = statusMined, s.height, s.merkleRoot
 	}
 	if s.kind != Burn {
 		l.Outpoint = outpointString(s.txid, uint32(s.vout)) // #nosec G115 // vout indexes an output
+		l.Seq = ch.m.Versions
 	}
 	if s.kind == Transfer && s.inscribed {
-		l.Inscribed, l.ContentType, l.Seq = true, s.contentType, ch.m.Versions
+		l.Inscribed, l.ContentType = true, s.contentType
+		l.Content, l.ContentSeq = l.Outpoint, l.Seq
 	}
 
 	next := ch.m
 	idx := next.Links
 	next.Links++
-	if l.Seq >= 0 {
+	if l.Outpoint != "" {
 		next.Versions++
 	}
 	next.Tip = l.Outpoint
@@ -103,7 +119,7 @@ func (t *Tracker) apply(cand candidate, s *spend) (bool, error) {
 	if s.mined {
 		// A mined spend proves every link before it mined.
 		for i, p := range ch.pending {
-			p.Status = statusMined
+			p.Status, p.Height, p.MerkleRoot = statusMined, s.height, s.merkleRoot
 			chg.putLink(cand.origin, ch.firstPending()+i, p)
 		}
 	}
@@ -142,22 +158,24 @@ func (t *Tracker) moveTipLocked(origin string, ch *chain, tip link, m meta) {
 	}
 }
 
-// rollbackLocked removes links from index from onward, all of them
-// unmined, and makes the link before them the tip again.
+// rollbackLocked removes links from index onward and makes the preceding
+// link the tip again. It handles both unmined tails and mined stale forks.
 func (t *Tracker) rollbackLocked(origin string, ch *chain, from int, reason string) error {
 	first := ch.firstPending()
-	if from < first || from >= ch.m.Links || from == 0 {
-		return fmt.Errorf("rollback of %s from link %d: only unmined links %d..%d can be rolled back", origin, from, first, ch.m.Links-1)
+	if from <= 0 || from >= ch.m.Links {
+		return fmt.Errorf("rollback of %s from link %d outside 1..%d", origin, from, ch.m.Links-1)
 	}
-	removed := ch.pending[from-first:]
-	var tip link
-	if from-1 >= first {
-		tip = ch.pending[from-1-first]
-	} else {
-		var err error
-		if tip, err = t.db.link(origin, from-1); err != nil {
-			return fmt.Errorf("read link %d of %s: %w", from-1, origin, err)
+	removed := make([]link, ch.m.Links-from)
+	for i := range removed {
+		l, err := t.db.link(origin, from+i)
+		if err != nil {
+			return fmt.Errorf("read link %d of %s: %w", from+i, origin, err)
 		}
+		removed[i] = l
+	}
+	tip, err := t.db.link(origin, from-1)
+	if err != nil {
+		return fmt.Errorf("read link %d of %s: %w", from-1, origin, err)
 	}
 	next := ch.m
 	next.Links, next.Tip, next.Closed = from, tip.Outpoint, false
@@ -174,7 +192,11 @@ func (t *Tracker) rollbackLocked(origin string, ch *chain, from int, reason stri
 	}
 
 	t.rememberRolledBackLocked(removed)
-	ch.pending = ch.pending[:from-first]
+	keepPending := max(0, from-first)
+	if keepPending > len(ch.pending) {
+		keepPending = len(ch.pending)
+	}
+	ch.pending = ch.pending[:keepPending]
 	ch.tracked = true
 	t.moveTipLocked(origin, ch, tip, next)
 	if ch.latest.Seq >= next.Versions {
@@ -185,12 +207,13 @@ func (t *Tracker) rollbackLocked(origin string, ch *chain, from int, reason stri
 		ch.latest = latest
 	}
 	t.rollbacks.Add(1)
-	t.log.Info("rolled back unmined links of a tracked origin", "origin", origin, "links", len(removed), "reason", reason)
+	t.log.Info("rolled back links of a tracked origin", "origin", origin, "links", len(removed), "reason", reason)
 	return nil
 }
 
-// markMinedLocked records links first..last as mined, the last at height.
-func (t *Tracker) markMinedLocked(origin string, ch *chain, last int, height uint32) error {
+// markMinedLocked records links first..last as mined, anchored by the proven
+// descendant at height and root.
+func (t *Tracker) markMinedLocked(origin string, ch *chain, last int, height uint32, root string) error {
 	first := ch.firstPending()
 	if last < first || last >= ch.m.Links {
 		return nil
@@ -198,10 +221,7 @@ func (t *Tracker) markMinedLocked(origin string, ch *chain, last int, height uin
 	chg := newChange()
 	for i := first; i <= last; i++ {
 		l := ch.pending[i-first]
-		l.Status = statusMined
-		if i == last {
-			l.Height = height
-		}
+		l.Status, l.Height, l.MerkleRoot = statusMined, height, root
 		chg.putLink(origin, i, l)
 		if l.Txid == ch.tip.Txid {
 			ch.tip = l

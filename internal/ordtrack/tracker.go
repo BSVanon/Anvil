@@ -14,6 +14,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/spendwatch"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/transaction/chaintracker"
+	"github.com/syndtr/goleveldb/leveldb"
 )
 
 // watchOwner is the tracker's owner name in the spend watch.
@@ -21,8 +22,9 @@ const watchOwner = "ordtrack"
 
 // Defaults and fixed bounds.
 const (
-	DefaultPendingTimeout = 24 * time.Hour
-	DefaultMaxOrigins     = 1000
+	DefaultPendingTimeout  = 24 * time.Hour
+	DefaultMaxOrigins      = 1000
+	immutableConfirmations = 6
 	// removedRetention is how long a chain that left the tracked set keeps
 	// its history before it is dropped.
 	removedRetention = 24 * time.Hour
@@ -61,10 +63,13 @@ type Tracker struct {
 	mu     sync.Mutex
 	chains map[string]*chain
 	tips   map[string]string // an open chain's tip outpoint -> its origin
-	wanted map[string]*want  // tracked origins not yet confirmed
-	beefs  *beefCache
-	hinted map[string]struct{} // txids last reported by a peer's hint
-	capped bool                // the tracked set was cut to MaxOrigins
+	// reserved holds a verified HTTP tip update from authorization until its
+	// broadcast either fails or is recorded.
+	reserved map[string]string // tip outpoint -> spending txid
+	wanted   map[string]*want  // tracked origins not yet confirmed
+	beefs    *beefCache
+	hinted   map[string]struct{} // txids last reported by a peer's hint
+	capped   bool                // the tracked set was cut to MaxOrigins
 	// behind holds chains a follow left unfinished; rolledBack the txids
 	// of links rolled back, each until when it is not taken again unmined.
 	behind     map[string]bool
@@ -101,18 +106,19 @@ func New(cfg Config) (*Tracker, error) {
 		return nil, err
 	}
 	t := &Tracker{
-		cfg:    cfg,
-		db:     db,
-		v:      newVerifier(cfg.Source, cfg.Chain),
-		watch:  cfg.Watcher,
-		log:    cfg.Logger,
-		now:    time.Now,
-		chains: make(map[string]*chain),
-		tips:   make(map[string]string),
-		wanted: make(map[string]*want),
-		beefs:  newBeefCache(),
-		hinted: make(map[string]struct{}),
-		behind: make(map[string]bool),
+		cfg:      cfg,
+		db:       db,
+		v:        newVerifier(cfg.Source, cfg.Chain),
+		watch:    cfg.Watcher,
+		log:      cfg.Logger,
+		now:      time.Now,
+		chains:   make(map[string]*chain),
+		tips:     make(map[string]string),
+		reserved: make(map[string]string),
+		wanted:   make(map[string]*want),
+		beefs:    newBeefCache(),
+		hinted:   make(map[string]struct{}),
+		behind:   make(map[string]bool),
 
 		rolledBack: make(map[string]time.Time),
 		queue:      make(chan candidate, queueSize),
@@ -133,7 +139,11 @@ func (t *Tracker) load() error {
 	if err != nil {
 		return err
 	}
-	for _, m := range metas {
+	for _, stored := range metas {
+		m, err := t.db.migrateSequence(stored)
+		if err != nil {
+			return fmt.Errorf("migrate sequence history of %s: %w", stored.Origin, err)
+		}
 		ch := &chain{m: m, tracked: m.RemovedAt == 0}
 		if ch.tip, err = t.db.link(m.Origin, m.Links-1); err != nil {
 			return fmt.Errorf("load tip of %s: %w", m.Origin, err)
@@ -193,10 +203,14 @@ func (t *Tracker) Run(ctx context.Context) {
 func (t *Tracker) onSpent(outpoint, spendingTxid string) {
 	t.mu.Lock()
 	origin, ok := t.tips[outpoint]
+	reserved := t.reserved[outpoint]
 	_, gossip := t.hinted[spendingTxid]
 	delete(t.hinted, spendingTxid)
 	t.mu.Unlock()
-	if !ok {
+	// The reserving request records its own candidate after the broadcast.
+	// Other candidates are left for the spend watch to report again after
+	// the short reservation ends.
+	if !ok || reserved != "" {
 		return
 	}
 	select {
@@ -252,54 +266,95 @@ func (t *Tracker) process(ctx context.Context, c candidate) bool {
 	return false
 }
 
-// Latest returns origin's latest version. An origin this node does not
-// track serves as its own latest version.
+// Latest returns origin's effective content at its current location. An
+// origin this node does not track serves as its own latest content.
 func (t *Tracker) Latest(origin string) (string, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if ch := t.chains[origin]; ch != nil && ch.tracked {
-		return ch.latest.Outpoint, nil
+	_, contentAt, _, err := t.ResolveVersion(origin, -1)
+	if errors.Is(err, content.ErrNotTracked) {
+		return origin, nil
 	}
-	return origin, nil
+	return contentAt, err
 }
 
 // At returns origin's version seq, 0 being the origin.
 func (t *Tracker) At(origin string, seq int) (string, error) {
-	outpoint, _, err := t.ResolveVersion(origin, seq)
+	outpoint, _, _, err := t.ResolveVersion(origin, seq)
 	if errors.Is(err, content.ErrNotTracked) && seq == 0 {
 		return origin, nil
 	}
 	return outpoint, err
 }
 
-// ResolveVersion returns origin's version seq, -1 being the latest, and
-// whether that version is still unmined.
-func (t *Tracker) ResolveVersion(origin string, seq int) (outpoint string, pending bool, err error) {
+// ResolveVersion returns the location named by spend sequence seq, the most
+// recent inscription at or before that location, and whether the location is
+// still unmined. Sequence -1 names the current location.
+func (t *Tracker) ResolveVersion(origin string, seq int) (outpoint, contentOutpoint string, pending bool, err error) {
+	resolved, err := t.ResolveVersionAt(origin, seq)
+	if err != nil {
+		return "", "", false, err
+	}
+	return resolved.Outpoint, resolved.ContentOutpoint, resolved.Pending, nil
+}
+
+// ResolveVersionAt resolves relativeSeq from locator. locator may be an
+// origin or any recorded location in its chain. The returned Seq is always
+// counted from the origin.
+func (t *Tracker) ResolveVersionAt(locator string, relativeSeq int) (content.VersionLocation, error) {
+	ref, err := t.db.location(locator)
+	if err != nil {
+		if errors.Is(err, leveldb.ErrNotFound) {
+			return content.VersionLocation{}, content.ErrNotTracked
+		}
+		return content.VersionLocation{}, fmt.Errorf("read version locator %s: %w", locator, err)
+	}
+	if err := t.reconcileMined(context.Background(), ref.Origin); err != nil {
+		return content.VersionLocation{}, fmt.Errorf("check best-chain anchors: %w", err)
+	}
 	t.mu.Lock()
-	ch := t.chains[origin]
+	ch := t.chains[ref.Origin]
 	if ch == nil || !ch.tracked {
 		t.mu.Unlock()
-		return "", false, content.ErrNotTracked
+		return content.VersionLocation{}, content.ErrNotTracked
 	}
 	latest, versions := ch.latest, ch.m.Versions
 	t.mu.Unlock()
+	absoluteSeq := relativeSeq
 	switch {
-	case seq == -1:
-		return latest.Outpoint, latest.Status == statusPending, nil
-	case seq < -1 || seq >= versions:
-		return "", false, content.ErrNoVersion
-	case seq == latest.Seq:
-		return latest.Outpoint, latest.Status == statusPending, nil
+	case relativeSeq == -1:
+		absoluteSeq = latest.Seq
+	case relativeSeq < -1 || relativeSeq > maxLinks || ref.Seq > maxLinks-relativeSeq:
+		return content.VersionLocation{}, content.ErrNoVersion
+	default:
+		absoluteSeq = ref.Seq + relativeSeq
 	}
-	l, err := t.db.version(origin, seq)
-	if err != nil {
-		return "", false, fmt.Errorf("read version %d of %s: %w", seq, origin, err)
+	if absoluteSeq < ref.Seq || absoluteSeq >= versions {
+		return content.VersionLocation{}, content.ErrNoVersion
 	}
-	return l.Outpoint, l.Status == statusPending, nil
+	l := latest
+	if absoluteSeq != latest.Seq {
+		l, err = t.db.version(ref.Origin, absoluteSeq)
+		if err != nil {
+			return content.VersionLocation{}, fmt.Errorf("read version %d of %s: %w", absoluteSeq, ref.Origin, err)
+		}
+	}
+	stable := false
+	if l.Status == statusMined {
+		if best, heightErr := t.cfg.Chain.CurrentHeight(context.Background()); heightErr == nil && best >= l.Height {
+			stable = best-l.Height+1 >= immutableConfirmations
+		}
+	}
+	return content.VersionLocation{
+		Origin: ref.Origin, Outpoint: l.Outpoint, ContentOutpoint: l.Content,
+		Seq: absoluteSeq, Pending: l.Status == statusPending, Immutable: stable,
+	}, nil
 }
 
 // History returns every version outpoint of a tracked origin, in order.
 func (t *Tracker) History(origin string) []string {
+	if err := t.reconcileMined(context.Background(), origin); err != nil {
+		t.log.Warn("check version history anchors failed", "origin", origin, "error", err)
+		return nil
+	}
 	t.mu.Lock()
 	ch := t.chains[origin]
 	tracked := ch != nil && ch.tracked

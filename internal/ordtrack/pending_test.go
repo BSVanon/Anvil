@@ -1,9 +1,12 @@
 package ordtrack
 
 import (
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/content"
+	"github.com/BSVanon/Anvil/internal/ordtrack/ordtracktest"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
@@ -108,6 +111,82 @@ func TestAConflictingMinedSpendRollsBack(t *testing.T) {
 	h.wantLatest(origin, origin, false)
 	if h.stat("ordtrack_rollbacks") != 1 || h.stat("ordtrack_pending") != 0 {
 		t.Fatalf("stats = %v", h.tr.Stats())
+	}
+}
+
+func TestUnrelatedMinedTransactionDoesNotRollBackPendingChain(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	origin := op(o, 0)
+	h.woc.set(origin, "down")
+	h.track(origin)
+	v1 := h.move(o, 0, h.inscribed("v1"))
+	h.observe(v1)
+
+	unrelated := h.mint("unrelated")
+	h.woc.set(origin, unrelated.TxID().String())
+	h.tr.checkPending(h.ctx)
+
+	h.wantTip(origin, op(v1, 0))
+	h.wantLatest(origin, op(v1, 0), true)
+	if h.stat("ordtrack_rollbacks") != 0 {
+		t.Fatalf("unrelated transaction caused rollback: %v", h.tr.Stats())
+	}
+}
+
+func TestReorgedMinedVersionRollsBack(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	origin := op(o, 0)
+	h.woc.set(origin, "down")
+	h.track(origin)
+	v1 := h.move(o, 0, h.inscribed("v1"))
+	h.chain.Mine(v1)
+	h.observe(v1)
+	h.wantLatest(origin, op(v1, 0), false)
+
+	rival := h.move(o, 0, plain())
+	h.chain.Reorg(v1, rival)
+	h.woc.set(origin, rival.TxID().String())
+	h.tr.maintain(h.ctx)
+
+	h.wantTip(origin, op(rival, 0))
+	h.wantLatest(origin, origin, false)
+}
+
+func TestResolveDoesNotServeAReorgedMinedVersion(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	origin := op(o, 0)
+	h.woc.set(origin, "down")
+	h.track(origin)
+	v1 := h.move(o, 0, h.inscribed("v1"))
+	h.chain.Mine(v1)
+	h.observe(v1)
+	rival := h.move(o, 0, plain())
+	h.chain.Reorg(v1, rival)
+	h.woc.set(origin, rival.TxID().String())
+
+	location, contentAt, pending, err := h.tr.ResolveVersion(origin, -1)
+	if err != nil || location != op(rival, 0) || contentAt != origin || pending {
+		t.Fatalf("latest after reorg = %s serving %s (pending %v), error %v", location, contentAt, pending, err)
+	}
+}
+
+func TestReorgedOriginIsNoLongerServed(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	origin := op(o, 0)
+	h.track(origin)
+	replacement := h.w.Fund(ordtracktest.Out{Sats: 1})
+	h.chain.Reorg(o, replacement)
+	h.tr.maintain(h.ctx)
+
+	if _, _, _, err := h.tr.ResolveVersion(origin, -1); !errors.Is(err, content.ErrNotTracked) {
+		t.Fatalf("reorged origin lookup error = %v, want not tracked", err)
+	}
+	if metas, err := h.tr.db.metas(); err != nil || len(metas) != 0 {
+		t.Fatalf("stored chains after origin reorg = %v, %v", metas, err)
 	}
 }
 

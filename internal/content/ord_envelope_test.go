@@ -63,7 +63,7 @@ func TestParseOrdEnvelope(t *testing.T) {
 		{"before a lock", envScript(t, hdr, "51", ct, "00", body, "68", p2pk), true, "text/html", "<p>hi</p>"},
 		{"tag aliases 0x01 and 0x00", envScript(t, hdr, "0101", ct, "0100", body, "68"), true, "text/html", "<p>hi</p>"},
 		{"last content type wins", envScript(t, hdr, "51", push([]byte("text/plain")), "51", ct, "00", body, "68"), true, "text/html", "<p>hi</p>"},
-		{"unknown parent field holding zero bytes", envScript(t, hdr, "51", ct, "53", parent, "00", body, "68"), true, "text/html", "<p>hi</p>"},
+		{"parent field holding zero bytes", envScript(t, hdr, "51", ct, "53", parent, "00", body, "68"), true, "text/html", "<p>hi</p>"},
 		{"unknown wide-tag field", envScript(t, hdr, push([]byte("ab")), push([]byte("xyz")), "51", ct, "00", body, "68"), true, "text/html", "<p>hi</p>"},
 		{"empty body", envScript(t, hdr, "51", ct, "00", "00", "68"), true, "text/html", ""},
 		{"no content type", envScript(t, hdr, "00", body, "68"), true, "", "<p>hi</p>"},
@@ -105,11 +105,12 @@ func TestParseOrdEnvelope(t *testing.T) {
 // to be read byte by byte, the 0x00 taken as the body tag, and the output
 // reported as holding no inscription.
 func TestParseInscriptionParentField(t *testing.T) {
-	parent := push(append(bytes.Repeat([]byte{0x11}, 32), 0x00, 0x00, 0x00, 0x00))
+	parentID := bytes.Repeat([]byte{0x11}, 32)
+	parent := push(append(append([]byte{}, parentID...), 0x00, 0x00, 0x00, 0x00))
 	lock := envScript(t, hdr, "51", push([]byte("image/webp")), "53", parent, "00", push([]byte("RIFF")), "68", p2pk)
 
-	// version 1, one input (null prevout, empty script), one 1-sat output.
-	tx := envScript(t, "01000000", "01", bytes.Repeat([]byte{0}, 32), "ffffffff", "00", "ffffffff", "01", "0100000000000000")
+	// version 1, one input spending the parent, one 1-sat output.
+	tx := envScript(t, "01000000", "01", parentID, "00000000", "00", "ffffffff", "01", "0100000000000000")
 	tx = append(tx, varIntBytes(len(lock))...)
 	tx = append(tx, lock...)
 	tx = append(tx, 0, 0, 0, 0)
@@ -120,6 +121,67 @@ func TestParseInscriptionParentField(t *testing.T) {
 	}
 	if insc.ContentType != "image/webp" || string(insc.Data) != "RIFF" {
 		t.Fatalf("got (%q, %q)", insc.ContentType, insc.Data)
+	}
+}
+
+func TestParentClaimRequiresMatchingInput(t *testing.T) {
+	parent := push(append(bytes.Repeat([]byte{0x22}, 32), 0x00, 0x00, 0x00, 0x00))
+	lock := envScript(t, hdr, "51", push([]byte("text/plain")), "53", parent, "00", push([]byte("forged child")), "68", p2pk)
+	tx := envScript(t, "01000000", "01", bytes.Repeat([]byte{0}, 32), "ffffffff", "00", "ffffffff", "01", "0100000000000000")
+	tx = append(tx, varIntBytes(len(lock))...)
+	tx = append(tx, lock...)
+	tx = append(tx, 0, 0, 0, 0)
+
+	if insc, err := parseInscription(hex.EncodeToString(tx), "0"); err == nil {
+		t.Fatalf("accepted parent claim without its spend: %q", insc.Data)
+	}
+}
+
+func TestParentClaimFormsAndLastFieldWins(t *testing.T) {
+	id := bytes.Repeat([]byte{0x33}, 32)
+	body := push([]byte("child"))
+	field := func(parent []byte) []byte { return envScript(t, "53", push(parent)) }
+	makeTx := func(inputID []byte, inputVout uint32, parents ...[]byte) string {
+		lock := envScript(t, hdr, "51", push([]byte("text/plain")))
+		for _, p := range parents {
+			lock = append(lock, field(p)...)
+		}
+		lock = append(lock, envScript(t, "00", body, "68", p2pk)...)
+		vout := []byte{byte(inputVout), byte(inputVout >> 8), byte(inputVout >> 16), byte(inputVout >> 24)}
+		tx := envScript(t, "01000000", "01", inputID, vout, "00", "ffffffff", "01", "0100000000000000")
+		tx = append(tx, varIntBytes(len(lock))...)
+		tx = append(tx, lock...)
+		tx = append(tx, 0, 0, 0, 0)
+		return hex.EncodeToString(tx)
+	}
+
+	parent32 := append([]byte{}, id...)
+	parent36 := append(append([]byte{}, id...), 7, 0, 0, 0)
+	wrongVout := append(append([]byte{}, id...), 8, 0, 0, 0)
+	other := bytes.Repeat([]byte{0x44}, 36)
+	for _, tc := range []struct {
+		name string
+		raw  string
+		ok   bool
+	}{
+		{"32-byte output zero", makeTx(id, 0, parent32), true},
+		{"36-byte output", makeTx(id, 7, parent36), true},
+		{"wrong output", makeTx(id, 7, wrongVout), false},
+		{"last parent wins", makeTx(id, 7, other, parent36), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseInscription(tc.raw, "0")
+			if (err == nil) != tc.ok {
+				t.Fatalf("parse error = %v, want success %v", err, tc.ok)
+			}
+		})
+	}
+
+	for _, n := range []int{0, 1, 31, 33, 35, 37} {
+		lock := envScript(t, hdr, "53", push(bytes.Repeat([]byte{0x55}, n)), "00", body, "68")
+		if _, ok := ParseOrdEnvelope(lock); ok {
+			t.Errorf("accepted %d-byte parent", n)
+		}
 	}
 }
 

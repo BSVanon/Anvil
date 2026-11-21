@@ -2,6 +2,7 @@ package ordtrack
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/ordtrack/ordtracktest"
 	"github.com/BSVanon/Anvil/internal/spendwatch"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/chaintracker"
 )
@@ -29,17 +31,26 @@ var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 // outpoint set to a txid is spent by it, one set to "down" answers 503 (an
 // answer the spend watch does not cache), any other answers 404, unspent.
 type fakeWoC struct {
-	srv   *httptest.Server
 	mu    sync.Mutex
 	state map[string]string
 	calls atomic.Int64
 }
 
 func newFakeWoC(t *testing.T) *fakeWoC {
-	f := &fakeWoC{state: map[string]string{}}
-	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
-	t.Cleanup(f.srv.Close)
-	return f
+	t.Helper()
+	return &fakeWoC{state: map[string]string{}}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func (f *fakeWoC) client() *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		w := httptest.NewRecorder()
+		f.serve(w, r)
+		return w.Result(), nil
+	})}
 }
 
 func (f *fakeWoC) serve(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +167,7 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) open() {
 	h.t.Helper()
 	h.watch = spendwatch.New(spendwatch.Config{
-		WoCBase: h.woc.srv.URL, RequestGap: time.Microsecond,
+		WoCBase: "http://woc.test", HTTPClient: h.woc.client(), RequestGap: time.Microsecond,
 		BackoffBase: time.Millisecond, BackoffMax: time.Millisecond, Logger: discard,
 	})
 	tr, err := New(Config{
@@ -247,6 +258,25 @@ func (h *harness) inscribed(body string) ordtracktest.Out {
 	return ordtracktest.Out{Sats: 1, Script: h.w.Inscription("text/plain", []byte(body))}
 }
 
+func (h *harness) inscribedWithParent(body string, parent *transaction.Transaction, vout uint32) ordtracktest.Out {
+	s := &script.Script{}
+	_ = s.AppendOpcodes(script.Op0, script.OpIF)
+	_ = s.AppendPushData([]byte("ord"))
+	_ = s.AppendOpcodes(script.Op1)
+	_ = s.AppendPushData([]byte("text/plain"))
+	_ = s.AppendOpcodes(script.Op3)
+	parentOutpoint := append([]byte{}, parent.TxID().CloneBytes()...)
+	var index [4]byte
+	binary.LittleEndian.PutUint32(index[:], vout)
+	_ = s.AppendPushData(append(parentOutpoint, index[:]...))
+	_ = s.AppendOpcodes(script.Op0)
+	_ = s.AppendPushData([]byte(body))
+	_ = s.AppendOpcodes(script.OpENDIF)
+	lock := append(script.Script{}, *s...)
+	lock = append(lock, *h.w.Lock()...)
+	return ordtracktest.Out{Sats: 1, Script: &lock}
+}
+
 func plain() ordtracktest.Out { return ordtracktest.Out{Sats: 1} }
 
 // move spends the token at prev's output vout, then a fresh mined funding
@@ -298,7 +328,7 @@ func (h *harness) latest(origin string) string {
 // version is origin's version seq, failing the test on an error.
 func (h *harness) version(origin string, seq int) (string, bool) {
 	h.t.Helper()
-	outpoint, pending, err := h.tr.ResolveVersion(origin, seq)
+	outpoint, _, pending, err := h.tr.ResolveVersion(origin, seq)
 	if err != nil {
 		h.t.Fatalf("version %d of %s: %v", seq, origin, err)
 	}
@@ -316,9 +346,12 @@ func (h *harness) wantTip(origin, want string) {
 
 func (h *harness) wantLatest(origin, want string, wantPending bool) {
 	h.t.Helper()
-	got, pending := h.version(origin, -1)
+	_, got, pending, err := h.tr.ResolveVersion(origin, -1)
+	if err != nil {
+		h.t.Fatalf("latest of %s: %v", origin, err)
+	}
 	if got != want || pending != wantPending {
-		h.t.Fatalf("latest of %s = %s (pending %v), want %s (pending %v)", origin, got, pending, want, wantPending)
+		h.t.Fatalf("latest content of %s = %s (pending %v), want %s (pending %v)", origin, got, pending, want, wantPending)
 	}
 	if l := h.latest(origin); l != want {
 		h.t.Fatalf("Latest(%s) = %s, want %s", origin, l, want)

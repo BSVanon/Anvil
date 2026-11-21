@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/BSVanon/Anvil/internal/beefnorm"
@@ -22,6 +23,12 @@ const (
 var (
 	errNotTransfer = errors.New("the spend does not move the token to a new 1-sat output")
 	errStaleTip    = errors.New("not the current tip of a tracked origin")
+	errTipShape    = errors.New("tip update has too many or oversized non-token outputs")
+)
+
+const (
+	maxTipCredentialOtherOutputs = 4
+	maxTipCredentialScriptBytes  = 200
 )
 
 // Active reports whether any tracked origin has a tip to follow. It is
@@ -49,7 +56,7 @@ func (t *Tracker) SpendsTip(tx *transaction.Transaction) (origin, tip string, ok
 			continue
 		}
 		key := outpointString(in.SourceTXID.String(), in.SourceTxOutIndex)
-		if o, hit := t.tips[key]; hit {
+		if o, hit := t.tips[key]; hit && t.reserved[key] == "" {
 			return o, key, true
 		}
 	}
@@ -59,10 +66,16 @@ func (t *Tracker) SpendsTip(tx *transaction.Transaction) (origin, tip string, ok
 // VerifyTipUpdate verifies, from what n holds alone, that n's subject
 // spends tip, origin's current tip, as a transfer to a new 1-sat output:
 // the checks every reported spend gets (see verify), with nothing
-// fetched. accept records the spend as origin's new, unmined tip
-// and tells peers; call it only once the transaction is broadcast. Any
-// other outcome, an end or a burn included, is an error.
-func (t *Tracker) VerifyTipUpdate(ctx context.Context, n *beefnorm.BEEF, origin, tip string) (accept func(), err error) {
+// fetched. On success it atomically checks that tip is still current and
+// below its pending cap, then reserves tip for this transaction. complete
+// must be called once: true records and publishes after a successful
+// broadcast; false releases the reservation. It reports whether a link was
+// recorded. Any other outcome, an end or a burn included, is an error.
+//
+// The free path permits the token-forward output plus at most four other
+// outputs, whose locking scripts are at most 200 bytes each. The token output
+// is not size-limited here because it carries the new version's content.
+func (t *Tracker) VerifyTipUpdate(ctx context.Context, n *beefnorm.BEEF, origin, tip string) (complete func(bool) bool, err error) {
 	if n == nil || n.Subject == nil || n.Tx == nil {
 		return nil, errInvalid
 	}
@@ -87,16 +100,74 @@ func (t *Tracker) VerifyTipUpdate(ctx context.Context, n *beefnorm.BEEF, origin,
 	if s.kind != Transfer {
 		return nil, fmt.Errorf("%w: %s", errNotTransfer, s.kind)
 	}
-	return func() {
-		applied, err := t.apply(c, s)
-		if err != nil {
-			t.log.Debug("tip update not recorded", "origin", origin, "txid", c.txid, "error", err)
-		}
-		if applied {
-			raw, _ := n.Atomic()
-			t.publish(origin, tip, outpointString(s.txid, uint32(s.vout)), raw) // #nosec G115 // vout indexes an output
-		}
+	if !tipCredentialShape(n.Tx, s.vout) {
+		return nil, errTipShape
+	}
+
+	// Verification runs without the tracker lock. Reserve only after it, with
+	// the current-tip, link-cap, pending-cap and rollback checks in one critical
+	// section immediately before the caller can broadcast.
+	t.mu.Lock()
+	ch = t.chains[origin]
+	switch {
+	case ch == nil || !ch.isOpen() || ch.tip.Outpoint != tip:
+		err = errStaleTip
+	case t.reserved[tip] != "":
+		err = errTipReserved
+	case ch.m.Links >= maxLinks:
+		err = errLinkCap
+	case !s.mined && len(ch.pending) >= maxPendingLinks:
+		err = errPendingCap
+	case !s.mined && t.wasRolledBackLocked(s.txid):
+		err = errRolledBack
+	default:
+		t.reserved[tip] = c.txid
+	}
+	t.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+
+	var once sync.Once
+	var recorded bool
+	return func(broadcastSucceeded bool) bool {
+		once.Do(func() {
+			t.mu.Lock()
+			if t.reserved[tip] != c.txid {
+				t.mu.Unlock()
+				return
+			}
+			if broadcastSucceeded {
+				recorded, err = t.applyLocked(c, s, true)
+			}
+			delete(t.reserved, tip)
+			t.mu.Unlock()
+
+			if err != nil {
+				t.log.Debug("tip update not recorded", "origin", origin, "txid", c.txid, "error", err)
+			}
+			if recorded {
+				raw, _ := n.Atomic()
+				t.publish(origin, tip, outpointString(s.txid, uint32(s.vout)), raw) // #nosec G115 // vout indexes an output
+			}
+		})
+		return recorded
 	}, nil
+}
+
+func tipCredentialShape(tx *transaction.Transaction, tokenVout int) bool {
+	if tx == nil || tokenVout < 0 || tokenVout >= len(tx.Outputs) || len(tx.Outputs) > maxTipCredentialOtherOutputs+1 {
+		return false
+	}
+	for vout, out := range tx.Outputs {
+		if vout == tokenVout {
+			continue
+		}
+		if out == nil || (out.LockingScript != nil && len(*out.LockingScript) > maxTipCredentialScriptBytes) {
+			return false
+		}
+	}
+	return true
 }
 
 // NoteBroadcast keeps the BEEF a transaction this node broadcast came

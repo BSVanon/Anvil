@@ -71,6 +71,15 @@ func (r rawSource) FetchRawTx(txid string) (string, error) {
 	return hex.EncodeToString(tx.Bytes()), nil
 }
 
+type trackingNotFoundTransport struct{}
+
+func (trackingNotFoundTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusNotFound, Status: "404 Not Found", Header: make(http.Header),
+		Body: io.NopCloser(bytes.NewReader(nil)), Request: r,
+	}, nil
+}
+
 // trackingNode is a node with an auth token over a test chain, and the
 // configuration and dependencies tracking takes, tracking nothing yet.
 type trackingNode struct {
@@ -123,9 +132,9 @@ func newTrackingNode(t *testing.T) *trackingNode {
 // unspent.
 func (n *trackingNode) start() (*ordtrack.Tracker, func()) {
 	n.t.Helper()
-	woc := httptest.NewServer(http.NotFoundHandler())
-	n.t.Cleanup(woc.Close)
-	tr, stop := startTracking(context.Background(), n.cfg, n.srv, quietLogger, n.deps, spendwatch.Config{WoCBase: woc.URL, RequestGap: time.Microsecond})
+	tr, stop := startTracking(context.Background(), n.cfg, n.srv, quietLogger, n.deps, spendwatch.Config{
+		WoCBase: "http://spendwatch.invalid", HTTPClient: &http.Client{Transport: trackingNotFoundTransport{}}, RequestGap: time.Microsecond,
+	})
 	n.t.Cleanup(stop)
 	return tr, stop
 }
@@ -208,8 +217,11 @@ func TestTrackingServesVersionsAndTakesTipUpdates(t *testing.T) {
 
 	rec := n.do(http.MethodGet, seq+"0", nil, nil)
 	if rec.Code != http.StatusOK || rec.Body.String() != "v0" || rec.Header().Get(content.OutpointHeader) != op(origin, 0) ||
-		rec.Header().Get("Cache-Control") != content.ImmutableCacheControl {
+		rec.Header().Get("Cache-Control") != "public, max-age=60" || rec.Header().Get(content.OrdSeqHeader) != "0" {
 		t.Fatalf("seq 0: %d %q %v", rec.Code, rec.Body.String(), rec.Header())
+	}
+	if colon := n.do(http.MethodGet, "/content/"+op(origin, 0)+":0", nil, nil); colon.Code != http.StatusOK || colon.Body.String() != "v0" {
+		t.Fatalf("colon seq 0: %d %q %v", colon.Code, colon.Body.String(), colon.Header())
 	}
 
 	// A tip update needs no token; the version it adds is served at once.
@@ -218,8 +230,23 @@ func TestTrackingServesVersionsAndTakesTipUpdates(t *testing.T) {
 		t.Fatalf("tip update: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = n.do(http.MethodGet, seq+"-1", nil, nil)
-	if rec.Code != http.StatusOK || rec.Body.String() != "v1" || rec.Header().Get("Cache-Control") != "public, max-age=60" {
+	if rec.Code != http.StatusOK || rec.Body.String() != "v1" || rec.Header().Get("Cache-Control") != "no-store" ||
+		rec.Header().Get(content.OrdSeqHeader) != "1" {
 		t.Fatalf("latest: %d %q %v", rec.Code, rec.Body.String(), rec.Header())
+	}
+	// A sequence suffix is relative to its path outpoint, while X-Ord-Seq is
+	// still counted from the origin.
+	rec = n.do(http.MethodGet, "/content/"+op(v1, 0)+":0", nil, nil)
+	if rec.Code != http.StatusOK || rec.Body.String() != "v1" || rec.Header().Get(content.OriginHeader) != op(origin, 0) ||
+		rec.Header().Get(content.OrdSeqHeader) != "1" {
+		t.Fatalf("non-origin locator: %d %q %v", rec.Code, rec.Body.String(), rec.Header())
+	}
+	for i := 0; i < 4; i++ {
+		n.fund(1)
+	}
+	if deep := n.do(http.MethodGet, seq+"0", nil, nil); deep.Code != http.StatusOK ||
+		deep.Header().Get("Cache-Control") != content.VersionImmutableCacheControl {
+		t.Fatalf("deep seq 0: %d %q %v", deep.Code, deep.Body.String(), deep.Header())
 	}
 
 	// The tip is published as a signed envelope.
@@ -238,7 +265,7 @@ func TestTrackingServesVersionsAndTakesTipUpdates(t *testing.T) {
 		t.Fatalf("token broadcast: %d %s", rec.Code, rec.Body.String())
 	}
 	waitFor(t, "the token broadcast to be followed", func() bool {
-		latest, _, _ := tr.ResolveVersion(op(origin, 0), -1)
+		latest, _, _, _ := tr.ResolveVersion(op(origin, 0), -1)
 		return latest == op(v2, 0)
 	})
 

@@ -41,8 +41,9 @@ type TipCredential interface {
 	SpendsTip(tx *transaction.Transaction) (origin, tip string, ok bool)
 	// VerifyTipUpdate verifies, from what n holds alone, that n's subject
 	// moves tip to a new 1-sat output, by the forward rule and spv.Verify.
-	// accept records the update; it is called once the broadcast succeeds.
-	VerifyTipUpdate(ctx context.Context, n *beefnorm.BEEF, origin, tip string) (accept func(), err error)
+	// On success it has reserved tip. complete(true) records after a successful
+	// broadcast; complete(false) releases it. The result says it was recorded.
+	VerifyTipUpdate(ctx context.Context, n *beefnorm.BEEF, origin, tip string) (complete func(bool) bool, err error)
 }
 
 // trackingSlot holds what SetTipCredential installs.
@@ -82,6 +83,10 @@ func (s *Server) SetTipCredential(tc TipCredential, stats func() map[string]int6
 // just verified, and recorded once the broadcast of that same transaction
 // succeeds. Every other request reaches gated with its body as received,
 // so its reply is the one it gets today.
+//
+// The work before that fall-through is deliberately not timing-padded. A
+// caller can infer whether an input names a tracked tip from response time;
+// tracked tips are already announced publicly on the ordtip:v1 gossip topic.
 func (s *Server) tipCredential(handler, gated http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		h := s.tracking.p.Load()
@@ -104,6 +109,12 @@ func (s *Server) tipCredential(handler, gated http.HandlerFunc) http.HandlerFunc
 			gated(w, r)
 			return
 		}
+		completed := false
+		defer func() {
+			if !completed {
+				u.complete(false)
+			}
+		}()
 		// The handler reads the BEEF verified, not the bytes received, so
 		// what it broadcasts is the transaction checked.
 		vr := r.Clone(r.Context())
@@ -113,8 +124,9 @@ func (s *Server) tipCredential(handler, gated http.HandlerFunc) http.HandlerFunc
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		rec := &broadcastRecorder{ResponseWriter: w}
 		handler(rec, vr)
-		if rec.succeeded(u.txid) {
-			u.accept()
+		recorded := u.complete(rec.succeeded(u.txid))
+		completed = true
+		if recorded {
 			h.used.Add(1)
 		}
 	}
@@ -123,9 +135,9 @@ func (s *Server) tipCredential(handler, gated http.HandlerFunc) http.HandlerFunc
 // tipUpdate is a verified tip update: its subject's txid, its BEEF and how
 // to record it.
 type tipUpdate struct {
-	txid   string
-	beef   []byte
-	accept func()
+	txid     string
+	beef     []byte
+	complete func(bool) bool
 }
 
 // verifyTipUpdate reports whether body is a verified tip update.
@@ -138,20 +150,23 @@ func (s *Server) verifyTipUpdate(r *http.Request, h *trackingHooks, body []byte)
 	if err != nil || n.Tx == nil {
 		return nil, false
 	}
-	origin, tip, spends := h.cred.SpendsTip(n.Tx)
-	if !spends {
+	if beefnorm.ValidateRelayFormat(n) != nil {
 		return nil, false
 	}
-	accept, err := h.cred.VerifyTipUpdate(r.Context(), n, origin, tip)
-	if err != nil {
-		s.logger.Debug("broadcast not taken as a tip update", "origin", origin, "error", err)
+	origin, tip, spends := h.cred.SpendsTip(n.Tx)
+	if !spends {
 		return nil, false
 	}
 	verified, err := n.Atomic()
 	if err != nil {
 		return nil, false
 	}
-	return &tipUpdate{txid: n.Subject.String(), beef: verified, accept: accept}, true
+	complete, err := h.cred.VerifyTipUpdate(r.Context(), n, origin, tip)
+	if err != nil {
+		s.logger.Debug("broadcast not taken as a tip update", "origin", origin, "error", err)
+		return nil, false
+	}
+	return &tipUpdate{txid: n.Subject.String(), beef: verified, complete: complete}, true
 }
 
 // carriesCredential reports whether r carries a token or a payment, which

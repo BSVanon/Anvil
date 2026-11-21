@@ -95,13 +95,28 @@ func (s *Server) BootstrapBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 // ServeContent handles GET /content/{origin} where origin is txid_vout. A
-// request with a seq query asks for one of origin's versions (seq.go).
+// seq query or :seq suffix asks for a tracked version (seq.go).
 func (s *Server) ServeContent(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Has("seq") {
-		s.serveVersion(w, r)
+	raw := r.PathValue("origin")
+	locator, pathSeq, hasPathSeq, pathErr := SplitVersionLocator(raw)
+	if pathErr != nil || (hasPathSeq && r.URL.Query().Has("seq")) {
+		http.Error(w, "invalid seq: want -1 or a version number", http.StatusBadRequest)
 		return
 	}
-	origin := r.PathValue("origin")
+	if hasPathSeq {
+		s.serveVersion(w, r, locator, pathSeq)
+		return
+	}
+	if r.URL.Query().Has("seq") {
+		seq, err := strconv.Atoi(r.URL.Query().Get("seq"))
+		if err != nil || seq < -1 {
+			http.Error(w, "invalid seq: want -1 or a version number", http.StatusBadRequest)
+			return
+		}
+		s.serveVersion(w, r, raw, seq)
+		return
+	}
+	origin := raw
 	if origin == "" {
 		http.Error(w, "missing origin", http.StatusBadRequest)
 		return
@@ -179,15 +194,17 @@ func parseInscription(rawTxHex string, voutStr string) (*inscription, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid vout: %w", err)
 	}
-
-	// Extract the specific output script
 	script, err := extractOutputScript(txBytes, vout)
 	if err != nil {
 		return nil, fmt.Errorf("extract output %d: %w", vout, err)
 	}
 
 	// Try a 1Sat Ordinal envelope first (BRC-160; see ord_envelope.go)
-	if env, ok := ParseOrdEnvelope(script); ok {
+	env, ok, err := parseOrdEnvelopeTx(txBytes, vout)
+	if err != nil {
+		return nil, fmt.Errorf("parse transaction: %w", err)
+	}
+	if ok {
 		return &inscription{ContentType: env.ContentType, Data: env.Body, FetchedAt: time.Now()}, nil
 	}
 

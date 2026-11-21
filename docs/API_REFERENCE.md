@@ -181,6 +181,27 @@ the node. IPv6 clients share a client key by `/64`.
 | `/findHeaderHexForHeight?height=N` | GET | No | Chaintracks-compatible parsed header lookup by height |
 | `/findHeaderHexForBlockHash?hash=H` | GET | No | Chaintracks-compatible parsed header lookup by display-order block hash |
 | `/content/{txid}_{vout}` | GET | No | Raw content from a transaction output |
+| `/content/{origin}?seq=N` | GET | No | Tracked origin spend sequence (`0` origin, every later location including plain transfers, `-1` current location) |
+| `/content/{outpoint}:N` | GET | No | Tracked spend sequence relative to the outpoint in the path |
+
+For a sequence location without an inscription, the response body is the most
+recent inscription at or before that location. `X-Outpoint` still names the
+sequence location. The `:N` path form and its relative numbering follow
+`go-ordfs-server docs/v2.swagger.yaml:290-293`; the query form remains
+supported. For an origin outpoint, `:N` and `?seq=N` resolve identically.
+
+`seq=-1` sends `Cache-Control: no-store`. An explicit sequence sends
+`public, max-age=31536000, immutable` only when its location is mined and has
+at least six confirmations on this node's best chain. Pending, shallow, or
+not-provably-deep locations use the configured short max-age. This is a safety
+divergence from the all-explicit-sequences policy in `go-ordfs-server
+docs/v2.swagger.yaml:350-354`: a shallow mapping can still be rolled back by a
+reorganization.
+
+Every sequence response sends `X-Ord-Seq`, counted from the tracked origin,
+including when the path starts at a later outpoint. **UNCERTAIN:** the upstream
+description does not state clearly whether this header is origin-relative
+(`go-ordfs-server docs/v2.swagger.yaml:336`).
 
 For back-compatibility, a miss from `/findHeaderHexForHeight` retains its
 existing response shape, unlike the canonical-shaped miss from
@@ -261,6 +282,22 @@ doesn't draw a "460 Missing input scripts". ARC transport failures set
 `arc.submitted = false` and surface the error in `arc.error`; consumers
 should retry via another upstream (status will be `"validated-only"`, not
 `"queued"`).
+
+When inscription tracking is enabled, a verified spend of a currently tracked
+tip can authorize its own broadcast without a bearer token or payment. The node
+reserves the still-current tip, and checks the pending-link cap, before it
+broadcasts. A failed broadcast releases the reservation; a successful one
+records the link. `broadcast_tip_credential_used` counts only recorded links.
+
+This free path accepts the token-forward output plus at most four other
+outputs. Each non-token output locking script is limited to 200 bytes. The
+token-forward output is not subject to that script limit because it carries the
+new version's content. The normal paid and token paths retain their existing
+transaction limits.
+
+Tip-credential fall-through is not timing-padded. Response time can therefore
+show whether an input names a tip tracked by this node. Tracked tips are also
+announced publicly on the `ordtip:v1` gossip topic.
 
 ## BEEF response shape (v2.1.0+)
 

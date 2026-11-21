@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strconv"
 
 	"github.com/BSVanon/Anvil/internal/content"
 )
@@ -52,36 +51,28 @@ func (c *scopeCache) versionRoots(origin, latestOutpoint string) (versions []str
 	return versions, true
 }
 
-// serveVersion answers /content/<origin>?seq= on a site host, once origin
-// is known to be in the site's content scope: the version of origin that
-// seq names, -1 being the latest, when the node tracks origin. The
-// response carries the same mirror headers as the rest of the site, with
-// origin and the outpoint served; a latest or not yet mined version is
-// cacheable for the root max-age only, a mined one for good.
-func (sh *SiteHandler) serveVersion(w http.ResponseWriter, r *http.Request, origin string) {
-	seq, err := strconv.Atoi(r.URL.Query().Get("seq"))
-	if err != nil || seq < -1 {
-		http.Error(w, "invalid seq: want -1 or a version number", http.StatusBadRequest)
-		return
-	}
+// serveVersion answers either sequence form on a site host once locator is in
+// the site's content scope. The response carries the same mirror headers as
+// the rest of the site. Pending and shallow mappings use the root max-age.
+func (sh *SiteHandler) serveVersion(w http.ResponseWriter, r *http.Request, locator string, seq int) {
 	resolver, ok := sh.versions.(content.VersionResolver)
 	if !ok {
 		sh.counters.NotFound.Add(1)
 		http.Error(w, content.ErrNotTracked.Error(), http.StatusNotFound)
 		return
 	}
-	outpoint, pending, err := resolver.ResolveVersion(origin, seq)
+	resolved, err := resolver.ResolveVersionAt(locator, seq)
 	switch {
 	case errors.Is(err, content.ErrNotTracked), errors.Is(err, content.ErrNoVersion):
 		sh.counters.NotFound.Add(1)
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	case err != nil:
-		sh.logger.Warn("gateway version lookup failed", "origin", origin)
+		sh.logger.Warn("gateway version lookup failed", "origin", locator)
 		http.Error(w, "version lookup failed", http.StatusBadGateway)
 		return
 	}
-	txid, vout, ok := splitOutpoint(outpoint)
+	txid, vout, ok := splitOutpoint(resolved.ContentOutpoint)
 	if !ok {
 		http.Error(w, "invalid version outpoint", http.StatusBadGateway)
 		return
@@ -92,13 +83,17 @@ func (sh *SiteHandler) serveVersion(w http.ResponseWriter, r *http.Request, orig
 		http.Error(w, "fetch failed", http.StatusBadGateway)
 		return
 	}
-	w.Header().Set(originHeader, origin)
-	w.Header().Set(outpointHeader, outpoint)
+	w.Header().Set(originHeader, resolved.Origin)
+	w.Header().Set(outpointHeader, resolved.Outpoint)
+	w.Header().Set(content.OrdSeqHeader, fmt.Sprintf("%d", resolved.Seq))
 	w.Header().Set("Content-Type", contentType)
-	if seq == -1 || pending {
+	switch {
+	case seq == -1:
+		w.Header().Set("Cache-Control", "no-store")
+	case resolved.Immutable:
+		w.Header().Set("Cache-Control", content.VersionImmutableCacheControl)
+	default:
 		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", int(sh.rootMaxAge.Seconds())))
-	} else {
-		w.Header().Set("Cache-Control", content.ImmutableCacheControl)
 	}
 	_, _ = w.Write(data)
 }

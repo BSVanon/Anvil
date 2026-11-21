@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -180,7 +181,22 @@ func (sh *SiteHandler) serveRoot(w http.ResponseWriter, r *http.Request, origin 
 // names is served instead.
 func (sh *SiteHandler) serveContentPath(w http.ResponseWriter, r *http.Request, origin string) {
 	target := strings.TrimPrefix(r.URL.Path, "/content/")
-	outpoint, ok := parseOutpoint(target)
+	locator, pathSeq, hasPathSeq, pathErr := content.SplitVersionLocator(target)
+	if pathErr != nil || (hasPathSeq && r.URL.Query().Has("seq")) {
+		http.Error(w, "invalid seq: want -1 or a version number", http.StatusBadRequest)
+		return
+	}
+	seq := pathSeq
+	versioned := hasPathSeq || r.URL.Query().Has("seq")
+	if !hasPathSeq && r.URL.Query().Has("seq") {
+		var err error
+		seq, err = strconv.Atoi(r.URL.Query().Get("seq"))
+		if err != nil || seq < -1 {
+			http.Error(w, "invalid seq: want -1 or a version number", http.StatusBadRequest)
+			return
+		}
+	}
+	outpoint, ok := parseOutpoint(locator)
 	if !ok {
 		sh.counters.NotFound.Add(1)
 		http.NotFound(w, r)
@@ -200,8 +216,8 @@ func (sh *SiteHandler) serveContentPath(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	}
-	if r.URL.Query().Has("seq") {
-		sh.serveVersion(w, r, outpoint)
+	if versioned {
+		sh.serveVersion(w, r, outpoint, seq)
 		return
 	}
 

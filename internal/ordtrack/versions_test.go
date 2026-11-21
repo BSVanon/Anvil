@@ -9,7 +9,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/ordtrack/ordtracktest"
 )
 
-func TestInscribedTransfersAreVersionsAndPlainOnesOnlyMoveTheTip(t *testing.T) {
+func TestEveryTransferHasASequenceAndPlainOnesKeepThePriorContent(t *testing.T) {
 	h := newHarness(t)
 	o := h.mint("v0")
 	origin := op(o, 0)
@@ -25,22 +25,23 @@ func TestInscribedTransfersAreVersionsAndPlainOnesOnlyMoveTheTip(t *testing.T) {
 		t.Fatalf("version 0 = %s (pending %v), want the origin", got, pending)
 	}
 
-	// An uninscribed transfer moves the tip; the latest version stays.
+	// An uninscribed transfer moves the sequence location; its effective
+	// content stays at the preceding inscription.
 	moved := h.move(v1, 0, plain())
 	h.observe(moved)
 	h.wantTip(origin, op(moved, 0))
 	h.wantLatest(origin, op(v1, 0), true)
-	if _, _, err := h.tr.ResolveVersion(origin, 2); !errors.Is(err, content.ErrNoVersion) {
-		t.Fatalf("version 2 before it exists: err %v", err)
+	if got, _ := h.version(origin, 2); got != op(moved, 0) {
+		t.Fatalf("sequence 2 = %s, want %s", got, op(moved, 0))
 	}
 
 	v2 := h.move(moved, 0, h.inscribed("v2"))
 	h.observe(v2)
 	h.wantLatest(origin, op(v2, 0), true)
-	if got, _ := h.version(origin, 2); got != op(v2, 0) {
-		t.Fatalf("version 2 = %s, want %s", got, op(v2, 0))
+	if got, _ := h.version(origin, 3); got != op(v2, 0) {
+		t.Fatalf("sequence 3 = %s, want %s", got, op(v2, 0))
 	}
-	if got := h.tr.History(origin); len(got) != 3 || got[0] != origin || got[1] != op(v1, 0) || got[2] != op(v2, 0) {
+	if got := h.tr.History(origin); len(got) != 4 || got[0] != origin || got[1] != op(v1, 0) || got[2] != op(moved, 0) || got[3] != op(v2, 0) {
 		t.Fatalf("history = %v", got)
 	}
 	if got, err := h.tr.At(origin, 1); err != nil || got != op(v1, 0) {
@@ -51,6 +52,65 @@ func TestInscribedTransfersAreVersionsAndPlainOnesOnlyMoveTheTip(t *testing.T) {
 	}
 	if h.stat("ordtrack_pending") != 3 || h.stat("ordtrack_origins") != 1 {
 		t.Fatalf("stats = %v", h.tr.Stats())
+	}
+}
+
+func TestSequenceCountsEverySpend(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	origin := op(o, 0)
+	h.track(origin)
+	v1 := h.move(o, 0, h.inscribed("v1"))
+	h.observe(v1)
+	moved := h.move(v1, 0, plain())
+	h.observe(moved)
+
+	if got, pending := h.version(origin, 2); got != op(moved, 0) || !pending {
+		t.Fatalf("sequence 2 = %s (pending %v), want current location %s", got, pending, op(moved, 0))
+	}
+	if got, contentAt, pending, err := h.tr.ResolveVersion(origin, -1); err != nil || got != op(moved, 0) || contentAt != op(v1, 0) || !pending {
+		t.Fatalf("latest = %s serving %s (pending %v), error %v", got, contentAt, pending, err)
+	}
+}
+
+func TestParentClaimChangesContentOnlyWhenTheParentIsSpent(t *testing.T) {
+	h := newHarness(t)
+	o := h.mint("v0")
+	origin := op(o, 0)
+	h.track(origin)
+	unrelated := h.fund(1)
+	forged := h.move(o, 0, h.inscribedWithParent("forged", unrelated, 0))
+	h.observe(forged)
+	if location, contentAt, _, err := h.tr.ResolveVersion(origin, 1); err != nil || location != op(forged, 0) || contentAt != origin {
+		t.Fatalf("forged claim resolved to location %s, content %s, error %v", location, contentAt, err)
+	}
+
+	validTx := h.mint("other")
+	validOrigin := op(validTx, 0)
+	h.track(origin, validOrigin)
+	child := h.move(validTx, 0, h.inscribedWithParent("child", validTx, 0))
+	h.observe(child)
+	if _, contentAt, _, err := h.tr.ResolveVersion(validOrigin, 1); err != nil || contentAt != op(child, 0) {
+		t.Fatalf("proved parent content = %s, error %v", contentAt, err)
+	}
+}
+
+func TestOriginAdmissionRejectsAnUnprovedParentClaim(t *testing.T) {
+	h := newHarness(t)
+	funding := h.fund(100_000)
+	unrelated := h.fund(1)
+	o := h.w.Spend(t, []ordtracktest.In{{Tx: funding}},
+		h.inscribedWithParent("forged origin", unrelated, 0), ordtracktest.Out{Sats: 90_000})
+	h.chain.Mine(o)
+	h.store.Add(o)
+	origin := op(o, 0)
+	h.track(origin)
+
+	h.tr.mu.Lock()
+	inscribed := h.tr.chains[origin].latest.Inscribed
+	h.tr.mu.Unlock()
+	if inscribed {
+		t.Fatal("origin admitted an unproved parent claim as an inscription")
 	}
 }
 
@@ -91,7 +151,7 @@ func TestEndAndBurnCloseTheChain(t *testing.T) {
 	later := h.w.Spend(t, []ordtracktest.In{{Tx: end}}, ordtracktest.Out{Sats: 1}, ordtracktest.Out{Sats: 3_000})
 	h.store.Add(later)
 	h.observe(later)
-	if got := h.tr.History(originA); len(got) != 2 {
+	if got := h.tr.History(originA); len(got) != 3 {
 		t.Fatalf("history after a later spend = %v", got)
 	}
 	if n := len(h.envelopes()); n != 1 {
@@ -148,7 +208,7 @@ func TestOnlyOriginsAreTracked(t *testing.T) {
 		t.Fatalf("%d SPV checks, want 1", n)
 	}
 	for _, p := range []string{op(v1, 0), op(o, 1), op(unmined, 0)} {
-		if _, _, err := h.tr.ResolveVersion(p, -1); !errors.Is(err, content.ErrNotTracked) {
+		if _, _, _, err := h.tr.ResolveVersion(p, -1); !errors.Is(err, content.ErrNotTracked) {
 			t.Fatalf("%s: err %v, want ErrNotTracked", p, err)
 		}
 	}
@@ -174,7 +234,7 @@ func TestTrackedSetChanges(t *testing.T) {
 	if h.watch.Len() != 1 {
 		t.Fatalf("watched %d after removing one", h.watch.Len())
 	}
-	if _, _, err := h.tr.ResolveVersion(originA, -1); !errors.Is(err, content.ErrNotTracked) {
+	if _, _, _, err := h.tr.ResolveVersion(originA, -1); !errors.Is(err, content.ErrNotTracked) {
 		t.Fatalf("a removed origin is still served: %v", err)
 	}
 	h.track(originA, originB)

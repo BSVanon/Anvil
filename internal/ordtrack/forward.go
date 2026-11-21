@@ -1,7 +1,7 @@
 // Package ordtrack follows the chains of 1Sat ordinal tokens (BRC-159) that
-// start at a bounded set of tracked origins, and records which links along
-// them carry an inscription (BRC-160), so a node can serve an origin's
-// latest version and any earlier one by number.
+// start at a bounded set of tracked origins. Every resulting location gets a
+// spend sequence, while inscription locations (BRC-160) determine the content
+// served at that location.
 //
 // A link is accepted only after this node verifies the spend itself: the
 // forward rule run on input values taken from verified source transactions,

@@ -164,9 +164,11 @@ warn_at_percent = 80
 # operator_reads_all_boxes = true
 
 # Version tracking for /content: the BRC-159 token chains that start at a set
-# of origins, followed so /content/<origin>?seq=N serves an origin's versions
-# (0 is the origin, N the Nth inscribed transfer after it, -1 the latest). A
-# gateway also follows the origins its sites file allows. On a node that
+# of origins, followed so /content/<origin>?seq=N serves an origin's spend
+# sequence (0 is the origin, N counts every later location including plain
+# transfers, and -1 is the current location). A plain location serves the most
+# recent inscription at or before it. A gateway also follows the origins its
+# sites file allows. On a node that
 # tracks origins, a POST /broadcast that verifiably moves a tracked origin's
 # current tip to a new 1-sat output is accepted without a token or payment;
 # every other broadcast is gated as before. Versions are kept in

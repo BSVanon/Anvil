@@ -19,6 +19,7 @@ const (
 	checksPerRound = 50
 	// pendingCheckEvery spaces one chain's mined-status checks.
 	pendingCheckEvery = 2 * time.Minute
+	minedCheckEvery   = 2 * time.Minute
 	addRetryBase      = time.Minute
 	addRetryMax       = 30 * time.Minute
 )
@@ -110,6 +111,7 @@ func (t *Tracker) saveMetaLocked(ch *chain) {
 func (t *Tracker) maintain(ctx context.Context) {
 	t.addWanted(ctx)
 	t.catchUp(ctx)
+	t.checkMined(ctx)
 	t.checkPending(ctx)
 	t.dropRemoved()
 }
@@ -183,8 +185,15 @@ func (t *Tracker) addOrigin(ctx context.Context, origin string) error {
 		}
 		return err
 	}
-	l := link{Outpoint: origin, Txid: txid, Kind: kindOrigin, Status: statusMined, Height: tx.MerklePath.BlockHeight, Seen: t.now().Unix(), Seq: 0}
-	if env, ok := content.ParseOrdEnvelope(tx.Outputs[vout].LockingScript.Bytes()); ok {
+	root, err := tx.MerklePath.ComputeRoot(tx.TxID())
+	if err != nil {
+		return fmt.Errorf("%w: compute origin merkle root: %v", errInvalid, err)
+	}
+	l := link{
+		Outpoint: origin, Content: origin, Txid: txid, Kind: kindOrigin,
+		Status: statusMined, Height: tx.MerklePath.BlockHeight, MerkleRoot: root.String(), Seen: t.now().Unix(), Seq: 0,
+	}
+	if env, ok := content.ParseOrdEnvelopeAt(tx, int(vout)); ok {
 		l.Inscribed, l.ContentType = true, env.ContentType
 	}
 	m := meta{Origin: origin, Tip: origin, Links: 1, Versions: 1}

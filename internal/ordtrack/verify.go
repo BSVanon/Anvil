@@ -68,6 +68,7 @@ type spend struct {
 	contentType string
 	mined       bool
 	height      uint32
+	merkleRoot  string
 }
 
 // verifier checks candidate spends. spvVerify is spv.Verify; tests count
@@ -166,9 +167,14 @@ func (v *verifier) verify(ctx context.Context, c candidate, trusted map[string]b
 	s := &spend{kind: kind, txid: c.txid, vout: vout, mined: mined}
 	if mined {
 		s.height = tx.MerklePath.BlockHeight
+		root, err := tx.MerklePath.ComputeRoot(tx.TxID())
+		if err != nil {
+			return nil, fmt.Errorf("%w: compute merkle root: %v", errInvalid, err)
+		}
+		s.merkleRoot = root.String()
 	}
 	if kind == Transfer {
-		if env, ok := content.ParseOrdEnvelope(tx.Outputs[vout].LockingScript.Bytes()); ok {
+		if env, ok := content.ParseOrdEnvelopeAt(tx, vout); ok {
 			s.inscribed, s.contentType = true, env.ContentType
 		}
 	}

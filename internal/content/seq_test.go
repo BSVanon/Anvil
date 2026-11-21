@@ -13,26 +13,68 @@ import (
 
 // fakeVersions resolves an origin's versions from a list.
 type fakeVersions struct {
-	versions map[string][]string // origin -> its versions, 0 the origin
-	pending  map[string]bool     // outpoint -> not yet mined
-	err      error
+	versions  map[string][]string // origin -> its versions, 0 the origin
+	content   map[string]string   // location -> effective content outpoint
+	pending   map[string]bool     // outpoint -> not yet mined
+	immutable map[string]bool     // outpoint -> at least six confirmations
+	err       error
 }
 
-func (f *fakeVersions) ResolveVersion(origin string, seq int) (string, bool, error) {
+func (f *fakeVersions) ResolveVersion(origin string, seq int) (string, string, bool, error) {
 	if f.err != nil {
-		return "", false, f.err
+		return "", "", false, f.err
 	}
 	vs, ok := f.versions[origin]
 	if !ok {
-		return "", false, ErrNotTracked
+		return "", "", false, ErrNotTracked
 	}
 	if seq == -1 {
 		seq = len(vs) - 1
 	}
 	if seq >= len(vs) {
-		return "", false, ErrNoVersion
+		return "", "", false, ErrNoVersion
 	}
-	return vs[seq], f.pending[vs[seq]], nil
+	outpoint := vs[seq]
+	contentAt := f.content[outpoint]
+	if contentAt == "" {
+		contentAt = outpoint
+	}
+	return outpoint, contentAt, f.pending[outpoint], nil
+}
+
+func (f *fakeVersions) ResolveVersionAt(locator string, relativeSeq int) (VersionLocation, error) {
+	if f.err != nil {
+		return VersionLocation{}, f.err
+	}
+	for origin, vs := range f.versions {
+		start := -1
+		for i, outpoint := range vs {
+			if outpoint == locator {
+				start = i
+				break
+			}
+		}
+		if start < 0 {
+			continue
+		}
+		seq := start + relativeSeq
+		if relativeSeq == -1 {
+			seq = len(vs) - 1
+		}
+		if seq < start || seq >= len(vs) {
+			return VersionLocation{}, ErrNoVersion
+		}
+		outpoint := vs[seq]
+		contentAt := f.content[outpoint]
+		if contentAt == "" {
+			contentAt = outpoint
+		}
+		return VersionLocation{
+			Origin: origin, Outpoint: outpoint, ContentOutpoint: contentAt,
+			Seq: seq, Pending: f.pending[outpoint], Immutable: f.immutable[outpoint],
+		}, nil
+	}
+	return VersionLocation{}, ErrNotTracked
 }
 
 // versionedTx is one transaction whose outputs 0 and 1 are inscribed "v0"
@@ -59,30 +101,39 @@ func serveSeq(s *Server, origin, query string, preset http.Header) *httptest.Res
 
 func TestSeqServesTrackedVersions(t *testing.T) {
 	txid, raw := versionedTx(t)
-	origin, v1 := txid+"_0", txid+"_1"
+	origin, v1, moved := txid+"_0", txid+"_1", txid+"_2"
 	s := NewServer("", &fakeTxSource{rawHex: raw}, nil, nil)
-	s.SetVersions(&fakeVersions{versions: map[string][]string{origin: {origin, v1}}, pending: map[string]bool{v1: true}}, 30*time.Second)
+	s.SetVersions(&fakeVersions{
+		versions:  map[string][]string{origin: {origin, v1, moved}},
+		content:   map[string]string{moved: v1},
+		pending:   map[string]bool{v1: true, moved: true},
+		immutable: map[string]bool{origin: true},
+	}, 30*time.Second)
 
-	for _, c := range []struct{ path, query, body, outpoint, cache string }{
-		{origin, "?seq=0", "v0", origin, ImmutableCacheControl},
-		{txid, "?seq=0", "v0", origin, ImmutableCacheControl},
-		{origin, "?seq=1", "v1", v1, "public, max-age=30"}, // pending
-		{origin, "?seq=-1", "v1", v1, "public, max-age=30"},
+	for _, c := range []struct{ path, query, body, outpoint, cache, ordSeq string }{
+		{origin, "?seq=0", "v0", origin, VersionImmutableCacheControl, "0"},
+		{txid, "?seq=0", "v0", origin, VersionImmutableCacheControl, "0"},
+		{origin + ":0", "", "v0", origin, VersionImmutableCacheControl, "0"},
+		{origin, "?seq=1", "v1", v1, "public, max-age=30", "1"}, // pending
+		{origin, "?seq=2", "v1", moved, "public, max-age=30", "2"},
+		{v1 + ":1", "", "v1", moved, "public, max-age=30", "2"},
+		{origin, "?seq=-1", "v1", moved, "no-store", "2"},
+		{origin + ":-1", "", "v1", moved, "no-store", "2"},
 	} {
 		rec := serveSeq(s, c.path, c.query, nil)
 		h := rec.Header()
 		if rec.Code != http.StatusOK || rec.Body.String() != c.body || h.Get("Cache-Control") != c.cache ||
-			h.Get(OriginHeader) != origin || h.Get(OutpointHeader) != c.outpoint ||
+			h.Get(OriginHeader) != origin || h.Get(OutpointHeader) != c.outpoint || h.Get(OrdSeqHeader) != c.ordSeq ||
 			h.Get("Content-Type") != "text/plain" || h.Get("Access-Control-Allow-Origin") != "*" ||
-			h.Get("Access-Control-Expose-Headers") != "X-Origin, X-Outpoint" {
+			h.Get("Access-Control-Expose-Headers") != "X-Origin, X-Outpoint, X-Ord-Seq" {
 			t.Fatalf("%s%s: %d %q %v", c.path, c.query, rec.Code, rec.Body.String(), h)
 		}
 	}
 	rec := serveSeq(s, origin, "?seq=0", http.Header{"Access-Control-Expose-Headers": {"X-Other"}})
-	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "X-Other, X-Origin, X-Outpoint" {
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "X-Other, X-Origin, X-Outpoint, X-Ord-Seq" {
 		t.Fatalf("expose headers %q", got)
 	}
-	if rec := serveSeq(s, origin, "?seq=2", nil); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), ErrNoVersion.Error()) {
+	if rec := serveSeq(s, origin, "?seq=3", nil); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), ErrNoVersion.Error()) {
 		t.Fatalf("a version that does not exist: %d %q", rec.Code, rec.Body.String())
 	}
 }

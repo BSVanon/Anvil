@@ -54,6 +54,15 @@ func (a storeRaw) FetchRawTx(txid string) (string, error) {
 	return hex.EncodeToString(tx.Bytes()), nil
 }
 
+type tipNotFoundTransport struct{}
+
+func (tipNotFoundTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusNotFound, Status: "404 Not Found", Header: make(http.Header),
+		Body: io.NopCloser(bytes.NewReader(nil)), Request: r,
+	}, nil
+}
+
 // countingChain counts the merkle roots the tracker's SPV checks look up.
 type countingChain struct {
 	*ordtracktest.Chain
@@ -71,7 +80,7 @@ type countingCred struct {
 	verifies atomic.Int64
 }
 
-func (c *countingCred) VerifyTipUpdate(ctx context.Context, n *beefnorm.BEEF, origin, tip string) (func(), error) {
+func (c *countingCred) VerifyTipUpdate(ctx context.Context, n *beefnorm.BEEF, origin, tip string) (func(bool) bool, error) {
 	c.verifies.Add(1)
 	return c.TipCredential.VerifyTipUpdate(ctx, n, origin, tip)
 }
@@ -126,9 +135,10 @@ func newTipFixture(t *testing.T, token string, price int) *tipFixture {
 	t.Helper()
 	f := &tipFixture{t: t, w: ordtracktest.NewWallet(t), chain: ordtracktest.NewChain(), store: ordtracktest.NewStore()}
 	f.counted = &countingChain{Chain: f.chain}
-	woc := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(woc.Close)
-	watch := spendwatch.New(spendwatch.Config{WoCBase: woc.URL, RequestGap: time.Microsecond, Logger: quietLog})
+	watch := spendwatch.New(spendwatch.Config{
+		WoCBase: "http://spendwatch.invalid", HTTPClient: &http.Client{Transport: tipNotFoundTransport{}},
+		RequestGap: time.Microsecond, Logger: quietLog,
+	})
 	tr, err := ordtrack.New(ordtrack.Config{
 		Path: filepath.Join(t.TempDir(), "ordtrack"), Source: storeSource{f.store}, Chain: f.counted, Watcher: watch, Logger: quietLog,
 	})
@@ -192,7 +202,7 @@ func (f *tipFixture) move(w *ordtracktest.Wallet, prev *transaction.Transaction,
 }
 
 func (f *tipFixture) tip() string {
-	out, _, err := f.tr.ResolveVersion(op(f.origin, 0), -1)
+	out, _, _, err := f.tr.ResolveVersion(op(f.origin, 0), -1)
 	if err != nil {
 		f.t.Fatal(err)
 	}

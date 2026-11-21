@@ -146,6 +146,20 @@ func (c *Chain) Mine(txs ...*transaction.Transaction) {
 	}
 }
 
+// Reorg replaces stale's block with a block containing replacement.
+func (c *Chain) Reorg(stale, replacement *transaction.Transaction) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if stale.MerklePath == nil {
+		panic("cannot replace an unmined transaction")
+	}
+	height := stale.MerklePath.BlockHeight
+	yes := true
+	id := replacement.TxID()
+	replacement.MerklePath = transaction.NewMerklePath(height, [][]*transaction.PathElement{{{Offset: 0, Hash: id, Txid: &yes}}})
+	c.roots[height] = *id
+}
+
 // IsValidRootForHeight implements chaintracker.ChainTracker.
 func (c *Chain) IsValidRootForHeight(_ context.Context, root *chainhash.Hash, height uint32) (bool, error) {
 	c.mu.Lock()

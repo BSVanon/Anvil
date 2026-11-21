@@ -17,6 +17,10 @@ import (
 const (
 	OriginHeader   = "X-Origin"
 	OutpointHeader = "X-Outpoint"
+	OrdSeqHeader   = "X-Ord-Seq"
+	// VersionImmutableCacheControl is used only after a tracked location is
+	// mined at least six blocks deep on the node's best chain.
+	VersionImmutableCacheControl = "public, max-age=31536000, immutable"
 )
 
 var (
@@ -28,12 +32,25 @@ var (
 	ErrNoVersion = errors.New("no such version of this origin")
 )
 
-// VersionResolver resolves a tracked origin's versions, BRC-159 links that
-// carry a BRC-160 inscription: seq 0 is the origin, N the Nth inscribed
-// link after it, -1 the latest. pending reports a version whose
-// transaction is not yet mined.
+// VersionResolver resolves a tracked origin's spend locations: seq 0 is the
+// origin, N is the Nth spend that has a resulting location, and -1 is the
+// current location. contentOutpoint is the most recent inscription at or
+// before that location. pending reports a location not yet mined.
 type VersionResolver interface {
-	ResolveVersion(origin string, seq int) (outpoint string, pending bool, err error)
+	ResolveVersion(origin string, seq int) (outpoint, contentOutpoint string, pending bool, err error)
+	ResolveVersionAt(locator string, relativeSeq int) (VersionLocation, error)
+}
+
+// VersionLocation is one resolved location. Seq is counted from Origin even
+// when the request started at a later locator. Immutable is true only when
+// the location is mined at least six blocks deep on the best chain.
+type VersionLocation struct {
+	Origin          string
+	Outpoint        string
+	ContentOutpoint string
+	Seq             int
+	Pending         bool
+	Immutable       bool
 }
 
 type versionHook struct {
@@ -41,10 +58,10 @@ type versionHook struct {
 	shortMaxAge time.Duration
 }
 
-// SetVersions makes GET /content/<origin>?seq= answer from r. Responses
-// for seq -1, and for a version not yet mined, are cacheable for
-// shortMaxAge only; a mined version's are immutable. Without it every
-// ?seq request answers that this node does not track the origin.
+// SetVersions makes the query and path sequence forms answer from r.
+// shortMaxAge is used for pending, shallow, or not-provably-deep locations.
+// Without r every sequence request answers that this node does not track the
+// origin.
 func (s *Server) SetVersions(r VersionResolver, shortMaxAge time.Duration) {
 	if r == nil {
 		s.versions.Store(nil)
@@ -53,16 +70,12 @@ func (s *Server) SetVersions(r VersionResolver, shortMaxAge time.Duration) {
 	s.versions.Store(&versionHook{r: r, shortMaxAge: shortMaxAge})
 }
 
-// serveVersion answers GET /content/<origin>?seq=N.
-func (s *Server) serveVersion(w http.ResponseWriter, r *http.Request) {
-	origin, ok := versionOrigin(r.PathValue("origin"))
+// serveVersion answers both /content/<locator>?seq=N and
+// /content/<locator>:N. N is relative to locator.
+func (s *Server) serveVersion(w http.ResponseWriter, r *http.Request, rawLocator string, seq int) {
+	locator, ok := versionOrigin(rawLocator)
 	if !ok {
 		http.Error(w, "invalid origin", http.StatusBadRequest)
-		return
-	}
-	seq, err := strconv.Atoi(r.URL.Query().Get("seq"))
-	if err != nil || seq < -1 {
-		http.Error(w, "invalid seq: want -1 or a version number", http.StatusBadRequest)
 		return
 	}
 	h := s.versions.Load()
@@ -70,7 +83,7 @@ func (s *Server) serveVersion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ErrNotTracked.Error(), http.StatusNotFound)
 		return
 	}
-	outpoint, pending, err := h.r.ResolveVersion(origin, seq)
+	resolved, err := h.r.ResolveVersionAt(locator, seq)
 	switch {
 	case errors.Is(err, ErrNotTracked), errors.Is(err, ErrNoVersion):
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -79,27 +92,48 @@ func (s *Server) serveVersion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "version lookup failed", http.StatusBadGateway)
 		return
 	}
-	txid, vout, _ := strings.Cut(outpoint, "_")
+	txid, vout, _ := strings.Cut(resolved.ContentOutpoint, "_")
 	insc, status, err := s.inscriptionAt(txid, vout)
 	if err != nil {
 		http.Error(w, err.Error(), status)
 		return
 	}
 	w.Header().Set("Content-Type", defaultContentType(insc.ContentType))
-	if seq == -1 || pending {
+	switch {
+	case seq == -1:
+		w.Header().Set("Cache-Control", "no-store")
+	case resolved.Immutable:
+		w.Header().Set("Cache-Control", VersionImmutableCacheControl)
+	default:
 		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", int(h.shortMaxAge.Seconds())))
-	} else {
-		w.Header().Set("Cache-Control", ImmutableCacheControl)
 	}
-	w.Header().Set(OriginHeader, origin)
-	w.Header().Set(OutpointHeader, outpoint)
+	w.Header().Set(OriginHeader, resolved.Origin)
+	w.Header().Set(OutpointHeader, resolved.Outpoint)
+	w.Header().Set(OrdSeqHeader, strconv.Itoa(resolved.Seq))
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	expose := OriginHeader + ", " + OutpointHeader
+	expose := OriginHeader + ", " + OutpointHeader + ", " + OrdSeqHeader
 	if prev := w.Header().Get("Access-Control-Expose-Headers"); prev != "" {
 		expose = prev + ", " + expose
 	}
 	w.Header().Set("Access-Control-Expose-Headers", expose)
 	_, _ = w.Write(insc.Data)
+}
+
+// SplitVersionLocator separates the optional :seq suffix accepted beside the
+// seq query form. It does not validate the outpoint portion.
+func SplitVersionLocator(raw string) (locator string, seq int, hasSeq bool, err error) {
+	i := strings.LastIndexByte(raw, ':')
+	if i < 0 {
+		return raw, 0, false, nil
+	}
+	if i == 0 || i == len(raw)-1 || strings.ContainsRune(raw[:i], ':') {
+		return "", 0, true, errors.New("invalid version locator")
+	}
+	seq, err = strconv.Atoi(raw[i+1:])
+	if err != nil || seq < -1 {
+		return "", 0, true, errors.New("invalid version sequence")
+	}
+	return raw[:i], seq, true, nil
 }
 
 // versionOrigin normalizes a path's "txid" or "txid_vout" to "txid_vout".

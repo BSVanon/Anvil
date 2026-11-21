@@ -26,7 +26,7 @@ func TestATipUpdateIsBroadcastWithoutATokenOrPayment(t *testing.T) {
 	if !f.srv.broadcaster.Mempool().Has(v1.TxID().String()) {
 		t.Fatal("the tip update was not broadcast")
 	}
-	if got, pending, _ := f.tr.ResolveVersion(origin, -1); got != op(v1, 0) || !pending {
+	if got, _, pending, _ := f.tr.ResolveVersion(origin, -1); got != op(v1, 0) || !pending {
 		t.Fatalf("latest %s (pending %v), want %s pending", got, pending, op(v1, 0))
 	}
 

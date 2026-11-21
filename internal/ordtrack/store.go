@@ -20,6 +20,8 @@ const (
 // link is one outpoint in a chain, the origin first.
 type link struct {
 	Outpoint    string `json:"outpoint"`
+	Content     string `json:"content,omitempty"` // effective inscription outpoint at this location
+	ContentSeq  int    `json:"content_seq,omitempty"`
 	Txid        string `json:"txid"`
 	Prev        string `json:"prev,omitempty"` // the outpoint it spent; "" for the origin
 	Kind        string `json:"kind"`           // origin, transfer, end or burn
@@ -28,7 +30,8 @@ type link struct {
 	Status      string `json:"status"` // mined or pending
 	Height      uint32 `json:"height,omitempty"`
 	Seen        int64  `json:"seen"` // unix seconds it was recorded
-	Seq         int    `json:"seq"`  // its version number, or -1
+	Seq         int    `json:"seq"`  // its spend sequence, or -1 when there is no resulting location
+	MerkleRoot  string `json:"merkle_root,omitempty"`
 }
 
 // meta is a chain's summary record.
@@ -46,6 +49,7 @@ type meta struct {
 //	m/<origin>        meta
 //	l/<origin>/<n>    link n, 0 the origin
 //	v/<origin>/<seq>  the index of the link that is version seq
+//	o/<outpoint>      the origin and sequence for a version location
 type store struct {
 	db *leveldb.DB
 }
@@ -68,6 +72,13 @@ func versionKey(origin string, seq int) []byte {
 	return []byte(fmt.Sprintf("v/%s/%08d", origin, seq))
 }
 
+func outpointKey(outpoint string) []byte { return []byte("o/" + outpoint) }
+
+type locationRef struct {
+	Origin string `json:"origin"`
+	Seq    int    `json:"seq"`
+}
+
 // metas returns every chain's summary.
 func (s *store) metas() ([]meta, error) {
 	it := s.db.NewIterator(util.BytesPrefix([]byte("m/")), nil)
@@ -83,6 +94,15 @@ func (s *store) metas() ([]meta, error) {
 	return out, it.Error()
 }
 
+func (s *store) meta(origin string) (meta, error) {
+	var m meta
+	b, err := s.db.Get(metaKey(origin), nil)
+	if err != nil {
+		return m, err
+	}
+	return m, json.Unmarshal(b, &m)
+}
+
 func (s *store) link(origin string, n int) (link, error) {
 	var l link
 	b, err := s.db.Get(linkKey(origin, n), nil)
@@ -90,6 +110,64 @@ func (s *store) link(origin string, n int) (link, error) {
 		return l, err
 	}
 	return l, json.Unmarshal(b, &l)
+}
+
+// migrateSequence upgrades inscription-only numbering to spend numbering.
+// It is idempotent and can rebuild every v/ key from the persisted links.
+func (s *store) migrateSequence(m meta) (meta, error) {
+	links := make([]link, m.Links)
+	content, contentSeq, seq := m.Origin, 0, 0
+	dirty := false
+	for i := range links {
+		l, err := s.link(m.Origin, i)
+		if err != nil {
+			return m, err
+		}
+		wantSeq := -1
+		if l.Outpoint != "" {
+			wantSeq = seq
+			seq++
+		}
+		if l.Inscribed {
+			content, contentSeq = l.Outpoint, wantSeq
+		}
+		if l.Seq != wantSeq || l.Content != content || l.ContentSeq != contentSeq {
+			dirty = true
+			l.Seq, l.Content, l.ContentSeq = wantSeq, content, contentSeq
+		}
+		if wantSeq >= 0 {
+			ref, refErr := s.location(l.Outpoint)
+			if refErr != nil && refErr != leveldb.ErrNotFound {
+				return m, refErr
+			}
+			if refErr != nil || ref.Origin != m.Origin || ref.Seq != wantSeq {
+				dirty = true
+			}
+		}
+		links[i] = l
+	}
+	if m.Versions != seq {
+		dirty = true
+		m.Versions = seq
+	}
+	if !dirty {
+		return m, nil
+	}
+	c := newChange()
+	it := s.db.NewIterator(util.BytesPrefix([]byte("v/"+m.Origin+"/")), nil)
+	for it.Next() {
+		c.b.Delete(append([]byte(nil), it.Key()...))
+	}
+	err := it.Error()
+	it.Release()
+	if err != nil {
+		return m, err
+	}
+	for i, l := range links {
+		c.putLink(m.Origin, i, l)
+	}
+	c.putMeta(m)
+	return m, s.apply(c)
 }
 
 // version returns the link that is origin's version seq.
@@ -103,6 +181,15 @@ func (s *store) version(origin string, seq int) (link, error) {
 		return link{}, fmt.Errorf("decode version %d of %s: %w", seq, origin, err)
 	}
 	return s.link(origin, n)
+}
+
+func (s *store) location(outpoint string) (locationRef, error) {
+	var ref locationRef
+	b, err := s.db.Get(outpointKey(outpoint), nil)
+	if err != nil {
+		return ref, err
+	}
+	return ref, json.Unmarshal(b, &ref)
 }
 
 // versionOutpoints returns the outpoint of each of origin's versions, in
@@ -142,6 +229,8 @@ func (c *change) putLink(origin string, n int, l link) {
 	c.b.Put(linkKey(origin, n), b)
 	if l.Seq >= 0 {
 		c.b.Put(versionKey(origin, l.Seq), []byte(strconv.Itoa(n)))
+		ref, _ := json.Marshal(locationRef{Origin: origin, Seq: l.Seq})
+		c.b.Put(outpointKey(l.Outpoint), ref)
 	}
 }
 
@@ -149,6 +238,7 @@ func (c *change) deleteLink(origin string, n int, l link) {
 	c.b.Delete(linkKey(origin, n))
 	if l.Seq >= 0 {
 		c.b.Delete(versionKey(origin, l.Seq))
+		c.b.Delete(outpointKey(l.Outpoint))
 	}
 }
 
@@ -158,6 +248,19 @@ func (s *store) apply(c *change) error { return s.db.Write(c.b, nil) }
 func (s *store) drop(origin string) error {
 	c := new(leveldb.Batch)
 	c.Delete(metaKey(origin))
+	m, err := s.meta(origin)
+	if err != nil && err != leveldb.ErrNotFound {
+		return err
+	}
+	if err == nil {
+		for seq := 0; seq < m.Versions; seq++ {
+			l, readErr := s.version(origin, seq)
+			if readErr != nil {
+				return readErr
+			}
+			c.Delete(outpointKey(l.Outpoint))
+		}
+	}
 	for _, prefix := range []string{"l/" + origin + "/", "v/" + origin + "/"} {
 		it := s.db.NewIterator(util.BytesPrefix([]byte(prefix)), nil)
 		for it.Next() {

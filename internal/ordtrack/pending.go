@@ -49,17 +49,21 @@ func (t *Tracker) checkPending(ctx context.Context) {
 // then followed again from the last mined link.
 func (t *Tracker) checkChain(ctx context.Context, j pendingJob, now time.Time) {
 	if st, err := t.cfg.Source.Status(ctx, j.newest.Txid); err == nil && st.Mined {
-		t.settle(j.origin, j.newIdx, j.newest.Txid, func(ch *chain) error {
-			return t.markMinedLocked(j.origin, ch, j.newIdx, st.Height)
-		})
-		return
+		if a, valid, anchorErr := t.anchorForTx(ctx, j.newest.Txid); anchorErr == nil && valid {
+			t.settle(j.origin, j.newIdx, j.newest.Txid, func(ch *chain) error {
+				return t.markMinedLocked(j.origin, ch, j.newIdx, a.height, a.root)
+			})
+			return
+		}
 	}
 	if j.first != j.newIdx {
 		if st, err := t.cfg.Source.Status(ctx, j.oldest.Txid); err == nil && st.Mined {
-			t.settle(j.origin, j.first, j.oldest.Txid, func(ch *chain) error {
-				return t.markMinedLocked(j.origin, ch, j.first, st.Height)
-			})
-			return
+			if a, valid, anchorErr := t.anchorForTx(ctx, j.oldest.Txid); anchorErr == nil && valid {
+				t.settle(j.origin, j.first, j.oldest.Txid, func(ch *chain) error {
+					return t.markMinedLocked(j.origin, ch, j.first, a.height, a.root)
+				})
+				return
+			}
 		}
 	}
 
@@ -67,7 +71,7 @@ func (t *Tracker) checkChain(ctx context.Context, j pendingJob, now time.Time) {
 	if now.Sub(time.Unix(j.oldest.Seen, 0)) >= t.cfg.PendingTimeout {
 		reason = "not mined within the pending timeout"
 	} else if spent, by, err := t.watch.Check(ctx, j.oldest.Prev); err == nil && spent && by != j.oldest.Txid {
-		if st, err := t.cfg.Source.Status(ctx, by); err == nil && st.Mined {
+		if t.verifiedMinedSpend(ctx, j.origin, j.oldest.Prev, by) {
 			reason = "a conflicting spend was mined"
 		}
 	}
@@ -79,6 +83,22 @@ func (t *Tracker) checkChain(ctx context.Context, j pendingJob, now time.Time) {
 	}) {
 		t.follow(ctx, j.origin)
 	}
+}
+
+// verifiedMinedSpend treats a spent-output response only as a hint. The
+// named transaction must pass the same bounded verification as an ordinary
+// candidate, including an anchored proof and an input spending tip.
+func (t *Tracker) verifiedMinedSpend(ctx context.Context, origin, tip, txid string) bool {
+	t.mu.Lock()
+	ch := t.chains[origin]
+	if ch == nil || !ch.tracked {
+		t.mu.Unlock()
+		return false
+	}
+	trusted := ch.trusted()
+	t.mu.Unlock()
+	s, err := t.v.verify(ctx, candidate{origin: origin, tip: tip, txid: txid}, trusted, true)
+	return err == nil && s.mined
 }
 
 // settle runs fn on origin's chain if link idx is still the unmined link

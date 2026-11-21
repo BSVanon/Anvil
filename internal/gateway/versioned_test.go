@@ -19,34 +19,77 @@ import (
 // trackedVersions is a Versions with a version history, as the node's
 // tracker is: versions lists each tracked origin's versions, 0 the origin.
 type trackedVersions struct {
-	versions map[string][]string
-	pending  map[string]bool
+	versions  map[string][]string
+	content   map[string]string
+	pending   map[string]bool
+	immutable map[string]bool
 }
 
 func (v *trackedVersions) Latest(origin string) (string, error) {
 	if vs := v.versions[origin]; len(vs) > 0 {
-		return vs[len(vs)-1], nil
+		latest := vs[len(vs)-1]
+		if contentAt := v.content[latest]; contentAt != "" {
+			return contentAt, nil
+		}
+		return latest, nil
 	}
 	return origin, nil
 }
 
 func (v *trackedVersions) At(origin string, seq int) (string, error) {
-	out, _, err := v.ResolveVersion(origin, seq)
+	out, _, _, err := v.ResolveVersion(origin, seq)
 	return out, err
 }
 
-func (v *trackedVersions) ResolveVersion(origin string, seq int) (string, bool, error) {
+func (v *trackedVersions) ResolveVersion(origin string, seq int) (string, string, bool, error) {
 	vs, ok := v.versions[origin]
 	if !ok {
-		return "", false, content.ErrNotTracked
+		return "", "", false, content.ErrNotTracked
 	}
 	if seq == -1 {
 		seq = len(vs) - 1
 	}
 	if seq >= len(vs) {
-		return "", false, content.ErrNoVersion
+		return "", "", false, content.ErrNoVersion
 	}
-	return vs[seq], v.pending[vs[seq]], nil
+	outpoint := vs[seq]
+	contentAt := v.content[outpoint]
+	if contentAt == "" {
+		contentAt = outpoint
+	}
+	return outpoint, contentAt, v.pending[outpoint], nil
+}
+
+func (v *trackedVersions) ResolveVersionAt(locator string, relativeSeq int) (content.VersionLocation, error) {
+	for origin, vs := range v.versions {
+		start := -1
+		for i, outpoint := range vs {
+			if outpoint == locator {
+				start = i
+				break
+			}
+		}
+		if start < 0 {
+			continue
+		}
+		seq := start + relativeSeq
+		if relativeSeq == -1 {
+			seq = len(vs) - 1
+		}
+		if seq < start || seq >= len(vs) {
+			return content.VersionLocation{}, content.ErrNoVersion
+		}
+		outpoint := vs[seq]
+		contentAt := v.content[outpoint]
+		if contentAt == "" {
+			contentAt = outpoint
+		}
+		return content.VersionLocation{
+			Origin: origin, Outpoint: outpoint, ContentOutpoint: contentAt,
+			Seq: seq, Pending: v.pending[outpoint], Immutable: v.immutable[outpoint],
+		}, nil
+	}
+	return content.VersionLocation{}, content.ErrNotTracked
 }
 
 func (v *trackedVersions) History(origin string) []string { return v.versions[origin] }
@@ -91,8 +134,9 @@ func newVersionedFixture() *versionedFixture {
 		f.g.set(o, "<html>"+o+"</html>")
 	}
 	f.v = &trackedVersions{
-		versions: map[string][]string{f.origin: {f.origin, f.v1, f.v2}, f.lib: {f.lib, f.libV1}},
-		pending:  map[string]bool{f.v2: true},
+		versions:  map[string][]string{f.origin: {f.origin, f.v1, f.v2}, f.lib: {f.lib, f.libV1}},
+		pending:   map[string]bool{f.v2: true},
+		immutable: map[string]bool{f.origin: true, f.v1: true},
 	}
 	return f
 }
@@ -102,19 +146,22 @@ func TestSiteServesTrackedVersions(t *testing.T) {
 	sh := versionedSite(t, f.origin, f.g, f.v, "site")
 	short := "public, max-age=30"
 	for _, c := range []struct {
-		path, body, origin, outpoint, cache string
+		path, body, origin, outpoint, cache, ordSeq string
 	}{
-		{"/content/" + f.origin + "?seq=0", "<html>v0", f.origin, f.origin, content.ImmutableCacheControl},
-		{"/content/" + f.origin + "?seq=1", "<html>v1", f.origin, f.v1, content.ImmutableCacheControl},
-		{"/content/" + f.origin + "?seq=2", "<html>v2", f.origin, f.v2, short}, // not yet mined
-		{"/content/" + f.origin + "?seq=-1", "<html>v2", f.origin, f.v2, short},
-		{"/content/" + f.lib + "?seq=-1", "<html>" + f.libV1, f.lib, f.libV1, short}, // a tracked origin the site references
-		{"/content/" + f.lib + "?seq=1", "<html>" + f.libV1, f.lib, f.libV1, content.ImmutableCacheControl},
+		{"/content/" + f.origin + "?seq=0", "<html>v0", f.origin, f.origin, content.VersionImmutableCacheControl, "0"},
+		{"/content/" + f.origin + ":0", "<html>v0", f.origin, f.origin, content.VersionImmutableCacheControl, "0"},
+		{"/content/" + f.origin + "?seq=1", "<html>v1", f.origin, f.v1, content.VersionImmutableCacheControl, "1"},
+		{"/content/" + f.origin + "?seq=2", "<html>v2", f.origin, f.v2, short, "2"}, // not yet mined
+		{"/content/" + f.v1 + ":1", "<html>v2", f.origin, f.v2, short, "2"},
+		{"/content/" + f.origin + "?seq=-1", "<html>v2", f.origin, f.v2, "no-store", "2"},
+		{"/content/" + f.lib + "?seq=-1", "<html>" + f.libV1, f.lib, f.libV1, "no-store", "1"}, // a tracked origin the site references
+		{"/content/" + f.lib + "?seq=1", "<html>" + f.libV1, f.lib, f.libV1, short, "1"},
 	} {
 		w := getSite(sh, c.path)
 		h := w.Header()
 		if w.Code != http.StatusOK || !strings.HasPrefix(w.Body.String(), c.body) || h.Get(originHeader) != c.origin ||
-			h.Get(outpointHeader) != c.outpoint || h.Get("Cache-Control") != c.cache || h.Get("X-Content-Type-Options") != "nosniff" {
+			h.Get(outpointHeader) != c.outpoint || h.Get(content.OrdSeqHeader) != c.ordSeq ||
+			h.Get("Cache-Control") != c.cache || h.Get("X-Content-Type-Options") != "nosniff" {
 			t.Fatalf("%s: %d %q %v", c.path, w.Code, w.Body.String(), h)
 		}
 	}
@@ -136,6 +183,20 @@ func TestSiteServesTrackedVersions(t *testing.T) {
 	}
 	if got := sh.Stats()["gateway_scope_refused"]; got != 1 {
 		t.Fatalf("scope refusals %d, want 1", got)
+	}
+}
+
+func TestSiteSequenceCanNameAPlainLocation(t *testing.T) {
+	f := newVersionedFixture()
+	f.v.versions[f.origin] = append(f.v.versions[f.origin], f.plain)
+	f.v.content = map[string]string{f.plain: f.v2}
+	f.v.pending[f.plain] = true
+	sh := versionedSite(t, f.origin, f.g, f.v, "site")
+	for _, seq := range []string{"3", "-1"} {
+		w := getSite(sh, "/content/"+f.origin+"?seq="+seq)
+		if w.Code != http.StatusOK || !strings.HasPrefix(w.Body.String(), "<html>v2") || w.Header().Get(outpointHeader) != f.plain {
+			t.Fatalf("seq=%s: %d %q %v", seq, w.Code, w.Body.String(), w.Header())
+		}
 	}
 }
 

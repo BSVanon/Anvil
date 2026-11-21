@@ -1,6 +1,11 @@
 package content
 
-import "github.com/bsv-blockchain/go-sdk/script"
+import (
+	"encoding/binary"
+
+	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction"
+)
 
 // OrdEnvelope is a well-formed 1Sat inscription envelope (BRC-160) found in
 // an output's locking script.
@@ -9,6 +14,11 @@ type OrdEnvelope struct {
 	ContentType string
 	// Body is field 0, the content bytes. It may be empty, never nil.
 	Body []byte
+	// Parent is field 3's binary outpoint: a 32-byte transaction ID and an
+	// optional 4-byte little-endian output index. It aliases the script.
+	Parent []byte
+	// ParentSet distinguishes an empty field-3 value from an absent field.
+	ParentSet bool
 }
 
 // ParseOrdEnvelope returns the first well-formed "ord" envelope in a locking
@@ -21,8 +31,9 @@ type OrdEnvelope struct {
 //     push of 0x00 or 0x01 is the same field as OP_0 or OP_1. A wider push
 //     or OP_1NEGATE is an unknown field;
 //   - each value is exactly one push. Values are never joined across pushes;
-//   - field 1 is the content type, and its last occurrence wins. Unknown
-//     fields are skipped;
+//   - field 1 is the content type, field 3 is a 32- or 36-byte parent
+//     outpoint, and each field's last occurrence wins. Unknown fields are
+//     skipped;
 //   - field 0, the body, which may be empty, ends the field list, and the
 //     next op must be OP_ENDIF.
 //
@@ -91,11 +102,49 @@ func parseOrdFields(scr *script.Script, pos int) (OrdEnvelope, bool) {
 			if env.Body == nil {
 				env.Body = []byte{}
 			}
+			if env.ParentSet && len(env.Parent) != 32 && len(env.Parent) != 36 {
+				return OrdEnvelope{}, false
+			}
 			return env, true
 		case 1:
 			env.ContentType = string(value.Data)
+		case 3:
+			env.Parent, env.ParentSet = value.Data, true
 		}
 	}
+}
+
+// ParseOrdEnvelopeAt parses output vout and enforces BRC-160's parent proof:
+// when field 3 claims a parent outpoint, the creating transaction must spend
+// that exact outpoint.
+func ParseOrdEnvelopeAt(tx *transaction.Transaction, vout int) (OrdEnvelope, bool) {
+	if tx == nil || vout < 0 || vout >= len(tx.Outputs) || tx.Outputs[vout].LockingScript == nil {
+		return OrdEnvelope{}, false
+	}
+	env, ok := ParseOrdEnvelope(tx.Outputs[vout].LockingScript.Bytes())
+	if !ok || !env.ParentSet {
+		return env, ok
+	}
+	parentVout := uint32(0)
+	if len(env.Parent) == 36 {
+		parentVout = binary.LittleEndian.Uint32(env.Parent[32:])
+	}
+	for _, in := range tx.Inputs {
+		if in.SourceTXID != nil && in.SourceTxOutIndex == parentVout &&
+			string(in.SourceTXID.CloneBytes()) == string(env.Parent[:32]) {
+			return env, true
+		}
+	}
+	return OrdEnvelope{}, false
+}
+
+func parseOrdEnvelopeTx(raw []byte, vout int) (OrdEnvelope, bool, error) {
+	tx, err := transaction.NewTransactionFromBytes(raw)
+	if err != nil {
+		return OrdEnvelope{}, false, err
+	}
+	env, ok := ParseOrdEnvelopeAt(tx, vout)
+	return env, ok, nil
 }
 
 // ordFieldTag returns the field number op names, or -1 for an unknown

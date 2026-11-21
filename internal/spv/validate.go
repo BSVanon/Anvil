@@ -131,14 +131,13 @@ func (v *Validator) ValidateBEEF(ctx context.Context, beef []byte) (*Result, err
 		v.recordResult(result, reason)
 		return result, nil
 	}
-	// Callers store and relay what this accepts with NewTransactionFromBEEF,
-	// which reads V1 and Atomic BEEFs only, so a V2 BEEF has always been
-	// refused here; inside an Atomic BEEF it is accepted.
-	if n.Format == transaction.BEEF_V2 {
+	// Callers store and relay only V1 and Atomic BEEFs. Apply the same
+	// post-parse format rule as the tip-update credential.
+	if err := beefnorm.ValidateRelayFormat(n); err != nil {
 		result := &Result{
 			Valid:      false,
 			Confidence: ConfidenceInvalid,
-			Message:    "parse transaction from BEEF: a V2 BEEF is accepted only inside an Atomic BEEF",
+			Message:    fmt.Sprintf("parse transaction from BEEF: %v", err),
 		}
 		v.recordResult(result, "parse_transaction")
 		return result, nil

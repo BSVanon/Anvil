@@ -2,10 +2,8 @@ package gateway
 
 import "fmt"
 
-// Versions resolves an origin's version history: which outpoint is
-// currently the latest version (what a public ordinals gateway's seq=-1
-// means) and which outpoint sits at a given sequence number (0 = the
-// origin itself).
+// Versions resolves an origin's tracked history. Latest returns the effective
+// content outpoint; At returns the location at a spend sequence (0 = origin).
 //
 // DefaultVersions does no tracking at all: every origin's latest version
 // IS the origin. The node's version tracker (internal/ordtrack) implements
@@ -14,9 +12,9 @@ import "fmt"
 // serves /content/<origin>?seq= on site hosts; one that also keeps a
 // History roots a site's content scope at each of its versions.
 type Versions interface {
-	// Latest returns the outpoint currently serving as origin's tip.
+	// Latest returns the effective content outpoint at the current location.
 	Latest(origin string) (outpoint string, err error)
-	// At returns the outpoint at version seq (0 = the origin itself).
+	// At returns the location at spend sequence seq (0 = the origin itself).
 	At(origin string, seq int) (outpoint string, err error)
 }
 
