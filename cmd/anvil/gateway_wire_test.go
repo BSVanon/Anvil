@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/BSVanon/Anvil/internal/api"
 	"github.com/BSVanon/Anvil/internal/config"
@@ -38,7 +40,7 @@ func TestWireGateway_DisabledIsIdenticalToTodaysHandler(t *testing.T) {
 	srv := newTestAPIServer(t)
 	logger := slog.Default()
 
-	wired := wireGateway(cfg, srv, logger)
+	wired := wireGateway(cfg, srv, logger, nil)
 	today := srv.Handler()
 
 	for _, path := range []string{"/stats", "/no-such-route-at-all"} {
@@ -79,11 +81,19 @@ func TestWireGateway_EnabledBuildsRouterAndWiresStats(t *testing.T) {
 	cfg.Gateway.APIHost = "admin.example.org"
 	cfg.Gateway.SitesFile = filepath.Join(dir, "gateway-sites.conf") // missing file: not an error
 	cfg.Gateway.ContentScope = "site"
+	cfg.Node.DataDir = dir
+	// Built directly rather than through config.Load, so none of
+	// finalizeGateway's defaulting runs: an explicit, non-privileged,
+	// ephemeral bind address here keeps wireGateway's new TLS/plain
+	// listeners (started because Gateway.Enabled is true) off a real
+	// privileged port for the lifetime of this test.
+	cfg.Gateway.HTTPSListen = "127.0.0.1:0"
+	cfg.Gateway.HTTPListen = "127.0.0.1:0"
 
 	srv := newTestAPIServer(t)
 	logger := slog.Default()
 
-	h := wireGateway(cfg, srv, logger)
+	h := wireGateway(cfg, srv, logger, nil)
 	rt, ok := h.(*gateway.Router)
 	if !ok {
 		t.Fatalf("expected wireGateway to return a *gateway.Router when enabled, got %T", h)
@@ -95,7 +105,7 @@ func TestWireGateway_EnabledBuildsRouterAndWiresStats(t *testing.T) {
 		t.Fatal("expected a non-nil Sites handler")
 	}
 
-	// api_host still reaches /stats — now carrying decision 8's gateway
+	// api_host still reaches /stats — now carrying the gateway
 	// counters, proving SetGatewayStats was actually wired (not just that
 	// the Router exists).
 	req := httptest.NewRequest("GET", "http://admin.example.org/stats", nil)
@@ -127,5 +137,77 @@ func TestWireGateway_EnabledBuildsRouterAndWiresStats(t *testing.T) {
 	h.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for an unrecognised Host, got %d", w2.Code)
+	}
+}
+
+// TestWireGateway_DisabledStartsNoListeners is the hard constraint's
+// wiring-level proof: with [gateway] off, wireGateway must return before
+// ever reaching startGatewayTLS — nothing binds the configured gateway
+// addresses, whatever they're set to. Paired with
+// TestWireGateway_EnabledStartsListeners below, which binds the same
+// kind of address when enabled, so this isn't vacuously true because
+// nothing ever binds regardless.
+func TestWireGateway_DisabledStartsNoListeners(t *testing.T) {
+	const httpsAddr = "127.0.0.1:48443"
+	const httpAddr = "127.0.0.1:48080"
+
+	cfg := &config.Config{} // Gateway.Enabled is false by default
+	cfg.Gateway.HTTPSListen = httpsAddr
+	cfg.Gateway.HTTPListen = httpAddr
+
+	srv := newTestAPIServer(t)
+	_ = wireGateway(cfg, srv, slog.Default(), nil)
+
+	// wireGateway's disabled path is a single synchronous early return —
+	// nothing async to wait for — but this sleep is cheap defense against
+	// a future refactor that moves a bind off the calling goroutine
+	// without this test noticing.
+	time.Sleep(50 * time.Millisecond)
+
+	for _, addr := range []string{httpsAddr, httpAddr} {
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			t.Fatalf("something is listening on %s although [gateway] is disabled", addr)
+		}
+	}
+}
+
+// TestWireGateway_EnabledStartsListeners is
+// TestWireGateway_DisabledStartsNoListeners's positive counterpart: with
+// [gateway] on, both the https and the plain listener actually come up.
+func TestWireGateway_EnabledStartsListeners(t *testing.T) {
+	const httpsAddr = "127.0.0.1:48444"
+	const httpAddr = "127.0.0.1:48081"
+	dir := t.TempDir()
+
+	cfg := &config.Config{}
+	cfg.Gateway.Enabled = true
+	cfg.Gateway.APIHost = "admin.example.org"
+	cfg.Gateway.SitesFile = filepath.Join(dir, "gateway-sites.conf")
+	cfg.Gateway.ContentScope = "site"
+	cfg.Node.DataDir = dir
+	cfg.Gateway.HTTPSListen = httpsAddr
+	cfg.Gateway.HTTPListen = httpAddr
+
+	srv := newTestAPIServer(t)
+	_ = wireGateway(cfg, srv, slog.Default(), nil)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for _, addr := range []string{httpsAddr, httpAddr} {
+		var lastErr error
+		for time.Now().Before(deadline) {
+			conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				lastErr = nil
+				break
+			}
+			lastErr = err
+			time.Sleep(20 * time.Millisecond)
+		}
+		if lastErr != nil {
+			t.Fatalf("nothing is listening on %s although [gateway] is enabled: %v", addr, lastErr)
+		}
 	}
 }
