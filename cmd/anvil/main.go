@@ -894,8 +894,8 @@ func main() {
 			return hash.String()
 		},
 		CustomCapabilities: cfg.Capabilities.Custom,
+		DataDir:            cfg.Node.DataDir,
 	})
-
 	if nodeWallet != nil {
 		nodeWallet.RegisterRoutes(srv.Mux(), srv.RequireAuth)
 	}

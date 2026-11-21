@@ -156,8 +156,8 @@ type ServerConfig struct {
 	// each request is authenticated by the sender's own identity key — no
 	// shared operator secret in public clients. Nil (mesh/wallet disabled)
 	// keeps the legacy operator-token gate.
-	Wallet sdk.Interface
-
+	Wallet  sdk.Interface
+	DataDir string // the node's data_dir; holds the BRC-121 payment journal
 	// CustomCapabilities are operator-declared capability entries merged into
 	// the /.well-known/anvil manifest. Lets an operator advertise AVOS oracle
 	// availability, custom data relays, etc., without Anvil code changes.
@@ -430,10 +430,10 @@ func cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics, x-includes-off-chain-values, x-aggregation, X-BSV-Topic")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, X-Topics, x-includes-off-chain-values, x-aggregation, X-BSV-Topic, x-bsv-beef, x-bsv-sender, x-bsv-nonce, x-bsv-time, x-bsv-vout")
 		// Expose the /overlay/query readiness headers so browser callers can read
 		// them (custom response headers are hidden from JS unless exposed).
-		w.Header().Set("Access-Control-Expose-Headers", "X-Overlay-Gasp-Enabled, X-Overlay-Gasp-Initial-Sync-Done, X-Overlay-Gasp-Last-Sync-Unix, X-Overlay-Gasp-Interval-Secs, X-BEEF-Source, X-BEEF-Subject-Proven")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Overlay-Gasp-Enabled, X-Overlay-Gasp-Initial-Sync-Done, X-Overlay-Gasp-Last-Sync-Unix, X-Overlay-Gasp-Interval-Secs, X-BEEF-Source, X-BEEF-Subject-Proven, x-bsv-sats, x-bsv-server")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -776,7 +776,7 @@ func (s *Server) authOrPay(next http.HandlerFunc) http.HandlerFunc {
 		// Handle CORS preflight for authOrPay endpoints
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, x-bsv-beef, x-bsv-sender, x-bsv-nonce, x-bsv-time, x-bsv-vout")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -841,7 +841,7 @@ func (s *Server) authOrPayBinary(next http.HandlerFunc) http.HandlerFunc {
 		// CORS preflight
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Token, X-Anvil-Auth, X402-Proof, X-Bsv-Payment, x-bsv-beef, x-bsv-sender, x-bsv-nonce, x-bsv-time, x-bsv-vout")
 			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 			w.WriteHeader(http.StatusNoContent)
 			return

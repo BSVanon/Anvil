@@ -31,6 +31,11 @@ func newServerPaymentGate(cfg ServerConfig, resolver *TopicMonetizationResolver)
 		pg.clientKey = func(r *http.Request) string {
 			return rateLimitKey(clientIP(r, cfg.TrustProxy, cfg.TrustProxyHops))
 		}
+		// BRC-121 needs the node wallet, ARC, the SPV validator and the
+		// data directory for its journal (brc121.go).
+		if err := pg.enableBRC121(cfg.Wallet, cfg.Validator, cfg.DataDir, cfg.Logger); err != nil && cfg.Logger != nil {
+			cfg.Logger.Warn("BRC-121 payments are off", "error", err)
+		}
 	}
 	return pg
 }
