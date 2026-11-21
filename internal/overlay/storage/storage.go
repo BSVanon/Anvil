@@ -27,7 +27,7 @@ import (
 // anci3 + beef3) are NOT cross-family snapshot-consistent — a concurrent
 // writer can produce a mix of pre- and post-update values across the
 // families. If a caller needs cross-family consistency it must hold an
-// external lock around the access. W-5 wiring should keep this in mind.
+// external lock around the access.
 type Storage struct {
 	db *leveldb.DB
 
@@ -470,14 +470,15 @@ func (s *Storage) hydrate(out *engine.Output, includeBEEF bool) error {
 	out.ConsumedBy = consumers
 	if includeBEEF {
 		if blob, err := s.db.Get(beefKey(&op.Txid), nil); err == nil {
-			beef, perr := safeNewBeefFromBytes(blob)
+			beef, perr := normalizedBeefFromBytes(blob)
 			if perr != nil {
-				// A corrupt/unparseable BEEF blob must NOT fail the whole lookup:
-				// one bad offer would 502 every query that scans it (the go-sdk
-				// parser panics on malformed input). Skip BEEF for this output —
+				// A corrupt/unparseable BEEF blob, or one beefnorm cannot
+				// normalize, must NOT fail the whole lookup: one bad offer
+				// would 502 every query that scans it (the go-sdk parser
+				// panics on malformed input). Skip BEEF for this output —
 				// the engine drops outputs whose Beef is nil from the results —
 				// and log it so the bad entry can be pruned.
-				slog.Warn("storage: output has unparseable BEEF, skipping from hydration",
+				slog.Warn("storage: output has unparseable or unnormalizable BEEF, skipping from hydration",
 					"txid", op.Txid.String(), "vout", op.Index, "error", perr)
 			} else {
 				out.Beef = beef
@@ -487,38 +488,6 @@ func (s *Storage) hydrate(out *engine.Output, includeBEEF bool) error {
 		}
 	}
 	return nil
-}
-
-// safeNewBeefFromBytes parses a stored blob so that one corrupt blob cannot
-// crash a whole lookup: a panic becomes an error the caller skips. go-sdk
-// v1.2.x panicked on an out-of-range BUMP index ("index out of range [210]
-// with length 1", seen in the field); v1.7.7 returns an error, and no known
-// input reaches the recover now, so the parser is a variable a test replaces.
-var newBeefFromBytes = transaction.NewBeefFromBytes
-
-func safeNewBeefFromBytes(blob []byte) (beef *transaction.Beef, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			beef, err = nil, fmt.Errorf("BEEF parse panicked: %v", r)
-		}
-	}()
-	return newBeefFromBytes(blob)
-}
-
-// storableBeefBytes serialises a BEEF for on-disk storage in a form go-sdk can
-// reliably re-parse on hydration. go-sdk's V1 serialisation (beef.Bytes() when
-// Version==BEEF_V1) can emit output its OWN parser then panics on — observed
-// with a real 4-tx UMP submit (AtomicBEEF wrapping a V1 BEEF, a 3-deep
-// unconfirmed chain anchored to a BUMP): admission parsed it fine, but the V1
-// re-serialisation could not be re-read ("index out of range [N] with length
-// 1"), so the output silently dropped from lookup hydration. BEEF V2 (BRC-96)
-// round-trips correctly for the same data (verified byte-identical subject
-// script), so we always persist V2. Clone first so we never mutate the caller's
-// BEEF — the engine may reuse it for other topics in the same submit.
-func storableBeefBytes(beef *transaction.Beef) ([]byte, error) {
-	b := beef.Clone()
-	b.Version = transaction.BEEF_V2
-	return b.Bytes()
 }
 
 // decodeOutpointBlob splits a concatenated 36-byte-per-outpoint blob.

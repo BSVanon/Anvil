@@ -335,8 +335,9 @@ func (s *Storage) ReconcileMerkleRoot(
 // go-overlay-services fails the whole lookup answer, GASP node or history
 // when this returns an error (engine.go:772,852,1286), so an ancillary BEEF
 // that cannot be parsed or merged is logged and skipped, with out.Beef left
-// as it was before that merge (mergeStoredBEEF). Only a failed read of the
-// store is returned.
+// as it was before that merge (ancillaryMerge); so is the one snapshot
+// ancillaryMerge takes to do that, if even it fails. Only a failed read of
+// the store is returned.
 func (s *Storage) LoadAncillaryBeef(ctx context.Context, out *engine.Output) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -352,12 +353,13 @@ func (s *Storage) LoadAncillaryBeef(ctx context.Context, out *engine.Output) err
 			}
 			return fmt.Errorf("storage: load beef: %w", err)
 		}
-		beef, err := safeNewBeefFromBytes(blob)
+		beef, err := normalizedBeefFromBytes(blob)
 		if err != nil {
 			return fmt.Errorf("storage: parse beef: %w", err)
 		}
 		out.Beef = beef
 	}
+	var merge *ancillaryMerge
 	for _, h := range out.AncillaryTxids {
 		if h == nil {
 			continue
@@ -369,7 +371,15 @@ func (s *Storage) LoadAncillaryBeef(ctx context.Context, out *engine.Output) err
 			}
 			return fmt.Errorf("storage: load ancillary beef %s: %w", h.String(), err)
 		}
-		if err := mergeStoredBEEF(&out.Beef, blob); err != nil {
+		if merge == nil {
+			var merr error
+			if merge, merr = newAncillaryMerge(&out.Beef); merr != nil {
+				slog.Warn("storage: skipping every ancillary BEEF; its subject could not be copied before merging them in",
+					"txid", out.Outpoint.Txid.String(), "vout", out.Outpoint.Index, "error", merr)
+				return nil
+			}
+		}
+		if err := merge.merge(blob); err != nil {
 			slog.Warn("storage: skipping an ancillary BEEF that cannot be merged",
 				"txid", out.Outpoint.Txid.String(), "vout", out.Outpoint.Index, "ancillary", h.String(), "error", err)
 		}
