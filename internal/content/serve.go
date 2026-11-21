@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,6 +47,8 @@ type Server struct {
 	maxAge              time.Duration
 	client              *http.Client
 	txidMismatchLimiter *txidMismatchLimiter // per-Server rate limit state; see txid_verify.go
+	// versions answers ?seq requests; see seq.go.
+	versions atomic.Pointer[versionHook]
 }
 
 // NewServer creates a content server.
@@ -91,8 +94,13 @@ func (s *Server) BootstrapBlock(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"status":"ok","block":"%s","message":"block cached, inscriptions now serveable"}`, blockHash)
 }
 
-// ServeContent handles GET /content/{origin} where origin is txid_vout.
+// ServeContent handles GET /content/{origin} where origin is txid_vout. A
+// request with a seq query asks for one of origin's versions (seq.go).
 func (s *Server) ServeContent(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("seq") {
+		s.serveVersion(w, r)
+		return
+	}
 	origin := r.PathValue("origin")
 	if origin == "" {
 		http.Error(w, "missing origin", http.StatusBadRequest)
