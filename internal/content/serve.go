@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,6 +47,8 @@ type Server struct {
 	maxAge              time.Duration
 	client              *http.Client
 	txidMismatchLimiter *txidMismatchLimiter // per-Server rate limit state; see txid_verify.go
+	// versions answers ?seq requests; see seq.go.
+	versions atomic.Pointer[versionHook]
 }
 
 // NewServer creates a content server.
@@ -91,9 +94,29 @@ func (s *Server) BootstrapBlock(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"status":"ok","block":"%s","message":"block cached, inscriptions now serveable"}`, blockHash)
 }
 
-// ServeContent handles GET /content/{origin} where origin is txid_vout.
+// ServeContent handles GET /content/{origin} where origin is txid_vout. A
+// seq query or :seq suffix asks for a tracked version (seq.go).
 func (s *Server) ServeContent(w http.ResponseWriter, r *http.Request) {
-	origin := r.PathValue("origin")
+	raw := r.PathValue("origin")
+	locator, pathSeq, hasPathSeq, pathErr := SplitVersionLocator(raw)
+	if pathErr != nil || (hasPathSeq && r.URL.Query().Has("seq")) {
+		http.Error(w, "invalid seq: want -1 or a version number", http.StatusBadRequest)
+		return
+	}
+	if hasPathSeq {
+		s.serveVersion(w, r, locator, pathSeq)
+		return
+	}
+	if r.URL.Query().Has("seq") {
+		seq, err := strconv.Atoi(r.URL.Query().Get("seq"))
+		if err != nil || seq < -1 {
+			http.Error(w, "invalid seq: want -1 or a version number", http.StatusBadRequest)
+			return
+		}
+		s.serveVersion(w, r, raw, seq)
+		return
+	}
+	origin := raw
 	if origin == "" {
 		http.Error(w, "missing origin", http.StatusBadRequest)
 		return
@@ -159,7 +182,7 @@ func serveInscription(w http.ResponseWriter, insc *inscription) {
 // parseInscription extracts inscription data from a specific transaction output.
 // Parses the raw tx to find the exact output at voutStr, then checks for inscription data.
 // Supports two formats:
-//   - 1Sat Ordinal: OP_FALSE OP_IF "ord" OP_1 <content-type> OP_0 <data> OP_ENDIF
+//   - 1Sat Ordinal: a BRC-160 envelope, OP_FALSE OP_IF "ord" OP_1 <content-type> OP_0 <data> OP_ENDIF
 //   - B:// Protocol: OP_RETURN <B-prefix> <data> <content-type> <encoding>
 func parseInscription(rawTxHex string, voutStr string) (*inscription, error) {
 	txBytes, err := hex.DecodeString(rawTxHex)
@@ -171,16 +194,18 @@ func parseInscription(rawTxHex string, voutStr string) (*inscription, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid vout: %w", err)
 	}
-
-	// Extract the specific output script
 	script, err := extractOutputScript(txBytes, vout)
 	if err != nil {
 		return nil, fmt.Errorf("extract output %d: %w", vout, err)
 	}
 
-	// Try 1Sat Ordinal format first
-	if insc := tryParseOrdinal(script); insc != nil {
-		return insc, nil
+	// Try a 1Sat Ordinal envelope first (BRC-160; see ord_envelope.go)
+	env, ok, err := parseOrdEnvelopeTx(txBytes, vout)
+	if err != nil {
+		return nil, fmt.Errorf("parse transaction: %w", err)
+	}
+	if ok {
+		return &inscription{ContentType: env.ContentType, Data: env.Body, FetchedAt: time.Now()}, nil
 	}
 
 	// Try B:// protocol (OP_RETURN based)
@@ -280,49 +305,6 @@ func readVarInt(data []byte) (uint64, int) {
 		}
 		return binary.LittleEndian.Uint64(data[1:9]), 9
 	}
-}
-
-// tryParseOrdinal looks for OP_FALSE OP_IF "ord" pattern.
-func tryParseOrdinal(txBytes []byte) *inscription {
-	marker := []byte{0x00, 0x63, 0x03, 0x6f, 0x72, 0x64}
-	idx := bytes.Index(txBytes, marker)
-	if idx < 0 {
-		return nil
-	}
-
-	pos := idx + len(marker)
-	insc := &inscription{FetchedAt: time.Now()}
-
-	for pos < len(txBytes) {
-		op := txBytes[pos]
-		pos++
-
-		switch {
-		case op == 0x51: // OP_1 — content-type
-			data, newPos, err := readPush(txBytes, pos)
-			if err != nil {
-				return nil
-			}
-			insc.ContentType = string(data)
-			pos = newPos
-		case op == 0x00: // OP_0 — file data
-			data, newPos, err := readPush(txBytes, pos)
-			if err != nil {
-				return nil
-			}
-			insc.Data = data
-			pos = newPos
-		case op == 0x68: // OP_ENDIF
-			if insc.Data != nil {
-				return insc
-			}
-			return nil
-		}
-	}
-	if insc.Data != nil {
-		return insc
-	}
-	return nil
 }
 
 // tryParseBProtocol looks for OP_RETURN followed by B:// protocol data.

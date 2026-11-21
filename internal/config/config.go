@@ -28,6 +28,7 @@ type Config struct {
 	API          APIConfig          `toml:"api"`
 	Capabilities CapabilitiesConfig `toml:"capabilities"`
 	Gateway      GatewayConfig      `toml:"gateway"`
+	Content      ContentConfig      `toml:"content"`
 }
 
 // CapabilitiesConfig lets operators declare capabilities beyond the built-in
@@ -544,6 +545,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	if err := finalizeGateway(cfg, path); err != nil {
+		return nil, err
+	}
+	if err := finalizeContent(&cfg.Content); err != nil {
 		return nil, err
 	}
 

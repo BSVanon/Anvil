@@ -927,7 +927,7 @@ func main() {
 	}
 
 	go func() {
-		handler := wireGateway(cfg, srv, logger, gossipMgr)
+		handler := wireGateway(cfg, srv, logger, trackingDeps{headerStore, proofStore, spv.NewProofFetcher(arcClient, logger), broadcaster, gossipMgr, envStore, identityPrivKey})
 		if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
 			log.Printf("REST API listening on %s (TLS)", cfg.Node.APIListen)
 			tlsSrv := newTLSAPIServer(cfg.Node.APIListen, handler)

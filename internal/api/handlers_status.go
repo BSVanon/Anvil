@@ -144,6 +144,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			stats["gateway"] = g
 		}
 	}
+	if t := s.trackingStats(); t != nil {
+		stats["tracking"] = t
+	}
 
 	if s.isAuthed(r) { // the operator's view only (brc121.go)
 		stats["brc121"] = s.paymentGate.brc121Status()

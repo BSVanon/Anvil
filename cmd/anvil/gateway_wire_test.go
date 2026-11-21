@@ -40,7 +40,7 @@ func TestWireGateway_DisabledIsIdenticalToTodaysHandler(t *testing.T) {
 	srv := newTestAPIServer(t)
 	logger := slog.Default()
 
-	wired := wireGateway(cfg, srv, logger, nil)
+	wired := wireGateway(cfg, srv, logger, trackingDeps{})
 	today := srv.Handler()
 
 	for _, path := range []string{"/stats", "/no-such-route-at-all"} {
@@ -93,7 +93,7 @@ func TestWireGateway_EnabledBuildsRouterAndWiresStats(t *testing.T) {
 	srv := newTestAPIServer(t)
 	logger := slog.Default()
 
-	h := wireGateway(cfg, srv, logger, nil)
+	h := wireGateway(cfg, srv, logger, trackingDeps{})
 	rt, ok := h.(*gateway.Router)
 	if !ok {
 		t.Fatalf("expected wireGateway to return a *gateway.Router when enabled, got %T", h)
@@ -156,7 +156,7 @@ func TestWireGateway_DisabledStartsNoListeners(t *testing.T) {
 	cfg.Gateway.HTTPListen = httpAddr
 
 	srv := newTestAPIServer(t)
-	_ = wireGateway(cfg, srv, slog.Default(), nil)
+	_ = wireGateway(cfg, srv, slog.Default(), trackingDeps{})
 
 	// wireGateway's disabled path is a single synchronous early return —
 	// nothing async to wait for — but this sleep is cheap defense against
@@ -191,7 +191,7 @@ func TestWireGateway_EnabledStartsListeners(t *testing.T) {
 	cfg.Gateway.HTTPListen = httpAddr
 
 	srv := newTestAPIServer(t)
-	_ = wireGateway(cfg, srv, slog.Default(), nil)
+	_ = wireGateway(cfg, srv, slog.Default(), trackingDeps{})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for _, addr := range []string{httpsAddr, httpAddr} {

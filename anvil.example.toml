@@ -163,6 +163,24 @@ warn_at_percent = 80
 # recipient then gets a 403.
 # operator_reads_all_boxes = true
 
+# Version tracking for /content: the BRC-159 token chains that start at a set
+# of origins, followed so /content/<origin>?seq=N serves an origin's spend
+# sequence (0 is the origin, N counts every later location including plain
+# transfers, and -1 is the current location). A plain location serves the most
+# recent inscription at or before it. A gateway also follows the origins its
+# sites file allows. On a node that
+# tracks origins, a POST /broadcast that verifiably moves a tracked origin's
+# current tip to a new 1-sat output is accepted without a token or payment;
+# every other broadcast is gated as before. Versions are kept in
+# <data_dir>/ordtrack. With no track_origins and [gateway] off, nothing is
+# tracked and nothing changes.
+# [content]
+# track_origins = ["<txid>_0"]     # origins to follow ("txid_vout" or "txid.vout")
+# max_tracked_origins = 1000       # cap on the tracked set
+# max_watched_outpoints = 10000    # cap on the outpoints the spend watch follows
+# spend_poll_interval = 600        # seconds between WhatsOnChain spent-output lookups of one outpoint (±20%; 1 request/s overall)
+# tip_pending_timeout = 86400      # seconds an unmined tip may stay unmined before it is rolled back
+
 [api]
 # auth_token is auto-derived from identity.wif — you don't need to set it.
 # If you want a custom token, set it here (overrides the derived one).

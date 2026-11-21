@@ -170,13 +170,16 @@ type scopeCache struct {
 	content contentFetcher
 	sf      singleflight.Group
 	now     func() time.Time
+	// history, when set, lists an origin's versions; see versionRoots.
+	history func(origin string) []string
 
 	mu    sync.Mutex
 	byKey map[string]*scopeResult
+	keyOf map[string]string // origin -> its one cached key
 }
 
 func newScopeCache(content contentFetcher) *scopeCache {
-	sc := &scopeCache{byKey: make(map[string]*scopeResult), now: time.Now}
+	sc := &scopeCache{byKey: make(map[string]*scopeResult), keyOf: make(map[string]string), now: time.Now}
 	sc.content = &negativeCachingFetcher{
 		inner:  content,
 		now:    func() time.Time { return sc.now() },
@@ -216,12 +219,18 @@ func (c *scopeCache) InScope(ctx context.Context, origin, latestOutpoint, target
 
 		scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scopeScanTimeout)
 		defer cancel()
-		result := scanScope(scanCtx, c.content, origin, latestOutpoint)
-		if !result.complete {
+		versions, rooted := c.versionRoots(origin, latestOutpoint)
+		result := scanScope(scanCtx, c.content, origin, latestOutpoint, versions...)
+		if !result.complete || !rooted {
 			result.expires = c.now().Add(scopeIncompleteCacheTTL)
 		}
 
+		// One result per origin: a new latest version replaces the last.
 		c.mu.Lock()
+		if prev, ok := c.keyOf[origin]; ok && prev != key {
+			delete(c.byKey, prev)
+		}
+		c.keyOf[origin] = key
 		c.byKey[key] = result
 		c.mu.Unlock()
 		return result, nil
@@ -271,15 +280,19 @@ type frontierNode struct {
 // caching reason) but does NOT stop the scan early: that node stays in
 // scope (it WAS referenced), it just can't be scanned further for its own
 // references, exactly as before — only the final caching decision changes.
-func scanScope(ctx context.Context, content contentFetcher, origin, latestOutpoint string) *scopeResult {
-	visited := map[string]struct{}{origin: {}, latestOutpoint: {}}
-	// Queue each root once: B7a's DefaultVersions always has
-	// latestOutpoint == origin (every site starts at seq 0 with no tip
-	// tracking yet), and queuing the same outpoint twice would fetch and
-	// count it twice against the byte budget for no benefit.
-	queue := []frontierNode{{origin, 0}}
-	if latestOutpoint != origin {
-		queue = append(queue, frontierNode{latestOutpoint, 0})
+//
+// versions are further roots: the origin's other versions, newest first.
+func scanScope(ctx context.Context, content contentFetcher, origin, latestOutpoint string, versions ...string) *scopeResult {
+	visited := map[string]struct{}{}
+	// Queue each root once: an untracked origin has latestOutpoint ==
+	// origin, and queuing the same outpoint twice would fetch and count it
+	// twice against the byte budget for no benefit.
+	var queue []frontierNode
+	for _, root := range append([]string{origin, latestOutpoint}, versions...) {
+		if _, seen := visited[root]; !seen {
+			visited[root] = struct{}{}
+			queue = append(queue, frontierNode{root, 0})
+		}
 	}
 	bytesFetched := 0
 	complete := true
