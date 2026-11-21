@@ -97,6 +97,7 @@ type Server struct {
 	messageboxBRC31   bool                    // true when messagebox routes are served behind canonical BRC-31 mutual auth
 	gatewayStatsFn    func() map[string]int64 // optional: merged into GET /stats under "gateway" — see SetGatewayStats
 	messagingPolicy   MessagingPolicy         // see MessagingPolicy's doc comment
+	tracking          trackingSlot            // POST /broadcast's tip credential; see SetTipCredential
 }
 
 // HealthCheck is a named subsystem health probe. Returns a warning string
@@ -337,7 +338,7 @@ func (s *Server) routes() {
 	// /broadcast accepts auth token OR x402 payment. Pre-wired for the wallet's
 	// future x402 client (E.2 migration in ANVIL_NODE_HANDOFF.md) — consumers
 	// with auth tokens keep working unchanged.
-	s.mux.HandleFunc("POST /broadcast", s.authOrPayBinary(s.handleBroadcast))
+	s.mux.HandleFunc("POST /broadcast", s.tipCredential(s.handleBroadcast, s.authOrPayBinary(s.handleBroadcast)))
 	// POST /data accepts bearer auth OR x402 payment (if payment gate exists).
 	// This lets third-party publishers submit envelopes by paying instead of
 	// needing the operator's auth token.

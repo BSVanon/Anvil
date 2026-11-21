@@ -129,6 +129,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			stats["gateway"] = g
 		}
 	}
+	if t := s.trackingStats(); t != nil {
+		stats["tracking"] = t
+	}
 
 	if len(warnings) > 0 {
 		stats["warnings"] = warnings
