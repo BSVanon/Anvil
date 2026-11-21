@@ -482,7 +482,22 @@ func (s *Shim) Query(w http.ResponseWriter, r *http.Request) {
 		writeLegacyError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, legacy)
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		writeLegacyError(w, http.StatusInternalServerError, "encode answer: "+err.Error())
+		return
+	}
+	// The answer is fully serialized now: only the network write is left,
+	// which this also bounds (boundAnswerWrite) as a backstop. Release t's
+	// JSON slot before that write rather than at the deferred Close above,
+	// so a client that opens the connection and never reads its answer no
+	// longer holds that slot for as long as it keeps the connection open —
+	// only for as long as everything up to this point took. Close is
+	// idempotent, so the deferred call above still safely covers every
+	// return before this one.
+	t.Close()
+	boundAnswerWrite(w, len(encoded))
+	writeJSONBytes(w, http.StatusOK, encoded)
 }
 
 // --- GET /overlay/topics + /overlay/services -----------------------------
