@@ -105,6 +105,8 @@ type MessagingPolicy struct {
 	Home                  messaging.HomeResolver
 	ForwardCopyTTLSeconds *int64
 	OperatorReadsAllBoxes *bool
+	PrivateHomes          *messaging.PrivateHomeStore
+	PrivateHomeCompatible func([]string) bool
 }
 
 // sendHomeAware applies the Home Rule's "API send" rows for msg's
@@ -139,7 +141,13 @@ func (s *Server) sendHomeAware(msg *messaging.Message) (id string, forward bool,
 	switch res.State {
 	case messaging.Home:
 		id, err = s.msgStore.Send(msg, s.identityPub)
-		return id, false, err == nil, err
+		forward = false
+		if s.messagingPolicy.PrivateHomes != nil {
+			if _, ok, claimErr := s.messagingPolicy.PrivateHomes.Current(msg.Recipient); claimErr == nil && ok {
+				forward = res.HasOtherHost
+			}
+		}
+		return id, forward, err == nil, err
 	case messaging.Elsewhere:
 		id, err = s.msgStore.SendElsewhere(msg, s.identityPub, ttl, store)
 		return id, true, store && err == nil, err
@@ -312,6 +320,9 @@ func (s *Server) handleAcknowledgeMessage(w http.ResponseWriter, r *http.Request
 			s.logger.Error("messagebox acknowledge failed", "error", err)
 		}
 		return
+	}
+	if s.gossipMgr != nil {
+		s.gossipMgr.BroadcastHomeAck(recipient, uniqueIDs)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

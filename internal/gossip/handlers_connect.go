@@ -46,7 +46,11 @@ func (m *Manager) announceInterests(peer *auth.Peer) error {
 	if err != nil {
 		return err
 	}
-	return peer.ToPeer(context.Background(), payload, nil, 5000)
+	if err := peer.ToPeer(context.Background(), payload, nil, 5000); err != nil {
+		return err
+	}
+	go m.announcePrivateHomes(peer)
+	return nil
 }
 
 // announceSHIP sends all local SHIP registrations to one admitted peer.
@@ -72,6 +76,7 @@ func (m *Manager) announceSHIP(peer *auth.Peer) {
 
 // ReannounceToAll sends this node's own SHIP registrations to admitted peers.
 func (m *Manager) ReannounceToAll() {
+	m.ResyncPrivateHomes()
 	if m.overlayDir == nil {
 		return
 	}

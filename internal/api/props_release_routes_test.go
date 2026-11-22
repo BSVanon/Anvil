@@ -104,8 +104,8 @@ func releaseRouteClasses() map[string]releaseRouteClass {
 	add(operatorOrPayment, "POST /broadcast", "POST /data")
 
 	add(identity, "/.well-known/auth", "/sendMessage", "/listMessages", "/acknowledgeMessage",
-		"/messages/session", "POST /sendMessage", "POST /listMessages", "POST /acknowledgeMessage",
-		"POST /messages/session", "GET /messages/subscribe")
+		"/messages/session", "/messages/home", "POST /sendMessage", "POST /listMessages", "POST /acknowledgeMessage",
+		"POST /messages/session", "GET /messages/subscribe", "GET /messages/home", "POST /messages/home")
 	add(identity, "/gateway/sites", "/gateway/sites/", "POST /gateway/sites", "DELETE /gateway/sites/{domain}")
 
 	add(none, "/submit", "/lookup", "/listTopicManagers", "/listLookupServiceProviders", "/arc-ingest",

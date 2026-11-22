@@ -38,6 +38,8 @@ max_exchange_peers = 8             # learned live peers; 0 advertises but never 
 # unset (the default) to accept any peer, as today.
 # Closed mode never derives advertise_url from public_url. It advertises only
 # an explicit URL and dials learned records only for allowed identities.
+# Learned, seed, and inbound sockets all pass the same identity, duplicate,
+# allowlist, and bond admission before any application message is dispatched.
 # Certificate admission is disabled when this section is absent. Lists and maps
 # default empty. Certifier keys are compressed identity keys; type IDs are
 # 32-byte Base64 values.
@@ -223,6 +225,17 @@ warn_at_percent = 80
 # false to restrict the operator token to its own box — naming another
 # recipient then gets a 403.
 # operator_reads_all_boxes = true   # new gateway deploys write false to limit the operator token
+#
+# Private homes are an Anvil-only closed-network extension, not canonical
+# BRC-33. A member signs an off-chain home claim that is shared only with
+# [mesh] allowed_peers. Enabling this requires allowed_peers to be non-empty.
+# Upgrade every allowed gateway before posting claims: connected named homes
+# must negotiate support and acknowledge each claim version before forwarding.
+# Claims never enter mesh:heartbeat or peer-exchange records; they and message
+# forwards use only the retained, admitted primary socket for an allowed peer.
+# private_homes = false
+# private_home_max_members = 10000  # 1..1000000 live or revocation-protected identities
+# private_home_max_ttl = 2592000    # seconds; 3600..7776000
 # Forwarded messages are accepted from admitted mesh peers. The origin
 # attestation is the peer's vouch for the sender; receivers do not repeat the
 # sender's certificate check.

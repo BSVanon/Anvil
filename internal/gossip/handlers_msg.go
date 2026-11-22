@@ -1,7 +1,6 @@
 package gossip
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -144,9 +143,10 @@ func messageForwardDigest(msg *messaging.Message, originNode string) [32]byte {
 // the store/relay table. The caller (handlers_messaging.go) must resolve
 // the recipient's Home state FIRST and skip calling ForwardMessage
 // entirely when it is Home — a message already stored at its recipient's
-// home node needs no flood. ForwardMessage itself does not re-check Home;
-// it unconditionally broadcasts to every connected peer that the
-// forward_peers filter allows (nil = every peer, today's behaviour).
+// home node needs no flood. ForwardMessage itself does not re-check this
+// node's Home state. Its selector uses authenticated peers and forward_peers;
+// a private claim also requires negotiated support and acknowledgement of that
+// claim version, preferring ready named homes over the ready fallback set.
 //
 // Returns how many peers it actually sent to (ToPeer returning no
 // error), not merely how many it attempted — the caller needs the real
@@ -163,15 +163,7 @@ func (m *Manager) ForwardMessage(msg *messaging.Message) int {
 		return 0
 	}
 
-	sent := 0
-	for _, peer := range m.admittedPeers("") {
-		if m.peerAllowedForForward(peer.identity) {
-			if err := peer.peer.ToPeer(context.Background(), payload, peer.identityPK, 5000); err == nil {
-				sent++
-			}
-		}
-	}
-	return sent
+	return m.sendPayloadToTargets(payload, m.selectedForwardPeers(msg.Recipient, ""))
 }
 
 func (m *Manager) signedForwardPayload(msg *messaging.Message) MsgForwardPayload {

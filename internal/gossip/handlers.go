@@ -65,6 +65,12 @@ func (m *Manager) forwardSHIPToAll(senderPK string, rawPayload json.RawMessage) 
 
 // handleMessage processes an incoming mesh message from an authenticated peer.
 func (m *Manager) handleMessage(senderPKHex string, senderPK *ec.PublicKey, payload []byte) error {
+	// Exact-socket admission is the application boundary. A temporary map key,
+	// duplicate loser, refused identity, or bond-rejected socket cannot dispatch
+	// any message type, including private-home control frames.
+	if _, ok := m.admittedPeer(senderPKHex); !ok {
+		return errPeerRefused
+	}
 	msg, err := Decode(payload)
 	if err != nil {
 		m.logger.Warn("invalid mesh message", "error", err)
@@ -92,6 +98,14 @@ func (m *Manager) handleMessage(senderPKHex string, senderPK *ec.PublicKey, payl
 		return m.onMsgForward(senderPKHex, msg.Data)
 	case MsgACMEChallenge:
 		return m.onACMEChallenge(senderPKHex, msg.Data)
+	case MsgHomeClaim:
+		return m.onHomeClaim(senderPKHex, msg.Data)
+	case MsgHomeRevoke:
+		return m.onHomeRevoke(senderPKHex, msg.Data)
+	case MsgHomeAck:
+		return m.onHomeAck(senderPKHex, msg.Data)
+	case MsgHomeStatus:
+		return m.onHomeStatus(senderPKHex, msg.Data)
 	default:
 		m.logger.Debug("unknown mesh message type", "type", msg.Type)
 	}

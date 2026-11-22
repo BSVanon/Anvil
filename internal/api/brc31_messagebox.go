@@ -103,6 +103,10 @@ func (s *Server) registerMessageboxBRC31() {
 	sub.HandleFunc("POST /listMessages", s.handleListMessages)
 	sub.HandleFunc("POST /acknowledgeMessage", s.handleAcknowledgeMessage)
 	sub.HandleFunc("POST /messages/session", s.handleMessageSession)
+	if s.messagingPolicy.PrivateHomes != nil {
+		sub.HandleFunc("POST /messages/home", s.handlePrivateHome)
+		sub.HandleFunc("GET /messages/home", s.handlePrivateHome)
+	}
 
 	authHandler := brc31ReplayNonceStatus(authMW.HTTPHandler(sub))
 	wrapped := brc31CORS(messageboxRateLimit(s.messageboxLimiter, authHandler))
@@ -115,6 +119,9 @@ func (s *Server) registerMessageboxBRC31() {
 	s.mux.Handle("/listMessages", wrapped)
 	s.mux.Handle("/acknowledgeMessage", wrapped)
 	s.mux.Handle("/messages/session", wrapped)
+	if s.messagingPolicy.PrivateHomes != nil {
+		s.mux.Handle("/messages/home", wrapped)
+	}
 	s.registerCertificateRoutes(sub, wrapped)
 
 	// SSE stays a direct route (EventSource can't do the handshake); it is

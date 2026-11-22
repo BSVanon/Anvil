@@ -21,7 +21,7 @@ type CertificateAdmission struct {
 
 func (s *Server) certificateAuthOptions() []func(*middleware.AuthMiddlewareConfig) {
 	opts := []func(*middleware.AuthMiddlewareConfig){middleware.WithAuthAllowUnauthenticated()}
-	if s.certificateGate.Gate == nil || (!s.certificateGate.RequireSender && s.certificateGate.Registration == nil) {
+	if s.certificateGate.Gate == nil || (!s.certificateGate.RequireSender && s.certificateGate.Registration == nil && s.messagingPolicy.PrivateHomes == nil) {
 		return opts
 	}
 	opts = append(opts,

@@ -1,13 +1,32 @@
 package gossip
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/bsv-blockchain/go-sdk/auth"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/wallet"
 )
+
+func newAuthorizedHandlerTestManager(t *testing.T) (*Manager, string, *ec.PublicKey) {
+	t.Helper()
+	identity, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderPK := identity.PubKey()
+	senderHex := hex.EncodeToString(senderPK.Compressed())
+	m := NewManager(ManagerConfig{
+		Wallet:       wallet.NewTestWalletForRandomKey(t),
+		AllowedPeers: []string{senderHex},
+	})
+	m.peers[senderHex] = &MeshPeer{Peer: &auth.Peer{}, IdentityPK: senderPK, admitted: true}
+	return m, senderHex, senderPK
+}
 
 // TestUnknownMeshMessageTypeIsIgnoredNotDropped is the wire-compatibility
 // check required before adding a new mesh message type: an older peer
@@ -18,12 +37,12 @@ import (
 // pins that behaviour so a future change to the dispatch can't silently
 // turn an unknown type into a dropped connection.
 func TestUnknownMeshMessageTypeIsIgnoredNotDropped(t *testing.T) {
-	m := NewManager(ManagerConfig{Wallet: wallet.NewTestWalletForRandomKey(t)})
+	m, senderHex, senderPK := newAuthorizedHandlerTestManager(t)
 	payload, err := Encode(MessageType("some_future_message_type"), map[string]string{"x": "y"})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	if err := m.handleMessage("deadbeef", nil, payload); err != nil {
+	if err := m.handleMessage(senderHex, senderPK, payload); err != nil {
 		t.Fatalf("handleMessage returned an error for an unknown type, want nil (ignored, not dropped): %v", err)
 	}
 }
@@ -32,7 +51,7 @@ func TestUnknownMeshMessageTypeIsIgnoredNotDropped(t *testing.T) {
 // registered hook with the decoded fields intact, through the real
 // handleMessage dispatch (not by calling onACMEChallenge directly).
 func TestOnACMEChallengeDispatchesToHook(t *testing.T) {
-	m := NewManager(ManagerConfig{Wallet: wallet.NewTestWalletForRandomKey(t)})
+	m, senderHex, senderPK := newAuthorizedHandlerTestManager(t)
 
 	type got struct {
 		sender  string
@@ -54,14 +73,14 @@ func TestOnACMEChallengeDispatchesToHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	if err := m.handleMessage("senderhex", nil, payload); err != nil {
+	if err := m.handleMessage(senderHex, senderPK, payload); err != nil {
 		t.Fatalf("handleMessage: %v", err)
 	}
 	if received == nil {
 		t.Fatal("hook was not called")
 	}
-	if received.sender != "senderhex" || received.key != "example.org+token" || string(received.value) != "token-cert-bytes" {
-		t.Fatalf("hook got %+v, want key=example.org+token value=token-cert-bytes sender=senderhex", received)
+	if received.sender != senderHex || received.key != "example.org+token" || string(received.value) != "token-cert-bytes" {
+		t.Fatalf("hook got %+v, want key=example.org+token value=token-cert-bytes sender=%s", received, senderHex)
 	}
 	if !received.expires.Equal(expires) {
 		t.Fatalf("expires = %v, want %v", received.expires, expires)
@@ -72,12 +91,12 @@ func TestOnACMEChallengeDispatchesToHook(t *testing.T) {
 // mode off (no hook registered) neither errors nor panics on a received
 // MsgACMEChallenge.
 func TestOnACMEChallengeNoHookIsSilentlyDropped(t *testing.T) {
-	m := NewManager(ManagerConfig{Wallet: wallet.NewTestWalletForRandomKey(t)})
+	m, senderHex, senderPK := newAuthorizedHandlerTestManager(t)
 	payload, err := Encode(MsgACMEChallenge, ACMEChallengePayload{Key: "k+http-01", Value: []byte("v"), Expires: time.Now().Add(time.Minute).Unix()})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	if err := m.handleMessage("senderhex", nil, payload); err != nil {
+	if err := m.handleMessage(senderHex, senderPK, payload); err != nil {
 		t.Fatalf("handleMessage: %v", err)
 	}
 }

@@ -9,7 +9,13 @@ package main
 // instead of growing with this logic inline.
 
 import (
+	"context"
+	"encoding/hex"
+	"log/slog"
+	"time"
+
 	anvilapi "github.com/BSVanon/Anvil/internal/api"
+	"github.com/BSVanon/Anvil/internal/certgate"
 	"github.com/BSVanon/Anvil/internal/config"
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
 	anvilmsg "github.com/BSVanon/Anvil/internal/messaging"
@@ -17,6 +23,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/overlay/lookups"
 	"github.com/BSVanon/Anvil/internal/overlay/topics"
 	"github.com/bsv-blockchain/go-overlay-services/pkg/core/engine"
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
 // wireMessagingPrivacy builds the api.MessagingPolicy — one struct,
@@ -50,17 +57,52 @@ func wireMessagingPrivacy(cfg *config.Config, v3Eng *engine.Engine, overlayDir *
 	}
 }
 
-// wireGossipMessagingPolicy builds the messaging policy (wireMessagingPrivacy)
-// and applies it everywhere it's needed: gossipMgr's message store
-// and its Home/TTL/forward_peers policy when gossipMgr is
-// non-nil (mesh enabled), always returning the policy so the caller can
-// also hand it to internal/api's ServerConfig — one call standing in
-// for what used to be a standalone wireMessagingPrivacy call plus a
-// separate SetMsgStore/SetMessagingPolicy pair. A nil gossipMgr (mesh
-// disabled) skips the gossip-side wiring but still returns a real
-// policy, since the API layer needs it regardless.
-func wireGossipMessagingPolicy(gossipMgr *anvilgossip.Manager, cfg *config.Config, v3Eng *engine.Engine, overlayDir *anviloverlay.Directory, msgStore *anvilmsg.Store) anvilapi.MessagingPolicy {
+// buildMessagingPolicy constructs the shared API/gossip policy without starting
+// network work. Production reconciles durable certificate bindings, then calls
+// applyGossipMessagingPolicy before starting seeds or the inbound listener.
+func buildMessagingPolicy(cfg *config.Config, v3Eng *engine.Engine, overlayDir *anviloverlay.Directory, msgStore *anvilmsg.Store) anvilapi.MessagingPolicy {
 	policy := wireMessagingPrivacy(cfg, v3Eng, overlayDir)
+	var privateHomes *anvilmsg.PrivateHomeStore
+	if cfg.Messaging.PrivateHomes && msgStore != nil {
+		ownIdentity := ""
+		if key, err := ec.PrivateKeyFromWif(cfg.Identity.WIF); err == nil {
+			ownIdentity = hex.EncodeToString(key.PubKey().Compressed())
+		}
+		allowedHomes := append([]string(nil), cfg.Mesh.AllowedPeers...)
+		if ownIdentity != "" {
+			allowedHomes = append(allowedHomes, ownIdentity)
+		}
+		privateHomes = anvilmsg.NewPrivateHomeStore(msgStore, anvilmsg.PrivateHomeOptions{
+			MaxMembers:   cfg.Messaging.PrivateHomeMaxMembers,
+			MaxTTL:       cfg.Messaging.PrivateHomeMaxTTL,
+			AllowedHomes: allowedHomes,
+		})
+		policy.PrivateHomes = privateHomes
+		policy.Home = anvilmsg.NewPrivateHomeResolver(privateHomes, ownIdentity, policy.Home)
+	}
+	return policy
+}
+
+func buildStartupMessagingPolicy(cfg *config.Config, v3Eng *engine.Engine, overlayDir *anviloverlay.Directory, msgStore *anvilmsg.Store, gate *certgate.Gate, logger *slog.Logger) anvilapi.MessagingPolicy {
+	policy := buildMessagingPolicy(cfg, v3Eng, overlayDir, msgStore)
+	if policy.PrivateHomes != nil && gate != nil {
+		gate.OnRevoke("private_homes", func(identity string) {
+			if _, _, err := policy.PrivateHomes.RevokeMember(identity); err != nil && logger != nil {
+				logger.Error("private home startup revocation failed", "error", err)
+			}
+		})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := anvilapi.ReconcilePrivateHomeAdmissions(ctx, policy.PrivateHomes, gate); err != nil {
+		if logger != nil {
+			logger.Error("private home admission reconciliation failed", "error", err)
+		}
+	}
+	return policy
+}
+
+func applyGossipMessagingPolicy(gossipMgr *anvilgossip.Manager, cfg *config.Config, policy anvilapi.MessagingPolicy, msgStore *anvilmsg.Store) anvilapi.MessagingPolicy {
 	if gossipMgr == nil {
 		return policy
 	}
@@ -69,8 +111,14 @@ func wireGossipMessagingPolicy(gossipMgr *anvilgossip.Manager, cfg *config.Confi
 		Home:                  policy.Home,
 		ForwardCopyTTLSeconds: policy.ForwardCopyTTLSeconds,
 		ForwardPeers:          anvilgossip.NewForwardPeerFilter(cfg.Messaging.ForwardPeers),
+		PrivateHomes:          policy.PrivateHomes,
 	})
+	policy.PrivateHomeCompatible = gossipMgr.CanApplyPrivateHomeClaim
 	return policy
+}
+
+func wireGossipMessagingPolicy(gossipMgr *anvilgossip.Manager, cfg *config.Config, v3Eng *engine.Engine, overlayDir *anviloverlay.Directory, msgStore *anvilmsg.Store) anvilapi.MessagingPolicy {
+	return applyGossipMessagingPolicy(gossipMgr, cfg, buildMessagingPolicy(cfg, v3Eng, overlayDir, msgStore), msgStore)
 }
 
 // messageBoxAdvertSource adapts ls_messagebox's own LevelDB index

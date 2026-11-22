@@ -80,6 +80,8 @@ type Manager struct {
 	// per-peer gossip rate limiting (loose defaults: 30/s burst 100)
 	peerRates  map[string]*peerRate
 	peerRateMu sync.Mutex
+	homeRates  map[string]*homeControlRate
+	homeRateMu sync.Mutex
 
 	// unstoredRelay budgets relays of forwards this node could not store.
 	unstoredRelay unstoredRelayBucket
@@ -194,10 +196,12 @@ type MeshPeer struct {
 	// bondChecked and admitted are guarded by Manager.mu. admitted is the
 	// application gate: identity binding, duplicate selection, allowlist, and
 	// bond verification have all succeeded for this exact socket.
-	bondChecked bool
-	admitted    bool
-	closed      bool
-	admissionMu sync.Mutex
+	bondChecked        bool
+	admitted           bool
+	closed             bool
+	privateHomeVersion int
+	appliedHomeClaims  map[string]int64
+	admissionMu        sync.Mutex
 }
 
 // ManagerConfig holds configuration for the gossip manager.
@@ -264,6 +268,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		bondChecker:        cfg.BondChecker,
 		allowlist:          newPeerAllowlist(cfg.AllowedPeers),
 		peerRates:          make(map[string]*peerRate),
+		homeRates:          make(map[string]*homeControlRate),
 		ratePerSec:         cfgRatePerSec(cfg.RatePerSec),
 		rateBurst:          cfgRateBurst(cfg.RateBurst),
 		slashTracker:       newSlashTracker(),

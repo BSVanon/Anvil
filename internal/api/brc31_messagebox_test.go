@@ -51,7 +51,7 @@ func testServerBRC31(t *testing.T) (*Server, *httptest.Server, string) {
 	return srv, ts, nodeHex
 }
 
-func buildTestServerBRC31(t *testing.T, certificateAdmission func(sdkwallet.Interface) CertificateAdmission) (*Server, string) {
+func buildTestServerBRC31(t *testing.T, certificateAdmission func(sdkwallet.Interface) CertificateAdmission, policyBuilders ...func(*messaging.Store, string) MessagingPolicy) (*Server, string) {
 	t.Helper()
 	hdir := t.TempDir()
 	hs, err := headers.NewTestStore(hdir)
@@ -84,6 +84,10 @@ func buildTestServerBRC31(t *testing.T, certificateAdmission func(sdkwallet.Inte
 	if certificateAdmission != nil {
 		admission = certificateAdmission(nodeWallet)
 	}
+	var policy MessagingPolicy
+	if len(policyBuilders) > 0 {
+		policy = policyBuilders[0](ms, nodeHex)
+	}
 
 	srv := NewServer(ServerConfig{
 		HeaderStore: hs, ProofStore: ps, EnvelopeStore: es,
@@ -95,6 +99,7 @@ func buildTestServerBRC31(t *testing.T, certificateAdmission func(sdkwallet.Inte
 		Wallet:          nodeWallet,
 		Logger:          logger,
 		CertificateGate: admission,
+		MessagingPolicy: policy,
 	})
 	if !srv.messageboxBRC31 {
 		t.Fatal("expected messageboxBRC31 to be enabled when Wallet is set")

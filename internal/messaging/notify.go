@@ -71,6 +71,11 @@ func (s *Store) SetOnStoredMessage(fn func(*StoredMessage)) {
 func (s *Store) insertAndNotify(record *StoredMessage) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if acknowledged, err := s.acknowledgedLocked(record.Recipient, record.MessageID); err != nil {
+		return false, err
+	} else if acknowledged {
+		return false, nil
+	}
 	if _, err := s.db.Get(indexKey(record.Recipient, record.MessageID), nil); err == nil {
 		return false, nil
 	} else if !errors.Is(err, leveldb.ErrNotFound) {

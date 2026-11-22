@@ -175,9 +175,23 @@ does not publish its own SHIP/SLAP advertisements. The built-in header-fallback
 peer is also suppressed; explicitly configured `[bsv] header_fallback_peers`
 still apply.
 
-These settings do not restrict BRC-33 message forwarding by themselves. Use
-`[messaging] forward_peers` for that layer; see
-[Messaging privacy](operator/messaging-privacy.md).
+`allowed_peers` bounds which identities can be reached, but it does not narrow
+message forwarding among those admitted peers. Use `[messaging] forward_peers`
+for that additional filter. When `[messaging] private_homes = true`, routing is
+stricter again: a private claim is synchronized only over the retained,
+admitted primary connection for an allowed identity. Pending inbound sockets,
+unbound sockets, duplicate losers, and bond- or allowlist-rejected sockets
+receive neither private-home control records nor message forwards. A claimed
+recipient is forwarded only to private-home-capable peers that acknowledged the
+current claim version, preferring ready named homes over the ready fallback set.
+
+Peer exchange changes how an allowed connection is discovered, not these
+admission or private-home rules. Its signed heartbeat may expose `mesh_url` to
+anyone able to read `mesh:heartbeat`; private-home claims and acknowledgements
+are never placed in heartbeat envelopes or the peer-exchange candidate table.
+Disabling `peer_exchange` stops learned advertising and dialing, while private
+home synchronization still runs on configured seeds and admitted inbound
+connections. See [Messaging privacy](operator/messaging-privacy.md).
 
 ## Overlay discovery
 

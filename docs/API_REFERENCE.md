@@ -34,11 +34,12 @@ mutual authentication is preferred and scopes callers to their own identity;
 the operator token remains a broad, node-scoped fallback.
 
 Certificate admission is optional. `[messaging] require_sender_certificate`
-gates message sends, while `[gateway] allow_registration` mounts the gateway
-registration routes described below. Enabling either switch makes the node ask
+gates message sends, `[gateway] allow_registration` mounts the gateway
+registration routes described below, and private-home writes use the same gate.
+Enabling any of those uses makes the node ask
 every BRC-31 client for a certificate during the one shared handshake for this
 host. The request applies to `/sendMessage`, `/listMessages`,
-`/acknowledgeMessage`, `/messages/session`, and the two registration endpoints.
+`/acknowledgeMessage`, `/messages/session`, `/messages/home`, and the two registration endpoints.
 A client that does not present an accepted certificate is not BRC-31
 authenticated on that node, so it cannot use any of those routes as an identity
 or mint a ticket for `/messages/subscribe`. The operator-token fallbacks remain
@@ -67,6 +68,8 @@ by that identity.
 | `/acknowledgeMessage` | POST | BRC-31 or operator token | Delete messages after receipt |
 | `/messages/session` | POST | BRC-31 | Mint a five-minute, identity-scoped SSE token |
 | `/messages/subscribe` | GET | Session ticket or operator header | Stream newly arrived messages for one message box |
+| `/messages/home` | POST | BRC-31 only | Create, renew, move, or release the caller's private homes |
+| `/messages/home` | GET | BRC-31 only | Read the caller's own current private-home claim |
 
 ### Gateway registration endpoints
 
@@ -171,6 +174,39 @@ acknowledged once. If none of the valid IDs match stored messages, the
 idempotent response remains HTTP 200 with `"acknowledged":0` (an intentional
 divergence from the canonical server).
 
+### GET and POST /messages/home
+
+These routes exist only when `[messaging] private_homes = true`. Private homes
+are an Anvil extension for closed networks, not canonical BRC-33. POST accepts
+`{"claim": RECORD}` with a maximum 16 KiB body. It requires BRC-31 mutual
+authentication as the same identity named by `record.member`; the operator
+token is never accepted. GET returns only that authenticated caller's current
+claim and never accepts a recipient override. In the route classification,
+`/messages/home`, `GET /messages/home`, and `POST /messages/home` are all
+identity-authenticated, messagebox-rate-limited, bounded-body routes, like the
+other BRC-31 messagebox endpoints.
+
+A claim response is
+`{"status":"success","homes":[...],"expiresAt":N}`. A release response is
+`{"status":"success","released":true}`. GET returns
+`{"status":"success","claim":RECORD}` or `404 ERR_NO_CLAIM`. When certgate
+is configured, POST also requires a current admission and otherwise returns
+`403 ERR_CERTIFICATE_REQUIRED`. A connected named gateway that has not
+negotiated private-home support causes `409 ERR_HOME_INCOMPATIBLE`; disconnected
+homes are checked on reconnect and are not selected until they acknowledge the
+claim version.
+
+`private_homes` requires a non-empty `[mesh] allowed_peers`. The defaults are
+`private_home_max_members = 10000` (valid range 1–1,000,000) and
+`private_home_max_ttl = 2592000` seconds (valid range 3,600–7,776,000). Claims,
+releases, revocations, acknowledgements, and capability status travel only over
+an allowed identity's retained, admitted primary mesh socket. Pending or
+unbound sockets, duplicate losers, and rejected sockets cannot dispatch these
+frames. Peer exchange may discover an allowed identity's address, but its
+heartbeat and candidate state never contain private-home records and do not
+bypass admission, capability negotiation, or per-claim acknowledgement. A
+relay-only send with no ready target returns `503 ERR_MESSAGE_UNDELIVERED`.
+
 ### Message validation, quotas, and errors
 
 - `recipient` must be a valid 33-byte compressed secp256k1 public key encoded
@@ -202,6 +238,14 @@ Malformed JSON request bodies and authentication failures retain the simpler
 | 400 | `ERR_INVALID_LIMIT` | `limit` is not a non-negative integer |
 | 400 | `ERR_MESSAGE_ID_REQUIRED` | `messageIds` is missing, null, or an empty array |
 | 400 | `ERR_INVALID_MESSAGE_ID` | `messageIds` has the wrong type, or an ID is empty, whitespace-only, or exceeds 256 bytes |
+| 400 | `ERR_INVALID_CLAIM` | Private-home record shape, bounds, policy, expiry, or signature is invalid |
+| 403 | `ERR_CLAIM_MEMBER_MISMATCH` | Authenticated identity differs from `claim.member` |
+| 403 | `ERR_CLAIM_LIMIT` | The live/revocation-protected identity cap is full for a new member |
+| 403 | `ERR_CERTIFICATE_REQUIRED` | A private-home write lacks a current certgate admission |
+| 404 | `ERR_NO_CLAIM` | The caller has no current, unexpired private-home claim |
+| 409 | `ERR_CLAIM_STALE` | `issuedAt` is not newer than the stored claim or release |
+| 409 | `ERR_HOME_INCOMPATIBLE` | A connected named gateway has not negotiated private-home support |
+| 500 | `ERR_CLAIM_STORE` | Private-home persistence failed |
 | 429 | `ERR_SENDER_QUOTA_EXCEEDED` | Sender/recipient pair quota is full |
 | 429 | `ERR_INBOX_QUOTA_EXCEEDED` | Configured recipient inbox quota is full |
 | 429 | `ERR_NODE_STORE_FULL` | Node-wide message store quota is full |
@@ -484,6 +528,8 @@ without direct-polling every node. When peer exchange has a configured or
 verified address, the payload also carries `"mesh_url": "wss://..."`. The
 envelope signature authenticates that address to its publisher identity;
 the field is omitted while advertising is off, unavailable, or unverified.
+Private-home claims and acknowledgements are never included in this heartbeat
+payload or in the peer-exchange status counters.
 
 ## Mesh nodes response shape
 

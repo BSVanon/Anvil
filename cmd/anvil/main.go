@@ -492,7 +492,7 @@ func main() {
 	}
 	certGate, stopCertGate := wireCertificateGate(cfg, verifierWallet, logger)
 	defer stopCertGate()
-	var gossipMgr *anvilgossip.Manager
+	messagingPolicy, gossipMgr := buildStartupMessagingPolicy(cfg, v3Eng, overlayDir, msgStore, certGate, logger), (*anvilgossip.Manager)(nil)
 	meshURLFn := func() string { return "" }
 	meshWanted := len(cfg.Mesh.Seeds) > 0 || cfg.Node.Listen != ""
 	if meshWanted && nodeWallet == nil {
@@ -566,6 +566,7 @@ func main() {
 				}
 			}(),
 		})
+		messagingPolicy = applyGossipMessagingPolicy(gossipMgr, cfg, messagingPolicy, msgStore)
 		defer gossipMgr.Stop()
 		meshURLFn = startMeshNetworking(context.Background(), cfg, gossipMgr)
 
@@ -574,7 +575,6 @@ func main() {
 
 	}
 
-	messagingPolicy := wireGossipMessagingPolicy(gossipMgr, cfg, v3Eng, overlayDir, msgStore) // unconditional: see its doc comment
 	// SHIP re-announce at half the TTL so entries survive on remote directories
 	if gossipMgr != nil {
 		go func() {

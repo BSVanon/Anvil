@@ -38,6 +38,11 @@ the same as no advert at all.
 | A mesh peer forwarded it to this node | Home | yes | `ttl_seconds` | only if the recipient's adverts ALSO name a host other than this node |
 | A mesh peer forwarded it to this node | Unadvertised or Elsewhere | only if `forward_copy_ttl > 0` | `forward_copy_ttl` | yes |
 
+A current private-home claim takes precedence over the public-advert rows. Each
+selected home stores the full `ttl_seconds` copy; a selected home forwards to
+the other selected homes. A gateway not selected as a home uses the non-Home
+row, but only claim-ready peers are eligible targets.
+
 The practical read: a message sits in long-term storage (`ttl_seconds`, 7 days by
 default) on a node the recipient calls home, or on the originating API node when
 the recipient is still Unadvertised. Every other node that merely sees the
@@ -127,6 +132,132 @@ relay itself fails — so it draws from the same manager-wide budget every other
 relay shares: 10 messages/second with a burst of 50.
 That is one allowance for the whole node, not per-sender or per-recipient; see "Known
 limits" below.
+
+## Private homes (closed networks)
+
+Private homes are an **Anvil extension, not canonical BRC-33**. They replace the
+public `tm_messagebox` advert only for members of a closed Anvil mesh. The claim
+never goes on chain, through an overlay, to ARC, or onto a public read. Every
+gateway listed in `[mesh] allowed_peers` can receive it through the private mesh
+protocol, whether or not that gateway is one of the selected homes.
+
+Enable the extension on every gateway in the closed network:
+
+```toml
+[mesh]
+allowed_peers = ["<gateway compressed identity key>"]
+
+[messaging]
+private_homes = true
+private_home_max_members = 10000
+private_home_max_ttl = 2592000
+```
+
+`private_homes = true` is refused when `allowed_peers` is empty. The member cap
+is 1–1,000,000 and the maximum lifetime is 3,600–7,776,000 seconds. The defaults
+are 10,000 members and 2,592,000 seconds (30 days). A trusted revocation keeps a
+non-evictable replay cutoff until every covered claim must have expired. That
+protected identity continues to occupy a member slot during this interval;
+ordinary member-signed releases cannot evict it.
+
+When certgate is configured, the member must also have a current admission. The
+claim is durably bound to that admission's revocation outpoint. Startup checks
+the outpoint and rebuilds its spend watch before mesh synchronization; a spent
+outpoint, or a strict check that cannot be completed, fails closed by replacing
+the claim with its replay cutoff. Allowed gateways are trusted operators:
+**any allowed gateway can issue that revocation cutoff**, so only mutually
+trusted operators belong in `allowed_peers`.
+
+The camelCase record is:
+
+```json
+{"kind":"claim","member":"02...","homes":["02...","03..."],"issuedAt":2000000000000,"expiresAt":2002592000,"signature":"3044..."}
+```
+
+`kind` is `claim` or `release`. A claim has one to three lowercase compressed
+gateway identity keys, strictly sorted with no duplicates. A release has
+`homes: []` and `expiresAt: 0`. `issuedAt` is Unix milliseconds and is the replay
+order; `expiresAt` is Unix seconds. The member signs these exact UTF-8 bytes:
+
+```text
+anvil-private-home/v1
+<kind>
+<member>
+<comma-joined homes>
+<issuedAt decimal>
+<expiresAt decimal>
+```
+
+This `@bsv/sdk` example matches the SDK's current `CreateSignatureArgs` and
+`CreateSignatureResult` types: `data` and returned `signature` are byte arrays,
+and `counterparty` accepts the literal `"anyone"`.
+
+```ts
+import { AuthFetch, type WalletInterface } from '@bsv/sdk'
+
+declare const wallet: WalletInterface
+declare const anvilURL: string
+
+const member = (await wallet.getPublicKey({ identityKey: true })).publicKey
+const homes = ['02...', '03...'].sort()
+const issuedAt = Date.now()
+const expiresAt = Math.floor(issuedAt / 1000) + 30 * 24 * 60 * 60
+const claim = { kind: 'claim', member, homes, issuedAt, expiresAt, signature: '' }
+const signedText = [
+  'anvil-private-home/v1', claim.kind, claim.member,
+  claim.homes.join(','), String(claim.issuedAt), String(claim.expiresAt)
+].join('\n')
+
+const { signature } = await wallet.createSignature({
+  data: [...new TextEncoder().encode(signedText)],
+  protocolID: [1, 'anvil private home'],
+  keyID: '1',
+  counterparty: 'anyone'
+})
+claim.signature = signature.map(byte => byte.toString(16).padStart(2, '0')).join('')
+
+const auth = new AuthFetch(wallet)
+await auth.fetch(`${anvilURL}/messages/home`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ claim }),
+  requireMutualAuth: true,
+  allowPayments: false
+})
+```
+
+Renew on login after half the lifetime has elapsed by signing a newer
+`issuedAt`. Changing the sorted `homes` is a move. Messages already stored at a
+dropped home remain there until their normal expiry, so drain that home before
+moving. To release, sign a newer record with `kind: "release"`, `homes: []`, and
+`expiresAt: 0`. A release leaves a replay tombstone for the configured maximum
+lifetime.
+
+Each selected home stores a full `ttl_seconds` copy. Acknowledging on one home
+clears the same IDs on the other selected homes; bounded acknowledgement
+tombstones stop a late forward from restoring them. These tombstones are paged
+to another current home when it reconnects, so an acknowledgement missed while
+offline—or by a failed immediate send—is retried before a late forward can
+restore the message.
+
+Private-home support is negotiated between gateways. A connected named gateway
+must advertise protocol support before a claim naming it is accepted, and it is
+not a forwarding target until it acknowledges applying that claim version.
+Fallback forwarding for a private claim likewise uses only admitted-primary,
+allowlisted, capable peers that applied the claim; pending or unbound sockets,
+duplicate losers, rejected sockets, and older gateways never receive the mail.
+Peer-exchange discovery does not relax this rule: a learned connection still
+passes identity, duplicate, allowlist, and bond admission, and private claims
+never appear in `mesh:heartbeat`. With `forward_copy_ttl = 0`, a send with
+no ready target returns `503 ERR_MESSAGE_UNDELIVERED` instead of reporting a
+transport-only success to an incompatible gateway. Upgrade every gateway first,
+then enable `private_homes` and begin posting claims. A move does not migrate
+stored messages.
+
+Claim/release pages, revocations, acknowledgements, and capability frames share
+a dedicated per-peer work budget. Claim pages are signature-validated outside
+the message-store writer and committed in one batch; reconnect synchronization
+streams bounded pages instead of materializing the full registry.
 
 ## Known limits
 

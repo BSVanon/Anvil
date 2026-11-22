@@ -236,10 +236,14 @@ func (s *Store) Acknowledge(recipient string, ids []string) (int, error) {
 			deleted++
 		}
 	}
+	if err := s.putAckTombstonesLocked(recipient, ids); err != nil {
+		return deleted, fmt.Errorf("store acknowledgement tombstone: %w", err)
+	}
 	return deleted, nil
 }
 
 func (s *Store) ExpireOld() int {
+	defer s.expireAckTombstones()
 	cutoff := s.now().Unix() - s.opts.TTLSeconds
 	expired := 0
 	deletionErrors := 0

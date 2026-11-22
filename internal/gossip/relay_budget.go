@@ -1,7 +1,6 @@
 package gossip
 
 import (
-	"context"
 	"sync"
 	"time"
 )
@@ -58,9 +57,8 @@ func (m *Manager) allowUnstoredRelay() bool {
 	return false
 }
 
-// relayMessageForward relays an incoming forward to every OTHER connected
-// peer that the forward_peers filter allows (nil = every peer, today's
-// behaviour). Called only for forwards onMsgForward (handlers_msg.go)
+// relayMessageForward relays an incoming forward to the same authenticated,
+// policy-compatible targets ForwardMessage uses. Called only for forwards onMsgForward (handlers_msg.go)
 // decided to relay, per the "Forward received" table; this function does not
 // itself re-check Home or any budget.
 func (m *Manager) relayMessageForward(senderPKHex string, fwd MsgForwardPayload) {
@@ -72,9 +70,5 @@ func (m *Manager) relayMessageForward(senderPKHex string, fwd MsgForwardPayload)
 	if err != nil {
 		return
 	}
-	for _, peer := range m.admittedPeers(senderPKHex) {
-		if m.peerAllowedForForward(peer.identity) {
-			_ = peer.peer.ToPeer(context.Background(), payload, peer.identityPK, 5000)
-		}
-	}
+	m.sendPayloadToTargets(payload, m.selectedForwardPeers(fwd.Message.Recipient, senderPKHex))
 }

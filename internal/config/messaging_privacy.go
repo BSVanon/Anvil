@@ -23,6 +23,43 @@ import (
 	"log"
 )
 
+type MessagingConfig struct {
+	TTLSeconds       int64 `toml:"ttl_seconds"`
+	MaxPairMessages  int64 `toml:"max_pair_messages"`
+	MaxPairBytes     int64 `toml:"max_pair_bytes"`
+	MaxStoreMessages int64 `toml:"max_store_messages"`
+	MaxStoreBytes    int64 `toml:"max_store_bytes"`
+	MaxInboxMessages int64 `toml:"max_inbox_messages"`
+	MaxInboxBytes    int64 `toml:"max_inbox_bytes"`
+	// Defaults/validation for the fields below are in this file.
+	ForwardCopyTTLSeconds *int64   `toml:"forward_copy_ttl"`
+	ForwardPeers          []string `toml:"forward_peers"`
+	OperatorReadsAllBoxes *bool    `toml:"operator_reads_all_boxes"`
+	HomeHosts             []string `toml:"home_hosts"`
+	PrivateHomes          bool     `toml:"private_homes"`
+	PrivateHomeMaxMembers int      `toml:"private_home_max_members"`
+	PrivateHomeMaxTTL     int64    `toml:"private_home_max_ttl"`
+}
+
+func defaultMessagingConfig() MessagingConfig {
+	return MessagingConfig{
+		TTLSeconds:            604800,
+		MaxPairMessages:       1000,
+		MaxPairBytes:          64 << 20,
+		MaxStoreMessages:      1000000,
+		MaxStoreBytes:         2 << 30,
+		PrivateHomeMaxMembers: 10000,
+		PrivateHomeMaxTTL:     2592000,
+	}
+}
+
+func validatePrivateHomeNetwork(cfg *MessagingConfig, mesh *MeshConfig) error {
+	if cfg.PrivateHomes && len(mesh.AllowedPeers) == 0 {
+		return fmt.Errorf("messaging.private_homes requires non-empty mesh.allowed_peers")
+	}
+	return nil
+}
+
 // defaultForwardCopyTTLSeconds is the forward_copy_ttl default: 24 hours.
 const defaultForwardCopyTTLSeconds = int64(24 * 60 * 60)
 
@@ -47,6 +84,12 @@ const defaultForwardCopyTTLSeconds = int64(24 * 60 * 60)
 // fires — previously a small ttl_seconds override could turn a
 // node relay-only with no line in the log saying so.
 func normalizeMessagingPrivacy(cfg *MessagingConfig) error {
+	if cfg.PrivateHomeMaxMembers < 1 || cfg.PrivateHomeMaxMembers > 1_000_000 {
+		return fmt.Errorf("messaging.private_home_max_members must be in 1..1000000, got %d", cfg.PrivateHomeMaxMembers)
+	}
+	if cfg.PrivateHomeMaxTTL < 3600 || cfg.PrivateHomeMaxTTL > 7_776_000 {
+		return fmt.Errorf("messaging.private_home_max_ttl must be in 3600..7776000, got %d", cfg.PrivateHomeMaxTTL)
+	}
 	if cfg.ForwardCopyTTLSeconds == nil {
 		ttl := defaultForwardCopyTTLSeconds
 		cfg.ForwardCopyTTLSeconds = &ttl

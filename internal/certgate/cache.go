@@ -2,8 +2,14 @@ package certgate
 
 import (
 	"context"
+	"encoding/hex"
+	"strings"
 	"time"
+
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
+
+const restoredAdmissionType = "private-home-restored"
 
 func (g *Gate) freshAdmission(key cacheKey, outpoint string, now time.Time) bool {
 	g.mu.Lock()
@@ -54,6 +60,74 @@ func (g *Gate) Admitted(ctx context.Context, identity string) bool {
 		return true
 	}
 	return false
+}
+
+// AdmissionOutpoint returns one current admission's revocation outpoint. An
+// empty outpoint with ok=true represents an explicitly allowed unrevocable
+// certificate.
+func (g *Gate) AdmissionOutpoint(ctx context.Context, identity string) (string, bool) {
+	identity = strings.ToLower(identity)
+	if !g.Admitted(ctx, identity) {
+		return "", false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for key, admission := range g.cache {
+		if key.identity == identity {
+			return admission.outpoint, true
+		}
+	}
+	return "", false
+}
+
+// AdmissionMatches closes the write-time race between fetching an admission
+// outpoint and persisting a gated object. If revocation removed the cache entry
+// in between, the caller must undo the write.
+func (g *Gate) AdmissionMatches(identity, outpoint string) bool {
+	identity = strings.ToLower(identity)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for key, admission := range g.cache {
+		if key.identity == identity && admission.outpoint == outpoint {
+			return true
+		}
+	}
+	return false
+}
+
+// RestoreAdmission rebuilds the revocation check/watch for a persisted claim.
+// It does not trust the stored binding as proof: revocable outpoints are checked
+// before the claim may remain active.
+func (g *Gate) RestoreAdmission(ctx context.Context, identity, outpoint string) error {
+	identity = strings.ToLower(identity)
+	raw, err := hex.DecodeString(identity)
+	if err != nil {
+		return ErrRefused
+	}
+	if _, err := ec.ParsePubKey(raw); err != nil {
+		return ErrRefused
+	}
+	key := cacheKey{identity: identity, typ: restoredAdmissionType}
+	if outpoint == "" {
+		g.remember(key, "", g.now().Add(g.recheck))
+		return nil
+	}
+	spent, _, err := g.watch.Check(ctx, outpoint)
+	expires := g.now().Add(g.recheck)
+	if err != nil {
+		g.checkError.Add(1)
+		if g.strict {
+			return err
+		}
+		expires = g.now().Add(min(g.recheck, lazyRetry))
+	} else if spent {
+		return ErrRevoked
+	}
+	if err := g.watch.Watch(outpoint, watchOwner); err != nil {
+		return err
+	}
+	g.remember(key, outpoint, expires)
+	return nil
 }
 
 func (g *Gate) remember(key cacheKey, outpoint string, expires time.Time) {

@@ -74,13 +74,15 @@ type MessagingPolicy struct {
 	Home                  messaging.HomeResolver
 	ForwardCopyTTLSeconds *int64
 	ForwardPeers          ForwardPeerFilter
+	PrivateHomes          *messaging.PrivateHomeStore
 }
 
 // SetMessagingPolicy wires the Home/forward/forward_peers policy into the manager.
-// Mirrors SetMsgStore: called once during startup wiring, before the
-// manager handles concurrent traffic, so it takes no lock.
+// Production calls it before mesh startup. ResyncPrivateHomes also repairs a
+// missed announcement if a caller installs it after a peer was admitted.
 func (m *Manager) SetMessagingPolicy(p MessagingPolicy) {
 	m.messagingPolicy = p
+	m.ResyncPrivateHomes()
 }
 
 func (m *Manager) homeResolverOrDefault() messaging.HomeResolver {
