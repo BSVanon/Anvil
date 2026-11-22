@@ -175,12 +175,27 @@ func (s *Store) initializeDurableIndexes(migrationStarted func(string) error) er
 }
 
 func (s *Store) writeDurable(env *Envelope, data []byte) error {
+	s.durableMu.Lock()
+	defer s.durableMu.Unlock()
+	return s.writeDurableLocked(env, data)
+}
+
+func (s *Store) writeDurableLocked(env *Envelope, data []byte) error {
 	primary := durablePrimaryKey(env.Topic, env.Key())
 	var old *Envelope
 	if prior, err := s.db.Get(primary, nil); err == nil {
 		old, _ = UnmarshalEnvelope(prior)
 	} else if !errors.Is(err, leveldb.ErrNotFound) {
 		return err
+	}
+	// Durable keys omit timestamps. A late catalog entry with an unchanged
+	// payload therefore collides with the newer entry's primary key and would
+	// destroy it before DeduplicateDurable could compare the two. Preserve the
+	// existing value unless the incoming catalog entry wins the same ordering
+	// used by dedup (newer timestamp, then lower stable ID).
+	if old != nil && env.Topic == "anvil:catalog" && strings.EqualFold(old.Pubkey, env.Pubkey) &&
+		!envelopeBefore(env, old) {
+		return nil
 	}
 
 	batch := new(leveldb.Batch)
@@ -195,6 +210,22 @@ func (s *Store) writeDurable(env *Envelope, data []byte) error {
 }
 
 func (s *Store) deleteDurable(primary []byte, env *Envelope) error {
+	s.durableMu.Lock()
+	defer s.durableMu.Unlock()
+	data, err := s.db.Get(primary, nil)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if stored, unmarshalErr := UnmarshalEnvelope(data); unmarshalErr == nil {
+		env = stored
+	}
+	return s.deleteDurableLocked(primary, env)
+}
+
+func (s *Store) deleteDurableLocked(primary []byte, env *Envelope) error {
 	batch := new(leveldb.Batch)
 	batch.Delete(primary)
 	s.addIndexDeletes(batch, env)

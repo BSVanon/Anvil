@@ -149,6 +149,7 @@ func (m *Manager) selfCheckMeshURL(parent context.Context, endpoint string) erro
 	if err != nil {
 		return err
 	}
+	m.attachTransport(transport)
 	defer transport.Close()
 	peer := auth.NewPeer(&auth.PeerOptions{Wallet: m.wallet, Transport: transport})
 	if err := peer.Start(); err != nil {

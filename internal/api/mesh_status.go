@@ -82,6 +82,7 @@ func (s *Server) handleMeshStatus(w http.ResponseWriter, r *http.Request) {
 		result["activity"] = map[string]interface{}{
 			"envelopes_received": activity.EnvsReceived,
 			"envelopes_sent":     activity.EnvsSent,
+			"send_dropped":       s.gossipMgr.SendDropped(),
 		}
 		result["peer_exchange"] = s.gossipMgr.PeerExchangeStatus()
 	} else {

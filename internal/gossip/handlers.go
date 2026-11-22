@@ -121,9 +121,8 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 	if m.store != nil {
 		if err := m.store.Ingest(env); err != nil {
 			m.logger.Warn("envelope store error", "error", err)
-		}
-		// Catalog dedup: one entry per publisher, latest wins.
-		if env.Topic == "anvil:catalog" && env.Durable {
+		} else if env.Topic == "anvil:catalog" && env.Durable {
+			// Catalog dedup: one entry per publisher, latest wins.
 			m.store.DeduplicateDurable(env)
 		}
 	}
@@ -297,7 +296,9 @@ func (m *Manager) onDataResponse(senderPKHex string, senderPK *ec.PublicKey, raw
 		m.observePeerAdvert(env)
 		lastValid = env
 		if m.store != nil {
-			_ = m.store.Ingest(env)
+			if err := m.store.Ingest(env); err == nil && env.Topic == "anvil:catalog" && env.Durable {
+				m.store.DeduplicateDurable(env)
+			}
 		}
 	}
 
@@ -357,7 +358,7 @@ func (m *Manager) forwardToInterested(senderPK string, topic string, rawEnvelope
 		for _, prefix := range prefixes {
 			if strings.HasPrefix(topic, prefix) {
 				peers = append(peers, admittedSendPeer{
-					identity: pkHex, peer: peer.Peer, identityPK: peer.IdentityPK,
+					identity: pkHex, peer: peer.Peer, identityPK: peer.IdentityPK, transport: peer.transport,
 				})
 				break
 			}
@@ -365,6 +366,10 @@ func (m *Manager) forwardToInterested(senderPK string, topic string, rawEnvelope
 	}
 	m.mu.RUnlock()
 	for _, peer := range peers {
+		if peer.transport != nil && peer.transport.Backlogged() {
+			m.IncrSendDropped()
+			continue
+		}
 		_ = peer.peer.ToPeer(context.Background(), encoded, peer.identityPK, 5000)
 		m.IncrSent()
 	}

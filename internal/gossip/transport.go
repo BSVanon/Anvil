@@ -102,10 +102,26 @@ type ServerWSTransport struct {
 	mu         sync.Mutex
 	onDataFunc func(context.Context, *auth.AuthMessage) error
 	onFrame    func()
-	done       chan struct{} // closed when the read loop exits
+	done       chan struct{} // closed when the connection is lost
 
 	authorized chan struct{} // closed by MarkAuthorized
 	authOnce   sync.Once
+
+	writeMu        sync.Mutex
+	writeCond      *sync.Cond
+	writeQueue     []transportFrame
+	queuedBytes    int
+	closed         bool
+	closeReason    string
+	finishOnce     sync.Once
+	doneOnce       sync.Once
+	writerDone     chan struct{}
+	queueMaxFrames int
+	queueMaxBytes  int
+	queueSoftBytes int
+	writeTimeout   time.Duration
+	minWriteRate   int
+	queueBudget    *transportQueueBudget
 }
 
 // NewServerWSTransport wraps an accepted or dialled WebSocket connection,
@@ -115,10 +131,31 @@ func NewServerWSTransport(conn *websocket.Conn) *ServerWSTransport {
 	if conn != nil {
 		conn.MaxPayloadBytes = preAuthMaxFrameBytes
 	}
-	return &ServerWSTransport{conn: conn, done: make(chan struct{}), authorized: make(chan struct{})}
+	s := &ServerWSTransport{
+		conn:           conn,
+		done:           make(chan struct{}),
+		authorized:     make(chan struct{}),
+		writerDone:     make(chan struct{}),
+		queueMaxFrames: transportSendQueueFrames,
+		queueMaxBytes:  transportSendQueueBytes,
+		queueSoftBytes: transportSoftQueueBytes,
+		writeTimeout:   transportWriteTimeout,
+		minWriteRate:   transportMinWriteRate,
+	}
+	s.writeCond = sync.NewCond(&s.writeMu)
+	if conn == nil {
+		s.writeMu.Lock()
+		s.markClosedLocked(transportCloseOwner)
+		s.writeMu.Unlock()
+		close(s.writerDone)
+		s.closeDone()
+	} else {
+		go s.writeLoop()
+	}
+	return s
 }
 
-// Done returns a channel that is closed when the connection is lost.
+// Done fires at close, a moment before the read loop exits.
 func (s *ServerWSTransport) Done() <-chan struct{} { return s.done }
 
 // MarkAuthorized signals that this connection's remote peer has completed
@@ -159,16 +196,26 @@ func (s *ServerWSTransport) RemoteAddr() string {
 	return addr.String()
 }
 
-// Close closes the underlying WebSocket connection, causing StartReceive to exit.
-func (s *ServerWSTransport) Close() error { return s.conn.Close() }
+// Close closes the underlying WebSocket connection, causing StartReceive and
+// the writer to exit. It is safe to call more than once.
+func (s *ServerWSTransport) Close() error {
+	return s.closeWithReason(transportCloseOwner)
+}
 
 // Send implements auth.Transport.Send.
 func (s *ServerWSTransport) Send(_ context.Context, message *auth.AuthMessage) error {
+	s.writeMu.Lock()
+	if s.closed {
+		reason := s.closeReason
+		s.writeMu.Unlock()
+		return fmt.Errorf("%w: %s", errTransportClosed, reason)
+	}
+	s.writeMu.Unlock()
 	data, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
-	return websocket.Message.Send(s.conn, data)
+	return s.enqueueFrame(data)
 }
 
 // OnData implements auth.Transport.OnData.
@@ -196,7 +243,11 @@ func (s *ServerWSTransport) GetRegisteredOnData() (func(context.Context, *auth.A
 // OnData callback. Blocks until the connection closes or errors.
 // When the connection is lost, the done channel is closed.
 func (s *ServerWSTransport) StartReceive() {
-	defer close(s.done)
+	if s.conn == nil {
+		s.closeWithReason(transportCloseOwner)
+		return
+	}
+	defer s.closeDone()
 	raised := false
 	for {
 		if !raised {
@@ -213,6 +264,7 @@ func (s *ServerWSTransport) StartReceive() {
 				raised = true
 				continue
 			}
+			s.closeWithReason(transportCloseRemote)
 			return // connection closed
 		}
 		s.mu.Lock()

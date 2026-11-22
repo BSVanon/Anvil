@@ -104,6 +104,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			"dedup_evictions":    s.gossipMgr.DedupEvictions(),
 			"duplicate_arrivals": s.gossipMgr.DuplicateArrivals(),
 			"catchup_truncated":  s.gossipMgr.CatchupTruncated(),
+			"send_dropped":       s.gossipMgr.SendDropped(),
 		}
 		if recent := s.gossipMgr.RecentConnections(10); len(recent) > 0 {
 			mesh["recent_connections"] = recent

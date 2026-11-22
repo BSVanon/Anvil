@@ -29,6 +29,7 @@ func (m *Manager) connectPeer(ctx context.Context, endpoint string, opts connect
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("websocket transport: %w", err)
 	}
+	m.attachTransport(transport)
 	peer := auth.NewPeer(&auth.PeerOptions{Wallet: m.wallet, Transport: transport})
 	connKey, connectionID := m.nextConnection("outbound")
 	connectedAt := time.Now()
@@ -40,6 +41,7 @@ func (m *Manager) connectPeer(ctx context.Context, endpoint string, opts connect
 		origKey:      connKey,
 		connectionID: connectionID,
 		closeFunc:    transport.Close,
+		transport:    transport,
 		exchange:     opts.exchange,
 		seed:         opts.seed,
 	}

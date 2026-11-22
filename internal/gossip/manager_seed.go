@@ -75,9 +75,13 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 		m.logger.Info("seed peer connected", "endpoint", endpoint, "peer", truncate(identity))
 		select {
 		case <-transport.Done():
-			m.removeMeshPeerWithReason(mp, "transport_closed")
+			reason := transport.CloseReason()
+			if reason == "" {
+				reason = "transport_closed"
+			}
+			m.removeMeshPeerWithReason(mp, reason)
 			forceEndpointRedial = m.needsCompatibilityRedial(mp, knownIdentity)
-			m.logger.Warn("seed peer disconnected, reconnecting", "endpoint", endpoint, "retry_in", interval)
+			m.logger.Warn("seed peer disconnected, reconnecting", "endpoint", endpoint, "reason", reason, "retry_in", interval)
 		case <-ctx.Done():
 			m.removeMeshPeerWithReason(mp, "context_cancelled")
 			return

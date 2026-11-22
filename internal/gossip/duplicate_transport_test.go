@@ -54,9 +54,9 @@ func TestSilentSameDirectionConnectionIsReplaced(t *testing.T) {
 		primary := peerForIdentity(hub, remoteIdentity)
 		return primary != nil && primary != oldPrimary && peerClosedWith(hub, oldPrimary, "duplicate_connection")
 	})
-	if !hasDisconnectReason(hub, remoteIdentity, "duplicate_connection") {
-		t.Fatal("replaced connection did not record duplicate_connection")
-	}
+	waitForMesh(t, time.Second, func() bool {
+		return hasDisconnectReason(hub, remoteIdentity, "duplicate_connection")
+	})
 	waitForMesh(t, time.Second, func() bool { return len(replacement.Interests()[hubIdentity]) > 0 })
 
 	broadcastTestEnvelope(t, replacement, remoteKey, "replacement-to-hub")

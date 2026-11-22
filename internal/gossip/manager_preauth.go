@@ -99,8 +99,12 @@ func (m *Manager) MeshHandler() http.Handler {
 			case <-transport.Done():
 				release()
 			}
-			m.removePeerWithReason(peerKey, "transport_closed")
-			m.logger.Info("inbound peer disconnected, cleaned up", "key", truncate(peerKey))
+			reason := transport.CloseReason()
+			if reason == "" {
+				reason = "transport_closed"
+			}
+			m.removePeerWithReason(peerKey, reason)
+			m.logger.Info("inbound peer disconnected, cleaned up", "key", truncate(peerKey), "reason", reason)
 		}).ServeHTTP(w, r)
 	})
 }

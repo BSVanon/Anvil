@@ -139,6 +139,7 @@ type Manager struct {
 	dedupEvictions    atomic.Int64
 	duplicateArrivals atomic.Int64
 	catchupTruncated  atomic.Int64
+	sendDropped       atomic.Int64
 
 	// unauthConns counts inbound MeshHandler connections currently open
 	// that have not yet reached MarkAuthorized (see reserveUnauthConn).
@@ -150,6 +151,7 @@ type Manager struct {
 	connSeq       atomic.Uint64
 	localIdentity string
 	pex           *peerExchangeState
+	transports    managerTransportState
 
 	// Duplicate convergence is enabled per remote identity only after that
 	// peer advertises exact-connection removal support. Keeping this state
@@ -194,6 +196,7 @@ type MeshPeer struct {
 	origKey      string       // process-unique connection key (stable across identity re-keying)
 	connectionID uint64       // process-unique creation sequence for identity-removal barriers
 	closeFunc    func() error // closes the underlying transport connection
+	transport    *ServerWSTransport
 	exchange     bool         // opened by the peer-exchange dial loop
 	seed         bool         // opened from a configured [mesh] seeds entry
 	lastFrameAt  atomic.Int64 // Unix nanoseconds; updated by the receive loop
@@ -338,60 +341,4 @@ func (m *Manager) BroadcastEnvelope(env *envelope.Envelope) {
 		return
 	}
 	m.forwardToInterested("", env.Topic, raw)
-}
-
-// AcceptPeer registers an inbound peer using a server-side transport.
-// Called by the mesh listener for each accepted WebSocket connection.
-// Returns the peer key used in the peers map and the transport's done channel.
-func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err error) {
-	peer := auth.NewPeer(&auth.PeerOptions{
-		Wallet:    m.wallet,
-		Transport: transport,
-	})
-
-	connKey, connectionID := m.nextConnection("inbound")
-	connectedAt := time.Now()
-	mp := &MeshPeer{
-		Peer:         peer,
-		Endpoint:     transport.RemoteAddr(),
-		Direction:    "inbound",
-		ConnectedAt:  connectedAt,
-		origKey:      connKey,
-		connectionID: connectionID,
-		closeFunc:    transport.Close,
-	}
-	transport.setOnFrame(func() { mp.lastFrameAt.Store(time.Now().UnixNano()) })
-	peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
-		return m.handlePeerMessage(ctx, mp, transport, senderPK, payload)
-	})
-
-	if err := peer.Start(); err != nil {
-		return "", fmt.Errorf("peer start: %w", err)
-	}
-
-	m.mu.Lock()
-	mp.lastFrameAt.Store(time.Now().UnixNano())
-	m.peers[connKey] = mp
-	peerCount := len(m.peers)
-	m.mu.Unlock()
-
-	m.logger.Info("mesh peer accepted (inbound)")
-	m.recordConnectionEvent(ConnectionEvent{
-		Direction: "inbound",
-		Event:     "connected",
-		Endpoint:  transport.RemoteAddr(),
-		PeerCount: peerCount,
-	})
-	m.logLiveDataReady(peerCount)
-
-	// Start the read loop in a goroutine; when it exits the done channel closes
-	go transport.StartReceive()
-
-	// No unconditional announce here: AcceptPeer can't gate the handshake
-	// itself (BRC-31 is mutual — we only learn the dialer's identity by
-	// completing it), so the earliest point this side can check
-	// allowed_peers is reactively, inside the ListenForGeneralMessages
-	// callback above, once the dialer sends its own first message. That
-	// callback replies with our announces only after that check passes.
-	return connKey, nil
 }

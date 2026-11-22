@@ -3,6 +3,7 @@ package envelope
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,7 @@ type Store struct {
 	maxDurableSize   int         // max payload size in bytes for durable envelopes
 	maxDurableStoreB int64       // max total durable store size in bytes (0 = unlimited)
 	durableFull      atomic.Bool // set by CheckDurableCapacity, checked on write
+	durableMu        sync.Mutex  // serializes LevelDB writes with cached durable counts
 }
 
 // NewStore opens or creates an envelope store.
@@ -183,53 +185,49 @@ func (s *Store) Delete(topic, key string) (bool, error) {
 // DeduplicateDurable removes older durable envelopes that share the same
 // topic and publisher pubkey as the given envelope, keeping only the newest.
 // Used for topics like anvil:catalog where one entry per publisher should win.
+// Equal timestamps keep the entry with the lexicographically lower stable
+// envelope order ID; an identical ID keeps the value already stored.
 // Returns the number of entries removed.
 func (s *Store) DeduplicateDurable(env *Envelope) int {
-	prefix := append(append([]byte{}, prefixDurable...), []byte(env.Topic+":")...)
-	currentKey := append(append([]byte{}, prefixDurable...), []byte(env.Topic+":"+env.Key())...)
+	s.durableMu.Lock()
+	defer s.durableMu.Unlock()
 
-	var toDelete [][]byte
-	newerExists := false
+	prefix := append(append([]byte{}, prefixDurable...), []byte(env.Topic+":")...)
+
+	type candidate struct {
+		key []byte
+		env *Envelope
+	}
+	var candidates []candidate
+	winner := -1
 	iter := s.db.NewIterator(util.BytesPrefix(prefix), nil)
 	for iter.Next() {
-		k := iter.Key()
-		if string(k) == string(currentKey) {
-			continue // skip self
-		}
-		old, err := UnmarshalEnvelope(iter.Value())
+		stored, err := UnmarshalEnvelope(iter.Value())
 		if err != nil {
 			continue
 		}
-		if old.Pubkey != env.Pubkey {
+		if !strings.EqualFold(stored.Pubkey, env.Pubkey) {
 			continue
 		}
-		if old.Timestamp > env.Timestamp {
-			// A newer entry already exists — the incoming envelope is stale.
-			newerExists = true
-			break
+		key := append([]byte(nil), iter.Key()...)
+		candidates = append(candidates, candidate{key: key, env: stored})
+		index := len(candidates) - 1
+		if winner < 0 || envelopeBefore(stored, candidates[winner].env) {
+			winner = index
 		}
-		keyCopy := make([]byte, len(k))
-		copy(keyCopy, k)
-		toDelete = append(toDelete, keyCopy)
 	}
 	iter.Release()
 
-	if newerExists {
-		// Stale envelope arrived late. Remove it instead of the newer one.
-		if data, err := s.db.Get(currentKey, nil); err == nil {
-			current, _ := UnmarshalEnvelope(data)
-			_ = s.deleteDurable(currentKey, current)
+	deleted := 0
+	for index, candidate := range candidates {
+		if index == winner {
+			continue
 		}
-		return 0
-	}
-
-	for _, k := range toDelete {
-		if data, err := s.db.Get(k, nil); err == nil {
-			old, _ := UnmarshalEnvelope(data)
-			_ = s.deleteDurable(k, old)
+		if err := s.deleteDurableLocked(candidate.key, candidate.env); err == nil {
+			deleted++
 		}
 	}
-	return len(toDelete)
+	return deleted
 }
 
 // StoreEphemeralDirect stores an envelope without validation. For testing only.

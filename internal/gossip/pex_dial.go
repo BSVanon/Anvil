@@ -107,7 +107,11 @@ func (m *Manager) dialExchangeCandidate(ctx context.Context, candidate *peerCand
 	case <-ctx.Done():
 		m.removeMeshPeerWithReason(mp, "context_cancelled")
 	case <-transport.Done():
-		m.removeMeshPeerWithReason(mp, "transport_closed")
+		reason := transport.CloseReason()
+		if reason == "" {
+			reason = "transport_closed"
+		}
+		m.removeMeshPeerWithReason(mp, reason)
 	}
 	m.pex.mu.Lock()
 	if current := m.pex.candidates[candidate.Identity]; current != nil {

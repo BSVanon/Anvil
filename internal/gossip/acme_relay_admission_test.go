@@ -211,7 +211,15 @@ func TestBroadcastACMEChallenge_AllowedPeerReceivesEntry(t *testing.T) {
 	if err := ally.Start(); err != nil {
 		t.Fatalf("ally start: %v", err)
 	}
-	go transport.StartReceive()
+	receiveDone := make(chan struct{})
+	go func() {
+		transport.StartReceive()
+		close(receiveDone)
+	}()
+	defer func() {
+		_ = transport.Close()
+		<-receiveDone
+	}()
 
 	if err := ally.ToPeer(t.Context(), []byte("hello"), nil, 5000); err != nil {
 		t.Fatalf("ally ToPeer: %v", err)

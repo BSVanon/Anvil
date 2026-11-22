@@ -242,6 +242,7 @@ func (m *Manager) closeDetachedPeer(peer *MeshPeer, reason string, peerCount int
 	if peer == nil {
 		return
 	}
+	m.warnTransportClose(peer, reason)
 	event := m.disconnectEventForPeer(peer, reason, peerCount)
 	if peer.Peer != nil {
 		_ = peer.Peer.Stop()

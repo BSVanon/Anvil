@@ -14,6 +14,7 @@ type admittedSendPeer struct {
 	identity   string
 	peer       *auth.Peer
 	identityPK *ec.PublicKey
+	transport  *ServerWSTransport
 }
 
 func (m *Manager) admitPeer(target *MeshPeer, bondSats int) bool {
@@ -40,7 +41,9 @@ func (m *Manager) admittedPeer(identity string) (admittedSendPeer, bool) {
 		m.mu.RUnlock()
 		return admittedSendPeer{}, false
 	}
-	target := admittedSendPeer{identity: identity, peer: peer.Peer, identityPK: peer.IdentityPK}
+	target := admittedSendPeer{
+		identity: identity, peer: peer.Peer, identityPK: peer.IdentityPK, transport: peer.transport,
+	}
 	m.mu.RUnlock()
 	return target, true
 }
@@ -53,7 +56,7 @@ func (m *Manager) admittedPeers(excludeIdentity string) []admittedSendPeer {
 			continue
 		}
 		peers = append(peers, admittedSendPeer{
-			identity: identity, peer: peer.Peer, identityPK: peer.IdentityPK,
+			identity: identity, peer: peer.Peer, identityPK: peer.IdentityPK, transport: peer.transport,
 		})
 	}
 	m.mu.RUnlock()

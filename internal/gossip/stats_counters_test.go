@@ -1,7 +1,6 @@
 package gossip
 
-// Unit tests for the three mesh health counters exposed on GET /stats
-// (dedup_evictions, duplicate_arrivals, catchup_truncated). Each test
+// Unit tests for mesh health counters exposed on GET /stats. Each test
 // drives the exact condition that increments its counter.
 
 import (
