@@ -31,6 +31,10 @@ import (
 // apiURL is the same `http://127.0.0.1:<APIListen>` cmdDoctor already
 // built for every other live check.
 func doctorGatewayChecks(cfg *config.Config, apiURL string, txtStatus func(ctx context.Context, domain string) string, portBound func(addr string) bool) int {
+	return doctorGatewayChecksWithAPI(cfg, apiURL, txtStatus, portBound, true)
+}
+
+func doctorGatewayChecksWithAPI(cfg *config.Config, apiURL string, txtStatus func(ctx context.Context, domain string) string, portBound func(addr string) bool, apiAvailable bool) int {
 	issues := 0
 
 	mode := cfg.Node.Mode
@@ -68,7 +72,7 @@ func doctorGatewayChecks(cfg *config.Config, apiURL string, txtStatus func(ctx c
 		}
 	}
 
-	issues += doctorGatewayTLSChecks(cfg, apiURL, entries, portBound)
+	issues += doctorGatewayTLSChecksWithAPI(cfg, apiURL, entries, portBound, apiAvailable)
 
 	if cfg.Node.PublicURL != "" {
 		warn("[node] public_url is set on a gateway node — this registers a public address; a closed gateway should leave it empty")
@@ -99,6 +103,10 @@ func doctorGatewayChecks(cfg *config.Config, apiURL string, txtStatus func(ctx c
 // gateway with no mesh peer connected right now may simply be between
 // connections).
 func doctorGatewayTLSChecks(cfg *config.Config, apiURL string, entries []sitesfile.Entry, portBound func(addr string) bool) int {
+	return doctorGatewayTLSChecksWithAPI(cfg, apiURL, entries, portBound, true)
+}
+
+func doctorGatewayTLSChecksWithAPI(cfg *config.Config, apiURL string, entries []sitesfile.Entry, portBound func(addr string) bool, apiAvailable bool) int {
 	issues := 0
 
 	for _, l := range []struct{ label, addr string }{
@@ -157,7 +165,7 @@ func doctorGatewayTLSChecks(cfg *config.Config, apiURL string, entries []sitesfi
 		}
 	}
 
-	if len(cfg.Mesh.AllowedPeers) > 0 {
+	if len(cfg.Mesh.AllowedPeers) > 0 && apiAvailable {
 		if meshResp := httpGet(apiURL + "/mesh/status"); meshResp != nil {
 			if mesh, ok := meshResp["mesh"].(map[string]interface{}); ok {
 				if peerCount, ok := mesh["peers"].(float64); ok && int(peerCount) > 0 {
@@ -167,6 +175,8 @@ func doctorGatewayTLSChecks(cfg *config.Config, apiURL string, entries []sitesfi
 				}
 			}
 		}
+	} else if len(cfg.Mesh.AllowedPeers) > 0 {
+		skip("ACME challenge replication status: API not answering")
 	}
 
 	return issues

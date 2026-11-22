@@ -107,6 +107,7 @@ or API listener, so use `anvil doctor` to catch an unavailable gateway port.
 TXT answer, ports 80 and 443, the terms switch, cached certificate state and
 cache-directory ownership/mode, the closed-network settings, and whether an
 allowed peer is connected for challenge replication.
+When its local API is unavailable, it reports that failure once and skips only the checks that require the API.
 
 ## Fixed rates
 

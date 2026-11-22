@@ -2,6 +2,22 @@ package main
 
 import "github.com/BSVanon/Anvil/internal/config"
 
+func doctorX402DiscoveryCheck(cfg *config.Config, apiURL string) int {
+	x402Resp := httpGet(apiURL + "/.well-known/x402")
+	if cfg.API.PaymentSatoshis > 0 {
+		if x402Resp != nil {
+			pass("x402 discovery responding")
+			return 0
+		}
+		fail("x402 discovery not responding (payment_satoshis=%d but /.well-known/x402 returns 404)", cfg.API.PaymentSatoshis)
+		return 1
+	}
+	if x402Resp == nil {
+		pass("x402 disabled (payment_satoshis=0)")
+	}
+	return 0
+}
+
 // doctorPaymentPathCheck reports whether configured route prices are published
 // by the live x402 discovery document and whether ARC is enabled for the
 // production payment paths.
