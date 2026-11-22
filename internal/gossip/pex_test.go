@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
@@ -60,6 +61,39 @@ func TestExchangeControlHookRefusesLoopbackUnlessTestSwitchIsSet(t *testing.T) {
 	allowLoopbackExchangeDial.Store(true)
 	if err := exchangeDialControl("tcp", "127.0.0.1:8333", nil); err != nil {
 		t.Fatalf("test loopback switch did not allow loopback: %v", err)
+	}
+}
+
+func TestOpenExchangeDialRefusesLoopbackBeforeConnecting(t *testing.T) {
+	allowLoopbackExchangeDial.Store(false)
+	t.Cleanup(func() { allowLoopbackExchangeDial.Store(false) })
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	var accepted atomic.Int32
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			accepted.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	_, err = newWSTransportAdapter("ws://"+listener.Addr().String(), time.Second, true)
+	if err == nil || !strings.Contains(err.Error(), "peer exchange refused non-public address") {
+		t.Fatalf("exchange dial error = %v, want non-public address refusal", err)
+	}
+	_ = listener.Close()
+	<-acceptDone
+	if got := accepted.Load(); got != 0 {
+		t.Fatalf("loopback listener accepted %d connections, want zero", got)
 	}
 }
 
@@ -175,12 +209,21 @@ func TestExchangeSelectionHonorsAllowlistSeedAndCaps(t *testing.T) {
 	if len(selected) != 1 || selected[0].Identity != "02allowed" {
 		t.Fatalf("selected %+v", selected)
 	}
-	var closed atomic.Bool
+	m.pex.mu.Lock()
+	m.pex.candidates[selected[0].Identity].Dialing = false
+	m.pex.mu.Unlock()
 	liveKey := mustPublicKey(t)
 	liveIdentity := fmt.Sprintf("%x", liveKey.Compressed())
-	m.peers[liveIdentity] = &MeshPeer{IdentityPK: liveKey, admitted: true, exchange: true, closeFunc: func() error { closed.Store(true); return nil }}
+	m.peers[liveIdentity] = &MeshPeer{Peer: &auth.Peer{}, IdentityPK: liveKey, admitted: true, exchange: true}
 	if got := m.exchangeCandidates(now); len(got) != 0 {
-		t.Fatalf("selected %d candidates above cap", len(got))
+		t.Fatalf("selected %d candidates with live exchange at cap", len(got))
+	}
+	delete(m.peers, liveIdentity)
+	m.pex.mu.Lock()
+	m.pex.candidates["02allowed"].Dialing = true
+	m.pex.mu.Unlock()
+	if got := m.exchangeCandidates(now); len(got) != 0 {
+		t.Fatalf("selected %d candidates with exchange dial in flight at cap", len(got))
 	}
 
 	open := NewManager(ManagerConfig{PeerExchange: true, MaxExchangePeers: 8})

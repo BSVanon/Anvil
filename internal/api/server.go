@@ -239,19 +239,7 @@ func NewServer(cfg ServerConfig) *Server {
 	if s.msgStore != nil {
 		s.msgStore.SetOnStoredMessage(s.NotifyMessage)
 	}
-	if s.messagingPolicy.PrivateHomes != nil && s.certificateGate.Gate != nil {
-		s.certificateGate.Gate.OnRevoke("private_homes", func(identity string) {
-			before, changed, err := s.messagingPolicy.PrivateHomes.RevokeMember(identity)
-			if err != nil {
-				s.logger.Error("private home revocation failed", "error", err)
-				return
-			}
-			if changed && s.gossipMgr != nil {
-				s.gossipMgr.BroadcastHomeRevoke(identity, before)
-			}
-		})
-		s.reconcilePrivateHomeAdmissions()
-	}
+	s.wirePrivateHomeRevocations()
 	s.routes()
 	return s
 }

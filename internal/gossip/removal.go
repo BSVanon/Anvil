@@ -22,6 +22,7 @@ func (m *Manager) removePeerWithReason(origKey, reason string) {
 			return
 		}
 		exact.closed = true
+		exact.closeReason = reason
 		m.deletePeerPointerLocked(exact, "")
 		identity := peerIdentity(exact)
 		m.cleanupIdentityLocked(identity)
@@ -46,6 +47,7 @@ func (m *Manager) removePeerWithReason(origKey, reason string) {
 	for peer := range unique {
 		m.deletePeerPointerLocked(peer, "")
 		peer.closed = true
+		peer.closeReason = reason
 	}
 	delete(m.interests, origKey)
 	delete(m.duplicateSafePeers, origKey)

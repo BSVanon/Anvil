@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/certgate"
 	"github.com/bsv-blockchain/go-bsv-middleware/pkg/middleware"
 	"github.com/bsv-blockchain/go-sdk/auth"
 )
@@ -144,9 +145,12 @@ func (s *Server) registerMessageboxLegacy() {
 // the sentinel itself rather than retyped, so brc31ReplayNonceStatus keeps
 // matching it even if the wording ever changes upstream.
 var replayedNonceMarker = []byte(auth.ErrReplayedNonce.Error())
+var certificateWatchUnavailableMarker = []byte(certgate.ErrWatchUnavailable.Error())
 
 // brc31ReplayNonceStatus wraps the BRC-31 auth handler so a replayed nonce
-// answers 401 instead of go-bsv-middleware's default 500.
+// answers 401 instead of go-bsv-middleware's default 500. It also gives a
+// private-home POST a coded 503 when certificate admission cannot retain its
+// revocation watch.
 //
 // go-bsv-middleware v0.13.3 maps errors to HTTP statuses once, in
 // authentication.(*Middleware).toHTTPError (pkg/internal/authentication/
@@ -173,7 +177,7 @@ func brc31ReplayNonceStatus(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &replayStatusBuffer{ResponseWriter: w}
 		next.ServeHTTP(rec, r)
-		rec.flush()
+		rec.flush(r)
 	})
 }
 
@@ -197,9 +201,14 @@ func (r *replayStatusBuffer) Write(b []byte) (int, error) {
 	return r.body.Write(b)
 }
 
-func (r *replayStatusBuffer) flush() {
+func (r *replayStatusBuffer) flush(request *http.Request) {
 	if r.status == http.StatusInternalServerError && bytes.Contains(r.body.Bytes(), replayedNonceMarker) {
 		writeCodedError(r.ResponseWriter, http.StatusUnauthorized, "ERR_REPLAYED_NONCE", "This request's nonce has already been used.")
+		return
+	}
+	if r.status == http.StatusInternalServerError && request.Method == http.MethodPost &&
+		request.URL.Path == "/messages/home" && bytes.Contains(r.body.Bytes(), certificateWatchUnavailableMarker) {
+		writeCodedError(r.ResponseWriter, http.StatusServiceUnavailable, "ERR_CERTIFICATE_WATCH_UNAVAILABLE", "The certificate revocation watch is unavailable.")
 		return
 	}
 	status := r.status

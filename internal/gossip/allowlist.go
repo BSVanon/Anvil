@@ -158,7 +158,7 @@ func (m *Manager) establishAndAuthorizePeer(ctx context.Context, peer *auth.Peer
 			return pkHex, fmt.Errorf("%w: %v", errBondRejected, err)
 		}
 	}
-	if _, bindErr := m.bindPeerIdentity(mp, senderPK); bindErr != nil {
+	if _, bindErr := m.bindPeerIdentity(mp, senderPK, true); bindErr != nil {
 		return pkHex, bindErr
 	}
 	if !m.admitPeer(mp, balance) {

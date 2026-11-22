@@ -114,6 +114,11 @@ func (r *Registrar) add(w http.ResponseWriter, req *http.Request, identity strin
 		writeRegistrationError(w, status, code, "Domain registration was refused.")
 		return
 	}
+	if status == http.StatusCreated && r.gate != nil && !r.gate.Admitted(req.Context(), identity) {
+		_, _, _ = r.unregister(identity, domain)
+		writeRegistrationError(w, http.StatusForbidden, "ERR_CERTIFICATE_REQUIRED", "A valid certificate is required.")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(`{"status":"success"}`))

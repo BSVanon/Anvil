@@ -21,6 +21,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+
+	"github.com/BSVanon/Anvil/internal/spendwatch"
 )
 
 type MessagingConfig struct {
@@ -56,6 +58,14 @@ func defaultMessagingConfig() MessagingConfig {
 func validatePrivateHomeNetwork(cfg *MessagingConfig, mesh *MeshConfig) error {
 	if cfg.PrivateHomes && len(mesh.AllowedPeers) == 0 {
 		return fmt.Errorf("messaging.private_homes requires non-empty mesh.allowed_peers")
+	}
+	return nil
+}
+
+func validatePrivateHomeWatchCapacity(cfg *MessagingConfig, certs *CertGateConfig) error {
+	if cfg.PrivateHomes && certs.Enabled() && cfg.PrivateHomeMaxMembers > spendwatch.DefaultMaxWatched {
+		return fmt.Errorf("messaging.private_home_max_members (%d) exceeds certificate spend watch cap (%d)",
+			cfg.PrivateHomeMaxMembers, spendwatch.DefaultMaxWatched)
 	}
 	return nil
 }

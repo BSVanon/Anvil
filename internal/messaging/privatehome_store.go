@@ -47,9 +47,13 @@ type PrivateHomeStore struct {
 	claims             int
 	ordinaryTombstones int
 	activeIdentities   int
+	primaryRecords     int
+	revocations        int
 	expirations        privateHomeExpiryHeap
 	ordinaryExpiries   privateHomeExpiryHeap
 	onFullScan         func()
+	onAdmissionRemoved func(string)
+	onRecordChanged    func(string, int64)
 }
 
 func NewPrivateHomeStore(messages *Store, opts PrivateHomeOptions) *PrivateHomeStore {
@@ -113,12 +117,24 @@ func (s *PrivateHomeStore) applyOne(ctx context.Context, record PrivateHomeRecor
 		return err
 	}
 	batch := new(leveldb.Batch)
-	if err := s.applySignedLocked(record, binding, batch); err != nil {
+	pending := &privateHomeBatchState{deleted: make(map[string]struct{})}
+	if err := s.applySignedLocked(record, binding, batch, pending); err != nil {
 		return err
 	}
 	if err := s.messages.db.Write(batch, nil); err != nil {
 		s.initialized = false
 		return fmt.Errorf("store private home record: %w", err)
+	}
+	if record.Kind != PrivateHomeClaim || binding == nil {
+		s.notifyAdmissionRemoved(record.Member)
+	}
+	for member := range pending.deleted {
+		s.notifyRecordChanged(member, 0)
+	}
+	s.notifyRecord(record)
+	if err := s.compactExpiryHeapsLocked(); err != nil {
+		s.initialized = false
+		return err
 	}
 	return nil
 }
@@ -152,10 +168,11 @@ func (s *PrivateHomeStore) ApplyBatch(ctx context.Context, records []PrivateHome
 		return fillPrivateHomeErrors(results, err)
 	}
 	batch := new(leveldb.Batch)
+	pending := &privateHomeBatchState{deleted: make(map[string]struct{}), protected: latest}
 	accepted := 0
 	for i, record := range records {
 		if results[i] == nil {
-			results[i] = s.applySignedLocked(record, nil, batch)
+			results[i] = s.applySignedLocked(record, nil, batch, pending)
 			if results[i] == nil {
 				accepted++
 			}
@@ -167,6 +184,19 @@ func (s *PrivateHomeStore) ApplyBatch(ctx context.Context, records []PrivateHome
 	if err := s.messages.db.Write(batch, nil); err != nil {
 		s.initialized = false
 		return fillPrivateHomeErrors(results, fmt.Errorf("store private home record: %w", err))
+	}
+	for i, record := range records {
+		if results[i] == nil {
+			s.notifyAdmissionRemoved(record.Member)
+			s.notifyRecord(record)
+		}
+	}
+	for member := range pending.deleted {
+		s.notifyRecordChanged(member, 0)
+	}
+	if err := s.compactExpiryHeapsLocked(); err != nil {
+		s.initialized = false
+		return fillPrivateHomeErrors(results, err)
 	}
 	return results
 }
@@ -180,7 +210,12 @@ func fillPrivateHomeErrors(results []error, err error) []error {
 	return results
 }
 
-func (s *PrivateHomeStore) applySignedLocked(record PrivateHomeRecord, binding *PrivateHomeAdmission, batch *leveldb.Batch) error {
+type privateHomeBatchState struct {
+	deleted   map[string]struct{}
+	protected map[string]int
+}
+
+func (s *PrivateHomeStore) applySignedLocked(record PrivateHomeRecord, binding *PrivateHomeAdmission, batch *leveldb.Batch, pending *privateHomeBatchState) error {
 	old, exists, err := s.recordLocked(record.Member)
 	if err != nil {
 		return err
@@ -195,17 +230,22 @@ func (s *PrivateHomeStore) applySignedLocked(record PrivateHomeRecord, binding *
 	if revoked && record.IssuedAt <= cutoff {
 		return ErrPrivateHomeStale
 	}
-	if record.Kind == PrivateHomeClaim && (!exists || old.Kind != PrivateHomeClaim) && !revoked && s.activeIdentities >= s.maxMembers {
-		return ErrPrivateHomeLimit
+	if record.Kind == PrivateHomeClaim && (!exists || old.Kind != PrivateHomeClaim) {
+		if s.claims >= s.maxMembers || s.revocations >= s.maxMembers {
+			return ErrPrivateHomeLimit
+		}
 	}
 	newOrdinary := record.Kind == PrivateHomeRelease && (!exists || old.Kind != PrivateHomeRelease || old.Signature == "")
 	for newOrdinary && s.ordinaryTombstones >= s.maxMembers {
-		if err := s.evictOldestOrdinaryLocked(batch, record.Member); err != nil {
+		if err := s.evictOldestOrdinaryLocked(batch, record.Member, pending); err != nil {
 			return err
 		}
 	}
 
 	s.accountRecordRemovalLocked(old, exists, revoked)
+	if !exists {
+		s.primaryRecords++
+	}
 	batch.Delete(privateHomeRecordKey(record.Member))
 	batch.Delete(privateHomeAdmissionKey(record.Member))
 	raw, err := json.Marshal(record)
@@ -237,7 +277,7 @@ func (s *PrivateHomeStore) Current(member string) (PrivateHomeRecord, bool, erro
 		return PrivateHomeRecord{}, false, err
 	}
 	record, ok, err := s.recordLocked(strings.ToLower(member))
-	if err != nil || !ok || record.Kind != PrivateHomeClaim {
+	if err != nil || !ok || record.Kind != PrivateHomeClaim || s.recordExpiry(record) <= s.now().Unix() {
 		return PrivateHomeRecord{}, false, err
 	}
 	return record, true, nil

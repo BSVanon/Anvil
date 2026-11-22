@@ -49,6 +49,33 @@ func TestDocumentedErrorCodesExactlyMatchCode(t *testing.T) {
 	}
 }
 
+func TestPrivateHomeTypeScriptFetchUsesCurrentOptions(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "operator", "messaging-privacy.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	start := strings.Index(text, "await auth.fetch(`${anvilURL}/messages/home`, {")
+	if start < 0 {
+		t.Fatal("private-home AuthFetch example is missing")
+	}
+	end := strings.Index(text[start:], "\n})")
+	if end < 0 {
+		t.Fatal("private-home AuthFetch example is incomplete")
+	}
+	block := text[start : start+end]
+	allowed := map[string]bool{
+		"method": true, "headers": true, "body": true, "retryCounter": true,
+		"paymentContext": true, "paymentRetryAttempts": true,
+	}
+	optionPattern := regexp.MustCompile(`(?m)^  ([A-Za-z][A-Za-z0-9]*):`)
+	for _, match := range optionPattern.FindAllStringSubmatch(block, -1) {
+		if !allowed[match[1]] {
+			t.Errorf("unsupported SimplifiedFetchRequestOptions field %q", match[1])
+		}
+	}
+}
+
 func documentedErrorCodes(t *testing.T, root string) map[string]bool {
 	t.Helper()
 	got := make(map[string]bool)

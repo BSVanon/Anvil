@@ -155,16 +155,25 @@ private_home_max_ttl = 2592000
 
 `private_homes = true` is refused when `allowed_peers` is empty. The member cap
 is 1–1,000,000 and the maximum lifetime is 3,600–7,776,000 seconds. The defaults
-are 10,000 members and 2,592,000 seconds (30 days). A trusted revocation keeps a
-non-evictable replay cutoff until every covered claim must have expired. That
-protected identity continues to occupy a member slot during this interval;
-ordinary member-signed releases cannot evict it.
+are 10,000 members and 2,592,000 seconds (30 days). When certgate is also
+configured, `private_home_max_members` cannot exceed the spend-watch cap of
+10,000. A trusted revocation keeps a non-evictable replay cutoff until every
+covered claim must have expired. Cutoffs use a separate store, capped at
+`private_home_max_members`, so a receiver accepts a cutoff even when its live
+member registry is full. If the cutoff store reaches its cap, new claims fail
+closed. Ordinary member-signed releases cannot evict trusted cutoffs.
 
 When certgate is configured, the member must also have a current admission. The
 claim is durably bound to that admission's revocation outpoint. Startup checks
 the outpoint and rebuilds its spend watch before mesh synchronization; a spent
-outpoint, or a strict check that cannot be completed, fails closed by replacing
-the claim with its replay cutoff. Allowed gateways are trusted operators:
+outpoint removes the admission and its pin before the member's claims are
+revoked. If a claim cannot be removed then because of a local storage error,
+the startup check removes it. During periodic rechecks, a
+failed revocation check keeps a live claim's pinned admission and spend watch;
+revocation follows a confirmed spend. A live binding pins its admission and
+spend watch until the claim is released, revoked, expired, or moved to another
+admission. If the watch cannot be retained, POST refuses the claim with
+`503 ERR_CERTIFICATE_WATCH_UNAVAILABLE` and does not store it. Allowed gateways are trusted operators:
 **any allowed gateway can issue that revocation cutoff**, so only mutually
 trusted operators belong in `allowed_peers`.
 
@@ -188,9 +197,10 @@ anvil-private-home/v1
 <expiresAt decimal>
 ```
 
-This `@bsv/sdk` example matches the SDK's current `CreateSignatureArgs` and
-`CreateSignatureResult` types: `data` and returned `signature` are byte arrays,
-and `counterparty` accepts the literal `"anyone"`.
+This `@bsv/sdk` example matches the SDK's current `CreateSignatureArgs`,
+`CreateSignatureResult`, and `SimplifiedFetchRequestOptions` types: `data` and
+returned `signature` are byte arrays, `counterparty` accepts the literal
+`"anyone"`, and `AuthFetch` negotiates the authenticated session itself.
 
 ```ts
 import { AuthFetch, type WalletInterface } from '@bsv/sdk'
@@ -220,9 +230,7 @@ const auth = new AuthFetch(wallet)
 await auth.fetch(`${anvilURL}/messages/home`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ claim }),
-  requireMutualAuth: true,
-  allowPayments: false
+  body: JSON.stringify({ claim })
 })
 ```
 

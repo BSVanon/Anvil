@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/BSVanon/Anvil/internal/messaging"
 	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
@@ -151,6 +152,9 @@ func (m *Manager) selectedForwardPeers(recipient, source string) []peerSendTarge
 	if m.messagingPolicy.PrivateHomes != nil {
 		if claim, ok, err := m.messagingPolicy.PrivateHomes.Current(recipient); err == nil && ok {
 			homes, claimVersion = claim.Homes, claim.IssuedAt
+			m.pruneAppliedHomeRecords([]messaging.PrivateHomeRecord{claim})
+		} else if err == nil {
+			m.dropAppliedHomeClaim(recipient)
 		}
 	}
 	source, own := strings.ToLower(source), m.ownIdentity()

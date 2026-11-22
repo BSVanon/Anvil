@@ -11,6 +11,8 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
+var privateHomeExpiryChunk = 1000
+
 type privateHomeExpiry struct {
 	at     int64
 	member string
@@ -63,8 +65,8 @@ func (s *PrivateHomeStore) rebuildIndexesLocked() error {
 		s.onFullScan()
 	}
 	s.claims, s.ordinaryTombstones, s.activeIdentities = 0, 0, 0
+	s.primaryRecords, s.revocations = 0, 0
 	s.expirations, s.ordinaryExpiries = nil, nil
-	now := s.now().Unix()
 	batch := new(leveldb.Batch)
 	changed := false
 	revoked := make(map[string]int64)
@@ -73,12 +75,13 @@ func (s *PrivateHomeStore) rebuildIndexesLocked() error {
 	for markers.Next() {
 		member := string(markers.Key()[len(privateHomeRevokedPrefix):])
 		cutoff, ok := decodePrivateHomeCutoff(markers.Value())
-		if !ok || cutoff/1000+s.maxTTL <= now {
+		if !ok {
 			batch.Delete(append([]byte(nil), markers.Key()...))
 			changed = true
 			continue
 		}
 		revoked[member] = cutoff
+		s.revocations++
 		s.activeIdentities++
 		heap.Push(&s.expirations, privateHomeExpiry{at: cutoff/1000 + s.maxTTL, member: member, kind: privateHomeExpiryRevocation})
 	}
@@ -91,19 +94,21 @@ func (s *PrivateHomeStore) rebuildIndexesLocked() error {
 	records := s.messages.db.NewIterator(util.BytesPrefix(privateHomeRecordPrefix), nil)
 	for records.Next() {
 		var record PrivateHomeRecord
-		if json.Unmarshal(records.Value(), &record) != nil || s.recordExpiry(record) <= now {
+		if json.Unmarshal(records.Value(), &record) != nil {
 			batch.Delete(append([]byte(nil), records.Key()...))
 			member := string(records.Key()[len(privateHomeRecordPrefix):])
 			batch.Delete(privateHomeAdmissionKey(member))
 			changed = true
 			continue
 		}
+		s.primaryRecords++
 		_, hasRevocation := revoked[record.Member]
 		if record.Kind == PrivateHomeRelease && record.Signature == "" && !hasRevocation {
 			// Migrate trusted cutoffs written by the first private-home store
 			// format, which represented them only as unsigned primary records.
 			revoked[record.Member] = record.IssuedAt
 			hasRevocation = true
+			s.revocations++
 			s.activeIdentities++
 			batch.Put(privateHomeRevocationKey(record.Member), encodePrivateHomeCutoff(record.IssuedAt))
 			heap.Push(&s.expirations, privateHomeExpiry{
@@ -134,10 +139,15 @@ func (s *PrivateHomeStore) expireLocked() error {
 	changed := false
 	deletedRecords := make(map[string]struct{})
 	deletedRevocations := make(map[string]struct{})
-	for s.expirations.Len() > 0 && s.expirations[0].at <= now {
+	processed := 0
+	for processed < privateHomeExpiryChunk && s.expirations.Len() > 0 && s.expirations[0].at <= now {
 		entry := heap.Pop(&s.expirations).(privateHomeExpiry)
+		processed++
 		switch entry.kind {
 		case privateHomeExpiryRecord:
+			if _, deleted := deletedRecords[entry.member]; deleted {
+				continue
+			}
 			record, exists, err := s.recordLocked(entry.member)
 			if err != nil {
 				return err
@@ -153,11 +163,15 @@ func (s *PrivateHomeStore) expireLocked() error {
 				revoked = false
 			}
 			s.accountRecordRemovalLocked(record, true, revoked)
+			s.primaryRecords--
 			batch.Delete(privateHomeRecordKey(entry.member))
 			batch.Delete(privateHomeAdmissionKey(entry.member))
 			deletedRecords[entry.member] = struct{}{}
 			changed = true
 		case privateHomeExpiryRevocation:
+			if _, deleted := deletedRevocations[entry.member]; deleted {
+				continue
+			}
 			cutoff, exists, err := s.revocationLocked(entry.member)
 			if err != nil {
 				return err
@@ -173,6 +187,7 @@ func (s *PrivateHomeStore) expireLocked() error {
 			if !current || record.Kind != PrivateHomeClaim || recordDeleted {
 				s.activeIdentities--
 			}
+			s.revocations--
 			batch.Delete(privateHomeRevocationKey(entry.member))
 			deletedRevocations[entry.member] = struct{}{}
 			changed = true
@@ -184,6 +199,10 @@ func (s *PrivateHomeStore) expireLocked() error {
 	if err := s.messages.db.Write(batch, nil); err != nil {
 		s.initialized = false
 		return err
+	}
+	for member := range deletedRecords {
+		s.notifyAdmissionRemoved(member)
+		s.notifyRecordChanged(member, 0)
 	}
 	return nil
 }
@@ -221,6 +240,51 @@ func (s *PrivateHomeStore) pushRecordExpiry(record PrivateHomeRecord) {
 	}
 }
 
+func (s *PrivateHomeStore) compactExpiryHeapsLocked() error {
+	recordLimit := 2*(s.primaryRecords+s.revocations) + 64
+	ordinaryLimit := 2*s.ordinaryTombstones + 64
+	if s.expirations.Len() <= recordLimit && s.ordinaryExpiries.Len() <= ordinaryLimit {
+		return nil
+	}
+	expirations := make(privateHomeExpiryHeap, 0, s.primaryRecords+s.revocations)
+	ordinary := make(privateHomeExpiryHeap, 0, s.ordinaryTombstones)
+	markers := s.messages.db.NewIterator(util.BytesPrefix(privateHomeRevokedPrefix), nil)
+	for markers.Next() {
+		member := string(markers.Key()[len(privateHomeRevokedPrefix):])
+		if cutoff, ok := decodePrivateHomeCutoff(markers.Value()); ok {
+			expirations = append(expirations, privateHomeExpiry{
+				at: cutoff/1000 + s.maxTTL, member: member, kind: privateHomeExpiryRevocation,
+			})
+		}
+	}
+	markerErr := markers.Error()
+	markers.Release()
+	if markerErr != nil {
+		return markerErr
+	}
+	records := s.messages.db.NewIterator(util.BytesPrefix(privateHomeRecordPrefix), nil)
+	for records.Next() {
+		var record PrivateHomeRecord
+		if json.Unmarshal(records.Value(), &record) != nil {
+			continue
+		}
+		entry := privateHomeExpiry{at: s.recordExpiry(record), member: record.Member, kind: privateHomeExpiryRecord}
+		expirations = append(expirations, entry)
+		if record.Kind == PrivateHomeRelease && record.Signature != "" {
+			ordinary = append(ordinary, entry)
+		}
+	}
+	recordErr := records.Error()
+	records.Release()
+	if recordErr != nil {
+		return recordErr
+	}
+	heap.Init(&expirations)
+	heap.Init(&ordinary)
+	s.expirations, s.ordinaryExpiries = expirations, ordinary
+	return nil
+}
+
 func (s *PrivateHomeStore) recordExpiry(record PrivateHomeRecord) int64 {
 	if record.Kind == PrivateHomeClaim {
 		return record.ExpiresAt
@@ -228,11 +292,19 @@ func (s *PrivateHomeStore) recordExpiry(record PrivateHomeRecord) int64 {
 	return record.IssuedAt/1000 + s.maxTTL
 }
 
-func (s *PrivateHomeStore) evictOldestOrdinaryLocked(batch *leveldb.Batch, replacingMember string) error {
+func (s *PrivateHomeStore) evictOldestOrdinaryLocked(batch *leveldb.Batch, replacingMember string, pending *privateHomeBatchState) error {
 	for s.ordinaryExpiries.Len() > 0 {
 		entry := heap.Pop(&s.ordinaryExpiries).(privateHomeExpiry)
 		if entry.member == replacingMember {
 			continue
+		}
+		if pending != nil {
+			if _, protected := pending.protected[entry.member]; protected {
+				continue
+			}
+			if _, deleted := pending.deleted[entry.member]; deleted {
+				continue
+			}
 		}
 		record, exists, err := s.recordLocked(entry.member)
 		if err != nil {
@@ -243,7 +315,11 @@ func (s *PrivateHomeStore) evictOldestOrdinaryLocked(batch *leveldb.Batch, repla
 		}
 		batch.Delete(privateHomeRecordKey(entry.member))
 		batch.Delete(privateHomeAdmissionKey(entry.member))
+		if pending != nil {
+			pending.deleted[entry.member] = struct{}{}
+		}
 		s.ordinaryTombstones--
+		s.primaryRecords--
 		return nil
 	}
 	return ErrPrivateHomeLimit

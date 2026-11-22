@@ -52,3 +52,15 @@ func TestPrivateHomeConfigurationRanges(t *testing.T) {
 		t.Fatalf("lower bounds refused: %v", err)
 	}
 }
+
+func TestPrivateHomeCertificateWatchCapacityIsValidated(t *testing.T) {
+	peer := "02" + strings.Repeat("a", 64)
+	body := "[mesh]\nallowed_peers = [\"" + peer + "\"]\n" +
+		"[messaging]\nprivate_homes = true\nprivate_home_max_members = 10001\n" +
+		"[certgate]\ncertifiers = [\"" + testCertifier + "\"]\ntypes = [\"" + testCertificateType + "\"]\n"
+	_, err := loadPrivateHomeConfig(t, body)
+	if err == nil || !strings.Contains(err.Error(), "private_home_max_members (10001)") ||
+		!strings.Contains(err.Error(), "spend watch cap (10000)") {
+		t.Fatalf("watch capacity error = %v", err)
+	}
+}

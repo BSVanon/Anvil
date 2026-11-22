@@ -85,6 +85,7 @@ Operator-file domains cannot be changed through the API. Registrations are
 owned by the authenticated identity, capped at 10 per identity and 1,000 in
 total, and removed for that identity on certificate revocation. Registration
 does not choose content: the domain's `_ordfs` TXT record remains authoritative.
+A registration request that races certificate revocation is refused with `403 ERR_CERTIFICATE_REQUIRED`.
 
 This switch shares one BRC-31 handshake with the messagebox routes. Enabling it,
 or `[messaging] require_sender_certificate`, requests a certificate from every

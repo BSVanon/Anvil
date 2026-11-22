@@ -15,13 +15,18 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 	consecutiveFails := 0
 	consecutiveRefusals := 0
 	knownIdentity := ""
+	forceEndpointRedial := false
 	for {
-		if knownIdentity != "" && m.hasIdentityConnection(knownIdentity) {
+		if forceEndpointRedial && m.identitySupportsExactRemoval(knownIdentity) {
+			forceEndpointRedial = false
+		}
+		if !forceEndpointRedial && knownIdentity != "" && m.hasIdentityConnection(knownIdentity) {
 			if !waitSeedInterval(ctx, interval) {
 				return
 			}
 			continue
 		}
+		forceEndpointRedial = false
 
 		mp, transport, identity, err := m.connectPeer(ctx, endpoint, connectPeerOptions{seed: true, dialTimeout: 10 * time.Second})
 		if identity != "" {
@@ -71,6 +76,7 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 		select {
 		case <-transport.Done():
 			m.removeMeshPeerWithReason(mp, "transport_closed")
+			forceEndpointRedial = m.needsCompatibilityRedial(mp, knownIdentity)
 			m.logger.Warn("seed peer disconnected, reconnecting", "endpoint", endpoint, "retry_in", interval)
 		case <-ctx.Done():
 			m.removeMeshPeerWithReason(mp, "context_cancelled")
@@ -80,6 +86,25 @@ func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string,
 			return
 		}
 	}
+}
+
+func (m *Manager) identitySupportsExactRemoval(identity string) bool {
+	m.mu.RLock()
+	_, ok := m.duplicateSafePeers[identity]
+	m.mu.RUnlock()
+	return ok
+}
+
+func (m *Manager) needsCompatibilityRedial(peer *MeshPeer, identity string) bool {
+	if peer == nil || identity == "" {
+		return false
+	}
+	m.mu.RLock()
+	reason := peer.closeReason
+	_, exactRemoval := m.duplicateSafePeers[identity]
+	m.mu.RUnlock()
+	return !exactRemoval && reason != "duplicate_connection" &&
+		reason != "self_connection" && reason != "identity_mismatch"
 }
 
 func waitSeedInterval(ctx context.Context, delay time.Duration) bool {
@@ -104,6 +129,7 @@ func (m *Manager) Stop() {
 		}
 		unique[peer] = struct{}{}
 		peer.closed = true
+		peer.closeReason = "shutdown"
 		peers = append(peers, peer)
 	}
 	m.peers = make(map[string]*MeshPeer)

@@ -38,7 +38,7 @@ func (s *PrivateHomeStore) CurrentClaims(members []string) (map[string]PrivateHo
 		if err != nil {
 			return nil, err
 		}
-		if ok && record.Kind == PrivateHomeClaim {
+		if ok && record.Kind == PrivateHomeClaim && s.recordExpiry(record) > s.now().Unix() {
 			claims[member] = record
 		}
 	}
@@ -97,7 +97,7 @@ func (s *PrivateHomeStore) applyRevocationLocked(member string, cutoff int64) (b
 		return false, err
 	}
 	unionExists := hadPrior || (exists && old.Kind == PrivateHomeClaim)
-	if !unionExists && s.activeIdentities >= s.maxMembers {
+	if !hadPrior && s.revocations >= s.maxMembers {
 		return false, ErrPrivateHomeLimit
 	}
 
@@ -105,6 +105,9 @@ func (s *PrivateHomeStore) applyRevocationLocked(member string, cutoff int64) (b
 	batch.Put(privateHomeRevocationKey(member), encodePrivateHomeCutoff(cutoff))
 	heapEntry := privateHomeExpiry{at: cutoff/1000 + s.maxTTL, member: member, kind: privateHomeExpiryRevocation}
 	pushPrivateHomeExpiry(&s.expirations, heapEntry)
+	if !hadPrior {
+		s.revocations++
+	}
 	if !unionExists {
 		s.activeIdentities++
 	}
@@ -123,6 +126,14 @@ func (s *PrivateHomeStore) applyRevocationLocked(member string, cutoff int64) (b
 		s.pushRecordExpiry(tombstone)
 	}
 	if err := s.messages.db.Write(batch, nil); err != nil {
+		s.initialized = false
+		return false, err
+	}
+	if exists && old.IssuedAt <= cutoff {
+		s.notifyAdmissionRemoved(member)
+		s.notifyRecordChanged(member, 0)
+	}
+	if err := s.compactExpiryHeapsLocked(); err != nil {
 		s.initialized = false
 		return false, err
 	}
@@ -159,7 +170,7 @@ func (s *PrivateHomeStore) ForEachRecordPage(size int, fn func([]PrivateHomeReco
 	page := make([]PrivateHomeRecord, 0, size)
 	for iter.Next() {
 		var record PrivateHomeRecord
-		if json.Unmarshal(iter.Value(), &record) != nil {
+		if json.Unmarshal(iter.Value(), &record) != nil || s.recordExpiry(record) <= s.now().Unix() {
 			continue
 		}
 		page = append(page, record)
@@ -188,12 +199,18 @@ func (s *PrivateHomeStore) ForEachRevocationPage(size int, fn func([]PrivateHome
 	if size < 1 {
 		size = 1
 	}
+	s.messages.writeMu.Lock()
+	if err := s.prepareLocked(); err != nil {
+		s.messages.writeMu.Unlock()
+		return err
+	}
+	s.messages.writeMu.Unlock()
 	iter := s.messages.db.NewIterator(util.BytesPrefix(privateHomeRevokedPrefix), nil)
 	defer iter.Release()
 	page := make([]PrivateHomeRevocation, 0, size)
 	for iter.Next() {
 		cutoff, ok := decodePrivateHomeCutoff(iter.Value())
-		if !ok {
+		if !ok || cutoff/1000+s.maxTTL <= s.now().Unix() {
 			continue
 		}
 		page = append(page, PrivateHomeRevocation{
@@ -230,6 +247,61 @@ func (s *PrivateHomeStore) Admissions() ([]PrivateHomeAdmission, error) {
 		}
 	}
 	return admissions, iter.Error()
+}
+
+// Admission returns the durable certificate binding for member, if present.
+func (s *PrivateHomeStore) Admission(member string) (PrivateHomeAdmission, bool, error) {
+	if s == nil || s.messages == nil {
+		return PrivateHomeAdmission{}, false, nil
+	}
+	s.messages.writeMu.Lock()
+	defer s.messages.writeMu.Unlock()
+	raw, err := s.messages.db.Get(privateHomeAdmissionKey(strings.ToLower(member)), nil)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		return PrivateHomeAdmission{}, false, nil
+	}
+	if err != nil {
+		return PrivateHomeAdmission{}, false, err
+	}
+	var admission PrivateHomeAdmission
+	if err := json.Unmarshal(raw, &admission); err != nil {
+		return PrivateHomeAdmission{}, false, err
+	}
+	return admission, true, nil
+}
+
+// SetOnAdmissionRemoved installs the lifecycle hook for certificate bindings.
+func (s *PrivateHomeStore) SetOnAdmissionRemoved(fn func(string)) {
+	if s != nil {
+		s.onAdmissionRemoved = fn
+	}
+}
+
+// SetOnRecordChanged installs the lifecycle hook for live claims.
+func (s *PrivateHomeStore) SetOnRecordChanged(fn func(string, int64)) {
+	if s != nil {
+		s.onRecordChanged = fn
+	}
+}
+
+func (s *PrivateHomeStore) notifyAdmissionRemoved(member string) {
+	if s.onAdmissionRemoved != nil {
+		s.onAdmissionRemoved(member)
+	}
+}
+
+func (s *PrivateHomeStore) notifyRecord(record PrivateHomeRecord) {
+	issuedAt := int64(0)
+	if record.Kind == PrivateHomeClaim && s.recordExpiry(record) > s.now().Unix() {
+		issuedAt = record.IssuedAt
+	}
+	s.notifyRecordChanged(record.Member, issuedAt)
+}
+
+func (s *PrivateHomeStore) notifyRecordChanged(member string, issuedAt int64) {
+	if s.onRecordChanged != nil {
+		s.onRecordChanged(member, issuedAt)
+	}
 }
 
 func (s *PrivateHomeStore) DeleteAdmission(member string) error {

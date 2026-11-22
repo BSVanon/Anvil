@@ -192,6 +192,7 @@ type MeshPeer struct {
 	closeFunc    func() error // closes the underlying transport connection
 	exchange     bool         // opened by the peer-exchange dial loop
 	seed         bool         // opened from a configured [mesh] seeds entry
+	lastFrameAt  atomic.Int64 // Unix nanoseconds; updated by the receive loop
 
 	// bondChecked and admitted are guarded by Manager.mu. admitted is the
 	// application gate: identity binding, duplicate selection, allowlist, and
@@ -199,6 +200,7 @@ type MeshPeer struct {
 	bondChecked        bool
 	admitted           bool
 	closed             bool
+	closeReason        string
 	privateHomeVersion int
 	appliedHomeClaims  map[string]int64
 	admissionMu        sync.Mutex
@@ -342,15 +344,17 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 	})
 
 	connKey, connectionID := m.nextConnection("inbound")
+	connectedAt := time.Now()
 	mp := &MeshPeer{
 		Peer:         peer,
 		Endpoint:     transport.RemoteAddr(),
 		Direction:    "inbound",
-		ConnectedAt:  time.Now(),
+		ConnectedAt:  connectedAt,
 		origKey:      connKey,
 		connectionID: connectionID,
 		closeFunc:    transport.Close,
 	}
+	transport.setOnFrame(func() { mp.lastFrameAt.Store(time.Now().UnixNano()) })
 	peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
 		return m.handlePeerMessage(ctx, mp, transport, senderPK, payload)
 	})
@@ -360,6 +364,7 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 	}
 
 	m.mu.Lock()
+	mp.lastFrameAt.Store(time.Now().UnixNano())
 	m.peers[connKey] = mp
 	peerCount := len(m.peers)
 	m.mu.Unlock()

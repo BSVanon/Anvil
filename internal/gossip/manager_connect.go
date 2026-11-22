@@ -31,17 +31,19 @@ func (m *Manager) connectPeer(ctx context.Context, endpoint string, opts connect
 	}
 	peer := auth.NewPeer(&auth.PeerOptions{Wallet: m.wallet, Transport: transport})
 	connKey, connectionID := m.nextConnection("outbound")
+	connectedAt := time.Now()
 	mp := &MeshPeer{
 		Peer:         peer,
 		Endpoint:     endpoint,
 		Direction:    "outbound",
-		ConnectedAt:  time.Now(),
+		ConnectedAt:  connectedAt,
 		origKey:      connKey,
 		connectionID: connectionID,
 		closeFunc:    transport.Close,
 		exchange:     opts.exchange,
 		seed:         opts.seed,
 	}
+	transport.setOnFrame(func() { mp.lastFrameAt.Store(time.Now().UnixNano()) })
 	peer.ListenForGeneralMessages(func(callbackCtx context.Context, senderPK *ec.PublicKey, payload []byte) error {
 		return m.handlePeerMessage(callbackCtx, mp, transport, senderPK, payload)
 	})
@@ -51,6 +53,7 @@ func (m *Manager) connectPeer(ctx context.Context, endpoint string, opts connect
 	}
 
 	m.mu.Lock()
+	mp.lastFrameAt.Store(time.Now().UnixNano())
 	m.peers[mp.origKey] = mp
 	peerCount := len(m.peers)
 	m.mu.Unlock()
@@ -96,12 +99,6 @@ func (m *Manager) handlePeerMessage(ctx context.Context, mp *MeshPeer, transport
 	identity := fmt.Sprintf("%x", senderPK.Compressed())
 	m.noteDuplicateCapability(identity, payload)
 	mp.admissionMu.Lock()
-	firstIdentity, err := m.bindPeerIdentity(mp, senderPK)
-	if err != nil {
-		mp.admissionMu.Unlock()
-		return err
-	}
-
 	m.mu.RLock()
 	current := m.peerMappedLocked(mp)
 	needsAdmission := current && !mp.admitted
@@ -124,6 +121,11 @@ func (m *Manager) handlePeerMessage(ctx context.Context, mp *MeshPeer, transport
 			mp.admissionMu.Unlock()
 			return fmt.Errorf("bond required: %w", verifyErr)
 		}
+	}
+	firstIdentity, err := m.bindPeerIdentity(mp, senderPK, true)
+	if err != nil {
+		mp.admissionMu.Unlock()
+		return err
 	}
 	newlyAdmitted := needsAdmission && m.admitPeer(mp, balance)
 	mp.admissionMu.Unlock()

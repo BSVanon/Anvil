@@ -101,6 +101,7 @@ type ServerWSTransport struct {
 	conn       *websocket.Conn
 	mu         sync.Mutex
 	onDataFunc func(context.Context, *auth.AuthMessage) error
+	onFrame    func()
 	done       chan struct{} // closed when the read loop exits
 
 	authorized chan struct{} // closed by MarkAuthorized
@@ -178,6 +179,12 @@ func (s *ServerWSTransport) OnData(callback func(context.Context, *auth.AuthMess
 	return nil
 }
 
+func (s *ServerWSTransport) setOnFrame(callback func()) {
+	s.mu.Lock()
+	s.onFrame = callback
+	s.mu.Unlock()
+}
+
 // GetRegisteredOnData implements auth.Transport.GetRegisteredOnData.
 func (s *ServerWSTransport) GetRegisteredOnData() (func(context.Context, *auth.AuthMessage) error, error) {
 	s.mu.Lock()
@@ -207,6 +214,12 @@ func (s *ServerWSTransport) StartReceive() {
 				continue
 			}
 			return // connection closed
+		}
+		s.mu.Lock()
+		onFrame := s.onFrame
+		s.mu.Unlock()
+		if onFrame != nil {
+			onFrame()
 		}
 		var msg auth.AuthMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {

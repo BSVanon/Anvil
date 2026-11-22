@@ -329,6 +329,9 @@ func Load(path string) (*Config, error) {
 	if err := validatePrivateHomeNetwork(&cfg.Messaging, &cfg.Mesh); err != nil {
 		return nil, err
 	}
+	if err := validatePrivateHomeWatchCapacity(&cfg.Messaging, &cfg.CertGate); err != nil {
+		return nil, err
+	}
 
 	if err := finalizeGateway(cfg, path); err != nil {
 		return nil, err

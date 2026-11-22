@@ -100,3 +100,20 @@ func TestBRC31ReplayedNonceGets401(t *testing.T) {
 		t.Errorf("replay body code = %v, want ERR_REPLAYED_NONCE (%s)", out["code"], raw)
 	}
 }
+
+func TestPrivateHomeWatchCapacityGetsCodedResponse(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"certificate revocation watch is unavailable: capacity reached"}`))
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/messages/home", nil)
+	brc31ReplayNonceStatus(next).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body %s", recorder.Code, recorder.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body["code"] != "ERR_CERTIFICATE_WATCH_UNAVAILABLE" {
+		t.Fatalf("body = %#v, error %v", body, err)
+	}
+}

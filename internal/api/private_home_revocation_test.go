@@ -133,7 +133,8 @@ func TestCertificateRevocationRemovesPrivateHomeClaim(t *testing.T) {
 		MaxMembers: 10, MaxTTL: 3600, AllowedHomes: []string{homeHex},
 	})
 	claim := signedHTTPPrivateHome(t, member, []string{homeHex}, time.Now().UnixMilli())
-	if err := registry.Apply(t.Context(), claim); err != nil {
+	revocationOutpoint := &transaction.Outpoint{Txid: chainhash.HashH([]byte("private home revocation")), Index: 1}
+	if err := registry.ApplyAdmitted(t.Context(), claim, revocationOutpoint.String()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +156,7 @@ func TestCertificateRevocationRemovesPrivateHomeClaim(t *testing.T) {
 	serial := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	certificate := &certificates.Certificate{
 		Type: wallet.StringBase64(typeBase64), SerialNumber: wallet.StringBase64(serial), Subject: *member.PubKey(),
-		Certifier: *certifier.PubKey(), RevocationOutpoint: &transaction.Outpoint{Txid: chainhash.HashH([]byte("private home revocation")), Index: 1},
+		Certifier: *certifier.PubKey(), RevocationOutpoint: revocationOutpoint,
 		Fields: map[wallet.CertificateFieldNameUnder50Bytes]wallet.StringBase64{},
 	}
 	signer, _ := wallet.NewCompletedProtoWallet(certifier)
@@ -172,9 +173,19 @@ func TestCertificateRevocationRemovesPrivateHomeClaim(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if _, ok, _ := registry.Current(claim.Member); !ok {
+			if gate.AdmissionMatches(claim.Member, revocationOutpoint.String()) {
+				t.Fatal("revoked claim left its admission pinned")
+			}
 			records, err := registry.Records()
 			if err != nil || len(records) != 1 || records[0].Kind != messaging.PrivateHomeRelease {
 				t.Fatalf("revocation tombstone = %+v, %v", records, err)
+			}
+			var cutoffs []messaging.PrivateHomeRevocation
+			if err := registry.ForEachRevocationPage(10, func(page []messaging.PrivateHomeRevocation) error {
+				cutoffs = append(cutoffs, page...)
+				return nil
+			}); err != nil || len(cutoffs) != 1 || cutoffs[0].Member != claim.Member {
+				t.Fatalf("revocation cutoffs = %+v, %v", cutoffs, err)
 			}
 			return
 		}

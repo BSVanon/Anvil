@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
@@ -18,6 +19,8 @@ var (
 )
 
 const exactRemovalCapability = "exact_connection_removal_v1"
+
+var staleDuplicateAfter = 150 * time.Second
 
 func (m *Manager) nextConnection(direction string) (string, uint64) {
 	id := m.connSeq.Add(1)
@@ -51,7 +54,7 @@ func (m *Manager) noteDuplicateCapability(identity string, payload []byte) {
 // remote has advertised exact-removal support, reciprocal sockets converge on
 // the deterministic winner. Until then both sockets remain live for rolling
 // compatibility, with only the preferred socket stored under the identity key.
-func (m *Manager) bindPeerIdentity(candidate *MeshPeer, identityPK *ec.PublicKey) (bool, error) {
+func (m *Manager) bindPeerIdentity(candidate *MeshPeer, identityPK *ec.PublicKey, candidateChecked bool) (bool, error) {
 	identity := fmt.Sprintf("%x", identityPK.Compressed())
 	if identity == m.localIdentity && identity != "" {
 		m.detachPeer(candidate, "self_connection")
@@ -67,6 +70,7 @@ func (m *Manager) bindPeerIdentity(candidate *MeshPeer, identityPK *ec.PublicKey
 	if candidate.connectionID != 0 && candidate.connectionID <= m.identityRemovalSeq[identity] {
 		m.deletePeerPointerLocked(candidate, "")
 		candidate.closed = true
+		candidate.closeReason = "identity_removed"
 		peerCount := len(m.peers)
 		m.mu.Unlock()
 		m.closeDetachedPeer(candidate, "identity_removed", peerCount)
@@ -88,7 +92,7 @@ func (m *Manager) bindPeerIdentity(candidate *MeshPeer, identityPK *ec.PublicKey
 
 	_, safe := m.duplicateSafePeers[identity]
 	if !safe || m.disableDuplicateConvergence {
-		if m.candidateWinsDuplicate(existing, candidate, identity) {
+		if m.candidateWinsDuplicate(existing, candidate, identity, false) {
 			m.peers[existing.origKey] = existing
 			m.peers[identity] = candidate
 			m.deletePeerPointerLocked(candidate, identity)
@@ -100,7 +104,7 @@ func (m *Manager) bindPeerIdentity(candidate *MeshPeer, identityPK *ec.PublicKey
 	}
 
 	kept := existing
-	if m.candidateWinsDuplicate(existing, candidate, identity) {
+	if m.candidateWinsDuplicate(existing, candidate, identity, candidateChecked) {
 		kept = candidate
 	}
 	unique := make(map[*MeshPeer]struct{})
@@ -115,6 +119,7 @@ func (m *Manager) bindPeerIdentity(candidate *MeshPeer, identityPK *ec.PublicKey
 	for peer := range unique {
 		m.deletePeerPointerLocked(peer, "")
 		peer.closed = true
+		peer.closeReason = "duplicate_connection"
 		losers = append(losers, peer)
 	}
 	m.peers[identity] = kept
@@ -134,7 +139,7 @@ func (m *Manager) bindPeerIdentity(candidate *MeshPeer, identityPK *ec.PublicKey
 	return firstIdentity, nil
 }
 
-func (m *Manager) candidateWinsDuplicate(existing, candidate *MeshPeer, identity string) bool {
+func (m *Manager) candidateWinsDuplicate(existing, candidate *MeshPeer, identity string, replaceStale bool) bool {
 	if existing.seed && candidate.exchange {
 		return false
 	}
@@ -142,7 +147,8 @@ func (m *Manager) candidateWinsDuplicate(existing, candidate *MeshPeer, identity
 		return true
 	}
 	if existing.Direction == candidate.Direction {
-		return false
+		lastFrame := existing.lastFrameAt.Load()
+		return replaceStale && lastFrame != 0 && time.Since(time.Unix(0, lastFrame)) > staleDuplicateAfter
 	}
 	preferOutbound := m.localIdentity != "" && m.localIdentity < identity
 	return (preferOutbound && candidate.Direction == "outbound") ||
@@ -181,6 +187,7 @@ func (m *Manager) detachPeer(target *MeshPeer, reason string) {
 		return
 	}
 	target.closed = true
+	target.closeReason = reason
 	m.deletePeerPointerLocked(target, "")
 	identity := peerIdentity(target)
 	m.cleanupIdentityLocked(identity)
@@ -197,6 +204,11 @@ func (m *Manager) cleanupIdentityLocked(identity string) {
 		return
 	}
 	if m.peers[identity] == nil {
+		if m.disableDuplicateConvergence {
+			delete(m.interests, identity)
+			delete(m.duplicateSafePeers, identity)
+			return
+		}
 		for key, peer := range m.peers {
 			if !peer.closed && peerIdentity(peer) == identity {
 				m.peers[identity] = peer

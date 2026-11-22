@@ -180,16 +180,38 @@ func (m *Manager) onHomeStatus(sender string, raw json.RawMessage) error {
 		if status.Version > peer.privateHomeVersion {
 			peer.privateHomeVersion = status.Version
 		}
-		if peer.appliedHomeClaims == nil {
-			peer.appliedHomeClaims = make(map[string]int64)
+	}
+	members := make([]string, 0, len(status.Applied))
+	if admitted {
+		for member := range peer.appliedHomeClaims {
+			members = append(members, member)
 		}
 		for _, applied := range status.Applied {
-			if isCompressedKeyHex(applied.Member) && applied.IssuedAt > peer.appliedHomeClaims[applied.Member] {
-				peer.appliedHomeClaims[applied.Member] = applied.IssuedAt
+			if isCompressedKeyHex(applied.Member) {
+				members = append(members, applied.Member)
 			}
 		}
 	}
 	m.mu.Unlock()
+	currentClaims, _ := m.messagingPolicy.PrivateHomes.CurrentClaims(members)
+	if admitted {
+		m.mu.Lock()
+		if current, currentOK := m.peers[sender]; currentOK && current == peer && admittedPrimaryLocked(sender, current) {
+			kept := make(map[string]int64, len(currentClaims))
+			for member, issuedAt := range peer.appliedHomeClaims {
+				if claim, live := currentClaims[member]; live && claim.IssuedAt == issuedAt {
+					kept[member] = issuedAt
+				}
+			}
+			for _, applied := range status.Applied {
+				if claim, live := currentClaims[applied.Member]; live && claim.IssuedAt == applied.IssuedAt {
+					kept[applied.Member] = applied.IssuedAt
+				}
+			}
+			peer.appliedHomeClaims = kept
+		}
+		m.mu.Unlock()
+	}
 	if firstStatus {
 		if target, found := m.targetForIdentity(sender); found {
 			go m.announcePrivateHomesToTarget(target)
@@ -202,6 +224,7 @@ func (m *Manager) broadcastHomeRecords(records []messaging.PrivateHomeRecord, so
 	if !m.privateHomesEnabled() || len(records) == 0 || len(records) > maxHomeRecords {
 		return
 	}
+	m.pruneAppliedHomeRecords(records)
 	payload, err := Encode(MsgHomeClaim, HomeClaimPayload{Records: records})
 	if err != nil || len(payload) > maxHomeClaimPayload {
 		return
@@ -260,9 +283,40 @@ func (m *Manager) broadcastHomeRevoke(revoke HomeRevokePayload, source string) {
 	if !m.privateHomesEnabled() {
 		return
 	}
+	m.dropAppliedHomeClaim(revoke.Member)
 	payload, err := Encode(MsgHomeRevoke, revoke)
 	if err == nil {
 		m.sendToAllowedPeers(payload, source, nil)
+	}
+}
+
+func (m *Manager) pruneAppliedHomeRecords(records []messaging.PrivateHomeRecord) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, record := range records {
+		for _, peer := range m.peers {
+			if record.Kind != messaging.PrivateHomeClaim || peer.appliedHomeClaims[record.Member] != record.IssuedAt {
+				delete(peer.appliedHomeClaims, record.Member)
+			}
+		}
+	}
+}
+
+func (m *Manager) dropAppliedHomeClaim(member string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, peer := range m.peers {
+		delete(peer.appliedHomeClaims, member)
+	}
+}
+
+func (m *Manager) onPrivateHomeRecordChanged(member string, issuedAt int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, peer := range m.peers {
+		if issuedAt == 0 || peer.appliedHomeClaims[member] != issuedAt {
+			delete(peer.appliedHomeClaims, member)
+		}
 	}
 }
 

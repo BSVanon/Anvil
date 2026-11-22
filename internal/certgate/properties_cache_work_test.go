@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,7 +118,7 @@ func TestRevocationLookupProperties(t *testing.T) {
 		w := newFakeWatcher()
 		w.watchErr = errors.New("watch capacity reached")
 		gate := f.gate(t, w, nil)
-		if gate.Verify(t.Context(), f.subject.PubKey(), cert) == nil || gate.Admitted(t.Context(), identity) {
+		if err := gate.VerifyAny(t.Context(), f.subject.PubKey(), []*certificates.VerifiableCertificate{cert}); !errors.Is(err, ErrWatchUnavailable) || gate.Admitted(t.Context(), identity) {
 			t.Fatal("certificate was admitted without a revocation watch")
 		}
 	})
@@ -182,4 +183,186 @@ func TestVerificationWorkBounds(t *testing.T) {
 			t.Fatalf("network revocation checks = %d, want 1", got)
 		}
 	})
+}
+
+func TestPinnedAdmissionSurvivesCachePressureUntilSpendRevokesIt(t *testing.T) {
+	f := newCertFixture(t)
+	w := newFakeWatcher()
+	gate := f.gate(t, w, nil)
+	cert := f.certificate(t, f.subject.PubKey(), f.outpoint)
+	if err := gate.Verify(t.Context(), f.subject.PubKey(), cert); err != nil {
+		t.Fatal(err)
+	}
+	identity := hex.EncodeToString(f.subject.PubKey().Compressed())
+	if _, err := gate.PinAdmission(identity, f.outpoint.String()); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxAdmissions+100; i++ {
+		key := cacheKey{identity: fmt.Sprintf("pressure-%05d", i), typ: f.typ}
+		if err := gate.remember(key, "", time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.mu.Lock()
+	watched := w.watched[f.outpoint.String()]
+	w.mu.Unlock()
+	if !gate.AdmissionMatches(identity, f.outpoint.String()) || !watched {
+		t.Fatal("cache pressure removed a pinned admission or its watch")
+	}
+	revoked := make(chan struct{}, 1)
+	gate.OnRevoke("claim", func(got string) {
+		if got != identity {
+			t.Errorf("revoked identity = %q", got)
+		}
+		w.mu.Lock()
+		watched := w.watched[f.outpoint.String()]
+		w.mu.Unlock()
+		if !watched {
+			t.Error("watch was removed before the claim revocation hook")
+		}
+		gate.UnpinAdmission(got)
+		revoked <- struct{}{}
+	})
+	gate.SetSpendVerifier(func(context.Context, string, string) error { return nil })
+	w.callback(f.outpoint.String(), strings.Repeat("c", 64))
+	select {
+	case <-revoked:
+	case <-time.After(time.Second):
+		t.Fatal("spend did not revoke the pinned admission")
+	}
+	deadline := time.Now().Add(time.Second)
+	for gate.Admitted(t.Context(), identity) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if gate.Admitted(t.Context(), identity) {
+		t.Fatal("spent pinned admission remained admitted")
+	}
+}
+
+func TestAdmissionOrderTracksOnlyLiveEntriesDuringChurn(t *testing.T) {
+	f := newCertFixture(t)
+	gate := f.gate(t, newFakeWatcher(), nil)
+	for i := 0; i < maxAdmissions*2; i++ {
+		key := cacheKey{identity: fmt.Sprintf("churn-%05d", i), typ: f.typ}
+		if err := gate.remember(key, "", time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		gate.forget(key)
+	}
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if len(gate.cache) != 0 || gate.order.Len() != 0 || len(gate.orderByKey) != 0 {
+		t.Fatalf("cache=%d order=%d order index=%d", len(gate.cache), gate.order.Len(), len(gate.orderByKey))
+	}
+}
+
+func TestClaimBindingRefusesAnUnavailableRevocationWatch(t *testing.T) {
+	f := newCertFixture(t)
+	w := newFakeWatcher()
+	gate := f.gate(t, w, nil)
+	cert := f.certificate(t, f.subject.PubKey(), f.outpoint)
+	if err := gate.Verify(t.Context(), f.subject.PubKey(), cert); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.watchErr = errors.New("capacity reached")
+	w.mu.Unlock()
+	identity := hex.EncodeToString(f.subject.PubKey().Compressed())
+	if _, err := gate.PinAdmission(identity, f.outpoint.String()); !errors.Is(err, ErrWatchUnavailable) {
+		t.Fatalf("pin error = %v", err)
+	}
+	gate.mu.Lock()
+	_, pinned := gate.pinned[identity]
+	gate.mu.Unlock()
+	if pinned {
+		t.Fatal("admission was pinned without a retained watch")
+	}
+}
+
+func TestPinnedAdmissionRetriesStrictCheckErrorUntilConfirmedSpend(t *testing.T) {
+	f := newCertFixture(t)
+	w := newFakeWatcher()
+	now := time.Unix(1_000, 0)
+	gate := f.gate(t, w, func(c *Config) { c.Now = func() time.Time { return now } })
+	cert := f.certificate(t, f.subject.PubKey(), f.outpoint)
+	if err := gate.Verify(t.Context(), f.subject.PubKey(), cert); err != nil {
+		t.Fatal(err)
+	}
+	identity := hex.EncodeToString(f.subject.PubKey().Compressed())
+	if _, err := gate.PinAdmission(identity, f.outpoint.String()); err != nil {
+		t.Fatal(err)
+	}
+	claimActive := true
+	hookCalls := 0
+	gate.OnRevoke("claim", func(got string) {
+		if got != identity {
+			t.Errorf("revoked identity = %q", got)
+		}
+		hookCalls++
+		claimActive = false
+		gate.UnpinAdmission(got)
+	})
+
+	now = now.Add(time.Hour)
+	w.mu.Lock()
+	w.checkErr = errors.New("unavailable")
+	w.mu.Unlock()
+	if !gate.Admitted(t.Context(), identity) {
+		t.Fatal("strict check error removed a pinned admission")
+	}
+	gate.mu.Lock()
+	adm, admitted := gate.cache[cacheKey{identity: identity, typ: f.typ, outpoint: f.outpoint.String()}]
+	gate.mu.Unlock()
+	if !admitted || !adm.expires.Equal(now.Add(lazyRetry)) {
+		t.Fatal("strict check error did not schedule a pinned admission retry")
+	}
+	w.mu.Lock()
+	watched := w.watched[f.outpoint.String()]
+	w.mu.Unlock()
+	if hookCalls != 0 || !claimActive || !gate.AdmissionMatches(identity, f.outpoint.String()) || !watched {
+		t.Fatal("strict check error revoked a private-home admission")
+	}
+	if got := gate.Stats()["certgate_check_errors"]; got != 1 {
+		t.Fatalf("check errors = %d, want 1", got)
+	}
+
+	now = now.Add(lazyRetry)
+	w.mu.Lock()
+	w.checkErr = nil
+	w.spent = true
+	w.mu.Unlock()
+	if gate.Admitted(t.Context(), identity) {
+		t.Fatal("confirmed spend left a pinned admission admitted")
+	}
+	w.mu.Lock()
+	watched = w.watched[f.outpoint.String()]
+	w.mu.Unlock()
+	if hookCalls != 1 || claimActive || watched || gate.AdmissionMatches(identity, f.outpoint.String()) {
+		t.Fatal("confirmed spend did not remove the claim, admission, and watch")
+	}
+}
+
+func TestStrictCheckErrorForgetsUnpinnedAdmission(t *testing.T) {
+	f := newCertFixture(t)
+	w := newFakeWatcher()
+	now := time.Unix(1_000, 0)
+	gate := f.gate(t, w, func(c *Config) { c.Now = func() time.Time { return now } })
+	cert := f.certificate(t, f.subject.PubKey(), f.outpoint)
+	if err := gate.Verify(t.Context(), f.subject.PubKey(), cert); err != nil {
+		t.Fatal(err)
+	}
+	identity := hex.EncodeToString(f.subject.PubKey().Compressed())
+	now = now.Add(time.Hour)
+	w.mu.Lock()
+	w.checkErr = errors.New("unavailable")
+	w.mu.Unlock()
+	if gate.Admitted(t.Context(), identity) {
+		t.Fatal("strict check error retained an unpinned admission")
+	}
+	w.mu.Lock()
+	watched := w.watched[f.outpoint.String()]
+	w.mu.Unlock()
+	if watched {
+		t.Fatal("strict check error retained an unpinned watch")
+	}
 }

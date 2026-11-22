@@ -39,7 +39,7 @@ func TestDuplicateConnectionKeepsDialFromLowerIdentity(t *testing.T) {
 			m.interests[identity] = []string{"topic:"}
 			m.peerRates[identity] = &peerRate{tokens: 3}
 
-			_, err := m.bindPeerIdentity(candidate, remote)
+			_, err := m.bindPeerIdentity(candidate, remote, true)
 			if test.candidateWins && err != nil {
 				t.Fatalf("candidate should win: %v", err)
 			}
@@ -84,7 +84,7 @@ func TestLoserCleanupCannotRemoveKeptIdentity(t *testing.T) {
 	m.peers[identity] = existing
 	m.peers[loser.origKey] = loser
 	m.duplicateSafePeers[identity] = struct{}{}
-	if _, err := m.bindPeerIdentity(loser, remote); !errors.Is(err, errDuplicateConnection) {
+	if _, err := m.bindPeerIdentity(loser, remote, true); !errors.Is(err, errDuplicateConnection) {
 		t.Fatalf("bind error = %v", err)
 	}
 	m.removePeerWithReason(loser.origKey, "transport_closed")
@@ -114,7 +114,7 @@ func TestDuplicateConnectionWaitsForExactRemovalCapability(t *testing.T) {
 	m.peers[identity] = existing
 	m.peers[candidate.origKey] = candidate
 
-	if _, err := m.bindPeerIdentity(candidate, remote); err != nil {
+	if _, err := m.bindPeerIdentity(candidate, remote, true); err != nil {
 		t.Fatalf("bind without negotiated capability: %v", err)
 	}
 	if existingClosed.Load() != 0 || candidateClosed.Load() != 0 {
@@ -140,7 +140,7 @@ func TestConfiguredSeedReplacesLearnedConnectionForSameIdentity(t *testing.T) {
 	m.peers[seed.origKey] = seed
 	m.duplicateSafePeers[identity] = struct{}{}
 
-	if _, err := m.bindPeerIdentity(seed, remote); err != nil {
+	if _, err := m.bindPeerIdentity(seed, remote, true); err != nil {
 		t.Fatalf("bind configured seed: %v", err)
 	}
 	if m.peers[identity] != seed || exchangeClosed.Load() != 1 {
@@ -188,7 +188,7 @@ func TestIdentityRemovalCoversReplacementAndAuthenticatingSocket(t *testing.T) {
 
 	bindDone := make(chan error, 1)
 	go func() {
-		_, err := m.bindPeerIdentity(pending, remote)
+		_, err := m.bindPeerIdentity(pending, remote, true)
 		bindDone <- err
 	}()
 	if err := <-bindDone; !errors.Is(err, errIdentityRemoved) {
@@ -213,7 +213,7 @@ func TestSelfConnectionIsClosedBeforeBinding(t *testing.T) {
 	var closed atomic.Int32
 	peer := &MeshPeer{Direction: "inbound", origKey: "self", closeFunc: func() error { closed.Add(1); return nil }}
 	m.peers[peer.origKey] = peer
-	if _, err := m.bindPeerIdentity(peer, self); !errors.Is(err, errSelfConnection) {
+	if _, err := m.bindPeerIdentity(peer, self, true); !errors.Is(err, errSelfConnection) {
 		t.Fatalf("bind error = %v", err)
 	}
 	if len(m.peers) != 0 || closed.Load() != 1 {

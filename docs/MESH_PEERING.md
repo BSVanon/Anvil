@@ -69,15 +69,23 @@ same physical connection: the one dialed by the node whose lowercase compressed
 identity-key hex sorts first. A configured-seed connection is preferred over a
 learned exchange connection for the same identity. Otherwise, when two URLs
 lead to the same identity from one side, the existing connection wins. The
-loser is closed with reason `duplicate_connection`, and topic interests are
-re-announced on the retained connection.
+exception is a same-direction connection that has received no frame for more
+than 150 seconds: after the newcomer passes identity, allowlist, and bond
+checks, it replaces the silent connection. The loser is closed with reason
+`duplicate_connection`, and topic interests are re-announced on the retained
+connection.
 
 During a rolling upgrade, a current node does not close a reciprocal socket to
 a peer that has not advertised exact-removal support. Both sockets remain open,
 but application fan-out uses one preferred connection. This avoids triggering
 the removal bug in older peers. Seed loops remember the identity behind an
 endpoint and do not redial while that identity is already connected in either
-direction.
+direction. If a seed-loop-owned connection to a peer without exact-removal
+support drops for a reason other than duplicate, self, or identity mismatch,
+the loop redials that endpoint once even when another socket for the identity
+is still open, then resumes normal identity-based suppression. A current node
+keeps two connections to an older peer that also seeds it, so the peer count
+shows two connections for that peer until both nodes have upgraded.
 
 ## Bonds
 

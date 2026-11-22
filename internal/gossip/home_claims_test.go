@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"testing"
 	"time"
@@ -180,5 +181,75 @@ func TestPrivateHomeDeliveryKeepsFullTTLAtNamedHome(t *testing.T) {
 	messages, err := store.List(record.Member, "inbox")
 	if err != nil || len(messages) != 1 || messages[0].ExpiryBase != 0 {
 		t.Fatalf("home copy = %+v, %v", messages, err)
+	}
+}
+
+func TestHomeStatusIgnoresMembersWithoutLiveClaims(t *testing.T) {
+	manager, _, _, keys := privateHomeManager(t)
+	sender := hex.EncodeToString(keys["allowed"].PubKey().Compressed())
+	peer := &MeshPeer{
+		Peer: &auth.Peer{}, IdentityPK: keys["allowed"].PubKey(), admitted: true,
+		privateHomeVersion: privateHomeProtocolVersion,
+	}
+	manager.peers[sender] = peer
+	applied := make([]HomeApplied, maxHomeRecords)
+	for i := range applied {
+		applied[i] = HomeApplied{Member: fmt.Sprintf("02%064x", i+1), IssuedAt: int64(i + 1)}
+	}
+	raw, _ := json.Marshal(HomeStatusPayload{Version: privateHomeProtocolVersion, Applied: applied})
+	if err := manager.onHomeStatus(sender, raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(peer.appliedHomeClaims) != 0 {
+		t.Fatalf("absent statuses retained %d applied claims", len(peer.appliedHomeClaims))
+	}
+}
+
+func TestHomeStatusEntriesFollowLiveClaimChurnAndExpiry(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	manager, _, store, keys := privateHomeManager(t)
+	hexKey := func(name string) string { return hex.EncodeToString(keys[name].PubKey().Compressed()) }
+	registry := messaging.NewPrivateHomeStore(store, messaging.PrivateHomeOptions{
+		MaxMembers: 10, MaxTTL: 3600, AllowedHomes: []string{hexKey("allowed")}, Now: func() time.Time { return now },
+	})
+	manager.SetMessagingPolicy(MessagingPolicy{PrivateHomes: registry})
+	sender := hexKey("allowed")
+	peer := &MeshPeer{
+		Peer: &auth.Peer{}, IdentityPK: keys["allowed"].PubKey(), admitted: true,
+		privateHomeVersion: privateHomeProtocolVersion,
+	}
+	manager.peers[sender] = peer
+	records := make([]messaging.PrivateHomeRecord, 10)
+	applied := make([]HomeApplied, 10)
+	memberKeys := make([]*ec.PrivateKey, 10)
+	for i := range records {
+		memberKeys[i], _ = ec.NewPrivateKey()
+		records[i] = signedGossipHomeRecord(t, memberKeys[i], []string{sender}, now.Add(time.Duration(i)*time.Millisecond).UnixMilli())
+		if err := registry.Apply(context.Background(), records[i]); err != nil {
+			t.Fatal(err)
+		}
+		applied[i] = HomeApplied{Member: records[i].Member, IssuedAt: records[i].IssuedAt}
+	}
+	raw, _ := json.Marshal(HomeStatusPayload{Version: privateHomeProtocolVersion, Applied: applied})
+	if err := manager.onHomeStatus(sender, raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(peer.appliedHomeClaims) != registry.Count() {
+		t.Fatalf("applied=%d live=%d", len(peer.appliedHomeClaims), registry.Count())
+	}
+	newer := signedGossipHomeRecord(t, memberKeys[0], []string{sender}, records[0].IssuedAt+100)
+	if err := registry.Apply(context.Background(), newer); err != nil {
+		t.Fatal(err)
+	}
+	if len(peer.appliedHomeClaims) > registry.Count() {
+		t.Fatalf("supersession left applied=%d live=%d", len(peer.appliedHomeClaims), registry.Count())
+	}
+	now = now.Add(2 * time.Hour)
+	empty, _ := json.Marshal(HomeStatusPayload{Version: privateHomeProtocolVersion})
+	if err := manager.onHomeStatus(sender, empty); err != nil {
+		t.Fatal(err)
+	}
+	if len(peer.appliedHomeClaims) != 0 || registry.Count() != 0 {
+		t.Fatalf("after expiry: applied=%d live=%d", len(peer.appliedHomeClaims), registry.Count())
 	}
 }

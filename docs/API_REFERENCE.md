@@ -59,7 +59,10 @@ certificate type IDs, per-type revealed fields, whether an unrevocable type is
 allowed, and the revocation policy. The default policy is `strict` with a
 one-hour recheck. Revocable certificates are watched by their revocation
 outpoint; spending it removes the admission and any gateway registrations owned
-by that identity.
+by that identity. An admission backing a live private-home claim is pinned until
+that claim is released, revoked, expired, or rebound. If private homes and
+certgate are both enabled, `private_home_max_members` cannot exceed the 10,000
+outpoint spend-watch cap.
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
@@ -191,13 +194,15 @@ A claim response is
 `{"status":"success","released":true}`. GET returns
 `{"status":"success","claim":RECORD}` or `404 ERR_NO_CLAIM`. When certgate
 is configured, POST also requires a current admission and otherwise returns
-`403 ERR_CERTIFICATE_REQUIRED`. A connected named gateway that has not
+`403 ERR_CERTIFICATE_REQUIRED`. If its revocation watch cannot be retained,
+POST stores no claim and returns `503 ERR_CERTIFICATE_WATCH_UNAVAILABLE`. A connected named gateway that has not
 negotiated private-home support causes `409 ERR_HOME_INCOMPATIBLE`; disconnected
 homes are checked on reconnect and are not selected until they acknowledge the
 claim version.
 
 `private_homes` requires a non-empty `[mesh] allowed_peers`. The defaults are
-`private_home_max_members = 10000` (valid range 1–1,000,000) and
+`private_home_max_members = 10000` (valid range 1–1,000,000, or at most 10,000
+when certgate is configured) and
 `private_home_max_ttl = 2592000` seconds (valid range 3,600–7,776,000). Claims,
 releases, revocations, acknowledgements, and capability status travel only over
 an allowed identity's retained, admitted primary mesh socket. Pending or
@@ -206,6 +211,9 @@ frames. Peer exchange may discover an allowed identity's address, but its
 heartbeat and candidate state never contain private-home records and do not
 bypass admission, capability negotiation, or per-claim acknowledgement. A
 relay-only send with no ready target returns `503 ERR_MESSAGE_UNDELIVERED`.
+Trusted revocation cutoffs are stored separately from live claims and are
+accepted even when the live registry is full. The cutoff store has the same
+configured member cap; while it is full, new claims are refused fail closed.
 
 ### Message validation, quotas, and errors
 
@@ -240,11 +248,12 @@ Malformed JSON request bodies and authentication failures retain the simpler
 | 400 | `ERR_INVALID_MESSAGE_ID` | `messageIds` has the wrong type, or an ID is empty, whitespace-only, or exceeds 256 bytes |
 | 400 | `ERR_INVALID_CLAIM` | Private-home record shape, bounds, policy, expiry, or signature is invalid |
 | 403 | `ERR_CLAIM_MEMBER_MISMATCH` | Authenticated identity differs from `claim.member` |
-| 403 | `ERR_CLAIM_LIMIT` | The live/revocation-protected identity cap is full for a new member |
+| 403 | `ERR_CLAIM_LIMIT` | The live member cap is full, or the cutoff store is full and new claims are fail-closed |
 | 403 | `ERR_CERTIFICATE_REQUIRED` | A private-home write lacks a current certgate admission |
 | 404 | `ERR_NO_CLAIM` | The caller has no current, unexpired private-home claim |
 | 409 | `ERR_CLAIM_STALE` | `issuedAt` is not newer than the stored claim or release |
 | 409 | `ERR_HOME_INCOMPATIBLE` | A connected named gateway has not negotiated private-home support |
+| 503 | `ERR_CERTIFICATE_WATCH_UNAVAILABLE` | A private-home claim's certificate revocation watch cannot be retained |
 | 500 | `ERR_CLAIM_STORE` | Private-home persistence failed |
 | 429 | `ERR_SENDER_QUOTA_EXCEEDED` | Sender/recipient pair quota is full |
 | 429 | `ERR_INBOX_QUOTA_EXCEEDED` | Configured recipient inbox quota is full |

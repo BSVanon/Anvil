@@ -17,7 +17,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
 
-func TestReciprocalSeedsConvergeWithoutChurnAndReconnect(t *testing.T) {
+func TestReciprocalSeedsConvergeWithoutExtraDialsAndReconnect(t *testing.T) {
 	keyA, _ := ec.NewPrivateKey()
 	keyB, _ := ec.NewPrivateKey()
 	receivedA := make(chan string, 4)
@@ -26,8 +26,17 @@ func TestReciprocalSeedsConvergeWithoutChurnAndReconnect(t *testing.T) {
 	mgrB := managerWithKey(t, keyB, ManagerConfig{OnEnvelope: func(env *envelope.Envelope) { receivedB <- env.Payload }})
 	defer mgrA.Stop()
 	defer mgrB.Stop()
-	serverA := httptest.NewServer(mgrA.MeshHandler())
-	serverB := httptest.NewServer(mgrB.MeshHandler())
+	var dialsA, dialsB atomic.Int32
+	handlerA := mgrA.MeshHandler()
+	handlerB := mgrB.MeshHandler()
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialsA.Add(1)
+		handlerA.ServeHTTP(w, r)
+	}))
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialsB.Add(1)
+		handlerB.ServeHTTP(w, r)
+	}))
 	defer serverA.Close()
 	defer serverB.Close()
 
@@ -58,6 +67,9 @@ func TestReciprocalSeedsConvergeWithoutChurnAndReconnect(t *testing.T) {
 	})
 	if peerForIdentity(mgrA, identityB) != peerA || peerForIdentity(mgrB, identityA) != peerB {
 		t.Fatal("reciprocal seeds churned after duplicate convergence")
+	}
+	if dialsA.Load() != 1 || dialsB.Load() != 1 {
+		t.Fatalf("reciprocal seeds dialed A=%d B=%d times before reconnect, want one each", dialsA.Load(), dialsB.Load())
 	}
 
 	broadcastTestEnvelope(t, mgrA, keyA, "from-a")

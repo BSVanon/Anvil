@@ -18,8 +18,9 @@ func (s *Store) ForEachAcknowledgementPage(recipient string, size int, fn func([
 	defer iter.Release()
 	page := make([]string, 0, size)
 	messageOffset := len(prefix) + 8
+	cutoff := s.now().Unix() - s.opts.TTLSeconds
 	for iter.Next() {
-		if len(iter.Key()) <= messageOffset {
+		if len(iter.Key()) <= messageOffset || ackTimestampFromIndex(iter.Key(), len(prefix)) <= cutoff {
 			continue
 		}
 		page = append(page, string(iter.Key()[messageOffset:]))

@@ -17,7 +17,7 @@ func wireCertificateGate(cfg *config.Config, verifierWallet wallet.Interface, lo
 	if cfg == nil || !cfg.CertGate.Enabled() {
 		return nil, func() {}
 	}
-	watch := spendwatch.New(spendwatch.Config{MaxWatched: 10000, Logger: logger})
+	watch := spendwatch.New(spendwatch.Config{MaxWatched: spendwatch.DefaultMaxWatched, Logger: logger})
 	gate, err := certgate.New(certgate.Config{
 		Certifiers: cfg.CertGate.Certifiers, Types: cfg.CertGate.Types,
 		RevealFields: cfg.CertGate.RevealFields, AllowUnrevocable: cfg.CertGate.AllowUnrevocable,

@@ -14,6 +14,8 @@ const (
 	maxAckTombstonesTotal        = uint64(1_000_000)
 )
 
+var ackTombstoneExpiryChunk = 1000
+
 var (
 	prefixAckPrimary   = []byte("ak:p:")
 	prefixAckRecipient = []byte("ak:r:")
@@ -173,20 +175,56 @@ func (s *Store) expireAckTombstones() {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	cutoff := s.now().Unix() - s.opts.TTLSeconds
-	for {
-		iter := s.db.NewIterator(util.BytesPrefix(prefixAckGlobal), nil)
-		if !iter.Next() {
-			iter.Release()
+	limit := ackTombstoneExpiryChunk
+	if limit < 1 {
+		limit = 1
+	}
+	iter := s.db.NewIterator(util.BytesPrefix(prefixAckGlobal), nil)
+	batch := new(leveldb.Batch)
+	removedByRecipient := make(map[string]uint64)
+	removed := uint64(0)
+	for removed < uint64(limit) && iter.Next() {
+		acknowledgedAt := ackTimestampFromIndex(iter.Key(), len(prefixAckGlobal))
+		if acknowledgedAt > cutoff {
+			break
+		}
+		primary := append([]byte(nil), iter.Value()...)
+		recipient, messageID, ok := splitAckPrimary(primary)
+		if !ok {
+			continue
+		}
+		batch.Delete(primary)
+		batch.Delete(ackRecipientKey(recipient, acknowledgedAt, messageID))
+		batch.Delete(append([]byte(nil), iter.Key()...))
+		removedByRecipient[recipient]++
+		removed++
+	}
+	iterErr := iter.Error()
+	iter.Release()
+	if iterErr != nil || removed == 0 {
+		return
+	}
+	for recipient, countRemoved := range removedByRecipient {
+		count, err := readUint64(s.db, ackCountKey(recipient))
+		if err != nil {
 			return
 		}
-		key := append([]byte(nil), iter.Key()...)
-		primary := append([]byte(nil), iter.Value()...)
-		iter.Release()
-		acknowledgedAt := ackTimestampFromIndex(key, len(prefixAckGlobal))
-		if acknowledgedAt > cutoff || s.removeAckTombstoneLocked(primary, acknowledgedAt) != nil {
-			return
+		if count <= countRemoved {
+			batch.Delete(ackCountKey(recipient))
+		} else {
+			putUint64(batch, ackCountKey(recipient), count-countRemoved)
 		}
 	}
+	total, err := readUint64(s.db, keyAckTotal)
+	if err != nil {
+		return
+	}
+	if total <= removed {
+		batch.Delete(keyAckTotal)
+	} else {
+		putUint64(batch, keyAckTotal, total-removed)
+	}
+	_ = s.db.Write(batch, nil)
 }
 
 func ackPrimaryKey(recipient, messageID string) []byte {

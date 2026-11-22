@@ -86,6 +86,7 @@ func buildMessagingPolicy(cfg *config.Config, v3Eng *engine.Engine, overlayDir *
 func buildStartupMessagingPolicy(cfg *config.Config, v3Eng *engine.Engine, overlayDir *anviloverlay.Directory, msgStore *anvilmsg.Store, gate *certgate.Gate, logger *slog.Logger) anvilapi.MessagingPolicy {
 	policy := buildMessagingPolicy(cfg, v3Eng, overlayDir, msgStore)
 	if policy.PrivateHomes != nil && gate != nil {
+		policy.PrivateHomes.SetOnAdmissionRemoved(gate.UnpinAdmission)
 		gate.OnRevoke("private_homes", func(identity string) {
 			if _, _, err := policy.PrivateHomes.RevokeMember(identity); err != nil && logger != nil {
 				logger.Error("private home startup revocation failed", "error", err)

@@ -81,7 +81,13 @@ type MessagingPolicy struct {
 // Production calls it before mesh startup. ResyncPrivateHomes also repairs a
 // missed announcement if a caller installs it after a peer was admitted.
 func (m *Manager) SetMessagingPolicy(p MessagingPolicy) {
+	if m.messagingPolicy.PrivateHomes != nil && m.messagingPolicy.PrivateHomes != p.PrivateHomes {
+		m.messagingPolicy.PrivateHomes.SetOnRecordChanged(nil)
+	}
 	m.messagingPolicy = p
+	if p.PrivateHomes != nil {
+		p.PrivateHomes.SetOnRecordChanged(m.onPrivateHomeRecordChanged)
+	}
 	m.ResyncPrivateHomes()
 }
 

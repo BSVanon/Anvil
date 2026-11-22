@@ -2,6 +2,7 @@
 package certgate
 
 import (
+	"container/list"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -24,8 +25,10 @@ const (
 )
 
 var (
-	ErrRefused = errors.New("certificate refused")
-	ErrRevoked = errors.New("certificate revoked")
+	ErrRefused          = errors.New("certificate refused")
+	ErrRevoked          = errors.New("certificate revoked")
+	ErrAdmissionFull    = errors.New("certificate admission cache is full")
+	ErrWatchUnavailable = errors.New("certificate revocation watch is unavailable")
 )
 
 // SpendWatcher is the part of spendwatch.Watcher used by certificate admission.
@@ -50,7 +53,7 @@ type Config struct {
 	VerifySignature  func(context.Context, *certificates.Certificate) error
 }
 
-type cacheKey struct{ identity, typ string }
+type cacheKey struct{ identity, typ, outpoint string }
 
 type admission struct {
 	outpoint string
@@ -71,8 +74,10 @@ type Gate struct {
 
 	mu          sync.Mutex
 	cache       map[cacheKey]admission
-	order       []cacheKey
+	order       *list.List
+	orderByKey  map[cacheKey]*list.Element
 	byOutpoint  map[string]map[cacheKey]struct{}
+	pinned      map[string]string
 	hooks       map[string]func(string)
 	verifySpend func(context.Context, string, string) error
 	verifyCert  func(context.Context, *certificates.Certificate) error
@@ -106,7 +111,8 @@ func New(cfg Config) (*Gate, error) {
 		wallet: cfg.Wallet, watch: cfg.Watcher, strict: cfg.RevocationCheck != "lazy",
 		recheck: cfg.Recheck, now: cfg.Now, certifiers: map[string]struct{}{},
 		types: map[string]struct{}{}, fields: cfg.RevealFields, unrev: cfg.AllowUnrevocable,
-		cache: map[cacheKey]admission{}, byOutpoint: map[string]map[cacheKey]struct{}{},
+		cache: map[cacheKey]admission{}, order: list.New(), orderByKey: map[cacheKey]*list.Element{},
+		byOutpoint: map[string]map[cacheKey]struct{}{}, pinned: map[string]string{},
 		hooks:      map[string]func(string){},
 		verifyCert: cfg.VerifySignature,
 	}
@@ -186,12 +192,18 @@ func (g *Gate) RequestedCertificates() *utils.RequestedCertificateSet {
 
 // VerifyAny admits identity when at least one supplied certificate is valid.
 func (g *Gate) VerifyAny(ctx context.Context, identity *ec.PublicKey, certs []*certificates.VerifiableCertificate) error {
+	var watchErr error
 	for _, cert := range certs[:min(len(certs), 8)] {
 		if err := g.verify(ctx, identity, cert); err == nil {
 			return nil
+		} else if errors.Is(err, ErrWatchUnavailable) {
+			watchErr = err
 		}
 	}
 	g.refused.Add(1)
+	if watchErr != nil {
+		return watchErr
+	}
 	return ErrRefused
 }
 
@@ -233,12 +245,14 @@ func (g *Gate) verify(ctx context.Context, identity *ec.PublicKey, cert *certifi
 		if !g.unrev[typ] {
 			return g.reject("unrevocable certificate is not allowed")
 		}
-		g.remember(cacheKey{identityHex, typ}, "", g.now().Add(g.recheck))
+		if err := g.remember(cacheKey{identityHex, typ, ""}, "", g.now().Add(g.recheck)); err != nil {
+			return g.reject(err.Error())
+		}
 		g.verified.Add(1)
 		return nil
 	}
 	outpoint := cert.RevocationOutpoint.String()
-	key := cacheKey{identityHex, typ}
+	key := cacheKey{identityHex, typ, outpoint}
 	if g.freshAdmission(key, outpoint, g.now()) {
 		g.verified.Add(1)
 		return nil
@@ -255,9 +269,12 @@ func (g *Gate) verify(ctx context.Context, identity *ec.PublicKey, cert *certifi
 		return g.reject(ErrRevoked.Error())
 	}
 	if err := g.watch.Watch(outpoint, watchOwner); err != nil {
-		return g.reject("revocation watch failed")
+		return fmt.Errorf("%w: %v", ErrWatchUnavailable, err)
 	}
-	g.remember(key, outpoint, expires)
+	if err := g.remember(key, outpoint, expires); err != nil {
+		g.unwatchIfUnused(outpoint)
+		return fmt.Errorf("%w: %v", ErrWatchUnavailable, err)
+	}
 	g.verified.Add(1)
 	return nil
 }
