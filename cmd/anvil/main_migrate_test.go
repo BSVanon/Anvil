@@ -18,8 +18,12 @@ func TestAutoMigrateLegacyOverlayKeys_NoLegacyData(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := autoMigrateLegacyOverlayKeys(db, nil); err != nil {
+	starts := 0
+	if err := autoMigrateLegacyOverlayKeys(db, nil, func(string) error { starts++; return nil }); err != nil {
 		t.Fatalf("expected nil error on fresh install, got: %v", err)
+	}
+	if starts != 0 {
+		t.Fatalf("fresh store recorded %d migration starts", starts)
 	}
 }
 
@@ -49,8 +53,12 @@ func TestAutoMigrateLegacyOverlayKeys_AlreadyMigrated(t *testing.T) {
 		}
 	}
 
-	if err := autoMigrateLegacyOverlayKeys(db, nil); err != nil {
+	starts := 0
+	if err := autoMigrateLegacyOverlayKeys(db, nil, func(string) error { starts++; return nil }); err != nil {
 		t.Fatalf("expected nil error on already-migrated, got: %v", err)
+	}
+	if starts != 0 {
+		t.Fatalf("already-migrated store recorded %d migration starts", starts)
 	}
 }
 
@@ -74,8 +82,15 @@ func TestAutoMigrateLegacyOverlayKeys_UnparseableLegacyFailsBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = autoMigrateLegacyOverlayKeys(db, nil)
+	var migrations []string
+	err = autoMigrateLegacyOverlayKeys(db, nil, func(name string) error {
+		migrations = append(migrations, name)
+		return nil
+	})
 	if err == nil {
 		t.Fatal("expected non-nil error on unparseable legacy data, got nil")
+	}
+	if len(migrations) != 1 || migrations[0] != legacyOverlayMigration {
+		t.Fatalf("migration starts = %v", migrations)
 	}
 }

@@ -120,6 +120,52 @@ func TestMigrationOrderingIdempotenceAndDataPreservation(t *testing.T) {
 	checkCounterInvariant(t, s)
 }
 
+func TestMigrationStartIsRecordedOnlyWhenSchemaNeedsWork(t *testing.T) {
+	path := t.TempDir()
+	recipient := testIdentity(t)
+	writeV1Fixture(t, path, recipient)
+	var migrations []string
+	opts := Options{MigrationStarted: func(name string) error {
+		migrations = append(migrations, name)
+		return nil
+	}}
+
+	s, err := NewStore(path, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) != 1 || migrations[0] != messageSchemaMigration {
+		t.Fatalf("migration starts = %v", migrations)
+	}
+
+	s, err = NewStore(path, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if len(migrations) != 1 {
+		t.Fatalf("no-op reopen recorded migration starts = %v", migrations)
+	}
+}
+
+func TestFreshMessageStoreDoesNotRecordMigrationStart(t *testing.T) {
+	var migrations []string
+	s, err := NewStore(t.TempDir(), Options{MigrationStarted: func(name string) error {
+		migrations = append(migrations, name)
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if len(migrations) != 0 {
+		t.Fatalf("fresh store recorded migration starts = %v", migrations)
+	}
+}
+
 func TestMigrationRecoversAfterInterruptedInsert(t *testing.T) {
 	path := t.TempDir()
 	recipient := testIdentity(t)

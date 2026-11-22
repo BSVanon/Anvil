@@ -41,45 +41,54 @@ var forbiddenSitesfileCalls = map[string]bool{
 	"AtomicWriteFile": true,
 }
 
-// TestUpgradeNeverRewritesGatewayConfigOrSites parses upgrade.go's own
-// source and walks every call expression in it structurally, rather
+// TestUpgradeNeverRewritesGatewayConfigOrSites parses the upgrade command's
+// production source files and walks every call expression structurally, rather
 // than running cmdUpgrade end-to-end (which would need a real systemd
 // and a real release to download). It catches a forbidden call added
-// anywhere in the file, including in code paths
+// anywhere in those files, including in code paths
 // TestUpgradeFileHandling_LeavesGatewayConfigAndSitesFileUntouched
 // (below) can't reach without that same systemd/network dependency;
 // that other test instead proves the actual on-disk outcome of the one
-// function upgrade.go does call locally. Keeping both: this one is
-// structural coverage of the whole file, that one is a real fixture's
+// function the upgrade command calls locally. Keeping both: this one is
+// structural coverage of the command, that one is a real fixture's
 // real before/after bytes for the one reachable path.
 func TestUpgradeNeverRewritesGatewayConfigOrSites(t *testing.T) {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "upgrade.go", nil, 0)
+	paths, err := filepath.Glob("upgrade*.go")
 	if err != nil {
-		t.Fatalf("parse upgrade.go: %v", err)
+		t.Fatalf("find upgrade source files: %v", err)
 	}
 
 	var hits []string
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				if forbiddenUpgradeCalls[fun.Name] {
+					hits = append(hits, fset.Position(call.Pos()).String()+": "+fun.Name+"(...)")
+				}
+			case *ast.SelectorExpr:
+				if pkg, ok := fun.X.(*ast.Ident); ok && pkg.Name == "sitesfile" && forbiddenSitesfileCalls[fun.Sel.Name] {
+					hits = append(hits, fset.Position(call.Pos()).String()+": sitesfile."+fun.Sel.Name+"(...)")
+				}
+			}
 			return true
-		}
-		switch fun := call.Fun.(type) {
-		case *ast.Ident:
-			if forbiddenUpgradeCalls[fun.Name] {
-				hits = append(hits, fset.Position(call.Pos()).String()+": "+fun.Name+"(...)")
-			}
-		case *ast.SelectorExpr:
-			if pkg, ok := fun.X.(*ast.Ident); ok && pkg.Name == "sitesfile" && forbiddenSitesfileCalls[fun.Sel.Name] {
-				hits = append(hits, fset.Position(call.Pos()).String()+": sitesfile."+fun.Sel.Name+"(...)")
-			}
-		}
-		return true
-	})
+		})
+	}
 
 	if len(hits) > 0 {
-		t.Errorf("upgrade.go calls a config/sites-file-writing function — anvil upgrade must leave a gateway's config and sites file untouched:\n%s", strings.Join(hits, "\n"))
+		t.Errorf("upgrade command calls a config/sites-file-writing function — anvil upgrade must leave a gateway's config and sites file untouched:\n%s", strings.Join(hits, "\n"))
 	}
 }
 

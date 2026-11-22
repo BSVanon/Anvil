@@ -24,6 +24,7 @@ const watchOwner = "ordtrack"
 const (
 	DefaultPendingTimeout  = 24 * time.Hour
 	DefaultMaxOrigins      = 1000
+	sequenceMigration      = "ordinal-spend-sequence"
 	immutableConfirmations = 6
 	// removedRetention is how long a chain that left the tracked set keeps
 	// its history before it is dropped.
@@ -48,6 +49,7 @@ type Config struct {
 	// MaxGossipPayload caps a published envelope's payload.
 	MaxGossipPayload int
 	Logger           *slog.Logger
+	MigrationStarted func(string) error
 }
 
 // Tracker follows tracked origins' chains and serves their versions. Its
@@ -139,8 +141,21 @@ func (t *Tracker) load() error {
 	if err != nil {
 		return err
 	}
+	migrationRecorded := false
+	recordMigration := func() error {
+		if migrationRecorded {
+			return nil
+		}
+		if t.cfg.MigrationStarted != nil {
+			if err := t.cfg.MigrationStarted(sequenceMigration); err != nil {
+				return err
+			}
+		}
+		migrationRecorded = true
+		return nil
+	}
 	for _, stored := range metas {
-		m, err := t.db.migrateSequence(stored)
+		m, err := t.db.migrateSequence(stored, recordMigration)
 		if err != nil {
 			return fmt.Errorf("migrate sequence history of %s: %w", stored.Origin, err)
 		}

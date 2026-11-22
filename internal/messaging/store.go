@@ -78,6 +78,7 @@ type Options struct {
 	MaxInboxBytes    int64
 	MaxStoreMessages int64
 	MaxStoreBytes    int64
+	MigrationStarted func(string) error
 }
 
 type Store struct {

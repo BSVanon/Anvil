@@ -39,7 +39,7 @@ type Store struct {
 }
 
 // NewStore opens or creates an envelope store.
-func NewStore(path string, maxEphemeralTTL, maxDurableSize int) (*Store, error) {
+func NewStore(path string, maxEphemeralTTL, maxDurableSize int, migrationStarted ...func(string) error) (*Store, error) {
 	db, err := store.OpenWithRecover(path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open envelope store: %w", err)
@@ -56,7 +56,11 @@ func NewStore(path string, maxEphemeralTTL, maxDurableSize int) (*Store, error) 
 		maxEphemeralTTL:         maxEphemeralTTL,
 		maxDurableSize:          maxDurableSize,
 	}
-	if err := s.initializeDurableIndexes(); err != nil {
+	var started func(string) error
+	if len(migrationStarted) > 0 {
+		started = migrationStarted[0]
+	}
+	if err := s.initializeDurableIndexes(started); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize envelope indexes: %w", err)
 	}

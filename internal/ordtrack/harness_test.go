@@ -138,9 +138,10 @@ type harness struct {
 	key   *ec.PrivateKey
 	dir   string
 
-	watch    *spendwatch.Watcher
-	tr       *Tracker
-	spvCalls atomic.Int64
+	watch            *spendwatch.Watcher
+	tr               *Tracker
+	spvCalls         atomic.Int64
+	migrationStarted func(string) error
 
 	mu        sync.Mutex
 	published []*envelope.Envelope
@@ -172,7 +173,7 @@ func (h *harness) open() {
 	})
 	tr, err := New(Config{
 		Path: filepath.Join(h.dir, "ordtrack"), Source: h.src, Chain: h.chain, Watcher: h.watch,
-		Publish: h.publish, SigningKey: h.key, Logger: discard,
+		Publish: h.publish, SigningKey: h.key, Logger: discard, MigrationStarted: h.migrationStarted,
 	})
 	if err != nil {
 		h.t.Fatal(err)

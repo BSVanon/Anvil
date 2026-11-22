@@ -530,6 +530,12 @@ orphan-lock contention without operator intervention.
   file + `rename` over the live path). Safe to re-run while services
   are up; no `text file busy` errors even when legacy units with
   different names still hold the old binary.
+- **`anvil upgrade` health-checks restarted units** at their configured
+  `GET /status` endpoint and normally restores the previous binary after a
+  failed check. Automatic rollback is suppressed once a migration starts. If
+  the pre-start migration marker cannot be read, the units still start, but a
+  later health failure also suppresses rollback because a startup migration
+  cannot be ruled out.
 
 ## Operator custom capabilities (v2.1.0+)
 

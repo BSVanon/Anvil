@@ -17,6 +17,8 @@ import (
 
 const migrationIndexBatchSize = 1000
 
+const messageSchemaMigration = "messagebox-v1-to-v2"
+
 var (
 	migrationIndexBatchBytes = 4 << 20
 	migrationPass1TestHook   func(indexed int) error
@@ -66,9 +68,18 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
+	hasV1Records, err := s.hasV1Records()
+	if err != nil {
+		return err
+	}
 	resuming := markerPresent || hasMigrationIndex
 	if resuming {
 		log.Printf("messagebox store migration resuming after an interruption")
+	}
+	if (resuming || hasV1Records) && s.opts.MigrationStarted != nil {
+		if err := s.opts.MigrationStarted(messageSchemaMigration); err != nil {
+			return fmt.Errorf("record message migration start: %w", err)
+		}
 	}
 	if !markerPresent {
 		if err := s.db.Put(keyMetaMigrating, []byte("1"), nil); err != nil {
@@ -100,6 +111,13 @@ func (s *Store) migrate() error {
 	log.Printf("messagebox store migrated: %d messages in %s this run (%d undecodable, %d unservable, %d duplicate v1 records left in place)",
 		counts.inserted, time.Since(started).Round(time.Millisecond), counts.undecodable, counts.unservable, counts.duplicate)
 	return nil
+}
+
+func (s *Store) hasV1Records() (bool, error) {
+	iter := s.db.NewIterator(util.BytesPrefix(prefixV1), nil)
+	defer iter.Release()
+	present := iter.Next()
+	return present, iter.Error()
 }
 
 func (s *Store) buildMigrationIndex(counts *migrationCounts) error {

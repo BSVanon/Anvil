@@ -1,17 +1,13 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -40,7 +36,11 @@ func cmdUpgrade(args []string) {
 	version := fs.String("version", "latest", "version to install (e.g. v0.5.0, or 'latest')")
 	check := fs.Bool("check", false, "check for updates without installing")
 	force := fs.Bool("force", false, "install even if already on the latest version")
+	healthTimeout := fs.Duration("health-timeout", 300*time.Second, "maximum time to wait for restarted service APIs")
 	_ = fs.Parse(args)
+	if *healthTimeout <= 0 {
+		fatal("--health-timeout must be greater than zero")
+	}
 
 	current := anvilversion.Version
 
@@ -278,6 +278,7 @@ func cmdUpgrade(args []string) {
 	// LevelDB), but BEFORE services restart (so the new engine never
 	// sees the legacy-only state). Each anvil-*.service has its own
 	// config file → its own data dir → its own migrate pass.
+	migrationRan := false
 	if needsV3Migrate(current, latestClean) {
 		step("Migrating overlay storage (v2 → v3)")
 		serviceConfigs := extractServiceConfigs("/etc/systemd/system", services)
@@ -299,6 +300,7 @@ func cmdUpgrade(args []string) {
 				// files appear in /var/lib/anvil/overlay/*; harmless at
 				// runtime since the dir is anvil-owned, but bad hygiene.
 				cmd := exec.Command("sudo", "-u", migrateUser, destBin, "overlay-migrate", "-config", cfgPath)
+				migrationRan = true
 				out, runErr := cmd.CombinedOutput()
 				fmt.Print(string(out))
 				if runErr != nil {
@@ -307,42 +309,40 @@ func cmdUpgrade(args []string) {
 			}
 			if len(migrateFails) > 0 {
 				fmt.Printf("    overlay-migrate failed for: %s\n", strings.Join(migrateFails, ", "))
-				if backedUp {
-					if rbErr := os.Rename(backupBin, destBin); rbErr == nil {
-						for _, svc := range services {
-							_ = exec.Command("systemctl", "start", svc).Run()
-						}
-						fatal("overlay-migrate failed — rolled back to previous binary; investigate UnparseableLegacy/UnparseableKey output above")
-					}
-				}
-				fatal("overlay-migrate failed — could not roll back binary; manual intervention required")
+				fatal("overlay-migrate failed after a data migration was started; automatic rollback is unsafe because an older binary may not read migrated data\n" +
+					"manual intervention required for units: " + strings.Join(migrateFails, ", ") + "\n" +
+					"inspect the migration output above and keep the new binary in place while repairing the affected data")
 			}
 			ok(fmt.Sprintf("Overlay migrated for %d node(s)", len(serviceConfigs)))
 		}
 	}
 
-	// Restart services — roll back if all fail to start
+	// Restart only services that were running before the upgrade, then require
+	// each readable, configured API to answer /status before accepting the new
+	// binary. A migration makes automatic binary rollback unsafe.
 	if len(services) > 0 {
-		step("Restarting services")
-		startFails := 0
+		endpoints, markerPaths, configFailures := serviceHealthEndpoints("/etc/systemd/system", services)
 		for _, svc := range services {
-			if err := exec.Command("systemctl", "start", svc).Run(); err != nil {
-				fmt.Printf("    WARNING: failed to start %s: %v\n", svc, err)
-				startFails++
+			if err, failed := configFailures[svc]; failed {
+				fmt.Printf("    WARNING: skipping health check for %s: %v\n", svc, err)
 			}
 		}
-		if startFails == len(services) && backedUp {
-			fmt.Println("    All services failed to start — rolling back")
-			if err := os.Rename(backupBin, destBin); err == nil {
-				for _, svc := range services {
-					_ = exec.Command("systemctl", "start", svc).Run()
-				}
-				fatal("upgrade rolled back — all services failed with new binary")
-			}
-			fatal("rollback also failed — manual intervention required")
+		step("Restarting services")
+		fmt.Printf("    waiting up to %v for configured /status endpoints\n", *healthTimeout)
+		plan := upgradeRestartPlan{
+			services:        services,
+			endpoints:       endpoints,
+			markerPaths:     markerPaths,
+			destination:     destBin,
+			backup:          backupBin,
+			backupAvailable: backedUp,
+			migrationRan:    migrationRan,
+			timeout:         *healthTimeout,
 		}
-		time.Sleep(2 * time.Second)
-		ok("Services restarted: " + strings.Join(services, ", "))
+		if err := restartServicesWithHealth(plan, productionUpgradeHealthDeps()); err != nil {
+			fatal(err.Error())
+		}
+		ok("Services restarted and healthy: " + strings.Join(services, ", "))
 	}
 
 	// Clean up backup
@@ -350,30 +350,7 @@ func cmdUpgrade(args []string) {
 		_ = os.Remove(backupBin)
 	}
 
-	// Verify each service is running the new version — catches zombie processes,
-	// failed starts, and port conflicts that systemctl doesn't report.
-	//
-	// v3.0.3+ uses retry-with-backoff instead of a single-shot 2-second
-	// sleep. On busy nodes (large wallet DB, header init, ExecStartPre
-	// doctor check), the daemon can take 30s+ to bind its HTTP listener
-	// after `systemctl start`. Pre-v3.0.3 single-shot would frequently
-	// produce "Upgrade partial" false-positives — operators panic, the
-	// service was actually fine, just slow to boot. The retry polls
-	// every 3s for up to 45s, fails fast on wrong-version (vs. waiting
-	// for a daemon that already reported the wrong number).
-	step("Verifying upgrade")
 	allVerified := true
-	for _, svc := range services {
-		port := apiPort(strings.TrimPrefix(svc, "anvil-"))
-		latestClean := strings.TrimPrefix(latest, "v")
-		if err := verifyServiceOnVersion(svc, port, latestClean, 45*time.Second, fetchRunningVersion); err != nil {
-			fmt.Printf("  ✗ %v\n", err)
-			allVerified = false
-		} else {
-			ok(fmt.Sprintf("%s on :%s running v%s", svc, port, latestClean))
-		}
-	}
-
 	// Auto-run doctor --yes so any lingering post-upgrade issues (stale
 	// headers after a reorg, a unit stuck in activating, version skew
 	// between services) get detected and fixed without the operator
@@ -398,458 +375,4 @@ func cmdUpgrade(args []string) {
 		fmt.Printf("  Upgrade partial: binary is %s but some issues need manual follow-up (see doctor output above)\n", latest)
 	}
 	fmt.Println()
-}
-
-// resolveRelease determines the download URL for a given version.
-func resolveRelease(version string) (tag, url string) {
-	binary := binaryName()
-
-	if version == "latest" {
-		tag = fetchLatestTag()
-		return tag, githubLatest + "/" + binary
-	}
-
-	// Normalize: ensure "v" prefix
-	if !strings.HasPrefix(version, "v") {
-		version = "v" + version
-	}
-	return version, githubDL + "/" + version + "/" + binary
-}
-
-// fetchLatestTag queries the GitHub API for the latest release tag.
-func fetchLatestTag() string {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(githubAPI)
-	if err != nil {
-		fatal("GitHub API request failed: " + err.Error())
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		fatal(fmt.Sprintf("GitHub API returned %d", resp.StatusCode))
-	}
-
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		fatal("parse GitHub response: " + err.Error())
-	}
-	if release.TagName == "" {
-		fatal("no releases found on GitHub")
-	}
-	return release.TagName
-}
-
-// binaryName returns the expected release artifact name for this platform.
-func binaryName() string {
-	arch := runtime.GOARCH
-	switch arch {
-	case "amd64":
-		return "anvil-linux-amd64"
-	case "arm64":
-		return "anvil-linux-arm64"
-	default:
-		fatal("unsupported architecture: " + arch)
-		return ""
-	}
-}
-
-// runningAnvilServices returns systemd service names whose units exist on
-// this host AND are in a state we should try to restart after upgrade.
-// "activating" is included because a crash-looping service (our production
-// scenario) is technically activating, not active, and we still want to
-// restart it on the new binary — the orphan kill we do first should let it
-// come up cleanly.
-func runningAnvilServices() []string {
-	states, err := diagnostics.EnumerateAnvilServices()
-	if err != nil {
-		// Fall back to the historical hardcoded list if enumeration fails
-		// (e.g. systemctl not installed in a test env). Preserves the prior
-		// behavior exactly.
-		var running []string
-		for _, svc := range []string{"anvil-a", "anvil-b"} {
-			out, err := exec.Command("systemctl", "is-active", svc).Output()
-			if err == nil && strings.TrimSpace(string(out)) == "active" {
-				running = append(running, svc)
-			}
-		}
-		return running
-	}
-	var running []string
-	for _, s := range states {
-		if s.ActiveState == "active" || s.ActiveState == "activating" {
-			running = append(running, s.Name)
-		}
-	}
-	return running
-}
-
-// truncateCmd returns s truncated to n characters with a trailing ellipsis
-// if it was shortened. Kept here (not shared with doctor.go) to avoid
-// introducing a shared file just for a single helper.
-func truncateCmd(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
-// ensureExecStartPreHook inspects every anvil-*.service unit file in the
-// standard systemd location and, if the unit ExecStarts the anvil binary
-// but has no ExecStartPre=...doctor --locks-only line, inserts one
-// immediately before the ExecStart line. Returns the number of files
-// modified.
-//
-// Units written by older versions with the legacy `--fix-locks-only`
-// alias are silently rewritten to the canonical `--locks-only` form so
-// the unit file matches what a fresh deploy would produce.
-//
-// Idempotent: if the canonical hook is already present, the file is
-// untouched. The modification is conservative (inserts or rewrites a
-// single line) so operator customizations above or below that section
-// are preserved.
-//
-// Failures on individual files are logged but don't abort the upgrade —
-// the binary replacement and service restart are the primary goals;
-// unit-file augmentation is a belt-on-top-of-suspenders safety feature.
-func ensureExecStartPreHook() int {
-	return ensureExecStartPreHookIn("/etc/systemd/system")
-}
-
-// ensureExecStartPreHookIn is the testable core of ensureExecStartPreHook.
-// Tests pass a tempdir; production calls use /etc/systemd/system.
-func ensureExecStartPreHookIn(systemdDir string) int {
-	const hookLine = "ExecStartPre=/opt/anvil/anvil doctor --locks-only"
-	const legacyHookLine = "ExecStartPre=/opt/anvil/anvil doctor --fix-locks-only"
-
-	entries, err := os.ReadDir(systemdDir)
-	if err != nil {
-		return 0
-	}
-
-	modified := 0
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if !strings.HasPrefix(name, "anvil-") || !strings.HasSuffix(name, ".service") {
-			continue
-		}
-		unitPath := filepath.Join(systemdDir, name)
-		raw, err := os.ReadFile(unitPath)
-		if err != nil {
-			continue
-		}
-		content := string(raw)
-		// Only touch files that actually invoke our binary; don't stomp
-		// on any unrelated unit someone happened to name anvil-*.service.
-		if !strings.Contains(content, "/opt/anvil/anvil") {
-			continue
-		}
-		if strings.Contains(content, hookLine) {
-			continue // already hooked with canonical flag
-		}
-
-		lines := strings.Split(content, "\n")
-		var out []string
-		inserted := false
-		// If a legacy --fix-locks-only hook is present, rewrite in place
-		// to the canonical form. Otherwise insert a fresh hook line
-		// immediately before the first ExecStart= line.
-		if strings.Contains(content, legacyHookLine) {
-			for _, line := range lines {
-				if strings.TrimSpace(line) == legacyHookLine {
-					out = append(out, hookLine)
-					inserted = true
-					continue
-				}
-				out = append(out, line)
-			}
-		} else {
-			for _, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if !inserted && strings.HasPrefix(trimmed, "ExecStart=") {
-					out = append(out, hookLine)
-					inserted = true
-				}
-				out = append(out, line)
-			}
-		}
-		if !inserted {
-			continue // no ExecStart= line found; unfamiliar shape, skip
-		}
-
-		newContent := strings.Join(out, "\n")
-		// Write via a staging file + rename for atomicity (same pattern
-		// as the binary install): systemd reads these on daemon-reload
-		// and a partial write would be a bad state.
-		staging := unitPath + ".new"
-		if err := os.WriteFile(staging, []byte(newContent), 0644); err != nil {
-			fmt.Printf("    WARNING: write staging %s: %v\n", staging, err)
-			continue
-		}
-		if err := os.Rename(staging, unitPath); err != nil {
-			fmt.Printf("    WARNING: rename %s → %s: %v\n", staging, unitPath, err)
-			_ = os.Remove(staging)
-			continue
-		}
-		modified++
-	}
-	return modified
-}
-
-// needsV3Migrate returns true when the upgrade is crossing the v2 → v3
-// boundary (current major < 3 AND new major >= 3). v3.0.0 is the first
-// release where the canonical engine uses the `ovl3:` LevelDB key family;
-// without a one-pass `anvil overlay-migrate` against each node's data,
-// the v3 daemon boots clean but serves no admitted records until BEEF
-// arrives. Fresh installs (current="") have nothing to migrate from and
-// return false.
-func needsV3Migrate(currentVer, newVer string) bool {
-	if strings.TrimSpace(currentVer) == "" {
-		return false
-	}
-	cur := parseVersion(currentVer)
-	nxt := parseVersion(newVer)
-	if cur == [3]int{0, 0, 0} {
-		return false
-	}
-	return cur[0] < 3 && nxt[0] >= 3
-}
-
-// extractServiceConfigs returns the `-config <path>` argument from each
-// service's unit-file ExecStart= line. Used by the upgrade migration hook
-// so we run `overlay-migrate` against the exact config systemd uses for
-// each node — never glob /etc/anvil/*.toml, which can drift from reality
-// when operators have custom paths or non-default config names.
-//
-// systemdDir is the directory containing the unit files (production:
-// /etc/systemd/system). services is the list of service basenames
-// without the .service suffix.
-//
-// Units without an ExecStart= line, without /opt/anvil/anvil in the
-// ExecStart= command, or without a -config flag are silently skipped.
-func extractServiceConfigs(systemdDir string, services []string) map[string]string {
-	result := map[string]string{}
-	for _, svc := range services {
-		unitPath := filepath.Join(systemdDir, svc+".service")
-		raw, err := os.ReadFile(unitPath)
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if !strings.HasPrefix(trimmed, "ExecStart=") {
-				continue
-			}
-			cmd := strings.TrimPrefix(trimmed, "ExecStart=")
-			if !strings.Contains(cmd, "/opt/anvil/anvil") {
-				continue
-			}
-			fields := strings.Fields(cmd)
-			for i, f := range fields {
-				if f == "-config" && i+1 < len(fields) {
-					result[svc] = fields[i+1]
-					break
-				}
-			}
-			break
-		}
-	}
-	return result
-}
-
-// serviceRunAsUser inspects each service's unit file for User= and returns
-// the first non-root value found. Falls back to "anvil" — the canonical
-// runtime user that `anvil deploy` creates and that every production unit
-// uses. Used by the upgrade-time overlay-migrate hook to keep new LevelDB
-// files owned by the same user the daemon runs as.
-func serviceRunAsUser(systemdDir string, services []string) string {
-	for _, svc := range services {
-		raw, err := os.ReadFile(filepath.Join(systemdDir, svc+".service"))
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if !strings.HasPrefix(trimmed, "User=") {
-				continue
-			}
-			user := strings.TrimSpace(strings.TrimPrefix(trimmed, "User="))
-			if user != "" && user != "root" {
-				return user
-			}
-		}
-	}
-	return "anvil"
-}
-
-// copyFileE copies src to dst with given permissions, returning any error.
-// Unlike copyFile (deploy.go), this does not call fatal — the caller decides.
-func copyFileE(src, dst string, perm os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", src, err)
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", dst, err)
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		_ = os.Remove(dst)
-		return fmt.Errorf("write %s: %w", dst, err)
-	}
-	return out.Close()
-}
-
-func printVersionCheck(current, latest string) {
-	fmt.Printf("  current: %s\n", current)
-	fmt.Printf("  latest:  %s\n", latest)
-	latestClean := strings.TrimPrefix(latest, "v")
-	if current == latestClean || current == latest {
-		fmt.Println("  up to date")
-	} else if versionNewerOrEqual(current, latestClean) {
-		fmt.Println("  up to date (ahead of latest release)")
-	} else {
-		fmt.Println("  upgrade available")
-		fmt.Println()
-		fmt.Println("  Run: sudo anvil upgrade")
-	}
-}
-
-// versionNewerOrEqual returns true if a >= b using simple semver comparison.
-func versionNewerOrEqual(a, b string) bool {
-	ap := parseVersion(a)
-	bp := parseVersion(b)
-	for i := 0; i < 3; i++ {
-		if ap[i] > bp[i] {
-			return true
-		}
-		if ap[i] < bp[i] {
-			return false
-		}
-	}
-	return true // equal
-}
-
-func parseVersion(v string) [3]int {
-	v = strings.TrimPrefix(v, "v")
-	var parts [3]int
-	_, _ = fmt.Sscanf(v, "%d.%d.%d", &parts[0], &parts[1], &parts[2])
-	return parts
-}
-
-// fileSHA256 computes the SHA256 hash of a file and returns it as a hex string.
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
-// killZombieOnPort finds and kills any process listening on the given port.
-// Handles the case where systemctl stop misses processes started outside systemd.
-func killZombieOnPort(port string) {
-	out, err := exec.Command("fuser", fmt.Sprintf("%s/tcp", port)).Output()
-	if err != nil || len(out) == 0 {
-		return // nothing on this port
-	}
-	pids := strings.Fields(strings.TrimSpace(string(out)))
-	for _, pid := range pids {
-		fmt.Printf("    killing zombie PID %s on port %s\n", pid, port)
-		_ = exec.Command("kill", "-9", pid).Run()
-	}
-	time.Sleep(500 * time.Millisecond)
-}
-
-// verifyServiceOnVersion polls a service's /status endpoint until it
-// reports the expected version, or returns an error after timeout.
-//
-// Three outcomes per poll:
-//   - Reports expected: success, return nil immediately.
-//   - Reports a different version: daemon is responding on the wrong
-//     binary (stuck zombie, partial restart). Fail-fast with operator
-//     remediation hint.
-//   - Doesn't respond yet: still booting (HTTP listener not bound),
-//     keep polling until timeout.
-//
-// Anvil daemons can take 30s+ to bind their HTTP listener on busy
-// nodes (large wallet DB load, header init, ExecStartPre doctor
-// pass). The pre-v3.0.3 implementation slept 2s once and gave up,
-// producing false-positive "Upgrade partial" reports.
-//
-// get is a function so tests can substitute a deterministic stub.
-func verifyServiceOnVersion(svc, port, expected string, timeout time.Duration, get func(string) string) error {
-	deadline := time.Now().Add(timeout)
-	const pollInterval = 3 * time.Second
-	for {
-		running := get(port)
-		if running == expected {
-			return nil
-		}
-		if running != "" {
-			return fmt.Errorf("%s on :%s running v%s, expected v%s (try: sudo systemctl restart %s)",
-				svc, port, running, expected, svc)
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%s on :%s not responding after %v (check: sudo journalctl -u %s)",
-				svc, port, timeout, svc)
-		}
-		time.Sleep(pollInterval)
-	}
-}
-
-// fetchRunningVersion queries a node's /status endpoint and returns the version string.
-func fetchRunningVersion(port string) string {
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/status", port))
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	var status struct {
-		Version string `json:"version"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return ""
-	}
-	return status.Version
-}
-
-// checkForUpdate queries GitHub for the latest release and logs if behind.
-// Called once on startup in a goroutine — never blocks the node.
-func checkForUpdate(logger *slog.Logger) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(githubAPI)
-	if err != nil {
-		return // silent — don't spam logs if offline
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return
-	}
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil || release.TagName == "" {
-		return
-	}
-	latestClean := strings.TrimPrefix(release.TagName, "v")
-	current := anvilversion.Version
-	if !versionNewerOrEqual(current, latestClean) {
-		logger.Warn("update available",
-			"current", current,
-			"latest", release.TagName,
-			"upgrade", "sudo anvil upgrade")
-	}
 }

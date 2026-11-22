@@ -133,6 +133,11 @@ func TestRestartMigratesInscriptionOnlySequenceRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var migrations []string
+	h.migrationStarted = func(name string) error {
+		migrations = append(migrations, name)
+		return nil
+	}
 	h.reopen()
 	location, contentAt, pending, err := h.tr.ResolveVersion(origin, 2)
 	if err != nil || location != op(moved, 0) || contentAt != op(v1, 0) || !pending {
@@ -141,6 +146,13 @@ func TestRestartMigratesInscriptionOnlySequenceRecords(t *testing.T) {
 	metas, err := h.tr.db.metas()
 	if err != nil || len(metas) != 1 || metas[0].Versions != 3 {
 		t.Fatalf("migrated metadata = %+v, %v", metas, err)
+	}
+	if len(migrations) != 1 || migrations[0] != sequenceMigration {
+		t.Fatalf("migration starts = %v", migrations)
+	}
+	h.reopen()
+	if len(migrations) != 1 {
+		t.Fatalf("clean reopen recorded migration starts = %v", migrations)
 	}
 }
 

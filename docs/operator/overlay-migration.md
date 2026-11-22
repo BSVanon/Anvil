@@ -209,6 +209,12 @@ Three Anvil-consuming apps need their own one-time updates when their host Anvil
 | Coin-tracking client | 2-4 hours | Uses the `/overlay/lookup` legacy shim; no changes are required through v3.0.0. |
 | Wallet | 1 day | Paymail handle resolution; v3.0.0 supports `identityKey` queries fully. Use the two-step paymail path (`.well-known/bsvalias` HTTP gateway → identityKey → `ls_identity`). The overlay-native `{attributes}` query remains deferred. |
 
+The node wallet records its built-in wallet-toolbox module identity in
+`<data_dir>/wallet/wallet-toolbox.version` after a successful schema migrate.
+For an existing wallet, an absent or changed version file causes a
+`wallet-schema` entry to be appended to `migration-started.log` before the real
+migration begins. A fresh wallet writes the version file after its first
+migrate without recording a migration marker.
 
 ## Support
 

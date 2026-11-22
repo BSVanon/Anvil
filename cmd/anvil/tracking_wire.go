@@ -13,10 +13,12 @@ import (
 	"github.com/BSVanon/Anvil/internal/envelope"
 	"github.com/BSVanon/Anvil/internal/gateway"
 	anvilgossip "github.com/BSVanon/Anvil/internal/gossip"
+	"github.com/BSVanon/Anvil/internal/migrationmarker"
 	"github.com/BSVanon/Anvil/internal/ordtrack"
 	"github.com/BSVanon/Anvil/internal/spendwatch"
 	"github.com/BSVanon/Anvil/internal/spv"
 	"github.com/BSVanon/Anvil/internal/txrelay"
+	anvilversion "github.com/BSVanon/Anvil/internal/version"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/chaintracker"
@@ -83,6 +85,7 @@ func startTracking(ctx context.Context, cfg *config.Config, srv *api.Server, log
 		SigningKey:       d.key,
 		MaxGossipPayload: cfg.Envelopes.MaxDurableSize,
 		Logger:           logger,
+		MigrationStarted: migrationmarker.Recorder(cfg.Node.DataDir, anvilversion.Version),
 	})
 	if err != nil {
 		logger.Error("version tracking not started", "error", err)

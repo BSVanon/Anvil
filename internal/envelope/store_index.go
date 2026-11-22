@@ -18,6 +18,8 @@ var (
 	durableIndexReady = []byte("m:envelope-index-v1")
 )
 
+const envelopeIndexMigration = "envelope-durable-indexes"
+
 // PageCursor identifies one envelope in the stable newest-first store order.
 // Timestamp alone is not a cursor because many signed envelopes can share it.
 type PageCursor struct {
@@ -101,7 +103,7 @@ func (s *Store) addIndexDeletes(batch *leveldb.Batch, env *Envelope) {
 	}
 }
 
-func (s *Store) initializeDurableIndexes() error {
+func (s *Store) initializeDurableIndexes(migrationStarted func(string) error) error {
 	_, markerErr := s.db.Get(durableIndexReady, nil)
 	build := errors.Is(markerErr, leveldb.ErrNotFound)
 	if markerErr != nil && !build {
@@ -113,6 +115,7 @@ func (s *Store) initializeDurableIndexes() error {
 	publicLatest := make(map[string]int64)
 	batch := new(leveldb.Batch)
 	pending := 0
+	migrationRecorded := false
 	iter := s.db.NewIterator(util.BytesPrefix(prefixDurable), nil)
 	for iter.Next() {
 		env, err := UnmarshalEnvelope(iter.Value())
@@ -127,6 +130,13 @@ func (s *Store) initializeDurableIndexes() error {
 			}
 		}
 		if build {
+			if !migrationRecorded && migrationStarted != nil {
+				if err := migrationStarted(envelopeIndexMigration); err != nil {
+					iter.Release()
+					return err
+				}
+				migrationRecorded = true
+			}
 			primary := append([]byte(nil), iter.Key()...)
 			s.addIndexPuts(batch, primary, env)
 			pending++

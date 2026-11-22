@@ -114,7 +114,7 @@ func (s *store) link(origin string, n int) (link, error) {
 
 // migrateSequence upgrades inscription-only numbering to spend numbering.
 // It is idempotent and can rebuild every v/ key from the persisted links.
-func (s *store) migrateSequence(m meta) (meta, error) {
+func (s *store) migrateSequence(m meta, started func() error) (meta, error) {
 	links := make([]link, m.Links)
 	content, contentSeq, seq := m.Origin, 0, 0
 	dirty := false
@@ -152,6 +152,11 @@ func (s *store) migrateSequence(m meta) (meta, error) {
 	}
 	if !dirty {
 		return m, nil
+	}
+	if started != nil {
+		if err := started(); err != nil {
+			return m, fmt.Errorf("record sequence migration start: %w", err)
+		}
 	}
 	c := newChange()
 	it := s.db.NewIterator(util.BytesPrefix([]byte("v/"+m.Origin+"/")), nil)

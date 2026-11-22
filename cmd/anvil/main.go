@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,6 +27,7 @@ import (
 	"github.com/BSVanon/Anvil/internal/headers"
 	mempoolpkg "github.com/BSVanon/Anvil/internal/mempool"
 	anvilmsg "github.com/BSVanon/Anvil/internal/messaging"
+	"github.com/BSVanon/Anvil/internal/migrationmarker"
 	"github.com/BSVanon/Anvil/internal/netguard"
 	anviloverlay "github.com/BSVanon/Anvil/internal/overlay"
 	"github.com/BSVanon/Anvil/internal/overlay/federation"
@@ -45,8 +45,6 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/libsv/go-p2p/wire"
-	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/syndtr/goleveldb/leveldb/util"
 )
 
 func main() {
@@ -101,6 +99,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	migrationStarted := migrationmarker.Recorder(cfg.Node.DataDir, anvilversion.Version)
 
 	logger := installEngineLog()
 
@@ -225,7 +224,7 @@ func main() {
 	broadcaster := txrelay.NewBroadcaster(mempool, arcClient, logger)
 
 	envDir := filepath.Join(cfg.Node.DataDir, "envelopes")
-	envStore, err := envelope.NewStore(envDir, cfg.Envelopes.MaxEphemeralTTL, cfg.Envelopes.MaxDurableSize)
+	envStore, err := envelope.NewStore(envDir, cfg.Envelopes.MaxEphemeralTTL, cfg.Envelopes.MaxDurableSize, migrationStarted)
 	if err != nil {
 		log.Fatalf("envelope store: %v", err)
 	}
@@ -258,6 +257,7 @@ func main() {
 		MaxInboxBytes:    cfg.Messaging.MaxInboxBytes,
 		MaxStoreMessages: cfg.Messaging.MaxStoreMessages,
 		MaxStoreBytes:    cfg.Messaging.MaxStoreBytes,
+		MigrationStarted: migrationStarted,
 	})
 	if err != nil {
 		log.Fatalf("message store: %v", err)
@@ -324,7 +324,7 @@ func main() {
 		// Fresh installs have neither family populated and boot
 		// cleanly (early-return on legacyCount == 0). Already-migrated
 		// nodes are skipped via the count-based comparison.
-		if err := autoMigrateLegacyOverlayKeys(overlayDir.DB(), logger); err != nil {
+		if err := autoMigrateLegacyOverlayKeys(overlayDir.DB(), logger, migrationStarted); err != nil {
 			log.Fatalf("auto-migrate legacy overlay data: %v", err)
 		}
 
@@ -451,7 +451,7 @@ func main() {
 	var nodeWallet *anvilwallet.NodeWallet
 	if cfg.Identity.WIF != "" {
 		walletDir := filepath.Join(cfg.Node.DataDir, "wallet")
-		nw, err := anvilwallet.New(cfg.Identity.WIF, walletDir, headerStore, proofStore, broadcaster, arcClient, logger)
+		nw, err := anvilwallet.New(cfg.Identity.WIF, walletDir, headerStore, proofStore, broadcaster, arcClient, logger, migrationStarted)
 		if err != nil {
 			if strings.Contains(err.Error(), "CGO_ENABLED") || strings.Contains(err.Error(), "cgo to work") {
 				log.Fatalf("FATAL: binary was built with CGO_ENABLED=0 but the wallet requires CGO.\n"+
@@ -909,80 +909,4 @@ func main() {
 
 func tipIsStale(tipUnix, nowUnix int64, thresholdSecs int) bool {
 	return nowUnix-tipUnix > int64(thresholdSecs)
-}
-
-// autoMigrateLegacyOverlayKeys is the v3.0.2+ replacement for the
-// warn-only boot scan that shipped in v3.0.0-3.0.1. If the overlay
-// LevelDB contains v2.x.x `ovl:` records with no matching v3 `ovl3:`
-// records, this runs the same migration logic as the standalone
-// `anvil overlay-migrate` subcommand — but in-process, BEFORE the v3
-// engine wires up, so a fresh v2→v3 upgrade just works for any
-// operator running `sudo anvil upgrade`.
-//
-// Returns nil on success (including no-op cases: fresh install or
-// already-migrated). Returns a non-nil error only on hard migration
-// failure (corrupt legacy values, unparseable keys, or DB I/O) so
-// main can fail-fast instead of booting a half-migrated daemon.
-//
-// Idempotent: re-runs are safe; the migrator skips records whose v3
-// counterpart already exists.
-func autoMigrateLegacyOverlayKeys(db *leveldb.DB, logger *slog.Logger) error {
-	legacyCount := countKeysWithPrefix(db, "ovl:")
-	if legacyCount == 0 {
-		return nil
-	}
-	v3Count := countKeysWithPrefix(db, "ovl3:")
-	if v3Count >= legacyCount {
-		return nil
-	}
-
-	if logger != nil {
-		logger.Info("v3 detected legacy v2 overlay data — running one-shot migration",
-			"legacy_keys", legacyCount,
-			"v3_keys_present", v3Count)
-	}
-
-	opts := anvilstorage.MigrateOptions{
-		LookupBackfiller: makeLookupBackfiller(db, false),
-	}
-	if logger != nil {
-		opts.Logger = func(format string, a ...any) {
-			logger.Info("auto-migrate", "line", fmt.Sprintf(format, a...))
-		}
-	}
-	stats, err := anvilstorage.Migrate(context.Background(), db, opts)
-	if err != nil {
-		return fmt.Errorf("storage.Migrate: %w", err)
-	}
-	if stats.UnparseableLegacy > 0 || stats.UnparseableKey > 0 {
-		return fmt.Errorf("migration found unparseable data: UnparseableLegacy=%d UnparseableKey=%d — run `anvil overlay-migrate -v` to inspect",
-			stats.UnparseableLegacy, stats.UnparseableKey)
-	}
-	if logger != nil {
-		logger.Info("v3 auto-migration complete",
-			"migrated", stats.Migrated,
-			"already_migrated", stats.AlreadyMigrated,
-			"lookup_backfilled", stats.LookupBackfilled,
-			"lookup_backfill_errors", stats.LookupBackfillErrors)
-	}
-	return nil
-}
-
-// countKeysWithPrefix returns the number of LevelDB keys starting with
-// the given prefix. Used by the legacy-key boot scan to detect partial
-// migrations (legacy count > v3 count means some records still need
-// the migrate step). Returns 0 on nil db. Cheap enough at boot since
-// admission counts are typically O(low thousands) per overlay node;
-// the scan is single-pass with no decode.
-func countKeysWithPrefix(db *leveldb.DB, prefix string) int {
-	if db == nil {
-		return 0
-	}
-	iter := db.NewIterator(util.BytesPrefix([]byte(prefix)), nil)
-	defer iter.Release()
-	count := 0
-	for iter.Next() {
-		count++
-	}
-	return count
 }

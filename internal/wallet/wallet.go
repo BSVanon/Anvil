@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -66,9 +67,15 @@ func New(
 	broadcaster *txrelay.Broadcaster,
 	arcClient *txrelay.ARCClient,
 	logger *slog.Logger,
+	migrationStarted ...func(string) error,
 ) (*NodeWallet, error) {
 	services := NewAnvilServices(headerStore, proofStore, broadcaster)
 
+	walletDB := dataDir + "/wallet.db"
+	needsInitialization, err := walletDatabaseNeedsInitialization(walletDB)
+	if err != nil {
+		return nil, fmt.Errorf("inspect wallet storage: %w", err)
+	}
 	// Create SQLite storage provider via GORM.
 	// Use WithDBConfig (not WithConfig) to preserve default FeeModel/Commission.
 	storageProvider, err := storage.NewGORMProvider(
@@ -77,7 +84,7 @@ func New(
 		storage.WithDBConfig(defs.Database{
 			Engine: defs.DBTypeSQLite,
 			SQLite: defs.SQLite{
-				ConnectionString: dataDir + "/wallet.db",
+				ConnectionString: walletDB,
 			},
 		}),
 		storage.WithBeefVerifier(storage.NewDefaultBeefVerifier(services)),
@@ -93,10 +100,20 @@ func New(
 	}
 	storageIdentityKey := hex.EncodeToString(identityKey.PubKey().Compressed())
 
+	migrationVersion, err := prepareWalletMigrationVersion(
+		dataDir, needsInitialization, logger, debug.ReadBuildInfo, migrationStarted,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// Migrate the storage schema (creates tables + saves settings).
 	// This must happen before wallet.New so that MakeAvailable succeeds.
-	if _, err := storageProvider.Migrate(context.Background(), "anvil", storageIdentityKey); err != nil {
-		return nil, fmt.Errorf("migrate wallet storage: %w", err)
+	if err := migrateWalletStorage(func() error {
+		_, err := storageProvider.Migrate(context.Background(), "anvil", storageIdentityKey)
+		return err
+	}, migrationVersion); err != nil {
+		return nil, err
 	}
 
 	w, err := wallet.New(
