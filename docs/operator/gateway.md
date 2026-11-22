@@ -5,6 +5,20 @@ own domain, how `api_host` is resolved and validated, and the fixed rate limits 
 applies. It does not cover the sites file's format or the CLI that manages it — see the
 `anvil gateway sites --help` command for those operations.
 
+## Install
+
+For a new gateway install, pass the API host, ACME account email, and explicit
+terms consent to the installer in one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v3.6.0/scripts/install.sh | sudo env ANVIL_MODE=gateway ANVIL_API_HOST=gateway.example.org ANVIL_ACME_ACCEPT_TOS=true ANVIL_ACME_EMAIL=ops@example.org bash
+```
+
+`ANVIL_ACME_ACCEPT_TOS` accepts `true` or `false`; `true` records consent in
+the new gateway config. Omit it to leave certificate issuance disabled. These
+values only affect a new config, so an upgrade leaves existing ACME and
+messaging settings unchanged.
+
 ## Routing order
 
 Every request to a gateway-enabled listener is dispatched by its Host header, normalised
@@ -103,6 +117,10 @@ Optional `acme_email` supplies the ACME account contact. Allowed mesh peers can
 replicate short-lived challenge entries so more than one gateway can answer a
 validation. A listener bind failure is logged without stopping the node's mesh
 or API listener, so use `anvil doctor` to catch an unavailable gateway port.
+
+For direct deployment, use `--acme-accept-tos` and `--acme-email` with
+`anvil deploy --mode gateway`; both flags are rejected in standard mode. The
+email must contain `@` and cannot contain whitespace or control characters.
 
 `anvil doctor` checks the gateway mode and sites file, each domain's `_ordfs`
 TXT answer, ports 80 and 443, the terms switch, cached certificate state and

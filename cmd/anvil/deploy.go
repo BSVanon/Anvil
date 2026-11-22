@@ -37,15 +37,27 @@ func cmdDeploy(args []string) {
 	mode := fs.String("mode", "standard", "node type: standard or gateway")
 	apiHost := fs.String("api-host", "", "gateway api_host (gateway mode only)")
 	gatewayPeersFlag := fs.String("gateway-peers", "", "comma-separated pubkey@mesh-url@overlay-url peers (gateway mode only)")
+	acmeAcceptTOS := fs.Bool("acme-accept-tos", false, "accept ACME terms for a new gateway config (gateway mode only)")
+	acmeEmail := fs.String("acme-email", "", "ACME account contact email for a new gateway config (gateway mode only)")
 	dryRun := fs.Bool("dry-run", false, "validate and show what would happen without changing anything")
 	skipHealth := fs.Bool("skip-health", false, "skip post-deploy health check")
 	_ = fs.Parse(args)
+	acmeAcceptTOSSet := false
+	acmeEmailSet := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "acme-accept-tos":
+			acmeAcceptTOSSet = true
+		case "acme-email":
+			acmeEmailSet = true
+		}
+	})
 
 	nodeList := parseNodeList(*nodes)
 	if len(nodeList) == 0 {
 		fatal("--nodes must be a, b, or ab")
 	}
-	gatewayPeers := resolveGatewayDeployArgs(*mode, *apiHost, *gatewayPeersFlag)
+	gatewayArgs := resolveGatewayDeployArgs(*mode, *apiHost, *gatewayPeersFlag, *acmeAcceptTOS, *acmeEmail, acmeAcceptTOSSet, acmeEmailSet)
 
 	if !*dryRun {
 		assertRoot()
@@ -97,7 +109,7 @@ func cmdDeploy(args []string) {
 	for _, n := range nodeList {
 		dataDir := nodeDataDir(*dataBase, n)
 		step(fmt.Sprintf("Deploying Node %s", strings.ToUpper(n)))
-		deployAnyNode(*mode, n, *configDir, dataDir, *installDir, *seedPeer, *nodeName, *publicURL, *apiHost, gatewayPeers, *dryRun)
+		deployAnyNode(*mode, n, *configDir, dataDir, *installDir, *seedPeer, *nodeName, *publicURL, *apiHost, gatewayArgs, *dryRun)
 	}
 
 	if *dryRun {

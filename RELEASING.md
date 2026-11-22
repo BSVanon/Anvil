@@ -52,6 +52,7 @@ three point at the same new `vX.Y.Z` tag:
   curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/vX.Y.Z/scripts/install.sh | sudo bash
   ```
 - **`scripts/install.sh`** — the same one-liner, in the "Secure install" comment near the top of the file.
+- **`docs/operator/gateway.md`** — the gateway-install one-liner in its "Install" section.
 - **`RELEASING.md`** (this file) — the "For operators who want maximum security" section below hardcodes a pinned curl one-liner and a `git checkout` example; both must track the release you're cutting, not stay on the previous one.
 
 Steps 5–7 below keep the `vX.Y.Z` placeholder because they describe the release process itself, not a specific file to edit.

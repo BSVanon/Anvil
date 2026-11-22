@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/BSVanon/Anvil/internal/config"
-	"github.com/BSVanon/Anvil/internal/sitesfile"
 )
 
 // gatewayPeer is one entry of ANVIL_GATEWAY_PEERS / `anvil gateway peer add`:
@@ -169,7 +168,7 @@ func renderGatewayPeersBlock(peers []gatewayPeer) string {
 // config with no resolvable api_host, and this command never sets
 // public_url for it to fall back to, so deployGatewayNode checks this
 // before ever calling renderGatewayConfig.
-func renderGatewayConfig(node, dataDir, configDir, apiHost, nodeName string, peers []gatewayPeer) string {
+func renderGatewayConfig(node, dataDir, configDir, apiHost, nodeName string, args gatewayDeployArgs) string {
 	meshPort := "8333"
 	apiPort := "9333"
 	if node == "b" {
@@ -186,6 +185,13 @@ func renderGatewayConfig(node, dataDir, configDir, apiHost, nodeName string, pee
 	// exactly this path; written out explicitly so an operator reading
 	// the file sees the real path rather than an implicit default.
 	sitesFile := filepath.Join(configDir, "gateway-sites.conf")
+	acmeConfig := ""
+	if args.ACMEAcceptTOS {
+		acmeConfig += "acme_accept_tos = true\n"
+	}
+	if args.ACMEEmail != "" {
+		acmeConfig += fmt.Sprintf("acme_email = \"%s\"\n", tomlEscapeString(args.ACMEEmail))
+	}
 
 	return fmt.Sprintf(`# Anvil Node %s (gateway)
 [node]
@@ -220,11 +226,15 @@ named_peers = %s
 max_ephemeral_ttl = 3600
 max_durable_size = 65536
 
+[messaging]
+# Gateway deployments limit the operator API token to this node's own identity box.
+operator_reads_all_boxes = false
+
 [gateway]
 enabled = true
 api_host = "%s"
 sites_file = "%s"
-
+%s
 [api]
 explorer_origin = "ce15872085966376ffe4479ecf32d88fc6be026aed0246054bf7bfaab2ea756a_0"
 rate_limit = 100
@@ -239,66 +249,16 @@ max_app_price_sats = 10000
 
 %s
 `, strings.ToUpper(node), tomlEscapeString(name), tomlEscapeString(dataDir), meshPort, apiPort,
-		tomlStringArray(peerMeshURLs(peers)), tomlStringArray(peerPubKeys(peers)),
-		tomlStringArray(peerOverlayURLs(peers)), tomlStringArray(peerOverlayURLs(peers)),
-		tomlEscapeString(apiHost), tomlEscapeString(sitesFile), renderGatewayPeersBlock(peers))
-}
-
-// validateGatewayDeployMode is resolveGatewayDeployArgs's pure check on
-// --mode alone, split out so it returns an error instead of calling
-// fatal — dropping this check is then a real, test-asserted regression
-// rather than something only a manual CLI run would catch.
-func validateGatewayDeployMode(mode string) error {
-	if mode != "standard" && mode != "gateway" {
-		return fmt.Errorf("--mode must be standard or gateway")
-	}
-	return nil
-}
-
-// validateGatewayDeployAPIHost is resolveGatewayDeployArgs's pure check
-// on --api-host: required in gateway mode (there is no [node] public_url
-// for internal/config.Load to default it from — gateway mode never sets
-// one), and shaped like a hostname — the same rule
-// internal/sitesfile.ValidateDomain applies to a site domain, so IP
-// literals and anything but ASCII LDH labels are refused here too. In
-// standard mode apiHost is unused, so nothing is checked.
-func validateGatewayDeployAPIHost(mode, apiHost string) error {
-	if mode != "gateway" {
-		return nil
-	}
-	if apiHost == "" {
-		return fmt.Errorf("--mode gateway requires --api-host (there is no [node] public_url for internal/config.Load to default it from — gateway mode never sets one)")
-	}
-	if _, ok := sitesfile.ValidateDomain(apiHost); !ok {
-		return fmt.Errorf("--api-host %q is not a valid hostname: no IP literals, ASCII LDH labels only", apiHost)
-	}
-	return nil
-}
-
-// resolveGatewayDeployArgs validates `anvil deploy`'s gateway-mode flags
-// and parses --gateway-peers, failing fast with a clear message rather
-// than writing a config internal/config.Load would only reject once the
-// daemon tries to start. Kept here (not cmd/anvil/deploy.go) so deploy.go
-// only grows by the one line that calls this.
-func resolveGatewayDeployArgs(mode, apiHost, gatewayPeersRaw string) []gatewayPeer {
-	if err := validateGatewayDeployMode(mode); err != nil {
-		fatal(err.Error())
-	}
-	peers, err := parseGatewayPeers(gatewayPeersRaw)
-	if err != nil {
-		fatal("--gateway-peers: " + err.Error())
-	}
-	if err := validateGatewayDeployAPIHost(mode, apiHost); err != nil {
-		fatal(err.Error())
-	}
-	return peers
+		tomlStringArray(peerMeshURLs(args.Peers)), tomlStringArray(peerPubKeys(args.Peers)),
+		tomlStringArray(peerOverlayURLs(args.Peers)), tomlStringArray(peerOverlayURLs(args.Peers)),
+		tomlEscapeString(apiHost), tomlEscapeString(sitesFile), acmeConfig, renderGatewayPeersBlock(args.Peers))
 }
 
 // deployAnyNode dispatches to deployNode or deployGatewayNode by mode, so
 // cmdDeploy's per-node loop stays a single call regardless of mode.
-func deployAnyNode(mode, node, configDir, dataDir, installDir, seedPeer, nodeName, publicURL, apiHost string, peers []gatewayPeer, dryRun bool) {
+func deployAnyNode(mode, node, configDir, dataDir, installDir, seedPeer, nodeName, publicURL, apiHost string, args gatewayDeployArgs, dryRun bool) {
 	if mode == "gateway" {
-		deployGatewayNode(node, configDir, dataDir, installDir, apiHost, peers, nodeName, dryRun)
+		deployGatewayNode(node, configDir, dataDir, installDir, apiHost, args, nodeName, dryRun)
 		return
 	}
 	deployNode(node, configDir, dataDir, installDir, seedPeer, nodeName, publicURL, dryRun)
@@ -350,7 +310,7 @@ func renderGatewayUnit(node, configDir, dataDir, installDir string) (string, err
 // renderGatewayConfig's template instead of renderConfig's, and
 // renderGatewayUnit instead of renderUnit for the one systemd directive
 // pair gateway mode needs that a standard node doesn't.
-func deployGatewayNode(node, configDir, dataDir, installDir, apiHost string, peers []gatewayPeer, nodeName string, dryRun bool) {
+func deployGatewayNode(node, configDir, dataDir, installDir, apiHost string, args gatewayDeployArgs, nodeName string, dryRun bool) {
 	unitContent, err := renderGatewayUnit(node, configDir, dataDir, installDir)
 	if err != nil {
 		fatal(err.Error())
@@ -366,7 +326,7 @@ func deployGatewayNode(node, configDir, dataDir, installDir, apiHost string, pee
 	}
 
 	tomlPath := filepath.Join(configDir, fmt.Sprintf("node-%s.toml", node))
-	writeGatewayConfigIfMissing(tomlPath, node, dataDir, configDir, apiHost, nodeName, peers, dryRun)
+	writeGatewayConfigIfMissing(tomlPath, node, dataDir, configDir, apiHost, nodeName, args, dryRun)
 
 	chownRecursive(dataDir, "anvil")
 }
@@ -377,9 +337,9 @@ func deployGatewayNode(node, configDir, dataDir, installDir, apiHost string, pee
 // be exercised directly in a test with dryRun=false — deployGatewayNode
 // itself always also writes a systemd unit under /etc/systemd/system,
 // which needs root.
-func writeGatewayConfigIfMissing(tomlPath, node, dataDir, configDir, apiHost, nodeName string, peers []gatewayPeer, dryRun bool) {
+func writeGatewayConfigIfMissing(tomlPath, node, dataDir, configDir, apiHost, nodeName string, args gatewayDeployArgs, dryRun bool) {
 	if _, err := os.Stat(tomlPath); os.IsNotExist(err) {
-		tomlContent := renderGatewayConfig(node, dataDir, configDir, apiHost, nodeName, peers)
+		tomlContent := renderGatewayConfig(node, dataDir, configDir, apiHost, nodeName, args)
 		if dryRun {
 			fmt.Printf("  [dry-run] would write %s (gateway)\n", tomlPath)
 		} else {

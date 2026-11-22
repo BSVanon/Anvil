@@ -114,7 +114,7 @@ func TestUpgradeFileHandling_LeavesGatewayConfigAndSitesFileUntouched(t *testing
 	// A real gateway config and a real sites file, exactly as
 	// deployGatewayNode would have written them.
 	configPath := filepath.Join(configDir, "node-a.toml")
-	configContent := renderGatewayConfig("a", dataDir, configDir, "gateway-a.example.org", "golden-gateway", []gatewayPeer{goldenPeerA})
+	configContent := renderGatewayConfig("a", dataDir, configDir, "gateway-a.example.org", "golden-gateway", gatewayDeployArgs{Peers: []gatewayPeer{goldenPeerA}})
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
 	}

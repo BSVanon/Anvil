@@ -89,7 +89,11 @@ max_app_price_sats = 10000
 // output for a two-peer gateway: its full field list, plus the marked
 // peer block.
 func TestRenderGatewayConfigGolden_TwoPeers(t *testing.T) {
-	got := renderGatewayConfig("a", "/var/lib/anvil", "/etc/anvil", "gateway-a.example.org", "golden-gateway", []gatewayPeer{goldenPeerA, goldenPeerB})
+	got := renderGatewayConfig("a", "/var/lib/anvil", "/etc/anvil", "gateway-a.example.org", "golden-gateway", gatewayDeployArgs{
+		Peers:         []gatewayPeer{goldenPeerA, goldenPeerB},
+		ACMEAcceptTOS: true,
+		ACMEEmail:     "ops@example.org",
+	})
 	want := `# Anvil Node A (gateway)
 [node]
 name = "golden-gateway"
@@ -123,10 +127,16 @@ named_peers = ["https://peer-a.example", "https://peer-b.example"]
 max_ephemeral_ttl = 3600
 max_durable_size = 65536
 
+[messaging]
+# Gateway deployments limit the operator API token to this node's own identity box.
+operator_reads_all_boxes = false
+
 [gateway]
 enabled = true
 api_host = "gateway-a.example.org"
 sites_file = "/etc/anvil/gateway-sites.conf"
+acme_accept_tos = true
+acme_email = "ops@example.org"
 
 [api]
 explorer_origin = "ce15872085966376ffe4479ecf32d88fc6be026aed0246054bf7bfaab2ea756a_0"
@@ -155,7 +165,7 @@ max_app_price_sats = 10000
 // `anvil gateway peer add` always has a structurally complete file to
 // edit later.
 func TestRenderGatewayConfigGolden_NoPeers(t *testing.T) {
-	got := renderGatewayConfig("b", "/var/lib/anvil-b", "/etc/anvil", "gateway-b.example.org", "gateway-b-fixed", nil)
+	got := renderGatewayConfig("b", "/var/lib/anvil-b", "/etc/anvil", "gateway-b.example.org", "gateway-b-fixed", gatewayDeployArgs{})
 	want := `# Anvil Node B (gateway)
 [node]
 name = "gateway-b-fixed"
@@ -188,6 +198,10 @@ named_peers = []
 [envelopes]
 max_ephemeral_ttl = 3600
 max_durable_size = 65536
+
+[messaging]
+# Gateway deployments limit the operator API token to this node's own identity box.
+operator_reads_all_boxes = false
 
 [gateway]
 enabled = true
@@ -339,21 +353,6 @@ func TestParseGatewayPeers(t *testing.T) {
 	})
 }
 
-func TestTomlStringArray(t *testing.T) {
-	if got := tomlStringArray(nil); got != "[]" {
-		t.Errorf("tomlStringArray(nil) = %q, want []", got)
-	}
-	if got := tomlStringArray([]string{}); got != "[]" {
-		t.Errorf("tomlStringArray([]) = %q, want []", got)
-	}
-	if got := tomlStringArray([]string{"a"}); got != `["a"]` {
-		t.Errorf(`tomlStringArray(["a"]) = %q, want ["a"]`, got)
-	}
-	if got := tomlStringArray([]string{"a", "b"}); got != `["a", "b"]` {
-		t.Errorf(`tomlStringArray(["a","b"]) = %q, want ["a", "b"]`, got)
-	}
-}
-
 // TestWriteGatewayConfigIfMissing_NeverOverwritesExistingConfig mirrors
 // deployNode's own guarantee for standard nodes: re-deploying an
 // already-configured node leaves its config byte-for-byte unchanged.
@@ -367,7 +366,7 @@ func TestWriteGatewayConfigIfMissing_NeverOverwritesExistingConfig(t *testing.T)
 	if err := os.WriteFile(tomlPath, []byte(existing), 0640); err != nil {
 		t.Fatal(err)
 	}
-	writeGatewayConfigIfMissing(tomlPath, "a", dir, dir, "gateway-a.example.org", "", []gatewayPeer{goldenPeerA}, false /* dryRun */)
+	writeGatewayConfigIfMissing(tomlPath, "a", dir, dir, "gateway-a.example.org", "", gatewayDeployArgs{Peers: []gatewayPeer{goldenPeerA}}, false /* dryRun */)
 
 	gotBytes, err := os.ReadFile(tomlPath)
 	if err != nil {
@@ -385,13 +384,13 @@ func TestWriteGatewayConfigIfMissing_NeverOverwritesExistingConfig(t *testing.T)
 func TestWriteGatewayConfigIfMissing_WritesWhenAbsent(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := dir + "/node-a.toml"
-	writeGatewayConfigIfMissing(tomlPath, "a", dir, dir, "gateway-a.example.org", "golden-gateway", []gatewayPeer{goldenPeerA}, false /* dryRun */)
+	writeGatewayConfigIfMissing(tomlPath, "a", dir, dir, "gateway-a.example.org", "golden-gateway", gatewayDeployArgs{Peers: []gatewayPeer{goldenPeerA}}, false /* dryRun */)
 
 	got, err := os.ReadFile(tomlPath)
 	if err != nil {
 		t.Fatalf("expected a config file to be written, got error: %v", err)
 	}
-	want := renderGatewayConfig("a", dir, dir, "gateway-a.example.org", "golden-gateway", []gatewayPeer{goldenPeerA})
+	want := renderGatewayConfig("a", dir, dir, "gateway-a.example.org", "golden-gateway", gatewayDeployArgs{Peers: []gatewayPeer{goldenPeerA}})
 	if string(got) != want {
 		t.Errorf("written config does not match renderGatewayConfig's output.\ngot:\n%s\nwant:\n%s", got, want)
 	}

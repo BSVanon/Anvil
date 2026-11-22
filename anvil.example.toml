@@ -217,7 +217,7 @@ warn_at_percent = 80
 # own identity box. Default true (today's behavior, unchanged). Set
 # false to restrict the operator token to its own box — naming another
 # recipient then gets a 403.
-# operator_reads_all_boxes = true
+# operator_reads_all_boxes = true   # new gateway deploys write false to limit the operator token
 # Forwarded messages are accepted from admitted mesh peers. The origin
 # attestation is the peer's vouch for the sender; receivers do not repeat the
 # sender's certificate check.

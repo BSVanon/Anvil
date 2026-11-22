@@ -18,7 +18,7 @@ import (
 // with an identity WIF appended, and returns its path.
 func writeGatewayTestConfig(t *testing.T, dir, apiHost, wif string) string {
 	t.Helper()
-	content := renderGatewayConfig("a", filepath.Join(dir, "data"), dir, apiHost, "test-gateway", []gatewayPeer{goldenPeerA})
+	content := renderGatewayConfig("a", filepath.Join(dir, "data"), dir, apiHost, "test-gateway", gatewayDeployArgs{Peers: []gatewayPeer{goldenPeerA}})
 	if wif != "" {
 		content += fmt.Sprintf("\n[identity]\nwif = %q\n", wif)
 	}

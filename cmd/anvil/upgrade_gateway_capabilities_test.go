@@ -17,7 +17,7 @@ import (
 func writeGatewayFixture(t *testing.T, dir, service string) string {
 	t.Helper()
 	configPath := filepath.Join(dir, "node-a.toml")
-	config := renderGatewayConfig("a", dir, dir, "gateway.example.org", "", nil)
+	config := renderGatewayConfig("a", dir, dir, "gateway.example.org", "", gatewayDeployArgs{})
 	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestEnsureGatewayCapabilities_DetectsByGatewayEnabledNotNodeMode(t *testing
 func TestEnsureGatewayCapabilities_MissingAnchorIsReportedAndLeftAlone(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "node-a.toml")
-	config := renderGatewayConfig("a", dir, dir, "gateway.example.org", "", nil)
+	config := renderGatewayConfig("a", dir, dir, "gateway.example.org", "", gatewayDeployArgs{})
 	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestEnsureGatewayCapabilities_InsertsOnlyTheMissingLine(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
 			configPath := filepath.Join(dir, "node-a.toml")
-			config := renderGatewayConfig("a", dir, dir, "gateway.example.org", "", nil)
+			config := renderGatewayConfig("a", dir, dir, "gateway.example.org", "", gatewayDeployArgs{})
 			if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
 				t.Fatal(err)
 			}

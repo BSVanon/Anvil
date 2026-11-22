@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -53,6 +54,32 @@ func TestValidateGatewayDeployAPIHost(t *testing.T) {
 	}
 }
 
+func TestValidateGatewayDeployACME(t *testing.T) {
+	if err := validateGatewayDeployACME("gateway", true, true, "ops@example.org"); err != nil {
+		t.Errorf("valid gateway ACME settings: unexpected error: %v", err)
+	}
+	if err := validateGatewayDeployACME("standard", true, false, ""); err == nil {
+		t.Error("standard mode with --acme-accept-tos: want an error, got nil")
+	} else if !strings.Contains(err.Error(), "--mode gateway") {
+		t.Errorf("standard mode terms error = %q, want clear gateway-mode guidance", err)
+	}
+	if err := validateGatewayDeployACME("standard", false, true, "ops@example.org"); err == nil {
+		t.Error("standard mode with --acme-email: want an error, got nil")
+	} else if !strings.Contains(err.Error(), "--mode gateway") {
+		t.Errorf("standard mode email error = %q, want clear gateway-mode guidance", err)
+	}
+	for _, email := range []string{
+		"ops.example.org",
+		"ops @example.org",
+		"ops@exam\nple.org",
+		"ops@example.org\x00",
+	} {
+		if err := validateGatewayDeployACME("gateway", false, true, email); err == nil {
+			t.Errorf("hostile email %q: want an error, got nil", email)
+		}
+	}
+}
+
 // TestRenderGatewayConfig_EscapesAnAPIHostInjectionAttempt is the
 // defense-in-depth half of the same fix: even if a quote-plus-newline
 // value somehow reached renderGatewayConfig directly (bypassing
@@ -61,7 +88,7 @@ func TestValidateGatewayDeployAPIHost(t *testing.T) {
 // injected table — rather than relying solely on the earlier check.
 func TestRenderGatewayConfig_EscapesAnAPIHostInjectionAttempt(t *testing.T) {
 	injection := `gw.example.com"` + "\n" + `[rogue]` + "\n" + `evil = true` + "\n" + `api_host = "gw.example.com`
-	rendered := renderGatewayConfig("a", "/var/lib/anvil", "/etc/anvil", injection, "golden-gateway", nil)
+	rendered := renderGatewayConfig("a", "/var/lib/anvil", "/etc/anvil", injection, "golden-gateway", gatewayDeployArgs{})
 
 	var doc struct {
 		Gateway struct {

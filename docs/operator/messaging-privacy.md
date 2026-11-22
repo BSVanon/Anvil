@@ -175,3 +175,7 @@ unset forwards to every peer, `operator_reads_all_boxes` defaults to `true` (thi
 gates the node operator's own unscoped API token; it never restricts a recipient-scoped
 token or `/sendMessage` itself), and a node with no `home_hosts` configured still becomes
 Home for any recipient whose advert names its `[node] public_url`.
+
+New gateway deployments are the exception: their generated `[messaging]` block
+sets `operator_reads_all_boxes = false`, limiting the operator token to the
+gateway node's own identity box. Existing configs are not changed on upgrade.

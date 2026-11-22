@@ -598,6 +598,10 @@ max_inbox_messages = 0
 max_inbox_bytes = 0
 ```
 
+New gateway configs created with `anvil deploy --mode gateway` set
+`[messaging] operator_reads_all_boxes = false`; existing configs keep their
+configured value on upgrade.
+
 ## Authentication and payment
 
 See [Authentication and payment](PAYMENTS.md) for bearer authentication, x402, BRC-121, direct payments, limits, and refusal handling.

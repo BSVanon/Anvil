@@ -238,7 +238,8 @@ pause_msg
 # SCREEN 1b: Node type
 #
 # Non-interactive: set ANVIL_MODE=gateway before piping into this
-# script (optionally with ANVIL_API_HOST and ANVIL_GATEWAY_PEERS) and
+# script (optionally with ANVIL_API_HOST, ANVIL_GATEWAY_PEERS,
+# ANVIL_ACME_ACCEPT_TOS and ANVIL_ACME_EMAIL) and
 # this whole screen is skipped — nothing here ever reads a prompt once
 # ANVIL_MODE is already set.
 # ══════════════════════════════════════════════════════════════
@@ -246,6 +247,8 @@ pause_msg
 NODE_MODE="${ANVIL_MODE:-}"
 GATEWAY_API_HOST="${ANVIL_API_HOST:-}"
 GATEWAY_PEERS="${ANVIL_GATEWAY_PEERS:-}"
+GATEWAY_ACME_ACCEPT_TOS="${ANVIL_ACME_ACCEPT_TOS:-}"
+GATEWAY_ACME_EMAIL="${ANVIL_ACME_EMAIL:-}"
 
 if [ -z "$NODE_MODE" ]; then
   clear
@@ -275,6 +278,10 @@ if [ "$NODE_MODE" != "standard" ] && [ "$NODE_MODE" != "gateway" ]; then
 fi
 if [ "$NODE_MODE" = "gateway" ] && [ -z "$GATEWAY_API_HOST" ]; then
   echo -e "${RED}Error: gateway mode needs an API host (ANVIL_API_HOST, or answer the prompt above)${NC}"
+  exit 1
+fi
+if [ "$NODE_MODE" != "gateway" ] && { [ -n "$GATEWAY_ACME_ACCEPT_TOS" ] || [ -n "$GATEWAY_ACME_EMAIL" ]; }; then
+  echo -e "${RED}Error: ANVIL_ACME_ACCEPT_TOS and ANVIL_ACME_EMAIL require ANVIL_MODE=gateway${NC}"
   exit 1
 fi
 
@@ -374,6 +381,12 @@ if [ "$NODE_MODE" = "gateway" ]; then
   DEPLOY_ARGS+=(--mode gateway --api-host "$GATEWAY_API_HOST")
   if [ -n "$GATEWAY_PEERS" ]; then
     DEPLOY_ARGS+=(--gateway-peers "$GATEWAY_PEERS")
+  fi
+  if [ -n "$GATEWAY_ACME_ACCEPT_TOS" ]; then
+    DEPLOY_ARGS+=(--acme-accept-tos="$GATEWAY_ACME_ACCEPT_TOS")
+  fi
+  if [ -n "$GATEWAY_ACME_EMAIL" ]; then
+    DEPLOY_ARGS+=(--acme-email "$GATEWAY_ACME_EMAIL")
   fi
 elif [ -n "$SEED_PEER" ]; then
   DEPLOY_ARGS+=(--seed "$SEED_PEER")
