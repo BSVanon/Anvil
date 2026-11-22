@@ -11,7 +11,7 @@ For a new gateway install, pass the API host, ACME account email, and explicit
 terms consent to the installer in one command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v3.6.1/scripts/install.sh | sudo env ANVIL_MODE=gateway ANVIL_API_HOST=gateway.example.org ANVIL_ACME_ACCEPT_TOS=true ANVIL_ACME_EMAIL=ops@example.org bash
+curl -fsSL https://raw.githubusercontent.com/BSVanon/Anvil/v3.6.2/scripts/install.sh | sudo env ANVIL_MODE=gateway ANVIL_API_HOST=gateway.example.org ANVIL_ACME_ACCEPT_TOS=true ANVIL_ACME_EMAIL=ops@example.org bash
 ```
 
 `ANVIL_ACME_ACCEPT_TOS` accepts `true` or `false`; `true` records consent in
