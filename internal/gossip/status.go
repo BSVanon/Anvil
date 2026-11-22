@@ -62,6 +62,10 @@ func (m *Manager) IncrReceived() { m.envsReceived.Add(1) }
 // IncrSent bumps the sent envelope counter (lock-free).
 func (m *Manager) IncrSent() { m.envsSent.Add(1) }
 
+// SHIPSyncsReceived returns the number of decoded SHIP sync messages handled
+// since this manager started. It is primarily useful for mesh health tests.
+func (m *Manager) SHIPSyncsReceived() int64 { return m.shipReceived.Load() }
+
 // IncrDedupEviction bumps the gossip dedup-set eviction counter (lock-free).
 // Called once per entry evicted from seen or msgSeen when either hits its
 // maxSeen cap and is trimmed back to half (see onData and

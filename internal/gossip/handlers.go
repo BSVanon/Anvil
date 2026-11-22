@@ -26,41 +26,15 @@ func (m *Manager) onSHIPSync(senderPK string, raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &sp); err != nil {
 		return nil
 	}
-	added := 0
-	for _, p := range sp.Peers {
-		if p.IdentityPub == "" || p.Domain == "" || p.Topic == "" {
-			continue
-		}
-		// AddSHIPPeerFromGossip handles domain-based dedup internally:
-		// removes any existing entry for the same domain+topic with a
-		// different identity before adding the new one.
-		if err := m.overlayDir.AddSHIPPeerFromGossip(p.IdentityPub, p.Domain, p.NodeName, p.Version, p.Topic); err == nil {
-			added++
-		}
-		if p.Version != "" {
-			m.mu.Lock()
-			if mp, ok := m.peers[p.IdentityPub]; ok {
-				mp.Version = p.Version
-			}
-			m.mu.Unlock()
-		}
-	}
+	m.shipReceived.Add(1)
+	added, forward := m.storeAndSelectSHIP(sp.Peers)
 	if added > 0 {
 		m.logger.Info("SHIP sync received", "from", truncate(senderPK), "added", added)
-		m.forwardSHIPToAll(senderPK, raw)
+	}
+	if len(forward) > 0 {
+		m.forwardSHIPToAll(senderPK, SHIPSyncPayload{Peers: forward})
 	}
 	return nil
-}
-
-// forwardSHIPToAll forwards SHIP sync to all peers except the sender.
-func (m *Manager) forwardSHIPToAll(senderPK string, rawPayload json.RawMessage) {
-	encoded, err := Encode(MsgSHIPSync, json.RawMessage(rawPayload))
-	if err != nil {
-		return
-	}
-	for _, peer := range m.admittedPeers(senderPK) {
-		_ = peer.peer.ToPeer(context.Background(), encoded, peer.identityPK, 5000)
-	}
 }
 
 // handleMessage processes an incoming mesh message from an authenticated peer.

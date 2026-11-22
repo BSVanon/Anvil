@@ -195,6 +195,8 @@ func (d *Directory) ForEachSHIP(fn func(identity, domain, nodeName, version, top
 // AddSHIPPeerFromGossip stores a SHIP peer received from a trusted mesh peer.
 // Deduplicates by domain+topic: if a different identity registers the same
 // domain+topic, the old entry is removed (handles node re-keying).
+// Every call rewrites the entry to refresh LastSeen; a nil error does not mean
+// the registration changed and must not be used as a forwarding decision.
 // Satisfies gossip.OverlayDirectory interface.
 func (d *Directory) AddSHIPPeerFromGossip(identity, domain, nodeName, version, topic string) error {
 	now := time.Now()

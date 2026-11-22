@@ -68,7 +68,10 @@ type Manager struct {
 	onEnvelope func(*envelope.Envelope)
 
 	// overlay directory for SHIP gossip (nil = SHIP sync disabled)
-	overlayDir OverlayDirectory
+	overlayDir        OverlayDirectory
+	shipForwardWindow time.Duration
+	shipForwardMu     sync.Mutex
+	shipForwarded     map[string]time.Time
 
 	// bond checker (nil = no bond required)
 	bondChecker *bond.Checker
@@ -125,6 +128,7 @@ type Manager struct {
 	// activity counters (lock-free atomics — safe to increment under RLock)
 	envsReceived atomic.Int64
 	envsSent     atomic.Int64
+	shipReceived atomic.Int64
 	startedAt    time.Time
 
 	// mesh health counters for GET /stats (lock-free atomics, cumulative
@@ -267,6 +271,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 		maxSeen:            maxSeen,
 		onEnvelope:         cfg.OnEnvelope,
 		overlayDir:         cfg.OverlayDir,
+		shipForwardWindow:  defaultSHIPForwardWindow,
+		shipForwarded:      make(map[string]time.Time),
 		bondChecker:        cfg.BondChecker,
 		allowlist:          newPeerAllowlist(cfg.AllowedPeers),
 		peerRates:          make(map[string]*peerRate),
