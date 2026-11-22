@@ -118,9 +118,10 @@ type acmeChallengeEligiblePeer struct {
 // never relayed further by a receiver (acmecache.go never forwards what
 // it applies).
 //
-// A peer is eligible only if both hold, checked here directly rather
+// A peer is eligible only if all hold, checked here directly rather
 // than assumed from connection-time admission having already run:
 //
+//   - application admission completed for this exact socket;
 //   - its identity is known (IdentityPK != nil). An inbound peer that
 //     has completed the transport-level connection but never sent its
 //     first application message is already in m.peers — AcceptPeer adds
@@ -141,6 +142,8 @@ type acmeChallengeEligiblePeer struct {
 //     proactive one — manager.go, allowlist.go — both set it that way),
 //     but checking the identity itself, independently, means this
 //     method's own safety never depends on that construction holding.
+//   - it is the primary map entry for that identity, so a compatibility
+//     socket retained during a rolling upgrade does not receive duplicates.
 //
 // The eligible set is copied out of m.peers while m.mu is held, then the
 // lock is released before any send: no network I/O ever happens while
@@ -165,8 +168,8 @@ func (m *Manager) BroadcastACMEChallenge(key string, value []byte, expires time.
 
 	m.mu.RLock()
 	eligible := make([]acmeChallengeEligiblePeer, 0, len(m.peers))
-	for _, peer := range m.peers {
-		if peer.Peer == nil || peer.IdentityPK == nil {
+	for identity, peer := range m.peers {
+		if !admittedPrimaryLocked(identity, peer) {
 			continue
 		}
 		identityHex := fmt.Sprintf("%x", peer.IdentityPK.Compressed())

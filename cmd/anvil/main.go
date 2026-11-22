@@ -3,12 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -495,6 +493,7 @@ func main() {
 	certGate, stopCertGate := wireCertificateGate(cfg, verifierWallet, logger)
 	defer stopCertGate()
 	var gossipMgr *anvilgossip.Manager
+	meshURLFn := func() string { return "" }
 	meshWanted := len(cfg.Mesh.Seeds) > 0 || cfg.Node.Listen != ""
 	if meshWanted && nodeWallet == nil {
 		log.Printf("mesh disabled: identity.wif required for authenticated peering (seeds=%d listen=%q)",
@@ -531,21 +530,24 @@ func main() {
 			log.Printf("mesh connection log: %s", connLogPath)
 		}
 		gossipMgr = anvilgossip.NewManager(anvilgossip.ManagerConfig{
-			Wallet:         nodeWallet.Wallet(),
-			Store:          envStore,
-			Logger:         logger,
-			LocalInterests: []string{""}, // match all topics — relay everything we store
-			MaxSeen:        10000,
-			OverlayDir:     overlayDir,
-			BondChecker:    bondCheck,
-			AllowedPeers:   cfg.Mesh.AllowedPeers,
-			LocalPubkeys:   localPKs,
-			ConnectionLog:  connLog,
-			IdentityKey:    identityPrivKey,
-			RatePerSec:     cfg.Mesh.RatePerSec,
-			RateBurst:      cfg.Mesh.RateBurst,
-			TxMempool:      anvilgossip.NewTxRelayMempool(mempool),
-			CatchUpTopics:  []string{"anvil:catalog", "mesh:heartbeat"},
+			Wallet:           nodeWallet.Wallet(),
+			Store:            envStore,
+			Logger:           logger,
+			LocalInterests:   []string{""}, // match all topics — relay everything we store
+			MaxSeen:          10000,
+			OverlayDir:       overlayDir,
+			BondChecker:      bondCheck,
+			AllowedPeers:     cfg.Mesh.AllowedPeers,
+			LocalPubkeys:     localPKs,
+			ConnectionLog:    connLog,
+			IdentityKey:      identityPrivKey,
+			RatePerSec:       cfg.Mesh.RatePerSec,
+			RateBurst:        cfg.Mesh.RateBurst,
+			TxMempool:        anvilgossip.NewTxRelayMempool(mempool),
+			CatchUpTopics:    []string{"anvil:catalog", "mesh:heartbeat"},
+			PeerExchange:     cfg.Mesh.PeerExchange,
+			MaxExchangePeers: cfg.Mesh.MaxExchangePeers,
+			SeedURLs:         cfg.Mesh.Seeds,
 			OnEnvelope: func() func(*envelope.Envelope) {
 				var firstData sync.Once
 				return func(env *envelope.Envelope) {
@@ -565,46 +567,11 @@ func main() {
 			}(),
 		})
 		defer gossipMgr.Stop()
-
-		// Connect to seed peers (auto-reconnect on disconnect, 30s retry)
-		for _, seed := range cfg.Mesh.Seeds {
-			go gossipMgr.ConnectSeedWithReconnect(context.Background(), seed, 30*time.Second)
-		}
-		if len(cfg.Mesh.Seeds) > 0 {
-			log.Printf("anvil mesh: connecting to %d seed peers (auto-reconnect enabled)", len(cfg.Mesh.Seeds))
-		}
+		meshURLFn = startMeshNetworking(context.Background(), cfg, gossipMgr)
 
 		// TX mesh relay deprecated (post-Teranode: no mempool to relay).
 		// Keeping code but not wiring announcers.
 
-		// Inbound mesh listener (wss:// with TLS, ws:// without)
-		if cfg.Node.Listen != "" {
-			go func() {
-				handler := gossipMgr.MeshHandler()
-				if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
-					log.Printf("mesh listener on %s (wss, TLS)", cfg.Node.Listen)
-					meshSrv := &http.Server{
-						Addr:              cfg.Node.Listen,
-						Handler:           handler,
-						ReadHeaderTimeout: 10 * time.Second,
-						TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
-					}
-					if err := meshSrv.ListenAndServeTLS(cfg.API.TLSCert, cfg.API.TLSKey); err != nil {
-						log.Fatalf("mesh listener: %v", err)
-					}
-				} else {
-					log.Printf("mesh listener on %s (ws, no TLS — dev only)", cfg.Node.Listen)
-					meshSrv := &http.Server{
-						Addr:              cfg.Node.Listen,
-						Handler:           handler,
-						ReadHeaderTimeout: 10 * time.Second,
-					}
-					if err := meshSrv.ListenAndServe(); err != nil {
-						log.Fatalf("mesh listener: %v", err)
-					}
-				}
-			}()
-		}
 	}
 
 	messagingPolicy := wireGossipMessagingPolicy(gossipMgr, cfg, v3Eng, overlayDir, msgStore) // unconditional: see its doc comment
@@ -701,6 +668,7 @@ func main() {
 				DemandFn:            gossipMgr.DemandMap,
 				PrivateOnlyTopicsFn: heartbeatPrivateOnlyTopicsFn(envStore),
 				UpstreamFn:          upstreamFn,
+				MeshURLFn:           meshURLFn,
 			})
 
 			log.Printf("feeds: heartbeat (60s) publisher started")

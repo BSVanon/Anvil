@@ -91,6 +91,7 @@ type HeartbeatPayload struct {
 	Topics         []string        `json:"topics"`
 	Demand         map[string]int  `json:"demand,omitempty"` // topic → subscriber/query count
 	UpstreamStatus *UpstreamStatus `json:"upstream_status,omitempty"`
+	MeshURL        string          `json:"mesh_url,omitempty"`
 	Timestamp      int64           `json:"ts"`
 }
 
@@ -116,6 +117,7 @@ type HeartbeatSources struct {
 	// means nothing is dropped here at all.
 	PrivateOnlyTopicsFn func() map[string]struct{}
 	UpstreamFn          func() *UpstreamStatus // optional
+	MeshURLFn           func() string          // optional, verified/configured mesh address
 }
 
 // RunHeartbeat publishes a mesh:heartbeat envelope every interval.
@@ -175,6 +177,10 @@ func (p *Publisher) publishHeartbeat(ttl int, sources HeartbeatSources) {
 	if sources.UpstreamFn != nil {
 		upstream = sources.UpstreamFn()
 	}
+	var meshURL string
+	if sources.MeshURLFn != nil {
+		meshURL = sources.MeshURLFn()
+	}
 
 	hb := HeartbeatPayload{
 		Node:           p.nodeName,
@@ -184,6 +190,7 @@ func (p *Publisher) publishHeartbeat(ttl int, sources HeartbeatSources) {
 		Topics:         topicNames,
 		Demand:         demand,
 		UpstreamStatus: upstream,
+		MeshURL:        meshURL,
 		Timestamp:      time.Now().Unix(),
 	}
 	data, _ := json.Marshal(hb)

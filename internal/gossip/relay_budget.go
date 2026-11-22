@@ -72,11 +72,9 @@ func (m *Manager) relayMessageForward(senderPKHex string, fwd MsgForwardPayload)
 	if err != nil {
 		return
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for pkHex, peer := range m.peers {
-		if pkHex != senderPKHex && peer.Peer != nil && m.peerAllowedForForward(pkHex) {
-			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
+	for _, peer := range m.admittedPeers(senderPKHex) {
+		if m.peerAllowedForForward(peer.identity) {
+			_ = peer.peer.ToPeer(context.Background(), payload, peer.identityPK, 5000)
 		}
 	}
 }

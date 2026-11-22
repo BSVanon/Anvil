@@ -163,13 +163,10 @@ func (m *Manager) ForwardMessage(msg *messaging.Message) int {
 		return 0
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	sent := 0
-	for pkHex, peer := range m.peers {
-		if peer.Peer != nil && m.peerAllowedForForward(pkHex) {
-			if err := peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000); err == nil {
+	for _, peer := range m.admittedPeers("") {
+		if m.peerAllowedForForward(peer.identity) {
+			if err := peer.peer.ToPeer(context.Background(), payload, peer.identityPK, 5000); err == nil {
 				sent++
 			}
 		}

@@ -3,270 +3,139 @@ package gossip
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
-
-	"github.com/bsv-blockchain/go-sdk/auth"
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 )
 
-// maxRefusalBackoff caps the reconnect delay for a seed whose authenticated
-// identity is connected but refused by [mesh] allowed_peers. Kept separate
-// from the plain connect-failure backoff below (capped at 5 minutes) — an
-// operator misconfiguration (wrong seed, DNS drift) that connects fine but
-// never passes the allowlist shouldn't retry at the same cadence as a
-// transient network failure, and 10 minutes is long enough that the repeated
-// refusal/disconnect doesn't stay visible as a reconnect-storm log line.
 const maxRefusalBackoff = 10 * time.Minute
 
-// ConnectSeedWithReconnect connects to a seed peer and automatically
-// reconnects if the connection drops. Blocks until ctx is cancelled.
-// Designed to run in a goroutine per seed peer.
+// ConnectSeedWithReconnect maintains one configured seed. Once the endpoint's
+// identity is known, a connection for that identity in either direction
+// suppresses redials. This prevents reciprocal seed entries from churning.
 func (m *Manager) ConnectSeedWithReconnect(ctx context.Context, endpoint string, interval time.Duration) {
 	consecutiveFails := 0
 	consecutiveRefusals := 0
+	knownIdentity := ""
 	for {
-		// Anti-thrash: exponential backoff after consecutive failures,
-		// capped at 5 minutes. Resets on successful connection.
-		retryDelay := interval
-		if consecutiveFails > 0 {
-			retryDelay = interval * time.Duration(1<<min(consecutiveFails, 4)) // 30s, 60s, 120s, 240s, 300s cap
-			if retryDelay > 5*time.Minute {
-				retryDelay = 5 * time.Minute
+		if knownIdentity != "" && m.hasIdentityConnection(knownIdentity) {
+			if !waitSeedInterval(ctx, interval) {
+				return
 			}
+			continue
 		}
 
-		transport, err := NewWSTransportAdapter(endpoint)
+		mp, transport, identity, err := m.connectPeer(ctx, endpoint, connectPeerOptions{seed: true, dialTimeout: 10 * time.Second})
+		if identity != "" {
+			knownIdentity = identity
+			m.noteSeedIdentity(identity)
+		}
 		if err != nil {
-			consecutiveFails++
-			m.logger.Warn("seed peer connect failed, retrying",
-				"endpoint", endpoint, "error", err, "retry_in", retryDelay,
-				"consecutive_fails", consecutiveFails)
-			select {
-			case <-ctx.Done():
+			switch {
+			case errors.Is(err, errSelfConnection):
+				m.logger.Warn("[mesh] seeds entry is this node itself; not dialing it again", "endpoint", endpoint)
 				return
-			case <-time.After(retryDelay):
-				continue
-			}
-		}
-		consecutiveFails = 0 // reset on successful connect
-
-		peer := auth.NewPeer(&auth.PeerOptions{
-			Wallet:    m.wallet,
-			Transport: transport,
-		})
-
-		// By the time this fires, establishAndAuthorizePeer below has
-		// already re-keyed this peer's map entry to its identity hex and
-		// checked allowed_peers — this callback only still needs to run
-		// the one-time bond check.
-		peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
-			pkHex := fmt.Sprintf("%x", senderPK.Compressed())
-
-			m.mu.Lock()
-			needsBondCheck := false
-			if mp, ok := m.peers[pkHex]; ok && !mp.bondChecked {
-				mp.bondChecked = true
-				needsBondCheck = true
-			}
-			m.mu.Unlock()
-
-			if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
-				balance, err := m.bondChecker.VerifyBond(senderPK)
-				if err != nil {
-					m.logger.Warn("outbound peer rejected: insufficient bond",
-						"peer", truncate(pkHex),
-						"endpoint", endpoint,
-						"error", err.Error())
-					m.recordConnectionEvent(ConnectionEvent{
-						Direction: "outbound",
-						Event:     "rejected",
-						Endpoint:  endpoint,
-						Identity:  pkHex,
-						Reason:    err.Error(),
-					})
-					m.removePeerWithReason(pkHex, "bond_rejected")
-					return fmt.Errorf("bond required: %w", err)
+			case errors.Is(err, errDuplicateConnection):
+				if !waitSeedInterval(ctx, interval) {
+					return
 				}
-				m.mu.Lock()
-				if mp, ok := m.peers[pkHex]; ok {
-					mp.BondSats = balance
-				}
-				m.mu.Unlock()
-				m.logger.Info("outbound peer bond verified",
-					"peer", truncate(pkHex),
-					"bond_sats", balance)
-			}
-			if needsBondCheck {
-				m.notePeerIdentity(pkHex)
-			}
-
-			return m.handleMessage(pkHex, senderPK, payload)
-		})
-
-		if err := peer.Start(); err != nil {
-			m.logger.Warn("seed peer start failed, retrying",
-				"endpoint", endpoint, "error", err, "retry_in", interval)
-			_ = transport.Close()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(interval):
 				continue
-			}
-		}
-
-		m.mu.Lock()
-		m.peers[endpoint] = &MeshPeer{
-			Peer:        peer,
-			Endpoint:    endpoint,
-			Direction:   "outbound",
-			ConnectedAt: time.Now(),
-			origKey:     endpoint,
-			closeFunc:   transport.Close,
-		}
-		peerCount := len(m.peers)
-		m.mu.Unlock()
-
-		m.logger.Info("seed peer connected", "endpoint", endpoint)
-		m.recordConnectionEvent(ConnectionEvent{
-			Direction: "outbound",
-			Event:     "connected",
-			Endpoint:  endpoint,
-			PeerCount: peerCount,
-		})
-		m.logLiveDataReady(peerCount)
-
-		go transport.StartReceive()
-
-		// Complete the handshake and check [mesh] allowed_peers BEFORE
-		// sending anything derived from local state — see
-		// establishAndAuthorizePeer. A refused peer is already removed
-		// and its transport closed.
-		pkHex, authErr := m.establishAndAuthorizePeer(ctx, peer, endpoint, "outbound", endpoint, 5000)
-		if authErr != nil {
-			if errors.Is(authErr, errPeerRefused) {
-				// Refused, not merely unreachable: back off exponentially
-				// up to maxRefusalBackoff instead of the fixed interval,
-				// so a misconfigured seed doesn't reconnect-and-get-refused
-				// every interval forever.
+			case errors.Is(err, errPeerRefused):
 				consecutiveRefusals++
-				refusalDelay := interval * time.Duration(uint64(1)<<min(consecutiveRefusals, 5))
-				if refusalDelay > maxRefusalBackoff {
-					refusalDelay = maxRefusalBackoff
+				delay := interval * time.Duration(uint64(1)<<min(consecutiveRefusals, 5))
+				if delay > maxRefusalBackoff {
+					delay = maxRefusalBackoff
 				}
 				m.logger.Warn("seed peer refused by allowed_peers, backing off",
-					"endpoint", endpoint, "peer", truncate(pkHex), "retry_in", refusalDelay,
-					"consecutive_refusals", consecutiveRefusals)
-				select {
-				case <-ctx.Done():
+					"endpoint", endpoint, "peer", truncate(identity), "retry_in", delay)
+				if !waitSeedInterval(ctx, delay) {
 					return
-				case <-time.After(refusalDelay):
-					continue
 				}
-			}
-			m.logger.Warn("seed peer handshake failed, retrying",
-				"endpoint", endpoint, "error", authErr, "retry_in", interval)
-			m.removePeerWithReason(endpoint, "handshake_failed")
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(interval):
+				continue
+			default:
+				consecutiveFails++
+				delay := interval * time.Duration(uint64(1)<<min(consecutiveFails-1, 4))
+				if delay > 5*time.Minute {
+					delay = 5 * time.Minute
+				}
+				m.logger.Warn("seed peer connect failed, retrying", "endpoint", endpoint,
+					"error", err, "retry_in", delay, "consecutive_fails", consecutiveFails)
+				if !waitSeedInterval(ctx, delay) {
+					return
+				}
 				continue
 			}
 		}
+
+		consecutiveFails = 0
 		consecutiveRefusals = 0
-		// Raise this connection's per-frame cap back to the library
-		// default now that it is authenticated and allowed — see
-		// ServerWSTransport.MarkAuthorized and the pre-auth cap it pairs
-		// with (transport.go). Without this call, every seed connection —
-		// the normal way nodes peer in production, per [mesh] seeds — would
-		// stay capped at preAuthMaxFrameBytes for its entire connected
-		// lifetime, breaking any gossip payload over that size on exactly
-		// the path real mesh traffic uses most.
-		transport.MarkAuthorized()
-
-		if err := m.announceInterests(peer); err != nil {
-			m.logger.Warn("seed peer interest announce failed", "endpoint", endpoint, "error", err)
-		}
-		m.announceSHIP(peer)
-		m.requestCatchUp(peer)
-
-		// Wait for connection to drop or context cancel
+		m.logger.Info("seed peer connected", "endpoint", endpoint, "peer", truncate(identity))
 		select {
 		case <-transport.Done():
-			m.removePeerWithReason(endpoint, "transport_closed")
-			m.logger.Warn("seed peer disconnected, reconnecting",
-				"endpoint", endpoint, "retry_in", interval)
+			m.removeMeshPeerWithReason(mp, "transport_closed")
+			m.logger.Warn("seed peer disconnected, reconnecting", "endpoint", endpoint, "retry_in", interval)
 		case <-ctx.Done():
-			m.removePeerWithReason(endpoint, "context_cancelled")
+			m.removeMeshPeerWithReason(mp, "context_cancelled")
 			return
 		}
+		if !waitSeedInterval(ctx, interval) {
+			return
+		}
+	}
+}
 
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(interval):
-		}
+func waitSeedInterval(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
 // Stop gracefully disconnects all peers, closing their transport connections.
-// Emits disconnect events to the connection log so restarts are visible.
 func (m *Manager) Stop() {
 	m.mu.Lock()
-	var events []ConnectionEvent
+	unique := make(map[*MeshPeer]struct{}, len(m.peers))
+	peers := make([]*MeshPeer, 0, len(m.peers))
 	for _, peer := range m.peers {
-		events = append(events, m.disconnectEventForPeer(peer, "shutdown", len(m.peers)-1))
-		if peer.Peer != nil {
-			_ = peer.Peer.Stop()
+		if _, seen := unique[peer]; seen {
+			continue
 		}
-		if peer.closeFunc != nil {
-			_ = peer.closeFunc()
-		}
+		unique[peer] = struct{}{}
+		peer.closed = true
+		peers = append(peers, peer)
 	}
 	m.peers = make(map[string]*MeshPeer)
 	m.mu.Unlock()
-	for _, event := range events {
-		m.recordConnectionEvent(event)
+	for _, peer := range peers {
+		m.closeDetachedPeer(peer, "shutdown", 0)
 	}
 }
 
-// allowPeerMessage checks if a peer is within gossip rate limits.
-// Returns true if allowed, false if rate-limited (drop silently).
-// After sustained violations, broadcasts a gossip spam warning.
+// allowPeerMessage checks the per-identity gossip token bucket.
 func (m *Manager) allowPeerMessage(peerPK string) bool {
 	m.peerRateMu.Lock()
 	defer m.peerRateMu.Unlock()
-
 	now := time.Now()
 	pr, ok := m.peerRates[peerPK]
 	if !ok {
 		m.peerRates[peerPK] = &peerRate{tokens: float64(m.rateBurst) - 1, lastSeen: now}
 		return true
 	}
-
-	// Refill tokens
-	elapsed := now.Sub(pr.lastSeen).Seconds()
-	pr.tokens += elapsed * m.ratePerSec
+	pr.tokens += now.Sub(pr.lastSeen).Seconds() * m.ratePerSec
 	if pr.tokens > float64(m.rateBurst) {
 		pr.tokens = float64(m.rateBurst)
 	}
 	pr.lastSeen = now
-
 	if pr.tokens < 1 {
 		pr.dropCount++
-		// Escalate after sustained violation: 200 drops (generous for reconnect bursts),
-		// max one warning per 10 minutes
 		if pr.dropCount >= 200 && now.Sub(pr.lastWarnAt) > 10*time.Minute {
 			pr.dropCount = 0
 			pr.lastWarnAt = now
-			// Release lock before broadcasting (broadcastSlashWarning acquires its own locks)
 			m.peerRateMu.Unlock()
-			m.logger.Warn("gossip spam detected, sending warning",
-				"peer", truncate(peerPK), "drops", 200)
-			m.broadcastSlashWarning(peerPK, SlashGossipSpam,
-				"sustained rate limit violation (200+ drops)")
+			m.logger.Warn("gossip spam detected, sending warning", "peer", truncate(peerPK), "drops", 200)
+			m.broadcastSlashWarning(peerPK, SlashGossipSpam, "sustained rate limit violation (200+ drops)")
 			m.peerRateMu.Lock()
 		}
 		return false

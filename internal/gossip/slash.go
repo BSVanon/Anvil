@@ -175,15 +175,8 @@ func (m *Manager) forwardSlashWarning(senderPK string, rawPayload json.RawMessag
 	if err != nil {
 		return
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for pkHex, peer := range m.peers {
-		if pkHex == senderPK {
-			continue
-		}
-		if peer.Peer != nil {
-			_ = peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
-		}
+	for _, peer := range m.admittedPeers(senderPK) {
+		_ = peer.peer.ToPeer(context.Background(), encoded, peer.identityPK, 5000)
 	}
 }
 
@@ -210,12 +203,8 @@ func (m *Manager) broadcastSlashWarning(target string, reason SlashReason, evide
 		return
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, peer := range m.peers {
-		if peer.Peer != nil {
-			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
-		}
+	for _, peer := range m.admittedPeers("") {
+		_ = peer.peer.ToPeer(context.Background(), payload, peer.identityPK, 5000)
 	}
 
 	if shouldDeregister {

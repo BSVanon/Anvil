@@ -117,36 +117,52 @@ func (m *Manager) checkAllowedPeer(pkHex, direction, endpoint string) bool {
 // re-handshaking, so callers can go straight to announcing once this
 // succeeds.
 //
-// mapKey is the key the caller registered this connection's MeshPeer under
-// before the identity was known (the dial endpoint). On success, the entry
-// is re-keyed to the identity hex, mirroring the re-key the reactive
-// ListenForGeneralMessages callback already does for the first message
-// received; direction/endpoint are passed through to checkAllowedPeer for
-// logging.
+// mp is the exact connection registered under a unique temporary key. On
+// success bindPeerIdentity applies the duplicate rule and re-keys that exact
+// connection to the authenticated identity. expectedIdentity is non-empty for
+// learned peer records and is checked before any local state is sent.
 //
 // Returns the peer's identity hex and a nil error when the caller may
-// proceed. A non-nil error is either errPeerRefused (checkAllowedPeer has
-// already removed the peer and closed its transport) or a wrapped handshake
-// error (the caller owns cleanup in that case, exactly as it did before this
-// helper existed).
-func (m *Manager) establishAndAuthorizePeer(ctx context.Context, peer *auth.Peer, mapKey, direction, endpoint string, maxWaitMs int) (pkHex string, err error) {
+// proceed. Identity mismatch, self-connection, duplicate, and allowlist errors
+// have already closed or detached this exact transport; the caller owns cleanup
+// for a plain handshake error.
+func (m *Manager) establishAndAuthorizePeer(ctx context.Context, peer *auth.Peer, mp *MeshPeer, expectedIdentity, endpoint string, maxWaitMs int) (pkHex string, err error) {
 	session, err := peer.GetAuthenticatedSession(ctx, nil, maxWaitMs)
 	if err != nil {
 		return "", fmt.Errorf("handshake: %w", err)
 	}
 	senderPK := session.PeerIdentityKey
 	pkHex = fmt.Sprintf("%x", senderPK.Compressed())
-
-	m.mu.Lock()
-	if mp, ok := m.peers[mapKey]; ok && mp.IdentityPK == nil {
-		mp.IdentityPK = senderPK
-		m.peers[pkHex] = mp
-		delete(m.peers, mapKey)
+	if expectedIdentity != "" && pkHex != expectedIdentity {
+		m.logger.Debug("mesh peer identity did not match advertisement",
+			"endpoint", endpoint, "expected", truncate(expectedIdentity), "received", truncate(pkHex))
+		m.removeMeshPeerWithReason(mp, "identity_mismatch")
+		return pkHex, errIdentityMismatch
 	}
-	m.mu.Unlock()
+	if pkHex == m.localIdentity && pkHex != "" {
+		m.removeMeshPeerWithReason(mp, "self_connection")
+		return pkHex, errSelfConnection
+	}
 
-	if !m.checkAllowedPeer(pkHex, direction, endpoint) {
+	mp.admissionMu.Lock()
+	defer mp.admissionMu.Unlock()
+	if !m.allowPeerExact(mp, pkHex, "outbound", endpoint) {
 		return pkHex, errPeerRefused
+	}
+	balance := 0
+	if m.bondChecker != nil && m.bondChecker.Required() {
+		balance, err = m.bondChecker.VerifyBond(senderPK)
+		if err != nil {
+			m.logger.Warn("peer rejected: insufficient bond", "peer", truncate(pkHex), "endpoint", endpoint, "error", err)
+			m.removeMeshPeerWithReason(mp, "bond_rejected")
+			return pkHex, fmt.Errorf("%w: %v", errBondRejected, err)
+		}
+	}
+	if _, bindErr := m.bindPeerIdentity(mp, senderPK); bindErr != nil {
+		return pkHex, bindErr
+	}
+	if !m.admitPeer(mp, balance) {
+		return pkHex, errDuplicateConnection
 	}
 	return pkHex, nil
 }

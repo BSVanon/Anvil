@@ -47,11 +47,8 @@ func (m *Manager) onTxAnnounce(senderPKHex string, senderPK *ec.PublicKey, raw j
 		return nil
 	}
 
-	m.mu.RLock()
-	peer, ok := m.peers[senderPKHex]
-	m.mu.RUnlock()
-	if ok && peer.Peer != nil {
-		_ = peer.Peer.ToPeer(context.Background(), payload, senderPK, 5000)
+	if peer, ok := m.admittedPeer(senderPKHex); ok {
+		_ = peer.peer.ToPeer(context.Background(), payload, senderPK, 5000)
 	}
 
 	return nil
@@ -86,11 +83,8 @@ func (m *Manager) onTxRequest(senderPKHex string, senderPK *ec.PublicKey, raw js
 		return nil
 	}
 
-	m.mu.RLock()
-	peer, ok := m.peers[senderPKHex]
-	m.mu.RUnlock()
-	if ok && peer.Peer != nil {
-		_ = peer.Peer.ToPeer(context.Background(), payload, senderPK, 5000)
+	if peer, ok := m.admittedPeer(senderPKHex); ok {
+		_ = peer.peer.ToPeer(context.Background(), payload, senderPK, 5000)
 	}
 
 	return nil
@@ -149,15 +143,8 @@ func (m *Manager) AnnounceTx(txid string, size int, excludePK string) {
 		return
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for pkHex, peer := range m.peers {
-		if pkHex == excludePK {
-			continue
-		}
-		if peer.Peer != nil {
-			_ = peer.Peer.ToPeer(context.Background(), payload, peer.IdentityPK, 5000)
-		}
+	for _, peer := range m.admittedPeers(excludePK) {
+		_ = peer.peer.ToPeer(context.Background(), payload, peer.identityPK, 5000)
 	}
 }
 

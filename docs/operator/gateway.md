@@ -128,6 +128,15 @@ cache-directory ownership/mode, the closed-network settings, and whether an
 allowed peer is connected for challenge replication.
 When its local API is unavailable, it reports that failure once and skips only the checks that require the API.
 
+## Mesh peer exchange
+
+Gateway mode does not itself publish a mesh address. A gateway with no
+`[node] public_url` and no explicit `[mesh] advertise_url` therefore remains
+silent even though peer exchange defaults on. In a closed gateway mesh,
+`allowed_peers` also prevents URL derivation: configure `advertise_url`
+explicitly if it is needed, and only allowlisted heartbeat identities will be
+dialed. Configured seeds continue to be maintained independently.
+
 ## Fixed rates
 
 Two rate limits are part of gateway mode's own traffic shaping, both fixed, built-in constants

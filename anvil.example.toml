@@ -17,6 +17,9 @@ api_listen = "0.0.0.0:9333"      # REST API — HTTPS when TLS configured
 seeds = [
   # "wss://peer1.example.com:8333",
 ]
+peer_exchange = true               # advertise/dial signed heartbeat peer records (default)
+# advertise_url = "wss://anvil.example.org/mesh" # explicit address; otherwise derived and self-checked in open mode
+max_exchange_peers = 8             # learned live peers; 0 advertises but never dials (range 0..64)
 # local_pubkeys = [
 #   "0231600bb272175e990e1639cba5c8f0a8e8c820c7c1b446d2301b0950957f9f66",
 # ]
@@ -33,6 +36,8 @@ seeds = [
 # authenticated identity public key is not listed here is refused right
 # after the handshake, before any of its messages are processed. Leave
 # unset (the default) to accept any peer, as today.
+# Closed mode never derives advertise_url from public_url. It advertises only
+# an explicit URL and dials learned records only for allowed identities.
 # Certificate admission is disabled when this section is absent. Lists and maps
 # default empty. Certifier keys are compressed identity keys; type IDs are
 # 32-byte Base64 values.

@@ -12,7 +12,7 @@
 | `/data` | DELETE | Bearer | Delete a stored envelope by `topic` + `key` |
 | `/broadcast` | POST | Bearer or x402 | Submit BEEF for validation; forwards to ARC if `?arc=true`. Returns derived `status` field. x402 accepted only when node sets a positive broadcast price. |
 | `/messages/subscribe` | GET | Session ticket, or operator token in a header | SSE stream of new BRC-33 messages in real time |
-| `/mesh/status` | GET | No | Rate-limited health snapshot; up to 1,000 newest topics and `upstream_status` for wallet failover decisions |
+| `/mesh/status` | GET | No | Rate-limited health snapshot; up to 1,000 newest topics, `upstream_status`, and peer-exchange state |
 | `/mesh/nodes` | GET | No | Rate-limited federation directory; up to 500 nodes with up to 100 topics each |
 
 ## Discovery Endpoints
@@ -431,6 +431,13 @@ finish and populate the cache after the current response has returned.
   "headers": { "height": 944988, "work": "0x..." },
   "identity": "02...",
   "mesh": { "peers": 2, "peer_list": [...], "started_at": "...", "uptime_secs": 3600 },
+  "peer_exchange": {
+    "enabled": true,
+    "advertised_url": "wss://anvil-prime.example/mesh",
+    "advertise_state": "verified",
+    "candidates": 12,
+    "exchange_peers": 4
+  },
   "activity": { "envelopes_received": 100, "envelopes_sent": 42 },
   "topics": [{ "topic": "oracle:rates", "count": 100, "age_secs": 30 }],
   "topics_total": 1,
@@ -447,6 +454,13 @@ finish and populate the cache after the current response has returned.
 `topics` contains at most 1,000 public topics, ordered by `latest_at` newest
 first and then topic name. `topics_total` is the number of public topics before
 that cap, and `topics_truncated` reports whether the cap removed entries.
+
+`peer_exchange.advertise_state` is `verified` for a derived address that passed
+the self-handshake, `configured` for an explicit operator URL, `unverified`
+while no derived candidate currently passes, `none` when no address can be
+derived, or `off` when peer exchange is disabled. `candidates` is the bounded
+signed-advertisement table size; `exchange_peers` counts only live connections
+opened by peer exchange, not configured seeds or inbound connections.
 
 `broadcast` reflects the ARC (or Arcade, post-migration) upstream health;
 `service_health` is the *host-level* health of the anvil service itself
@@ -466,7 +480,10 @@ the legacy name is still accepted for backward compatibility).
 
 Heartbeat envelopes published on the `mesh:heartbeat` topic carry the
 same `upstream_status` so federation consumers can observe node health
-without direct-polling every node.
+without direct-polling every node. When peer exchange has a configured or
+verified address, the payload also carries `"mesh_url": "wss://..."`. The
+envelope signature authenticates that address to its publisher identity;
+the field is omitted while advertising is off, unavailable, or unverified.
 
 ## Mesh nodes response shape
 

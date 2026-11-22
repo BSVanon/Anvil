@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
 
 	"github.com/bsv-blockchain/go-sdk/auth"
 	"golang.org/x/net/websocket"
@@ -32,11 +36,60 @@ const preAuthMaxFrameBytes = 64 << 10 // 64 KiB
 // a conn wrapper). This replaces the SDK's WebSocketTransport so we
 // own the conn and can close it cleanly.
 func NewWSTransportAdapter(endpoint string) (*ServerWSTransport, error) {
-	conn, err := websocket.Dial(endpoint, "", "http://localhost")
+	return newWSTransportAdapter(endpoint, 10*time.Second, false)
+}
+
+var allowLoopbackExchangeDial atomic.Bool
+
+func newWSTransportAdapter(endpoint string, timeout time.Duration, guardPrivate bool) (*ServerWSTransport, error) {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	config, err := websocket.NewConfig(endpoint, "http://localhost")
+	if err != nil {
+		return nil, fmt.Errorf("websocket config %s: %w", endpoint, err)
+	}
+	dialer := &net.Dialer{Timeout: timeout}
+	if guardPrivate {
+		dialer.Control = exchangeDialControl
+	}
+	config.Dialer = dialer
+	dialCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	conn, err := config.DialContext(dialCtx)
 	if err != nil {
 		return nil, fmt.Errorf("websocket dial %s: %w", endpoint, err)
 	}
 	return NewServerWSTransport(conn), nil
+}
+
+func exchangeDialControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("peer exchange remote address: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("peer exchange remote address is not an IP")
+	}
+	if ip.IsLoopback() && allowLoopbackExchangeDial.Load() {
+		return nil
+	}
+	if isUnsafeExchangeIP(ip) {
+		return fmt.Errorf("peer exchange refused non-public address %s", ip)
+	}
+	return nil
+}
+
+func isUnsafeExchangeIP(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		return v4[0] == 0 || v4[0] == 127 ||
+			(v4[0] == 100 && v4[1]&0xc0 == 64) ||
+			v4.IsPrivate() || v4.IsLinkLocalUnicast() ||
+			v4.IsLinkLocalMulticast() || v4.IsMulticast() || v4.IsUnspecified()
+	}
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
 }
 
 // --- Inbound (server-side) transport ---

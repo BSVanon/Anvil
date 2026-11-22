@@ -11,7 +11,73 @@ Configure seed peers in `[mesh]` to connect to existing nodes:
 seeds = ["wss://anvil.sendbsv.com/mesh"]
 ```
 
-Seed connections auto-reconnect on disconnect (30-second retry loop).
+Seed connections auto-reconnect on disconnect (30-second retry loop). A seed
+that authenticates as the local node is closed before any topic or overlay
+announcement is sent; its reconnect loop then stops for the lifetime of the
+process. This makes an accidental self-seed harmless after one diagnostic dial.
+
+## Peer exchange
+
+Peer exchange is enabled by default. A node places a verified `mesh_url` in its
+signed `mesh:heartbeat` envelope. Heartbeats already propagate across multiple
+mesh hops and are validated against the publisher identity, so another node can
+learn the address without a new wire message. Older nodes ignore the field.
+
+In open mode, a node with `[node] public_url` derives a WebSocket address and
+verifies it with a 10-second WebSocket plus BRC-31 handshake back to itself. For
+the common nginx layout, `https://node.example` is tried first as
+`wss://node.example/mesh`, which proxies to the mesh listener at
+`127.0.0.1:8333`. A direct address using the configured mesh listen port is the
+fallback. Only an address whose handshake reveals this node's identity is
+advertised. Verification repeats every six hours; a failed recheck immediately
+removes the derived address until a retry succeeds.
+
+An explicit `advertise_url` is advertised as configured. Its self-check is
+diagnostic: failure logs a warning but does not remove the operator-supplied
+address. URLs are limited to 512 bytes and must use `ws://` or `wss://` with a
+host and no userinfo, query, or fragment.
+
+Learned peers are considered every 30 seconds. At most two are dialed per tick,
+and no more than `max_exchange_peers` learned connections are kept. Each dial
+has a 10-second timeout, must authenticate as the identity that advertised it,
+and still passes the normal bond and `allowed_peers` gates. Failures use
+per-candidate exponential backoff. An identity mismatch is closed before any
+announcement and suppressed for six hours.
+
+Open-mode exchange dials reject loopback, private, link-local, CGNAT,
+multicast, unspecified, and `0.0.0.0/8` destinations at the connected socket,
+after DNS resolution. This prevents DNS rebinding from reaching internal
+addresses. Configured seeds are never replaced by learned records and do not
+count toward the exchange connection cap.
+
+```toml
+[mesh]
+peer_exchange = true       # default; master switch for advertising and dialing
+advertise_url = ""         # optional explicit ws:// or wss:// address
+max_exchange_peers = 8     # default; 0..64, with 0 meaning advertise only
+```
+
+Anyone who can read the `mesh:heartbeat` topic can read its `mesh_url`. Do not
+advertise an address that is intended to remain confidential.
+
+## Duplicate connections
+
+Current nodes advertise exact-connection removal support in their topic
+declaration. Once both identities support it, only one live connection is
+retained per remote identity. When two nodes dial each other, both retain the
+same physical connection: the one dialed by the node whose lowercase compressed
+identity-key hex sorts first. A configured-seed connection is preferred over a
+learned exchange connection for the same identity. Otherwise, when two URLs
+lead to the same identity from one side, the existing connection wins. The
+loser is closed with reason `duplicate_connection`, and topic interests are
+re-announced on the retained connection.
+
+During a rolling upgrade, a current node does not close a reciprocal socket to
+a peer that has not advertised exact-removal support. Both sockets remain open,
+but application fan-out uses one preferred connection. This avoids triggering
+the removal bug in older peers. Seed loops remember the identity behind an
+endpoint and do not redial while that identity is already connected in either
+direction.
 
 ## Bonds
 
@@ -22,7 +88,12 @@ Nodes can require a minimum bond before accepting mesh peers. A bond is BSV lock
 min_bond_sats = 10000
 ```
 
-This prevents spam peering and ensures operators have economic skin in the game. Bond verification results are cached for 1 hour (successes only — transient failures retry immediately).
+This prevents spam peering and ensures operators have economic skin in the
+game. Identity, allowlist, and bond checks all complete before a connection is
+admitted, its pre-authentication frame limit is raised, or any interests, SHIP
+directory, catch-up request, envelope, transaction, slash warning, or message
+forward is sent to it. Bond verification results are cached for 1 hour
+(successes only — transient failures retry immediately).
 
 When `min_bond_sats = 0` (default), any authenticated peer can join the mesh.
 
@@ -88,6 +159,13 @@ named_peers = ["https://overlay-a.internal", "https://overlay-b.internal"]
 non-empty, an inbound or outbound peer not on the list is dropped immediately
 after the BRC-31 handshake and before either side exchanges gossip state. An
 empty list keeps open peering; bond rules still apply.
+
+Closed-network mode never derives a mesh advertisement from `public_url`; set
+`advertise_url` explicitly if peers should learn one. Learned URLs are dialed
+only when the signed advertising identity is in `allowed_peers`. Private
+addresses are permitted for those allowlisted identities. Setting
+`peer_exchange = false` disables both advertising and learned dialing without
+changing configured seed maintenance.
 
 `[overlay] named_peers` contains overlay base URLs. When it is non-empty, GASP
 sync for every hosted topic, federated lookup, submit propagation, and SHIP/SLAP
@@ -163,6 +241,9 @@ public_url = "https://my-node.example.com"
 
 [mesh]
 seeds = ["wss://seed-node.example.com/mesh"]
+peer_exchange = true
+advertise_url = ""
+max_exchange_peers = 8
 min_bond_sats = 10000
 local_pubkeys = ["02...optional-local-app-pubkey..."]
 

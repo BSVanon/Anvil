@@ -9,125 +9,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bsv-blockchain/go-sdk/auth"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 
 	"github.com/BSVanon/Anvil/internal/envelope"
 )
-
-// requestCatchUp asks a peer for recent envelopes on topics this node cares about.
-// Called after connect so new/reconnecting nodes immediately get catalog, feeds, etc.
-// Catches up on: (1) built-in catchUpTopics, (2) non-empty local interest prefixes.
-func (m *Manager) requestCatchUp(peer *auth.Peer) {
-	// Merge built-in topics with non-empty interest prefixes (deduped).
-	seen := make(map[string]struct{})
-	var topics []string
-	for _, t := range m.catchUpTopics {
-		if _, ok := seen[t]; !ok {
-			seen[t] = struct{}{}
-			topics = append(topics, t)
-		}
-	}
-	for _, prefix := range m.localInterests {
-		if prefix == "" {
-			continue // wildcard = "forward everything live", not "backfill entire store"
-		}
-		if _, ok := seen[prefix]; !ok {
-			seen[prefix] = struct{}{}
-			topics = append(topics, prefix)
-		}
-	}
-	if len(topics) == 0 {
-		return
-	}
-	// No round counter reset needed here — catchUpRounds is keyed by
-	// "peerPK:topic", so a new peer naturally starts at 0 for all topics.
-	for _, topic := range topics {
-		payload, err := Encode(MsgDataRequest, DataRequestPayload{
-			Topic: topic,
-			Limit: 50,
-		})
-		if err != nil {
-			continue
-		}
-		_ = peer.ToPeer(context.Background(), payload, nil, 5000)
-	}
-	m.logger.Debug("catch-up requested", "topics", topics)
-}
-
-// announceInterests sends our topic declarations to a peer.
-func (m *Manager) announceInterests(peer *auth.Peer) error {
-	payload, err := Encode(MsgTopics, TopicsPayload{Prefixes: m.localInterests})
-	if err != nil {
-		return err
-	}
-	ctx := context.Background()
-	return peer.ToPeer(ctx, payload, nil, 5000)
-}
-
-// announceSHIP sends all local SHIP registrations to a peer.
-func (m *Manager) announceSHIP(peer *auth.Peer) {
-	if m.overlayDir == nil {
-		return
-	}
-	var peers []SHIPPeerInfo
-	m.overlayDir.ForEachSHIP(func(identity, domain, nodeName, version, topic string) bool {
-		peers = append(peers, SHIPPeerInfo{
-			IdentityPub: identity,
-			Domain:      domain,
-			NodeName:    nodeName,
-			Version:     version,
-			Topic:       topic,
-		})
-		return true
-	})
-	if len(peers) == 0 {
-		return
-	}
-	payload, err := Encode(MsgSHIPSync, SHIPSyncPayload{Peers: peers})
-	if err != nil {
-		return
-	}
-	_ = peer.ToPeer(context.Background(), payload, nil, 5000)
-}
-
-// ReannounceToAll sends this node's own SHIP registrations to all connected peers.
-// Only sends self-registered entries (TxID == "self-registered") to prevent
-// keeping dead remote peers alive by re-gossiping their stale entries.
-// Call periodically to keep LastSeen fresh on remote directories.
-func (m *Manager) ReannounceToAll() {
-	if m.overlayDir == nil {
-		return
-	}
-	var peers []SHIPPeerInfo
-	m.overlayDir.ForEachSHIP(func(identity, domain, nodeName, version, topic string) bool {
-		// Only include entries owned by local pubkeys — skip learned gossip entries
-		if _, isLocal := m.localPubkeys[identity]; isLocal {
-			peers = append(peers, SHIPPeerInfo{
-				IdentityPub: identity,
-				Domain:      domain,
-				NodeName:    nodeName,
-				Version:     version,
-				Topic:       topic,
-			})
-		}
-		return true
-	})
-	if len(peers) == 0 {
-		return
-	}
-	payload, err := Encode(MsgSHIPSync, SHIPSyncPayload{Peers: peers})
-	if err != nil {
-		return
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, mp := range m.peers {
-		if mp.Peer != nil {
-			_ = mp.Peer.ToPeer(context.Background(), payload, mp.IdentityPK, 5000)
-		}
-	}
-}
 
 // onSHIPSync handles SHIP registrations received from a peer.
 // Uses full-replace semantics: for each domain in the incoming sync,
@@ -173,15 +58,8 @@ func (m *Manager) forwardSHIPToAll(senderPK string, rawPayload json.RawMessage) 
 	if err != nil {
 		return
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for pkHex, peer := range m.peers {
-		if pkHex == senderPK {
-			continue
-		}
-		if peer.Peer != nil {
-			_ = peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
-		}
+	for _, peer := range m.admittedPeers(senderPK) {
+		_ = peer.peer.ToPeer(context.Background(), encoded, peer.identityPK, 5000)
 	}
 }
 
@@ -250,6 +128,7 @@ func (m *Manager) onData(senderPK string, raw json.RawMessage) error {
 		m.logger.Debug("envelope signature invalid", "topic", env.Topic, "error", err)
 		return nil
 	}
+	m.observePeerAdvert(env)
 
 	if m.store != nil {
 		if err := m.store.Ingest(env); err != nil {
@@ -408,11 +287,8 @@ func (m *Manager) onDataRequest(senderPKHex string, senderPK *ec.PublicKey, raw 
 		return err
 	}
 
-	m.mu.RLock()
-	peer, ok := m.peers[senderPKHex]
-	m.mu.RUnlock()
-	if ok && peer.Peer != nil {
-		return peer.Peer.ToPeer(context.Background(), resp, senderPK, 5000)
+	if peer, ok := m.admittedPeer(senderPKHex); ok {
+		return peer.peer.ToPeer(context.Background(), resp, senderPK, 5000)
 	}
 	return nil
 }
@@ -430,6 +306,7 @@ func (m *Manager) onDataResponse(senderPKHex string, senderPK *ec.PublicKey, raw
 		if err := env.Validate(); err != nil {
 			continue
 		}
+		m.observePeerAdvert(env)
 		lastValid = env
 		if m.store != nil {
 			_ = m.store.Ingest(env)
@@ -459,11 +336,8 @@ func (m *Manager) onDataResponse(senderPKHex string, senderPK *ec.PublicKey, raw
 				Cursor: &cursorValue,
 			})
 			if err == nil {
-				m.mu.RLock()
-				peer, ok := m.peers[senderPKHex]
-				m.mu.RUnlock()
-				if ok && peer.Peer != nil {
-					_ = peer.Peer.ToPeer(context.Background(), payload, senderPK, 5000)
+				if peer, ok := m.admittedPeer(senderPKHex); ok {
+					_ = peer.peer.ToPeer(context.Background(), payload, senderPK, 5000)
 				}
 			}
 		} else {
@@ -483,22 +357,27 @@ func (m *Manager) forwardToInterested(senderPK string, topic string, rawEnvelope
 	}
 
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
+	peers := make([]admittedSendPeer, 0, len(m.peers))
 	for pkHex, peer := range m.peers {
 		if pkHex == senderPK {
 			continue
 		}
-
+		if !admittedPrimaryLocked(pkHex, peer) {
+			continue
+		}
 		prefixes := m.interests[pkHex]
 		for _, prefix := range prefixes {
 			if strings.HasPrefix(topic, prefix) {
-				if peer.Peer != nil {
-					_ = peer.Peer.ToPeer(context.Background(), encoded, peer.IdentityPK, 5000)
-					m.IncrSent()
-				}
+				peers = append(peers, admittedSendPeer{
+					identity: pkHex, peer: peer.Peer, identityPK: peer.IdentityPK,
+				})
 				break
 			}
 		}
+	}
+	m.mu.RUnlock()
+	for _, peer := range peers {
+		_ = peer.peer.ToPeer(context.Background(), encoded, peer.identityPK, 5000)
+		m.IncrSent()
 	}
 }

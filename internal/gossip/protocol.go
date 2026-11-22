@@ -86,7 +86,8 @@ type Message struct {
 
 // TopicsPayload declares interest prefixes.
 type TopicsPayload struct {
-	Prefixes []string `json:"prefixes"`
+	Prefixes     []string `json:"prefixes"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // DataRequestPayload requests cached envelopes for a topic.

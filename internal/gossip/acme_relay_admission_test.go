@@ -309,7 +309,7 @@ func TestBroadcastACMEChallenge_LockNotHeldDuringSend(t *testing.T) {
 	go slowTransport.StartReceive()
 
 	mgrB.mu.Lock()
-	mgrB.peers[slowHex] = &MeshPeer{Peer: slowPeer, IdentityPK: slowKey.PubKey()}
+	mgrB.peers[slowHex] = &MeshPeer{Peer: slowPeer, IdentityPK: slowKey.PubKey(), admitted: true}
 	mgrB.mu.Unlock()
 
 	broadcastDone := make(chan struct{})

@@ -36,6 +36,10 @@ func TestMeshStatusEndpoint(t *testing.T) {
 	if _, ok := result["headers"]; !ok {
 		t.Error("missing 'headers' field")
 	}
+	pex, ok := result["peer_exchange"].(map[string]interface{})
+	if !ok || pex["advertise_state"] != "off" {
+		t.Errorf("missing or malformed peer_exchange status: %v", result["peer_exchange"])
+	}
 
 	// Topics should be present (empty list is fine — envelope store exists)
 	if _, ok := result["topics"]; !ok {

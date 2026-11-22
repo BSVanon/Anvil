@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BSVanon/Anvil/internal/gossip"
 	"github.com/BSVanon/Anvil/internal/version"
 	"github.com/libsv/go-p2p/wire"
 )
@@ -82,6 +83,9 @@ func (s *Server) handleMeshStatus(w http.ResponseWriter, r *http.Request) {
 			"envelopes_received": activity.EnvsReceived,
 			"envelopes_sent":     activity.EnvsSent,
 		}
+		result["peer_exchange"] = s.gossipMgr.PeerExchangeStatus()
+	} else {
+		result["peer_exchange"] = gossip.PeerExchangeStatus{AdvertiseState: "off"}
 	}
 
 	// Topics with counts and freshness (cached to avoid LevelDB scan per

@@ -137,6 +137,23 @@ type Manager struct {
 	// unauthConns counts inbound MeshHandler connections currently open
 	// that have not yet reached MarkAuthorized (see reserveUnauthConn).
 	unauthConns atomic.Int32
+
+	// Every socket gets a process-unique key. Endpoints are not unique: two
+	// configured URLs can resolve to the same node, and reciprocal seed dials
+	// deliberately create two sockets until duplicate resolution runs.
+	connSeq       atomic.Uint64
+	localIdentity string
+	pex           *peerExchangeState
+
+	// Duplicate convergence is enabled per remote identity only after that
+	// peer advertises exact-connection removal support. Keeping this state
+	// scoped to the current live connections makes rolling upgrades safe even
+	// if a node later rolls back while retaining its identity key.
+	duplicateSafePeers map[string]struct{}
+	identityRemovalSeq map[string]uint64
+	// disableDuplicateConvergence emulates a peer predating capability
+	// negotiation in real-transport compatibility coverage.
+	disableDuplicateConvergence bool
 }
 
 // peerRate tracks token-bucket rate limiting for a single peer.
@@ -161,23 +178,26 @@ type OverlayDirectory interface {
 
 // MeshPeer represents a single authenticated mesh connection.
 type MeshPeer struct {
-	Peer        *auth.Peer
-	IdentityPK  *ec.PublicKey
-	Endpoint    string
-	Direction   string
-	BondSats    int          // verified bond amount in satoshis (0 = not checked)
-	Version     string       // remote node version (from SHIP sync)
-	ConnectedAt time.Time    // when this peer connected
-	origKey     string       // the original map key at insertion time (for cleanup after re-key)
-	closeFunc   func() error // closes the underlying transport connection
+	Peer         *auth.Peer
+	IdentityPK   *ec.PublicKey
+	Endpoint     string
+	Direction    string
+	BondSats     int          // verified bond amount in satoshis (0 = not checked)
+	Version      string       // remote node version (from SHIP sync)
+	ConnectedAt  time.Time    // when this peer connected
+	origKey      string       // process-unique connection key (stable across identity re-keying)
+	connectionID uint64       // process-unique creation sequence for identity-removal barriers
+	closeFunc    func() error // closes the underlying transport connection
+	exchange     bool         // opened by the peer-exchange dial loop
+	seed         bool         // opened from a configured [mesh] seeds entry
 
-	// bondChecked marks that the one-time bond-verification step has run
-	// for this peer. Tracked separately from IdentityPK == nil (which used
-	// to double as this trigger) because ConnectPeer/ConnectSeedWithReconnect
-	// now re-key IdentityPK proactively, via establishAndAuthorizePeer,
-	// before the reactive ListenForGeneralMessages callback ever fires —
-	// AcceptPeer still re-keys reactively and doesn't need this field.
+	// bondChecked and admitted are guarded by Manager.mu. admitted is the
+	// application gate: identity binding, duplicate selection, allowlist, and
+	// bond verification have all succeeded for this exact socket.
 	bondChecked bool
+	admitted    bool
+	closed      bool
+	admissionMu sync.Mutex
 }
 
 // ManagerConfig holds configuration for the gossip manager.
@@ -211,6 +231,12 @@ type ManagerConfig struct {
 	TxMempool Mempool
 	// OnTx is called when a new transaction is received via the mesh.
 	OnTx OnTxCallback
+	// PeerExchange enables heartbeat peer records and exchange dialing.
+	PeerExchange bool
+	// MaxExchangePeers caps live connections opened by peer exchange.
+	MaxExchangePeers int
+	// SeedURLs are excluded from exchange dialing and never count toward its cap.
+	SeedURLs []string
 }
 
 // NewManager creates a gossip manager backed by go-sdk auth.Peer.
@@ -224,32 +250,44 @@ func NewManager(cfg ManagerConfig) *Manager {
 		logger = slog.Default()
 	}
 	m := &Manager{
-		wallet:         cfg.Wallet,
-		store:          cfg.Store,
-		logger:         logger,
-		peers:          make(map[string]*MeshPeer),
-		interests:      make(map[string][]string),
-		localInterests: cfg.LocalInterests,
-		seen:           make(map[string]struct{}),
-		msgSeen:        make(map[string]struct{}),
-		maxSeen:        maxSeen,
-		onEnvelope:     cfg.OnEnvelope,
-		overlayDir:     cfg.OverlayDir,
-		bondChecker:    cfg.BondChecker,
-		allowlist:      newPeerAllowlist(cfg.AllowedPeers),
-		peerRates:      make(map[string]*peerRate),
-		ratePerSec:     cfgRatePerSec(cfg.RatePerSec),
-		rateBurst:      cfgRateBurst(cfg.RateBurst),
-		slashTracker:   newSlashTracker(),
-		localPubkeys:   make(map[string]struct{}),
-		connLog:        cfg.ConnectionLog,
-		txMempool:      cfg.TxMempool,
-		onTxCallback:   cfg.OnTx,
+		wallet:             cfg.Wallet,
+		store:              cfg.Store,
+		logger:             logger,
+		peers:              make(map[string]*MeshPeer),
+		interests:          make(map[string][]string),
+		localInterests:     cfg.LocalInterests,
+		seen:               make(map[string]struct{}),
+		msgSeen:            make(map[string]struct{}),
+		maxSeen:            maxSeen,
+		onEnvelope:         cfg.OnEnvelope,
+		overlayDir:         cfg.OverlayDir,
+		bondChecker:        cfg.BondChecker,
+		allowlist:          newPeerAllowlist(cfg.AllowedPeers),
+		peerRates:          make(map[string]*peerRate),
+		ratePerSec:         cfgRatePerSec(cfg.RatePerSec),
+		rateBurst:          cfgRateBurst(cfg.RateBurst),
+		slashTracker:       newSlashTracker(),
+		localPubkeys:       make(map[string]struct{}),
+		connLog:            cfg.ConnectionLog,
+		txMempool:          cfg.TxMempool,
+		onTxCallback:       cfg.OnTx,
+		duplicateSafePeers: make(map[string]struct{}),
+		identityRemovalSeq: make(map[string]uint64),
 	}
 	m.startedAt = time.Now()
 	m.catchUpTopics = cfg.CatchUpTopics
 	m.catchUpRounds = make(map[string]int)
 	m.identityKey = cfg.IdentityKey
+	if cfg.IdentityKey != nil {
+		m.localIdentity = fmt.Sprintf("%x", cfg.IdentityKey.PubKey().Compressed())
+	} else if cfg.Wallet != nil {
+		identityCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if result, err := cfg.Wallet.GetPublicKey(identityCtx, wallet.GetPublicKeyArgs{IdentityKey: true}, ""); err == nil && result != nil && result.PublicKey != nil {
+			m.localIdentity = fmt.Sprintf("%x", result.PublicKey.Compressed())
+		}
+	}
+	m.pex = newPeerExchangeState(cfg.PeerExchange, cfg.MaxExchangePeers, cfg.SeedURLs)
 	for _, pk := range cfg.LocalPubkeys {
 		pk = strings.ToLower(strings.TrimSpace(pk))
 		if pk == "" {
@@ -264,132 +302,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 // Uses go-sdk auth.Peer + WebSocketTransport for BRC-31 identity verification.
 // Requires a wallet — returns an error if none was configured.
 func (m *Manager) ConnectPeer(ctx context.Context, endpoint string) error {
-	if m.wallet == nil {
-		return fmt.Errorf("cannot connect to peer: no wallet configured (identity.wif required)")
-	}
-	transport, err := NewWSTransportAdapter(endpoint)
-	if err != nil {
-		return fmt.Errorf("websocket transport: %w", err)
-	}
-
-	peer := auth.NewPeer(&auth.PeerOptions{
-		Wallet:    m.wallet,
-		Transport: transport,
-	})
-
-	// Register message handler before starting. By the time this fires,
-	// establishAndAuthorizePeer below has usually already re-keyed this
-	// peer's map entry to its identity hex and checked allowed_peers —
-	// but go-sdk gives no ordering guarantee between that call returning
-	// and this callback firing for the peer's first general message, so
-	// the check below runs here too, defensively, the same as AcceptPeer
-	// already does for the symmetric inbound case.
-	peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
-		pkHex := fmt.Sprintf("%x", senderPK.Compressed())
-
-		m.mu.Lock()
-		needsBondCheck := false
-		if mp, ok := m.peers[pkHex]; ok && !mp.bondChecked {
-			mp.bondChecked = true
-			needsBondCheck = true
-		}
-		m.mu.Unlock()
-
-		// [mesh] allowed_peers, defense in depth: establishAndAuthorizePeer
-		// below is the primary check for an outbound dial, but if this
-		// callback's first message ever ran before that check returns, a
-		// message from a peer about to be refused must still never reach
-		// handleMessage below. Factored into outboundAllowlistGate so the
-		// check can be exercised directly in a test: the ordering this
-		// guards against has no documented guarantee either way and no
-		// deterministic reproduction from outside go-sdk's internals.
-		if err := m.outboundAllowlistGate(needsBondCheck, pkHex, endpoint); err != nil {
-			return err
-		}
-
-		// Verify bond on first message (identity just revealed)
-		if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
-			balance, err := m.bondChecker.VerifyBond(senderPK)
-			if err != nil {
-				m.logger.Warn("outbound peer rejected: insufficient bond",
-					"peer", truncate(pkHex),
-					"endpoint", endpoint,
-					"error", err.Error())
-				m.recordConnectionEvent(ConnectionEvent{
-					Direction: "outbound",
-					Event:     "rejected",
-					Endpoint:  endpoint,
-					Identity:  pkHex,
-					Reason:    err.Error(),
-				})
-				m.removePeerWithReason(pkHex, "bond_rejected")
-				return fmt.Errorf("bond required: %w", err)
-			}
-			m.mu.Lock()
-			if mp, ok := m.peers[pkHex]; ok {
-				mp.BondSats = balance
-			}
-			m.mu.Unlock()
-			m.logger.Info("outbound peer bond verified",
-				"peer", truncate(pkHex),
-				"bond_sats", balance)
-		}
-		if needsBondCheck {
-			m.notePeerIdentity(pkHex)
-		}
-
-		return m.handleMessage(pkHex, senderPK, payload)
-	})
-
-	if err := peer.Start(); err != nil {
-		return fmt.Errorf("peer start: %w", err)
-	}
-
-	m.mu.Lock()
-	m.peers[endpoint] = &MeshPeer{
-		Peer:        peer,
-		Endpoint:    endpoint,
-		Direction:   "outbound",
-		ConnectedAt: time.Now(),
-		origKey:     endpoint,
-		closeFunc:   transport.Close,
-	}
-	peerCount := len(m.peers)
-	m.mu.Unlock()
-
-	m.logger.Info("mesh peer connecting", "endpoint", endpoint)
-	m.recordConnectionEvent(ConnectionEvent{
-		Direction: "outbound",
-		Event:     "connected",
-		Endpoint:  endpoint,
-		PeerCount: peerCount,
-	})
-	m.logLiveDataReady(peerCount)
-
-	// Start the read loop for incoming messages
-	go transport.StartReceive()
-
-	// Complete the handshake and check [mesh] allowed_peers BEFORE sending
-	// anything derived from local state (interests, SHIP directory,
-	// catch-up requests) — see establishAndAuthorizePeer. A refused peer
-	// is already removed and its transport closed; we must not announce
-	// anything to it.
-	if _, err := m.establishAndAuthorizePeer(ctx, peer, endpoint, "outbound", endpoint, 5000); err != nil {
-		return fmt.Errorf("peer identity not established: %w", err)
-	}
-	transport.MarkAuthorized()
-
-	// Announce our topic interests
-	if err := m.announceInterests(peer); err != nil {
-		return err
-	}
-
-	// Share our SHIP registrations
-	m.announceSHIP(peer)
-
-	// Request catch-up for critical topics (catalog, feeds)
-	m.requestCatchUp(peer)
-	return nil
+	_, _, _, err := m.connectPeer(ctx, endpoint, connectPeerOptions{})
+	return err
 }
 
 // BroadcastEnvelope sends an envelope to all interested peers.
@@ -422,74 +336,18 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 		Transport: transport,
 	})
 
-	// Use a temporary key until the auth handshake reveals the real identity
-	tempKey := fmt.Sprintf("inbound-%p", transport)
-
+	connKey, connectionID := m.nextConnection("inbound")
+	mp := &MeshPeer{
+		Peer:         peer,
+		Endpoint:     transport.RemoteAddr(),
+		Direction:    "inbound",
+		ConnectedAt:  time.Now(),
+		origKey:      connKey,
+		connectionID: connectionID,
+		closeFunc:    transport.Close,
+	}
 	peer.ListenForGeneralMessages(func(ctx context.Context, senderPK *ec.PublicKey, payload []byte) error {
-		pkHex := fmt.Sprintf("%x", senderPK.Compressed())
-
-		m.mu.Lock()
-		needsBondCheck := false
-		if mp, ok := m.peers[tempKey]; ok && mp.IdentityPK == nil {
-			mp.IdentityPK = senderPK
-			m.peers[pkHex] = mp
-			delete(m.peers, tempKey)
-			needsBondCheck = true
-		}
-		m.mu.Unlock()
-
-		// [mesh] allowed_peers: refuse an inbound peer whose identity isn't
-		// listed, right after the handshake and before any bond check,
-		// message processing, or reply. This is the earliest point this
-		// side learns who dialed in — accepting a connection can't gate
-		// the handshake response itself, since BRC-31 is mutual: we only
-		// learn the dialer's identity by completing it. See
-		// establishAndAuthorizePeer for the symmetric outbound-dial case.
-		if needsBondCheck && !m.checkAllowedPeer(pkHex, "inbound", transport.RemoteAddr()) {
-			return fmt.Errorf("peer identity not in allowed_peers")
-		}
-
-		// Verify bond on first message (identity just revealed)
-		if needsBondCheck && m.bondChecker != nil && m.bondChecker.Required() {
-			balance, err := m.bondChecker.VerifyBond(senderPK)
-			if err != nil {
-				m.logger.Warn("peer rejected: insufficient bond",
-					"peer", truncate(pkHex),
-					"error", err.Error())
-				m.recordConnectionEvent(ConnectionEvent{
-					Direction: "inbound",
-					Event:     "rejected",
-					Endpoint:  transport.RemoteAddr(),
-					Identity:  pkHex,
-					Reason:    err.Error(),
-				})
-				m.removePeerWithReason(pkHex, "bond_rejected")
-				return fmt.Errorf("bond required: %w", err)
-			}
-			m.mu.Lock()
-			if mp, ok := m.peers[pkHex]; ok {
-				mp.BondSats = balance
-			}
-			m.mu.Unlock()
-			m.logger.Info("peer bond verified",
-				"peer", truncate(pkHex),
-				"bond_sats", balance)
-		}
-		if needsBondCheck {
-			m.notePeerIdentity(pkHex)
-			transport.MarkAuthorized()
-			// Reply with our own announces now that this peer's identity
-			// has passed allowed_peers — never before. (We are the
-			// acceptor: the dialer always speaks first, so replying here,
-			// strictly after the check, cannot deadlock.)
-			if err := m.announceInterests(peer); err != nil {
-				m.logger.Warn("inbound peer interest announce failed", "peer", truncate(pkHex), "error", err)
-			}
-			m.announceSHIP(peer)
-			m.requestCatchUp(peer)
-		}
-
-		return m.handleMessage(pkHex, senderPK, payload)
+		return m.handlePeerMessage(ctx, mp, transport, senderPK, payload)
 	})
 
 	if err := peer.Start(); err != nil {
@@ -497,14 +355,7 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 	}
 
 	m.mu.Lock()
-	m.peers[tempKey] = &MeshPeer{
-		Peer:        peer,
-		Endpoint:    transport.RemoteAddr(),
-		Direction:   "inbound",
-		ConnectedAt: time.Now(),
-		origKey:     tempKey,
-		closeFunc:   transport.Close,
-	}
+	m.peers[connKey] = mp
 	peerCount := len(m.peers)
 	m.mu.Unlock()
 
@@ -526,70 +377,5 @@ func (m *Manager) AcceptPeer(transport *ServerWSTransport) (peerKey string, err 
 	// allowed_peers is reactively, inside the ListenForGeneralMessages
 	// callback above, once the dialer sends its own first message. That
 	// callback replies with our announces only after that check passes.
-	return tempKey, nil
-}
-
-// removePeer removes a peer from the peers and interests maps.
-// Pass the original key that was returned by AcceptPeer or used in ConnectPeer.
-// After re-keying (temp key → identity pubkey), the peer's origKey field
-// identifies it unambiguously even with multiple inbound peers.
-func (m *Manager) removePeer(origKey string) {
-	m.removePeerWithReason(origKey, "")
-}
-
-func (m *Manager) removePeerWithReason(origKey, reason string) {
-	m.mu.Lock()
-	var event ConnectionEvent
-
-	// Fast path: key hasn't been re-keyed yet
-	if p, ok := m.peers[origKey]; ok {
-		event = m.disconnectEventForPeer(p, reason, len(m.peers)-1)
-		_ = p.Peer.Stop()
-		if p.closeFunc != nil {
-			_ = p.closeFunc()
-		}
-		delete(m.peers, origKey)
-		delete(m.interests, origKey)
-		m.mu.Unlock()
-		m.recordConnectionEvent(event)
-		return
-	}
-
-	// Slow path: peer was re-keyed to its identity pubkey.
-	// Find it by matching origKey on the MeshPeer struct.
-	for k, p := range m.peers {
-		if p.origKey == origKey {
-			event = m.disconnectEventForPeer(p, reason, len(m.peers)-1)
-			_ = p.Peer.Stop()
-			if p.closeFunc != nil {
-				_ = p.closeFunc()
-			}
-			delete(m.peers, k)
-			delete(m.interests, k)
-			m.mu.Unlock()
-			m.recordConnectionEvent(event)
-			return
-		}
-	}
-	m.mu.Unlock()
-}
-
-// SetOnEnvelopeHook adds an additional callback invoked for each mesh-received
-// envelope. The existing onEnvelope callback (if any) continues to fire.
-// Used to wire SSE push notifications from the API server.
-func (m *Manager) SetOnEnvelopeHook(fn func(*envelope.Envelope)) {
-	prev := m.onEnvelope
-	m.onEnvelope = func(env *envelope.Envelope) {
-		if prev != nil {
-			prev(env)
-		}
-		fn(env)
-	}
-}
-
-// PeerCount returns the number of connected mesh peers.
-func (m *Manager) PeerCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.peers)
+	return connKey, nil
 }

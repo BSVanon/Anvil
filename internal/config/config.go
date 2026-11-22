@@ -47,6 +47,10 @@ type CapabilitiesConfig struct {
 // MeshConfig defines Anvil mesh peering via go-sdk auth.Peer + WebSocket.
 type MeshConfig struct {
 	Seeds []string `toml:"seeds"` // WebSocket endpoints of seed peers
+	// PeerExchange advertises and dials authenticated heartbeat peer records.
+	PeerExchange     bool   `toml:"peer_exchange"`
+	AdvertiseURL     string `toml:"advertise_url"`
+	MaxExchangePeers int    `toml:"max_exchange_peers"`
 
 	// AllowedPeers is a closed-network allowlist of identity public keys
 	// (hex). Empty means today's behaviour: any peer that completes the
@@ -428,6 +432,10 @@ func Load(path string) (*Config, error) {
 			Listen:    "0.0.0.0:8333",
 			APIListen: "0.0.0.0:9333",
 		},
+		Mesh: MeshConfig{
+			PeerExchange:     true,
+			MaxExchangePeers: 8,
+		},
 		BSV: BSVConfig{
 			Nodes:                  append([]string(nil), defaultBSVSeeds...),
 			HeaderSyncIntervalSecs: 30,
@@ -553,6 +561,14 @@ func Load(path string) (*Config, error) {
 	if len(cfg.Foundry.Seeds) > 0 && len(cfg.Mesh.Seeds) == 0 {
 		cfg.Mesh.Seeds = cfg.Foundry.Seeds
 	}
+	if cfg.Mesh.MaxExchangePeers < 0 || cfg.Mesh.MaxExchangePeers > 64 {
+		return nil, fmt.Errorf("mesh.max_exchange_peers must be between 0 and 64")
+	}
+	if cfg.Mesh.AdvertiseURL != "" {
+		if err := validateMeshAdvertiseURL(cfg.Mesh.AdvertiseURL); err != nil {
+			return nil, fmt.Errorf("mesh.advertise_url: %w", err)
+		}
+	}
 
 	// Guarantee the BSV header-sync peer list always carries the canonical
 	// fallback seeds. Older `anvil deploy` templates wrote a single peer
@@ -589,6 +605,32 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func validateMeshAdvertiseURL(raw string) error {
+	if len(raw) > 512 {
+		return fmt.Errorf("must be at most 512 bytes")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return fmt.Errorf("scheme must be ws:// or wss://")
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return fmt.Errorf("host is required")
+	}
+	if u.User != nil {
+		return fmt.Errorf("userinfo is not allowed")
+	}
+	if u.RawQuery != "" {
+		return fmt.Errorf("query is not allowed")
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("fragment is not allowed")
+	}
+	return nil
 }
 
 // deriveAuthToken deterministically derives an API bearer token from a WIF.
