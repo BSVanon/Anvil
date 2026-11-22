@@ -14,17 +14,22 @@ import (
 // of text inscriptions referencing each other, for exercising the scope
 // scanner's bounds directly (no HTTP, no real content.Server).
 type graphContent struct {
-	mu    sync.Mutex
-	nodes map[string]string // outpoint -> body (served as text/html)
-	calls map[string]int
+	mu           sync.Mutex
+	nodes        map[string]string // outpoint -> body
+	contentTypes map[string]string // outpoint -> content type
+	calls        map[string]int
 }
 
 func newGraphContent() *graphContent {
-	return &graphContent{nodes: map[string]string{}, calls: map[string]int{}}
+	return &graphContent{nodes: map[string]string{}, contentTypes: map[string]string{}, calls: map[string]int{}}
 }
 
 func (g *graphContent) set(outpoint, body string) {
 	g.nodes[outpoint] = body
+}
+
+func (g *graphContent) setContentType(outpoint, contentType string) {
+	g.contentTypes[outpoint] = contentType
 }
 
 func (g *graphContent) Inscription(_ context.Context, txid string, vout int) ([]byte, string, error) {
@@ -36,7 +41,11 @@ func (g *graphContent) Inscription(_ context.Context, txid string, vout int) ([]
 	if !ok {
 		return nil, "", fmt.Errorf("no such node: %s", op)
 	}
-	return []byte(body), "text/html", nil
+	contentType := g.contentTypes[op]
+	if contentType == "" {
+		contentType = "text/html"
+	}
+	return []byte(body), contentType, nil
 }
 
 func ref(outpoint string) string { return "/content/" + outpoint }
@@ -67,6 +76,9 @@ func TestScanScope_DepthBound(t *testing.T) {
 	if result.has(nodes[5]) {
 		t.Fatal("expected node5 (depth 5) to be out of scope — beyond scopeMaxDepth")
 	}
+	if !result.complete {
+		t.Fatal("expected reaching the depth bound to remain complete")
+	}
 }
 
 func TestScanScope_CountBound(t *testing.T) {
@@ -96,6 +108,9 @@ func TestScanScope_CountBound(t *testing.T) {
 	}
 	if result.has(children[fanOut-1]) {
 		t.Fatal("expected the last-referenced child (past the count bound) to be out of scope")
+	}
+	if !result.complete {
+		t.Fatal("expected reaching the outpoint bound to remain complete")
 	}
 }
 
@@ -129,6 +144,9 @@ func TestScanScope_BytesBound(t *testing.T) {
 	}
 	if result.has(child4) {
 		t.Fatal("expected child4 to be out of scope: only discoverable by scanning child2, which the bytes bound stops before fetching")
+	}
+	if !result.complete {
+		t.Fatal("expected reaching the bytes bound to remain complete")
 	}
 }
 

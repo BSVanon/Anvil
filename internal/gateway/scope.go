@@ -281,59 +281,76 @@ type frontierNode struct {
 // scope (it WAS referenced), it just can't be scanned further for its own
 // references, exactly as before — only the final caching decision changes.
 //
-// versions are further roots: the origin's other versions, newest first.
+// versions are further roots: the origin's other versions, newest first. They
+// are queued only after the origin and latestOutpoint frontier has drained.
 func scanScope(ctx context.Context, content contentFetcher, origin, latestOutpoint string, versions ...string) *scopeResult {
 	visited := map[string]struct{}{}
-	// Queue each root once: an untracked origin has latestOutpoint ==
-	// origin, and queuing the same outpoint twice would fetch and count it
-	// twice against the byte budget for no benefit.
-	var queue []frontierNode
 	for _, root := range append([]string{origin, latestOutpoint}, versions...) {
-		if _, seen := visited[root]; !seen {
-			visited[root] = struct{}{}
+		visited[root] = struct{}{}
+	}
+
+	var queue []frontierNode
+	queued := map[string]struct{}{}
+	queueRoots := func(roots []string) {
+		// Queue each root once: an untracked origin has latestOutpoint ==
+		// origin, and queuing the same outpoint twice would fetch and count it
+		// twice against the byte budget for no benefit.
+		for _, root := range roots {
+			if _, seen := queued[root]; seen {
+				continue
+			}
+			queued[root] = struct{}{}
 			queue = append(queue, frontierNode{root, 0})
 		}
 	}
+	queueRoots([]string{origin, latestOutpoint})
 	bytesFetched := 0
 	complete := true
 
-	for len(queue) > 0 && len(visited) < scopeMaxOutpoints && bytesFetched < scopeMaxBytes {
-		if err := ctx.Err(); err != nil {
-			complete = false
-			break
-		}
-		node := queue[0]
-		queue = queue[1:]
-		if node.depth >= scopeMaxDepth {
-			continue
-		}
-		txid, vout, ok := splitOutpoint(node.outpoint)
-		if !ok {
-			continue
-		}
-		data, contentType, err := content.Inscription(ctx, txid, vout)
-		if err != nil {
-			complete = false
-			continue
-		}
-		bytesFetched += len(data)
-		if !isScannableText(contentType) {
-			continue
-		}
-		for _, m := range scopeRefRe.FindAllStringSubmatch(string(data), -1) {
-			ref, ok := parseOutpoint(m[1] + "_" + m[2])
+	for {
+		for len(queue) > 0 && len(visited) < scopeMaxOutpoints && bytesFetched < scopeMaxBytes {
+			if err := ctx.Err(); err != nil {
+				complete = false
+				break
+			}
+			node := queue[0]
+			queue = queue[1:]
+			if node.depth >= scopeMaxDepth {
+				continue
+			}
+			txid, vout, ok := splitOutpoint(node.outpoint)
 			if !ok {
 				continue
 			}
-			if _, seen := visited[ref]; seen {
+			data, contentType, err := content.Inscription(ctx, txid, vout)
+			if err != nil {
+				complete = false
 				continue
 			}
-			if len(visited) >= scopeMaxOutpoints {
-				break
+			bytesFetched += len(data)
+			if !isScannableText(contentType) {
+				continue
 			}
-			visited[ref] = struct{}{}
-			queue = append(queue, frontierNode{ref, node.depth + 1})
+			for _, m := range scopeRefRe.FindAllStringSubmatch(string(data), -1) {
+				ref, ok := parseOutpoint(m[1] + "_" + m[2])
+				if !ok {
+					continue
+				}
+				if _, seen := visited[ref]; seen {
+					continue
+				}
+				if len(visited) >= scopeMaxOutpoints {
+					break
+				}
+				visited[ref] = struct{}{}
+				queue = append(queue, frontierNode{ref, node.depth + 1})
+			}
 		}
+		if len(queue) > 0 || len(versions) == 0 || len(visited) >= scopeMaxOutpoints || bytesFetched >= scopeMaxBytes {
+			break
+		}
+		queueRoots(versions)
+		versions = nil
 	}
 	return &scopeResult{set: visited, complete: complete}
 }

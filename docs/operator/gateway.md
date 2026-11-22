@@ -87,6 +87,7 @@ sequence becomes `immutable` only after the resolved location has at least six
 confirmations; this confirmation rule is Anvil's documented divergence from
 ORDFS. See [Proof and Content Endpoints](../API_REFERENCE.md#proof-and-content-endpoints)
 for the complete cache and numbering contract.
+When enforcing its content-scope limits, the gateway scans the origin and latest-version trees before older-version roots.
 
 ## TLS and ACME
 
